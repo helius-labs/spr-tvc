@@ -8,7 +8,8 @@ use spr_tvc_protocol::encoding::{decode_lower_hex_array, encode_lower_hex};
 
 use crate::{App, Release, Service};
 
-const TESTKIT_JSON: &str = include_str!("../../../packages/tvc-wallet/src/local-testkit.json");
+const TESTKIT_JSON: &str =
+    include_str!("../../../packages/decryption-service/src/local-testkit.json");
 /// The fixture's own format version, which the TypeScript testkit checks too.
 const TESTKIT_VERSION: u8 = 1;
 

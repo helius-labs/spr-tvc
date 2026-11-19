@@ -1,7 +1,7 @@
 [package]
 name = "spr-tvc-protocol"
 version = "0.1.0"
-description = "Development TVC protocol, canonical encoding, and cryptographic foundations for Zolana private wallets"
+description = "TVC wire protocol for attested Solana Privacy Rings decryption"
 edition.workspace = true
 license.workspace = true
 rust-version = "1.98"
@@ -21,7 +21,7 @@ zeroize = { version = "=1.9.0", features = ["zeroize_derive"] }
 
 [dev-dependencies]
 # Test-only interop pin. AGPL-3.0-only; not a runtime dependency of this crate.
-qos_p256 = { version = "=0.12.1", default-features = false }
+qos_p256.workspace = true
 
 [[test]]
 name = "conformance"

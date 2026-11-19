@@ -15,9 +15,6 @@ pub enum ErrorCode {
     InvalidEncryptedEnvelope,
     ReleaseBindingMismatch,
     QuorumKeyEpochMismatch,
-    InvalidWalletDescriptor,
-    WalletBindingMismatch,
-    UnauthorizedClient,
     ExpiredRequest,
     TurnkeyEvidenceInvalid,
     InvalidCanonicalJson,
@@ -36,7 +33,6 @@ pub enum ErrorCode {
     DiscoveryUntrusted,
     NetworkMismatch,
     ReleasePolicyInvalid,
-    DescriptorExpired,
 }
 
 impl ErrorCode {
@@ -78,52 +74,5 @@ impl From<ErrorCode> for TvcError {
 }
 
 #[cfg(test)]
-mod tests {
-    use strum::VariantArray;
-
-    use super::ErrorCode;
-
-    #[test]
-    fn every_code_is_its_variant_name() {
-        let names: Vec<&str> = ErrorCode::VARIANTS
-            .iter()
-            .map(|code| code.as_str())
-            .collect();
-        assert_eq!(
-            names,
-            [
-                "UnsupportedVersion",
-                "RequestTooLarge",
-                "InvalidEncryptedEnvelope",
-                "ReleaseBindingMismatch",
-                "QuorumKeyEpochMismatch",
-                "InvalidWalletDescriptor",
-                "WalletBindingMismatch",
-                "UnauthorizedClient",
-                "ExpiredRequest",
-                "TurnkeyEvidenceInvalid",
-                "InvalidCanonicalJson",
-                "DuplicateJsonField",
-                "UnknownJsonField",
-                "InvalidHex",
-                "InvalidDecimal",
-                "InvalidPublicKey",
-                "InvalidSignature",
-                "HighSSignature",
-                "DerSignatureRejected",
-                "CompressedKeyRejected",
-                "DoubleHashRejected",
-                "UnsupportedProofPath",
-                "BootProofUnverified",
-                "DiscoveryUntrusted",
-                "NetworkMismatch",
-                "ReleasePolicyInvalid",
-                "DescriptorExpired",
-            ]
-        );
-        for code in ErrorCode::VARIANTS {
-            assert_eq!(code.to_string(), code.as_str());
-            assert_eq!(crate::TvcError::new(*code).to_string(), code.as_str());
-        }
-    }
-}
+#[path = "../tests/unit/wire_errors.rs"]
+mod tests;

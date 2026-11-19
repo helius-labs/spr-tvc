@@ -3,9 +3,7 @@ import tsPlugin from "@typescript-eslint/eslint-plugin";
 import tsParser from "@typescript-eslint/parser";
 
 const TURNKEY_PROOF_SEAM =
-  "packages/tvc-wallet/src/verify/internal/turnkey-proof-seam.ts";
-const TURNKEY_CONFORMANCE_TEST =
-  "packages/tvc-wallet/src/wallet/turnkey.conformance.test.ts";
+  "packages/decryption-service/src/verify/internal/turnkey-proof-seam.ts";
 
 export default [
   {
@@ -14,9 +12,8 @@ export default [
   js.configs.recommended,
   {
     files: [
-      "packages/tvc-wallet/**/*.{ts,tsx}",
+      "packages/decryption-service/**/*.{ts,tsx}",
       "examples/typescript-client/{src,examples}/**/*.{ts,tsx}",
-      "apps/tvc-gateway/e2e/*.ts",
     ],
     languageOptions: {
       parser: tsParser,
@@ -51,8 +48,7 @@ export default [
     },
   },
   {
-    // The conformance test imports `@turnkey/core`'s types, a dev dependency.
-    files: [TURNKEY_PROOF_SEAM, TURNKEY_CONFORMANCE_TEST],
+    files: [TURNKEY_PROOF_SEAM],
     rules: {
       "no-restricted-imports": "off",
     },
@@ -60,7 +56,7 @@ export default [
   {
     // The client example signs Solana transactions with the wallet's own
     // Turnkey API key; the restriction above guards the package's proof seam.
-    files: ["examples/typescript-client/src/lib.ts"],
+    files: ["examples/typescript-client/src/turnkey.ts", "examples/typescript-client/src/lib.ts"],
     rules: {
       "no-restricted-imports": "off",
     },

@@ -10,6 +10,7 @@ mod release;
 mod request;
 mod service;
 #[cfg(any(test, feature = "testing"))]
+#[path = "../tests/support/enclave.rs"]
 pub mod testing;
 
 pub use cipher::{check_batch, open_ciphertexts};

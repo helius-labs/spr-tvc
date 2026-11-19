@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::SecretKey;
 use sha2::{Digest, Sha256};
+use spr_tvc_protocol::constants::API_VERSION;
 use spr_tvc_protocol::crypto::{
     parse_uncompressed_sec1, qos_decrypt, sign_p256_prehash, verify_p256_prehash,
 };
@@ -18,11 +19,8 @@ mod fixtures;
 use fixtures::{
     bind_discovery_to_policy, reject_double_hashed_signature, verify_fixtures, write_fixtures,
 };
-use spr_tvc_protocol::constants::API_VERSION;
 use spr_tvc_protocol::release::verify_signed_release_policy;
-use spr_tvc_protocol::types::{
-    DecryptLabel, DeriveItem, HealthResponse, Network, Operation, OperationKind, ServiceInfo,
-};
+use spr_tvc_protocol::types::{HealthResponse, Network, ServiceInfo};
 use spr_tvc_protocol::{PinnedReleaseAuthorities, ReleasePolicy, SignedReleasePolicy};
 
 fn fixtures_dir() -> PathBuf {
@@ -83,77 +81,6 @@ fn unknown_and_duplicate_json_fields_are_rejected() {
     let duplicate =
         parse_strict_json::<HealthResponse>(r#"{"status":"Healthy","status":"Healthy"}"#);
     assert_eq!(duplicate.unwrap_err().code, ErrorCode::DuplicateJsonField);
-}
-
-#[test]
-fn operations_parse_strictly() {
-    let decrypt: Operation = parse_strict_json(&format!(
-        r#"{{"type":"Decrypt","items":[{{"ciphertext":"aa","viewing_public_key":"{}","transaction_viewing_public_key":"{}","salt":"{}","slot_index":"1","label":"Transfer"}}]}}"#,
-        "04".repeat(33),
-        "04".repeat(33),
-        "cc".repeat(16),
-    ))
-    .unwrap();
-    assert_eq!(decrypt.kind(), OperationKind::Decrypt);
-    let Operation::Decrypt { items } = &decrypt else {
-        panic!("expected a decrypt");
-    };
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].slot_index, 1);
-    assert_eq!(items[0].label, DecryptLabel::Transfer);
-
-    let derive: Operation = parse_strict_json(&format!(
-        r#"{{"type":"Derive","items":[{{"kind":"Nullifier","utxo_hash":"{h}","blinding":"{h}"}},{{"kind":"MergeDummyNullifier","first_nullifier":"{h}","slot_index":"3"}},{{"kind":"MergeOutputBlinding","first_nullifier":"{h}"}},{{"kind":"MergePrivateTxBlinding","first_nullifier":"{h}"}},{{"kind":"MergeOutputKey","first_nullifier":"{h}"}}]}}"#,
-        h = "22".repeat(32),
-    ))
-    .unwrap();
-    assert_eq!(derive.kind(), OperationKind::Derive);
-    let Operation::Derive { items } = &derive else {
-        panic!("expected a derive");
-    };
-    assert!(matches!(
-        items[1],
-        DeriveItem::MergeDummyNullifier { slot_index: 3, .. }
-    ));
-    assert!(matches!(items[4], DeriveItem::MergeOutputKey { .. }));
-
-    let transaction_keys: Operation = parse_strict_json(&format!(
-        r#"{{"type":"TransactionKeys","items":[{{"viewing_public_key":"{}","first_nullifier":"{}"}}]}}"#,
-        "04".repeat(33),
-        "22".repeat(32),
-    ))
-    .unwrap();
-    assert_eq!(transaction_keys.kind(), OperationKind::TransactionKeys);
-
-    // The prover request is carried whole; its shape is the prover's. The
-    // attestation and the signed policy file are carried as received.
-    let prove: Operation = parse_strict_json(&format!(
-        r#"{{"type":"Prove","request":{{"circuitType":"merge","inputs":[{{"nullifier":"0x1"}}],"userNullifierSecret":null}},"prover":{{"target":"/prove/merge_1_1","nonce":"{}","attestation":{{"platform":"aws-nitro"}},"policy":{{"payload":"7b7d","signatures":[{{"public_key":"{}","signature":"{}"}}]}}}}}}"#,
-        "11".repeat(32),
-        "33".repeat(32),
-        "22".repeat(64),
-    ))
-    .unwrap();
-    assert_eq!(prove.kind(), OperationKind::Prove);
-    let Operation::Prove { request, prover } = &prove else {
-        panic!("expected a prove");
-    };
-    assert!(request["userNullifierSecret"].is_null());
-    assert_eq!(prover.target, "/prove/merge_1_1");
-
-    // Retired operations, unknown fields, unknown labels, and non-canonical
-    // integers are rejected.
-    for body in [
-        r#"{"type":"ViewTags"}"#,
-        r#"{"type":"Spend","tree":"t","inputs":[],"action":{"type":"Withdrawal","recipient":"r","asset":"a","amount":"1"},"assets":[]}"#,
-        r#"{"type":"Decrypt","items":[],"assets":[]}"#,
-        r#"{"type":"Decrypt","items":[{"ciphertext":"aa","viewing_public_key":"02","transaction_viewing_public_key":"03","salt":"cc","slot_index":"1","label":"Anonymous"}]}"#,
-        r#"{"type":"Derive","items":[{"kind":"MergeDummyNullifier","first_nullifier":"22","slot_index":"01"}]}"#,
-        r#"{"type":"Prove","request":{"circuitType":"merge"},"fill":[0]}"#,
-        r#"{"type":"Prove","request":{"circuitType":"merge"}}"#,
-    ] {
-        assert!(parse_strict_json::<Operation>(body).is_err(), "{body}");
-    }
 }
 
 #[test]

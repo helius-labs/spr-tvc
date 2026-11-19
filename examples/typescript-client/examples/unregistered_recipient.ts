@@ -1,29 +1,25 @@
 import {
-  LocalKeys,
   SOL_MINT,
   Wallet,
   buildDepositTransaction,
   buildTransferTransaction,
   syncWallet,
-  type Bytes32,
 } from "@heliuslabs/spr";
-import { ed25519DerivationMessage } from "@heliuslabs/spr/keypair";
 import { isWalletRegistered } from "@heliuslabs/spr/wallet";
-import { createSignableMessage, generateKeyPairSigner, getAddressEncoder } from "@solana/kit";
 
-import { decryptionService, expectBalance, sendAndConfirmFactory, setup } from "../src/lib.js";
+import { expectBalance, localWalletKeys, sendAndConfirmFactory, setup } from "../src/lib.js";
 
 const AMOUNT = 3_000_000n;
 
 async function main(): Promise<void> {
-  const { zolana, keys, signer } = await setup();
-  const service = decryptionService();
-  const send = sendAndConfirmFactory(zolana, signer);
+  const { zolana, service, sender, recipient } = await setup();
+  const keys = await localWalletKeys(sender, zolana.proofService);
+  const send = sendAndConfirmFactory(zolana, sender);
 
   const wallet = new Wallet({ identity: keys.address() });
   const deposit = await buildDepositTransaction({
     client: zolana,
-    feePayer: signer.address,
+    feePayer: sender.address,
     recipient: keys.address(),
     amount: AMOUNT,
   });
@@ -31,7 +27,6 @@ async function main(): Promise<void> {
   await syncWallet({ client: zolana, wallet, keys, config: { requireSlot: depositTx.slot } });
 
   // The recipient has no registry record, so the sender pays its service keys.
-  const recipient = await generateKeyPairSigner();
   if (await isWalletRegistered({ rpc: zolana, owner: recipient.address })) {
     throw new Error("a new address has a registry record");
   }
@@ -39,7 +34,7 @@ async function main(): Promise<void> {
     client: zolana,
     wallet,
     keys,
-    feePayer: signer.address,
+    feePayer: sender.address,
     recipient: await service.address(recipient.address),
     amount: AMOUNT,
   });
@@ -56,28 +51,19 @@ async function main(): Promise<void> {
   });
   expectBalance("receive", received.balance(SOL_MINT), AMOUNT, 1);
 
-  // The recipient's own wallet, from its signature over the derivation message.
-  const derivation = ed25519DerivationMessage(
-    new Uint8Array(getAddressEncoder().encode(recipient.address)) as Bytes32,
-  );
-  const [signatures] = await recipient.signMessages([createSignableMessage(derivation)]);
-  const derivationSeed = signatures?.[recipient.address];
-  if (!derivationSeed) throw new Error("the recipient did not sign");
-  const ownKeys = LocalKeys.fromDerivationSeed(
-    { solanaPublicKey: recipient.address, derivationSeed },
-    zolana.proofService,
-  );
-
-  // The sweep. The recipient holds no SOL, so the sender pays the fee and both sign.
+  const ownKeys = sender.address === recipient.address
+    ? keys
+    : await localWalletKeys(recipient, zolana.proofService);
   const sweep = await buildTransferTransaction({
     client: zolana,
     wallet: received,
     keys: serviceKeys,
-    feePayer: signer.address,
+    feePayer: sender.address,
     recipient: ownKeys.address(),
     amount: AMOUNT,
   });
-  const sweepTx = await sendAndConfirmFactory(zolana, signer, recipient)(sweep);
+  const sweepSend = sender.address === recipient.address ? send : sendAndConfirmFactory(zolana, sender, recipient);
+  const sweepTx = await sweepSend(sweep);
   const own = new Wallet({ identity: ownKeys.address() });
   await syncWallet({
     client: zolana,
@@ -86,6 +72,9 @@ async function main(): Promise<void> {
     config: { requireSlot: sweepTx.slot },
   });
   expectBalance("sweep", own.balance(SOL_MINT), AMOUNT, 1);
+  serviceKeys.destroy();
+  if (ownKeys !== keys) ownKeys.destroy();
+  keys.destroy();
   console.log(`sweep recipient=${recipient.address} private_balance=${AMOUNT} tx=${sweepTx.signature}`);
 }
 
