@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { initializePoseidon, SOL_MINT, ViewingKey, Wallet } from "@heliuslabs/spr";
 import { DEFAULT_TREE_ID } from "@heliuslabs/spr/interface";
 import { randomSalt } from "@heliuslabs/spr/keypair";
-import { createProofOutput, decryptTransactions, encodeConfidentialSlots } from "@heliuslabs/spr/transaction";
+import {
+  createProofOutput,
+  decryptTransactions,
+  encodeConfidentialSlots,
+  type IndexedShieldedTransaction,
+} from "@heliuslabs/spr/transaction";
 import { ed25519 } from "@noble/curves/ed25519";
 import { p256 } from "@noble/curves/p256";
 import { address, generateKeyPairSigner, getAddressDecoder, type Signature } from "@solana/kit";
@@ -154,36 +159,51 @@ describe("the decryption service through the gateway", () => {
       const output = (amount: bigint) => createProofOutput({ ownerAddress: recipient, asset: SOL_MINT, amount });
       const valid = output(5n);
       const mismatched = output(7n);
-      const commitments = [valid.hash(DEFAULT_TREE_ID), output(8n).hash(DEFAULT_TREE_ID)];
+      const commitments = [valid.hash(DEFAULT_TREE_ID), mismatched.hash(DEFAULT_TREE_ID)];
+      const wrongCommitment = output(8n).hash(DEFAULT_TREE_ID);
       const salt = randomSalt();
       const slots = encodeConfidentialSlots([valid, mismatched], wallet.registry, senderKey, salt);
-      const report = await decryptTransactions({
-        wallet,
-        keys,
-        transactions: [{
-          slot: 1n,
-          txSignature: "1".repeat(64) as Signature,
-          txViewingPublicKey: senderKey.publicKey(),
-          salt,
-          outputSlots: slots.map((slot, index) => ({
-            viewTag: slot!.viewTag,
-            payload: slot!.data,
-            outputContext: {
-              hash: commitments[index]!,
-              tree: address("3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"),
-              leafIndex: BigInt(index),
-            },
-          })),
-          messages: [],
-          nullifiers: [],
-          proofless: false,
-        }],
-      });
+      const transaction: IndexedShieldedTransaction = {
+        slot: 1n,
+        txSignature: "1".repeat(64) as Signature,
+        txViewingPublicKey: senderKey.publicKey(),
+        salt,
+        outputSlots: slots.map((slot, index) => ({
+          viewTag: slot!.viewTag,
+          payload: slot!.data,
+          outputContext: {
+            hash: index === 1 ? wrongCommitment : commitments[index]!,
+            tree: address("3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"),
+            leafIndex: BigInt(index),
+          },
+        })),
+        messages: [],
+        nullifiers: [],
+        proofless: false,
+      };
+      const report = await decryptTransactions({ wallet, keys, transactions: [transaction] });
       expect(report).toMatchObject({ storedUtxos: 1, undecryptableCandidates: 1 });
       expect(wallet.utxos().map(({ utxo }) => utxo.amount)).toEqual([5n]);
       expect(signMessages).toHaveBeenCalledTimes(2);
-      expect(signMessages.mock.calls[1]?.[0][0]?.content)
-        .not.toEqual(signMessages.mock.calls[0]?.[0][0]?.content);
+
+      const corrected = {
+        ...transaction,
+        outputSlots: transaction.outputSlots.map((slot, index) => ({
+          ...slot,
+          outputContext: { ...slot.outputContext, hash: commitments[index]! },
+        })),
+      };
+      const freshWallet = new Wallet({ identity: keys.address() });
+      const correctedReport = await decryptTransactions({
+        wallet: freshWallet,
+        keys,
+        transactions: [corrected],
+      });
+      expect(correctedReport).toMatchObject({ storedUtxos: 2, undecryptableCandidates: 0 });
+      expect(freshWallet.utxos().map(({ utxo }) => utxo.amount)).toEqual([5n, 7n]);
+      expect(signMessages).toHaveBeenCalledTimes(3);
+      const approvals = signMessages.mock.calls.map(([messages]) => encodeLowerHex(messages[0]!.content));
+      expect(new Set(approvals).size).toBe(3);
     } finally {
       senderKey.destroy();
       keys.destroy();
