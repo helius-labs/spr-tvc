@@ -8,16 +8,12 @@ use tower::ServiceExt as _;
 use super::*;
 use crate::release::NETWORK;
 
-fn info(quorum: &P256Pair, ephemeral: &P256Pair) -> ServiceInfo {
-    crate::testing::release().service_info([0x22; 32], [0x33; 32], quorum, ephemeral)
+fn info(quorum: &P256Pair) -> ServiceInfo {
+    crate::testing::release().service_info([0x22; 32], [0x33; 32], quorum)
 }
 
 fn app(quorum: P256Pair, ephemeral: P256Pair) -> Router {
-    router(Arc::new(Service::new(
-        info(&quorum, &ephemeral),
-        ephemeral,
-        quorum,
-    )))
+    router(Arc::new(Service::new(info(&quorum), ephemeral, quorum)))
 }
 
 #[tokio::test]
@@ -40,10 +36,9 @@ async fn health_is_exact() {
 async fn info_is_untrusted_discovery_bound_to_runtime_public_keys() {
     let quorum = P256Pair::generate().unwrap();
     let ephemeral = P256Pair::generate().unwrap();
-    let ephemeral_public_key = ephemeral.public_key().to_bytes();
-    let expected = info(&quorum, &ephemeral);
+    let expected = info(&quorum);
     let response = app(quorum, ephemeral)
-        .oneshot(Request::get("/v1/info").body(Body::empty()).unwrap())
+        .oneshot(Request::get("/v2/info").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -51,7 +46,6 @@ async fn info_is_untrusted_discovery_bound_to_runtime_public_keys() {
     let actual: ServiceInfo = parse_strict_json(&crate::testing::body(response).await).unwrap();
     assert_eq!(actual, expected);
     assert_eq!(actual.network, NETWORK);
-    assert_eq!(actual.ephemeral_public_key, ephemeral_public_key);
 }
 
 #[tokio::test]
@@ -74,7 +68,7 @@ async fn ping_decrypts_with_quorum_and_signs_exact_utf8_with_ephemeral() {
     .unwrap();
     let response = app(quorum, ephemeral)
         .oneshot(
-            Request::post("/v1/ping")
+            Request::post("/v2/ping")
                 .header(CONTENT_TYPE, "application/json")
                 .body(Body::from(request_body))
                 .unwrap(),
@@ -135,7 +129,7 @@ async fn ping_rejects_ephemeral_encryption_and_noncanonical_plaintext_genericall
         let response = app
             .clone()
             .oneshot(
-                Request::post("/v1/ping")
+                Request::post("/v2/ping")
                     .header(CONTENT_TYPE, "application/json")
                     .body(Body::from(body))
                     .unwrap(),
@@ -158,14 +152,14 @@ async fn ping_rejects_wrong_method_and_oversized_body() {
 
     let response = app
         .clone()
-        .oneshot(Request::get("/v1/ping").body(Body::empty()).unwrap())
+        .oneshot(Request::get("/v2/ping").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
 
     let response = app
         .oneshot(
-            Request::post("/v1/ping")
+            Request::post("/v2/ping")
                 .header(CONTENT_TYPE, "application/json")
                 .body(Body::from(vec![
                     0u8;
@@ -197,23 +191,24 @@ async fn every_other_request_gets_a_generic_json_error() {
     let invalid = (StatusCode::BAD_REQUEST, "InvalidRequest");
     let cases = [
         (
-            request("GET", "/v1/operations", "", Vec::new()),
+            request("GET", "/v2/operations", "", Vec::new()),
             not_allowed,
         ),
-        (request("PUT", "/v1/ping", json, Vec::new()), not_allowed),
+        (request("PUT", "/v2/ping", json, Vec::new()), not_allowed),
         (request("POST", "/health", json, Vec::new()), not_allowed),
-        (request("DELETE", "/v1/info", "", Vec::new()), not_allowed),
-        (request("GET", "/v1/unknown", "", Vec::new()), not_found),
+        (request("DELETE", "/v2/info", "", Vec::new()), not_allowed),
+        (request("GET", "/v2/unknown", "", Vec::new()), not_found),
+        (request("GET", "/v1/info", "", Vec::new()), not_found),
         (request("POST", "/", json, Vec::new()), not_found),
         (
-            request("POST", "/v1/operations", "text/plain", Vec::new()),
+            request("POST", "/v2/operations", "text/plain", Vec::new()),
             invalid,
         ),
-        (request("POST", "/v1/ping", "", Vec::new()), invalid),
+        (request("POST", "/v2/ping", "", Vec::new()), invalid),
         (
             request(
                 "POST",
-                "/v1/operations",
+                "/v2/operations",
                 "application/json; charset=utf-8",
                 b"{}".to_vec(),
             ),

@@ -216,7 +216,7 @@ describe("bindings and HTTP skeleton", () => {
     }
   });
 
-  it("treats /health as readiness-only and /v1/info as untrusted discovery", () => {
+  it("treats /health as readiness-only and /v2/info as untrusted discovery", () => {
     const fixture = readJson("http-skeleton.json");
     expect(fixture.health_body).toBe('{"status":"Healthy"}');
     expect(fixture.health_has_release_id).toBe(false);
@@ -385,7 +385,7 @@ describe("enclave verification", () => {
       nowMs: () => BigInt(String(policyFixture.now_ms)),
       transport: {
         fetch: async (url) =>
-          url.pathname === "/v1/info"
+          url.pathname === "/v2/info"
             ? new Response(String(http.info_body), {
                 status: 200,
                 headers: { "content-type": "application/json" },

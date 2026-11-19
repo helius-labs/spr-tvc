@@ -201,7 +201,7 @@ fn sample_running() -> Running {
     }
 }
 
-fn sample_info(quorum: &QosP256Public, ephemeral: &QosP256Public) -> ServiceInfo {
+fn sample_info(quorum: &QosP256Public) -> ServiceInfo {
     let running = sample_running();
     ServiceInfo {
         version: API_VERSION,
@@ -213,7 +213,6 @@ fn sample_info(quorum: &QosP256Public, ephemeral: &QosP256Public) -> ServiceInfo
         quorum_public_key: quorum.to_bytes().to_vec(),
         quorum_key_id: running.quorum_key_id,
         quorum_key_epoch: running.quorum_key_epoch,
-        ephemeral_public_key: ephemeral.to_bytes().to_vec(),
         supported_operations: OPERATIONS.to_vec(),
         max_encrypted_request_bytes: MAX_ENCRYPTED_REQUEST_BYTES,
         max_encrypted_response_bytes: MAX_ENCRYPTED_RESPONSE_BYTES,
@@ -226,7 +225,6 @@ fn sample_policy(info: &ServiceInfo) -> ReleasePolicy {
         version: API_VERSION,
         release_id: info.release_id.clone(),
         network: info.network,
-        tvc_application_id: "spr-tvc-decryption-service".to_owned(),
         security_domain_id: info.security_domain_id,
         accepted_manifest_digests: vec![encode_lower_hex(&info.manifest_digest)],
         accepted_executable_digests: vec![encode_lower_hex(&info.executable_digest)],
@@ -238,7 +236,6 @@ fn sample_policy(info: &ServiceInfo) -> ReleasePolicy {
         max_encrypted_response_bytes: u32::try_from(info.max_encrypted_response_bytes)
             .expect("u32"),
         turnkey_trust_root_id: EXPECTED_TURNKEY_TRUST_ROOT_ID.to_owned(),
-        turnkey_proof_schema_versions: vec!["turnkey.boot_proof.v1".to_owned()],
         valid_from_ms: 1_700_000_000_000,
         expires_at_ms: 1_800_000_000_000,
         revocation_epoch: 0,
@@ -270,7 +267,6 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
             .public_key(),
     );
     let quorum = qos_public_from_secrets(&encryption_sk, &signing_sk)?;
-    let ephemeral = qos_public_from_secrets(&ephemeral_sk, &signing_sk)?;
     let plaintext = b"qos-envelope-plaintext";
     let envelope = qos_encrypt_with(&quorum.encryption, plaintext, &ephemeral_sk, &nonce)?;
     let decrypted = qos_decrypt(&encryption_sk, &envelope)?;
@@ -409,8 +405,8 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
         })),
     );
 
-    // What the enclave answers to `GET /health` and `GET /v1/info`.
-    let info = sample_info(&quorum, &ephemeral);
+    // What the enclave answers to `GET /health` and `GET /v2/info`.
+    let info = sample_info(&quorum);
     let health = jcs_serialize(&HealthResponse {
         status: HealthStatus::Healthy,
     })?;
@@ -572,7 +568,7 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
     }
     {
         let mut m = info.clone();
-        m.quorum_public_key = info.ephemeral_public_key.clone();
+        m.quorum_public_key[64] ^= 1;
         binding_cases.push(("quorum_public_key", m));
     }
     {

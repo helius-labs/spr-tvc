@@ -1,4 +1,4 @@
-//! What a release is, and what it advertises at `/v1/info`.
+//! What a release is, and what it advertises at `/v2/info`.
 
 use qos_p256::P256Pair;
 use spr_tvc_protocol::constants::{
@@ -62,7 +62,6 @@ impl Release {
         manifest_digest: [u8; 32],
         executable_digest: [u8; 32],
         quorum: &P256Pair,
-        ephemeral: &P256Pair,
     ) -> ServiceInfo {
         ServiceInfo {
             version: API_VERSION,
@@ -74,7 +73,6 @@ impl Release {
             quorum_public_key: quorum.public_key().to_bytes(),
             quorum_key_id: self.quorum_key_id,
             quorum_key_epoch: self.quorum_key_epoch,
-            ephemeral_public_key: ephemeral.public_key().to_bytes(),
             supported_operations: vec![
                 OperationKind::ServicePublicKeys,
                 OperationKind::ServiceDecrypt,

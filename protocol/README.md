@@ -1,6 +1,6 @@
 # Decryption wire protocol
 
-The Rust and [TypeScript](../sdk/src/protocol.ts)
+Version 2 of the wire protocol uses `/v2` routes. The Rust and [TypeScript](../sdk/src/protocol.ts)
 implementations share the [conformance fixtures](#fixtures).
 
 ## Encoding
@@ -17,9 +17,9 @@ base58. The network is `devnet` or `mainnet`.
 
 | Domain | Payload |
 | --- | --- |
-| `SPR_TVC_DECRYPTION_SERVICE_REQUEST_V1` | `JCS(request)` with `operation.signature` omitted |
-| `ZOLANA_TVC_RESULT_V1` | Encrypted result bytes |
-| `ZOLANA_TVC_RELEASE_POLICY_V1` | `JCS(policy)` |
+| `SPR_TVC_DECRYPTION_SERVICE_REQUEST_V2` | `JCS(request)` with `operation.signature` omitted |
+| `SPR_TVC_RESULT_V2` | Encrypted result bytes |
+| `SPR_TVC_RELEASE_POLICY_V2` | `JCS(policy)` |
 
 ## Envelope
 
@@ -33,7 +33,7 @@ ciphertext || tag[16]`. The length includes the authentication tag.
 
 ## Decryption service
 
-`POST /v1/operations` takes an `EncryptedRequest` with `version`,
+`POST /v2/operations` takes an `EncryptedRequest` with `version`,
 `quorum_key_id`, `quorum_key_epoch`, and `ciphertext`. Its plaintext is a
 `ServiceRequest` with `version`, a fresh 32-byte `request_id`,
 `target_release_id`, `target_manifest_digest`, `target_executable_digest`,
@@ -43,9 +43,9 @@ uncompressed P-256), and `operation`.
 The `EncryptedResponse` echoes the request ID and contains the encrypted
 result and an App Proof. The replica's Ephemeral signing subkey signs the
 exact UTF-8 proof payload with P-256/SHA-256. The payload binds the type
-`spr.tvc.decryption_service.v1`, version, request ID, request and result
-digests, operation (`ServicePublicKeys` or `ServiceDecrypt`), and 32 zero
-bytes as `sealed_seed_digest`. Verify the proof before opening the reply.
+`spr.tvc.decryption_service.v2`, version, request ID, request and result
+digests, and operation (`ServicePublicKeys` or `ServiceDecrypt`). Verify
+the proof before opening the reply.
 The HTTP request body and encrypted result each have a 262,144-byte limit.
 Invalid operations return `InvalidRequest`.
 
@@ -70,16 +70,16 @@ service rejects small-order keys.
 `Decrypt` names the base58 `signer` and carries the signer's 64-byte Ed25519
 `signature` in lowercase hex, verified strictly, over a Solana off-chain message v0 (format 0,
 one signer) whose application domain is
-`SHA-256("TSPP/decryption-service/decrypt/v1")` and whose payload is
-`TSPP/decryption-service/decrypt/v1/<network>/<hex of the request digest>`.
+`SHA-256("TSPP/decryption-service/decrypt/v2")` and whose payload is
+`TSPP/decryption-service/decrypt/v2/<network>/<hex of the request digest>`.
 The digest binds the items, release pins, request ID, and one-time response
 public key. The recipient client generates that key pair before asking the
 owner to sign. The reply is encrypted to the signed public key, including
 on replay. Reading it requires the corresponding private key.
 
-`Decrypt` accepts up to 256 items. The verified signer determines the service viewing key. Each item's `viewing_public_key` is a
-consistency check. Its `transaction_viewing_public_key` is the sender's
-ephemeral X25519 public key and is required to derive the shared secret.
+`Decrypt` accepts up to 256 items. The verified signer determines the service
+viewing key. Each item's `ephemeral_viewing_public_key` is the sender's
+X25519 public key used to derive the shared secret.
 The pool cipher is unauthenticated. The client keeps a decoded UTXO only when
 its recomputed commitment equals the indexed output commitment.
 
@@ -91,23 +91,22 @@ private key remains in the enclave. See the
 
 ## Release policy
 
-A release policy names a release: its id, the network, the TVC
-application id, the security domain, the accepted manifest and executable
+A release policy names the release ID, network, security domain, accepted manifest and executable
 digests, the Quorum key id, epoch and public key, the allowed operations, and
 the request and response size limits. Release authorities sign
-`H(ZOLANA_TVC_RELEASE_POLICY_V1, JCS(policy))` with P-256; a client accepts
+`H(SPR_TVC_RELEASE_POLICY_V2, JCS(policy))` with P-256; a client accepts
 the policy only for the network it expects (`NetworkMismatch` otherwise) and
-at a threshold of authority signatures, and verification fails closed on an
-empty, duplicate, or unknown key. A re-signed policy is a new authority set
-every client must accept.
+at a positive integer threshold of distinct authority keys. Unknown and
+repeated signer IDs do not count. The SDK obtains the authority keys and
+policy together from its release pin.
 
 The trust material a client pins is the policy, the authority public keys,
 and the QOS identity PCRs. Before its first operation, the client in
 `@heliuslabs/spr-decryption-service` verifies the policy, binds every security
-field of `GET /v1/info` to it, including the network, completes the
-Quorum-encrypted `POST /v1/ping`, and verifies the Nitro Boot Proof against
-the PCRs and the accepted manifest digests. The client repeats attestation
-verification for an operation served by a different replica. `/health`
+field of `GET /v2/info` to it, including the network, completes the
+Quorum-encrypted `POST /v2/ping`, and verifies the Nitro Boot Proof against
+the PCRs and the accepted manifest digests. The client verifies the signing
+replica's attestation for each operation reply. `/health`
 reports process readiness.
 
 ## Fixtures

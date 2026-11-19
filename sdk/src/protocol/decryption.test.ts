@@ -5,7 +5,7 @@ import { decryptMessage, serviceRequestDigest, type ServiceRequest } from "./dec
 
 // The same request and vectors as `protocol/tests/unit/decryption_request_binding.rs`.
 const request: ServiceRequest = {
-  version: 1,
+  version: 2,
   request_id: "01".repeat(32),
   target_release_id: "release",
   target_manifest_digest: "02".repeat(32),
@@ -19,17 +19,16 @@ const request: ServiceRequest = {
     signature: "00".repeat(64),
     items: [{
       ciphertext: "010203",
-      viewing_public_key: "04".repeat(33),
-      transaction_viewing_public_key: "04".repeat(33),
+      ephemeral_viewing_public_key: "04".repeat(33),
       salt: "00".repeat(16),
       slot_index: "0",
       label: "Transfer",
     }],
   },
 };
-const DIGEST = "b5c277a4d791edfc9e76ae31add50ce8b7977cc11b233d0e5f6ce02612c37760";
+const DIGEST = "57de6984916cb0b0f12b15535c704853c01136d99ffcca29547bc441b944a5fb";
 const MESSAGE =
-  "ff736f6c616e61206f6666636861696e005be1ef179167714826436f2f8f69579bd2bd3f7b3ad3cf18e4a0b6a1a0700e27000107070707070707070707070707070707070707070707070707070707070707076b00545350502f64656372797074696f6e2d736572766963652f646563727970742f76312f6d61696e6e65742f30393039303930393039303930393039303930393039303930393039303930393039303930393039303930393039303930393039303930393039303930393039";
+  "ff736f6c616e61206f6666636861696e00e80ca057c8ae40aaee353f7ee35a972bb911496758a0e5f62f8292f066ab94f8000107070707070707070707070707070707070707070707070707070707070707076b00545350502f64656372797074696f6e2d736572766963652f646563727970742f76322f6d61696e6e65742f30393039303930393039303930393039303930393039303930393039303930393039303930393039303930393039303930393039303930393039303930393039";
 
 describe("the decryption service's request", () => {
   it("has the digest the enclave computes, whatever its signature", () => {

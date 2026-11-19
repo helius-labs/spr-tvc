@@ -12,7 +12,7 @@ fn a_decrypt_needs_the_owner_signature_over_this_request_and_network() {
     refused(&service, &decrypt(&service, &owner, other(NETWORK), items));
 
     type Edit = fn(&mut ServiceRequest);
-    let edits: [(&str, Edit); 9] = [
+    let edits: [(&str, Edit); 8] = [
         ("signer", |request| {
             let ServiceOperation::Decrypt { signer, .. } = &mut request.operation else {
                 unreachable!()
@@ -28,11 +28,8 @@ fn a_decrypt_needs_the_owner_signature_over_this_request_and_network() {
         ("ciphertext", |request| {
             request_items(request)[0].ciphertext[0] ^= 1
         }),
-        ("viewing key", |request| {
-            request_items(request)[0].viewing_public_key[1] ^= 1
-        }),
-        ("transaction viewing key", |request| {
-            request_items(request)[0].transaction_viewing_public_key[1] ^= 1;
+        ("ephemeral viewing key", |request| {
+            request_items(request)[0].ephemeral_viewing_public_key[1] ^= 1;
         }),
         ("salt", |request| request_items(request)[0].salt[0] ^= 1),
         ("slot", |request| request_items(request)[0].slot_index = 1),
@@ -56,6 +53,31 @@ fn a_decrypt_needs_the_owner_signature_over_this_request_and_network() {
             "{field}",
         );
     }
+}
+
+#[test]
+fn a_signature_binds_the_batch_order_and_length() {
+    let service = service();
+    let owner = recipient_signer();
+    let (viewing, _) = service_keys(&service, &owner);
+    let request = decrypt(
+        &service,
+        &owner,
+        NETWORK,
+        vec![
+            transfer_output(viewing, b"first", 0),
+            transfer_output(viewing, b"second", 1),
+        ],
+    );
+    let mut reordered = request.clone();
+    request_items(&mut reordered).swap(0, 1);
+    refused(&service, &reordered);
+    let mut shorter = request;
+    let ServiceOperation::Decrypt { items, .. } = &mut shorter.operation else {
+        unreachable!()
+    };
+    items.pop();
+    refused(&service, &shorter);
 }
 
 fn request_items(request: &mut ServiceRequest) -> &mut [DecryptItem] {

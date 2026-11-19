@@ -1,15 +1,11 @@
 import { sha384 } from "@noble/hashes/sha512";
-import { verifyP256Message } from "../crypto/p256.js";
-import { parseQosP256Public } from "../crypto/qos.js";
 import { DecryptionServiceError } from "../protocol/error.js";
 import {
   MAX_CLOCK_SKEW_MS,
   SHA256_LEN,
   SHA384_LEN,
-  TVC_APP_PROOF_SCHEME,
 } from "../protocol/constants.js";
 import { bytesEqual, decodeLowerHex, encodeLowerHex } from "../protocol/hex.js";
-import { isRfc8785 } from "../protocol/jcs.js";
 import {
   type CborValue,
   decodeAwsNitroAttestationCbor,
@@ -17,7 +13,6 @@ import {
 } from "./cbor.js";
 import {
   type CoseSign1,
-  type TurnkeyAppProofWire,
   type TurnkeyBootProofWire,
   verifyTurnkeyAwsAttestation,
 } from "./turnkey.js";
@@ -38,12 +33,13 @@ type QosIdentityPcrIndex = 0 | 1 | 2 | 3;
 
 /**
  * Independently trusted Nitro measurements for the expected QOS deployment.
- * Never populate these values from `/v1/info` or from the Boot Proof itself.
+ * Never populate these values from `/v2/info` or from the Boot Proof itself.
  */
 export type QosIdentityPcrs = Readonly<Record<QosIdentityPcrIndex, string>>;
 
 type VerifyBootProofInput = {
-  appProof: TurnkeyAppProofWire;
+  /** Public key from a previously signature-checked App Proof. */
+  ephemeralPublicKey: string;
   bootProof: TurnkeyBootProofWire;
   allowedManifestSha256: readonly string[];
   expectedPcrs: QosIdentityPcrs;
@@ -65,10 +61,8 @@ type DecodedBootProof = {
  * independently pinned QOS manifest/PCR checks.
  */
 export async function verifyBootProof(input: VerifyBootProofInput): Promise<void> {
-  let stage = "app-proof";
+  let stage = "decode";
   try {
-    verifyTvcAppProof(input.appProof);
-    stage = "decode";
     const decoded = decodeBootProof(input.bootProof);
     stage = "shape";
     validateAttestationShape(decoded.attestation);
@@ -117,16 +111,6 @@ export function computeQosLiveManifestCommitmentPcr(
   const extensionInput = new Uint8Array(SHA384_LEN + commitment.length);
   extensionInput.set(commitment, SHA384_LEN);
   return sha384(extensionInput);
-}
-
-function verifyTvcAppProof(appProof: TurnkeyAppProofWire): void {
-  if (appProof.scheme !== TVC_APP_PROOF_SCHEME || !isRfc8785(appProof.proofPayload)) {
-    throw new DecryptionServiceError("BootProofUnverified");
-  }
-  const publicKey = decodeLowerHex(appProof.publicKey);
-  const signature = decodeLowerHex(appProof.signature);
-  const qosPublic = parseQosP256Public(publicKey);
-  verifyP256Message(qosPublic.signing, new TextEncoder().encode(appProof.proofPayload), signature);
 }
 
 function decodeBootProof(bootProof: TurnkeyBootProofWire): DecodedBootProof {
@@ -217,7 +201,7 @@ function verifyProofBindings(
     throw new DecryptionServiceError("BootProofUnverified");
   }
   const appPublicKey = decodeFixedLowerHex(
-    input.appProof.publicKey,
+    input.ephemeralPublicKey,
     QOS_EPHEMERAL_PUBLIC_KEY_LENGTH,
   );
   const bootPublicKey = decodeFixedLowerHex(

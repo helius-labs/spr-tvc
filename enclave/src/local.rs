@@ -43,7 +43,6 @@ pub fn service() -> Service {
         sha256(testkit.manifest_label.as_bytes()),
         sha256(testkit.executable_label.as_bytes()),
         &quorum,
-        &ephemeral,
     );
     Service::new(info, ephemeral, quorum)
 }

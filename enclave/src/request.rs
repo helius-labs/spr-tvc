@@ -87,7 +87,6 @@ pub(crate) fn respond(
         request_digest,
         result_digest: result_digest(&encrypted_result),
         operation: request.operation.kind(),
-        sealed_seed_digest: [0; 32],
     })
     .map_err(|_| Failure::Unavailable)?;
     let signature = sign_ephemeral_low_s(ephemeral, proof_payload.as_bytes())?;

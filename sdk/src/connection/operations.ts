@@ -33,7 +33,6 @@ const OPERATION_PROOF_KEYS = [
   "request_digest",
   "result_digest",
   "operation",
-  "sealed_seed_digest",
 ] as const;
 
 type EncryptedResponse = {
@@ -55,7 +54,6 @@ type OperationProofPayload = {
   request_digest: string;
   result_digest: string;
   operation: OperationKind;
-  sealed_seed_digest: string;
 };
 
 export function requireCurrentReleasePolicy(
@@ -132,6 +130,7 @@ async function verifyOperationProof(
   context: ConnectedTvcRuntime,
   exchange: Exchange,
   response: EncryptedResponse,
+  encryptedResult: Uint8Array,
   signal?: AbortSignal,
 ): Promise<void> {
   assertExactObjectKeys(response.tvc_app_proof, TVC_APP_PROOF_KEYS, "InvalidCanonicalJson");
@@ -158,9 +157,8 @@ async function verifyOperationProof(
     payload.version !== API_VERSION ||
     payload.request_id !== exchange.request.request_id ||
     payload.request_digest !== encodeLowerHex(exchange.requestDigest) ||
-    payload.result_digest !== encodeLowerHex(resultDigest(requireHex(response.encrypted_result))) ||
-    payload.operation !== exchange.operation ||
-    payload.sealed_seed_digest !== "00".repeat(SHA256_LEN)
+    payload.result_digest !== encodeLowerHex(resultDigest(encryptedResult)) ||
+    payload.operation !== exchange.operation
   ) {
     throw new DecryptionServiceError("ReleaseBindingMismatch");
   }
@@ -168,55 +166,51 @@ async function verifyOperationProof(
 
 /**
  * Encrypts the request to the Quorum key, sends it, and opens the answer once
- * its App Proof names this request and its result. Wipes `responseSecret`.
+ * its App Proof names this request and its result. The caller owns the response secret.
  */
 export async function sealedExchange(
   context: ConnectedTvcRuntime,
   exchange: Exchange,
   signal?: AbortSignal,
 ): Promise<string> {
-  try {
-    signal?.throwIfAborted();
-    const quorum = parseQosP256Public(
-      requireHex(context.info.quorum_public_key, QOS_P256_PUBLIC_LEN),
-    );
-    const ciphertext = qosEncrypt(
-      quorum.encryption,
-      te.encode(canonicalizeJsonValue(exchange.request)),
-    );
-    const encrypted = encryptedRequest(context.info, encodeLowerHex(ciphertext));
-    checkRequestSize(context.info, enclaveRequestBytes(encrypted));
-    // The ciphertext is hex, so it cannot exceed twice the byte ceiling;
-    // RESPONSE_ENVELOPE_SLACK covers the surrounding JSON and App Proof.
-    const maxResponseBytes = BigInt(context.info.max_encrypted_response_bytes);
-    const responseText = await sendToEnclave(
-      context.backend.endpoint, encrypted, context.transport,
-      maxResponseBytes * 2n + RESPONSE_ENVELOPE_SLACK, signal,
-    );
-    const response = parseStrictJson<EncryptedResponse>(responseText, ENCRYPTED_RESPONSE_KEYS);
-    if (
-      response.version !== API_VERSION ||
-      !bytesEqual(
-        requireHex(response.request_id, SHA256_LEN),
-        requireHex(exchange.request.request_id, SHA256_LEN),
-      )
-    ) {
-      throw new DecryptionServiceError("ReleaseBindingMismatch");
-    }
-    const encryptedResult = requireHex(response.encrypted_result);
-    if (BigInt(encryptedResult.length) > maxResponseBytes) {
-      throw new DecryptionServiceError("ResponseTooLarge");
-    }
-    await verifyOperationProof(context, exchange, response, signal);
-    let plaintext: string;
-    try {
-      plaintext = td.decode(qosDecrypt(exchange.responseSecret, encryptedResult));
-    } catch {
-      throw new DecryptionServiceError("InvalidEncryptedEnvelope");
-    }
-    if (!isRfc8785(plaintext)) throw new DecryptionServiceError("InvalidCanonicalJson");
-    return plaintext;
-  } finally {
-    exchange.responseSecret.fill(0);
+  signal?.throwIfAborted();
+  const quorum = parseQosP256Public(
+    requireHex(context.info.quorum_public_key, QOS_P256_PUBLIC_LEN),
+  );
+  const ciphertext = qosEncrypt(
+    quorum.encryption,
+    te.encode(canonicalizeJsonValue(exchange.request)),
+  );
+  const encrypted = encryptedRequest(context.info, encodeLowerHex(ciphertext));
+  checkRequestSize(context.info, enclaveRequestBytes(encrypted));
+  // The ciphertext is hex, so it cannot exceed twice the byte ceiling;
+  // RESPONSE_ENVELOPE_SLACK covers the surrounding JSON and App Proof.
+  const maxResponseBytes = BigInt(context.info.max_encrypted_response_bytes);
+  const responseText = await sendToEnclave(
+    context.backend.endpoint, encrypted, context.transport,
+    maxResponseBytes * 2n + RESPONSE_ENVELOPE_SLACK, signal,
+  );
+  const response = parseStrictJson<EncryptedResponse>(responseText, ENCRYPTED_RESPONSE_KEYS);
+  if (
+    response.version !== API_VERSION ||
+    !bytesEqual(
+      requireHex(response.request_id, SHA256_LEN),
+      requireHex(exchange.request.request_id, SHA256_LEN),
+    )
+  ) {
+    throw new DecryptionServiceError("ReleaseBindingMismatch");
   }
+  const encryptedResult = requireHex(response.encrypted_result);
+  if (BigInt(encryptedResult.length) > maxResponseBytes) {
+    throw new DecryptionServiceError("ResponseTooLarge");
+  }
+  await verifyOperationProof(context, exchange, response, encryptedResult, signal);
+  let plaintext: string;
+  try {
+    plaintext = td.decode(qosDecrypt(exchange.responseSecret, encryptedResult));
+  } catch {
+    throw new DecryptionServiceError("InvalidEncryptedEnvelope");
+  }
+  if (!isRfc8785(plaintext)) throw new DecryptionServiceError("InvalidCanonicalJson");
+  return plaintext;
 }

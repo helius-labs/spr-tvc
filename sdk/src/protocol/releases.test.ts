@@ -17,7 +17,6 @@ const POLICY_KEYS = [
   "version",
   "releaseId",
   "network",
-  "tvcApplicationId",
   "securityDomainId",
   "acceptedManifestDigests",
   "acceptedExecutableDigests",
@@ -28,7 +27,6 @@ const POLICY_KEYS = [
   "maxEncryptedRequestBytes",
   "maxEncryptedResponseBytes",
   "turnkeyTrustRootId",
-  "turnkeyProofSchemaVersions",
   "validFromMs",
   "expiresAtMs",
   "revocationEpoch",
@@ -73,10 +71,9 @@ describe("the committed release files", () => {
 describe("a release file", () => {
   const authority = p256.utils.randomPrivateKey();
   const policy: ReleasePolicy = {
-    version: 1,
+    version: 2,
     releaseId: "decryption-service-devnet-test",
     network: "devnet",
-    tvcApplicationId: "app",
     securityDomainId: "33".repeat(32),
     acceptedManifestDigests: ["11".repeat(32)],
     acceptedExecutableDigests: ["22".repeat(32)],
@@ -87,7 +84,6 @@ describe("a release file", () => {
     maxEncryptedRequestBytes: 262_144,
     maxEncryptedResponseBytes: 262_144,
     turnkeyTrustRootId: "aws-nitro-root-g1",
-    turnkeyProofSchemaVersions: ["turnkey.boot_proof.v1"],
     validFromMs: "1700000000000",
     expiresAtMs: "1900000000000",
     revocationEpoch: "0",
@@ -112,6 +108,19 @@ describe("a release file", () => {
   it("verifies for the network it names and no other", () => {
     expect(verifyReleaseFile(file(policy), "devnet", now).releasePolicy.policy).toEqual(policy);
     expect(() => verifyReleaseFile(file(policy), "mainnet", now)).toThrowError(/NetworkMismatch/);
+  });
+
+  it.each([undefined, NaN, 0, 1.5, "1", 2, 256])("rejects a malformed or impossible authority threshold %s", (threshold) => {
+    const signed = file(policy);
+    const release = { ...signed, releaseAuthorities: { ...signed.releaseAuthorities, threshold } };
+    expect(() => verifyReleaseFile(release, "devnet", now)).toThrowError(/ReleasePolicyInvalid/);
+  });
+
+  it("rejects the same authority key under two IDs", () => {
+    const signed = file(policy);
+    const key = signed.releaseAuthorities.keys[0]!;
+    signed.releaseAuthorities.keys.push({ ...key, keyId: "alias" });
+    expect(() => verifyReleaseFile(signed, "devnet", now)).toThrowError(/ReleasePolicyInvalid/);
   });
 
   it("is refused tampered, expired, in another shape, or with a field the protocol does not have", () => {

@@ -12,8 +12,9 @@ Only the holder of that response private key can open the reply.
 
 ## Devnet
 
-Connect to the devnet enclave endpoint in [`deploy/release.json`](deploy/release.json)
-with a Turnkey Boot Proof resolver. Devnet uses disposable funds.
+The SDK requires a signed v2 release pin before it connects to
+the [devnet endpoint](deploy/release.json). Use `just decryption-e2e`
+or `just headless-e2e` to run v2 locally.
 
 The [devnet app](deploy/devnet/spr-decryption-service-devnet.app.json) has its
 own Quorum key, with a 2-of-3 split provisioned using devnet operator key

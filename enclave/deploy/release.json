@@ -3,9 +3,6 @@
   "imageRepository": "ghcr.io/helius-labs/spr-tvc-decryption-service",
   "qosVersion": "0.12.1",
   "turnkeyTrustRootId": "aws-nitro-root-g1",
-  "turnkeyProofSchemaVersions": [
-    "turnkey.boot_proof.v1"
-  ],
   "qosIdentityPcrs": {
     "0": "a16c37b49023089be139b667cf87a32c796a9ccacacf9f0c87bf1a2f58546f2b46218ee6c0a17885f8a7d1b8cccff078",
     "1": "a16c37b49023089be139b667cf87a32c796a9ccacacf9f0c87bf1a2f58546f2b46218ee6c0a17885f8a7d1b8cccff078",

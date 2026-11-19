@@ -55,7 +55,7 @@ fn loads_hosted_qos_manifest_and_reports_its_digests() {
     );
     let expected = P256Pair::from_master_seed(&[EPHEMERAL_SEED; 32].into()).unwrap();
     assert_eq!(
-        service.info.ephemeral_public_key,
+        service.ephemeral.public_key().to_bytes(),
         expected.public_key().to_bytes()
     );
 }

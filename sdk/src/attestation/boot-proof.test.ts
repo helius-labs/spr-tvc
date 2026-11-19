@@ -23,7 +23,7 @@ const { verifyBootProof } = await import("./boot-proof.js");
 
 function verify(overrides: AttestationOverrides = {}, input: Record<string, unknown> = {}) {
   return verifyBootProof({
-    appProof: appProof(),
+    ephemeralPublicKey: appProof().publicKey,
     bootProof: bootProof(overrides),
     allowedManifestSha256: [encodeLowerHex(MANIFEST_DIGEST)],
     expectedPcrs: EXPECTED_PCRS,
@@ -122,17 +122,4 @@ describe("verifyBootProof", () => {
     expect(verifyChainMock).not.toHaveBeenCalled();
   });
 
-  it("rejects an App Proof that is not signed by the key it claims", async () => {
-    const proof = appProof();
-    await expect(
-      verify({}, { appProof: { ...proof, signature: encodeLowerHex(new Uint8Array(64)) } }),
-    ).rejects.toThrowError(/BootProofUnverified/);
-    await expect(
-      verify({}, { appProof: { ...proof, scheme: "SIGNATURE_SCHEME_TK_API_P256" } }),
-    ).rejects.toThrowError(/BootProofUnverified/);
-    await expect(
-      verify({}, { appProof: { ...proof, proofPayload: '{"b":1,"a":2}' } }),
-    ).rejects.toThrowError(/BootProofUnverified/);
-    expect(verifyChainMock).not.toHaveBeenCalled();
-  });
 });

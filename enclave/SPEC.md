@@ -18,6 +18,12 @@ PCR17 commits to the approved manifest digest and the replica's ephemeral
 public key. The SDK verifies operation App Proofs against the same policy,
 using the Boot Proof for the replica that signed each answer.
 
+The release signer gets the manifest from the authenticated Turnkey deployment
+API for the recorded live deployment. It checks the manifest's executable
+digest against the build descriptor and its Quorum key against the app
+configuration. The live Boot Proof must commit to that manifest. Discovery
+is checked against those values before the release policy is signed.
+
 ## Send and claim
 
 1. **Send.** The wallet checks the registry for the destination address. With
@@ -38,9 +44,8 @@ using the Boot Proof for the replica that signed each answer.
 3. **Decrypt.** The enclave opens the request under its Quorum key and
    checks the release. It verifies the Ed25519 signature before deriving
    service keys from the verified address. It rejects batches over 256 items
-   and any declared recipient viewing key that differs from the derived
-   key. It opens every item under that derived private key. A rejected item
-   yields an error for the whole batch.
+   and opens every item under the derived private viewing key. A malformed
+   item yields an error for the whole batch.
 4. **Verify and sweep.** The enclave encrypts the ordered plaintexts and
    nullifier secret to the signed response key. Its App Proof binds the
    request and encrypted result. The SDK verifies the proof before opening
@@ -55,16 +60,14 @@ using the Boot Proof for the replica that signed each answer.
 | Input | Purpose |
 | --- | --- |
 | `ciphertext` | Pool ciphertext from the indexed output. |
-| `viewing_public_key` | Declared recipient key. The enclave checks it for consistency with the key derived from the signer. |
-| `transaction_viewing_public_key` | Sender's ephemeral X25519 key. The enclave combines it with the recipient viewing secret to derive the shared secret. |
+| `ephemeral_viewing_public_key` | Sender's ephemeral X25519 key. The enclave combines it with the recipient viewing secret to derive the shared secret. |
 | `salt` | 16-byte pool cipher salt. |
 | `slot_index` | Transfer output index as a `u32`, or zero for a ring deposit. |
 | `label` | `Transfer` or `RingDeposit`, each with a separate cipher domain. |
 
-A matching recipient declaration carries no proof of the ciphertext's
-origin. A foreign ciphertext relabeled with the recipient's key is still
-opened under the recipient's key. The SDK's commitment check applies in both
-cases.
+Every ciphertext is opened under the signer's derived service key. A
+ciphertext from a foreign recipient yields unrelated bytes. The SDK uses
+the indexed commitment to accept only the expected note.
 
 ## Key custody and trust
 

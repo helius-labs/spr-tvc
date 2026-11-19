@@ -54,7 +54,6 @@ export async function connectLocalUnattestedTvc(
     info.quorum_key_epoch !== "1" ||
     info.proof_type !== SERVICE_PROOF_TYPE ||
     info.quorum_public_key !== config.expectedQuorumPublicKey ||
-    info.ephemeral_public_key !== config.expectedEphemeralPublicKey ||
     info.supported_operations.length !== config.expectedOperations.length ||
     config.expectedOperations.some(
       (operation, index) => info.supported_operations[index] !== operation,

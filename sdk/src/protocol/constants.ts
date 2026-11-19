@@ -1,11 +1,11 @@
-export const API_VERSION = 1;
+export const API_VERSION = 2;
 export const EXPECTED_TURNKEY_TRUST_ROOT_ID = "aws-nitro-root-g1";
 export const TVC_APP_PROOF_SCHEME = "SIGNATURE_SCHEME_EPHEMERAL_KEY_P256";
-export const TVC_QOS_PING_PROOF_TYPE = "spr.tvc.qos_ping.v1";
+export const TVC_QOS_PING_PROOF_TYPE = "spr.tvc.qos_ping.v2";
 export const TVC_APP_PROOF_KEYS = ["scheme", "public_key", "proof_payload", "signature"] as const;
 
-export const RESULT_DIGEST_DOMAIN = "ZOLANA_TVC_RESULT_V1";
-export const RELEASE_POLICY_DOMAIN = "ZOLANA_TVC_RELEASE_POLICY_V1";
+export const RESULT_DIGEST_DOMAIN = "SPR_TVC_RESULT_V2";
+export const RELEASE_POLICY_DOMAIN = "SPR_TVC_RELEASE_POLICY_V2";
 
 export const MAX_CLOCK_SKEW_MS = 60_000n;
 

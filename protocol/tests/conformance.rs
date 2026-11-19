@@ -208,6 +208,16 @@ fn signed_release_policy_rejects_empty_duplicate_unknown_and_mutated() {
     let now_ms = decode_decimal_u64(value["now_ms"].as_str().unwrap()).unwrap();
     let network: Network = serde_json::from_value(value["network"].clone()).unwrap();
     verify_signed_release_policy(&signed, &authorities, network, now_ms).unwrap();
+    let mut repeated_key = authorities.clone();
+    let mut alias = repeated_key.keys[0].clone();
+    alias.key_id = "distinct-id".to_owned();
+    repeated_key.keys.push(alias);
+    assert_eq!(
+        verify_signed_release_policy(&signed, &repeated_key, network, now_ms)
+            .unwrap_err()
+            .code,
+        ErrorCode::ReleasePolicyInvalid,
+    );
     assert_eq!(value["empty_signatures"], "ReleasePolicyInvalid");
     assert_eq!(value["duplicate_key_id"], "ReleasePolicyInvalid");
     assert_eq!(value["unknown_key_id"], "ReleasePolicyInvalid");

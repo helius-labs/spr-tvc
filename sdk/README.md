@@ -1,6 +1,7 @@
 # @heliuslabs/spr-decryption-service
 
-TypeScript client for the attested decryption service. Pass a Solana Kit
+TypeScript client for wire v2 of the attested decryption service. Each hosted
+network requires a signed v2 release pin. Pass a Solana Kit
 `MessagePartialSigner` for the recipient and the SPR client's proof service.
 
 ```ts

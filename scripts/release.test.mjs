@@ -2,12 +2,12 @@
 // node --test scripts/ (the policy phase's tests need `pnpm build:ts` first).
 import assert from "node:assert/strict";
 import { createECDH, createPublicKey, verify } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { tvcCredentials, turnkeyBootProofs, turnkeyStamp, verifiedReleaseFile, verifyRelease } from "./release.mjs";
+import { approvedDeployment, tvcCredentials, turnkeyBootProofs, turnkeyStamp, verifiedReleaseFile, verifyRelease } from "./release.mjs";
 
 function apiKey() {
   const ecdh = createECDH("prime256v1");
@@ -97,16 +97,16 @@ const cfg = {
   network: "devnet",
   endpoint: "https://app.example",
   appId: "app",
+  qosVersion: "0.12.1",
   securityDomainId: "11".repeat(32),
   quorumKeyId: "quorum",
   quorumKeyEpoch: "1",
   turnkeyTrustRootId: "aws-nitro-root-g1",
-  turnkeyProofSchemaVersions: ["turnkey.boot_proof.v1"],
   policyValidityDays: 1,
   qosIdentityPcrs: { 0: "aa".repeat(48), 1: "bb".repeat(48), 2: "cc".repeat(48), 3: "dd".repeat(48) },
 };
 const info = {
-  version: 1,
+  version: 2,
   network: "devnet",
   security_domain_id: cfg.securityDomainId,
   release_id: "release",
@@ -122,11 +122,16 @@ const info = {
     .join(""),
   quorum_key_id: "quorum",
   quorum_key_epoch: "1",
-  ephemeral_public_key: `04${"66".repeat(129)}`,
   supported_operations: ["ServicePublicKeys", "ServiceDecrypt"],
   max_encrypted_request_bytes: "262144",
   max_encrypted_response_bytes: "262144",
-  proof_type: "spr.tvc.decryption_service.v1",
+  proof_type: "spr.tvc.decryption_service.v2",
+};
+
+const approved = {
+  manifestDigest: info.manifest_digest,
+  executableDigest: info.executable_digest,
+  quorumPublicKey: info.quorum_public_key,
 };
 
 test("nothing is signed for a replica that does not verify", async () => {
@@ -136,14 +141,14 @@ test("nothing is signed for a replica that does not verify", async () => {
     return { releasePolicy: { policy }, releaseAuthorities: {} };
   };
   await assert.rejects(
-    verifiedReleaseFile("release", cfg, info, 1_800_000_000_000, {
+    verifiedReleaseFile("release", cfg, info, approved, 1_800_000_000_000, {
       verify: async () => { throw new Error("refused"); },
       sign,
     }),
     /refused/,
   );
   assert.deepEqual(signed, []);
-  const file = await verifiedReleaseFile("release", cfg, info, 1_800_000_000_000, { verify: async () => {}, sign });
+  const file = await verifiedReleaseFile("release", cfg, info, approved, 1_800_000_000_000, { verify: async () => {}, sign });
   assert.equal(signed.length, 1);
   assert.deepEqual(file.qosIdentityPcrs, cfg.qosIdentityPcrs);
   assert.equal(file.releasePolicy.policy.acceptedManifestDigests[0], info.manifest_digest);
@@ -159,13 +164,51 @@ test("a replica is refused under another trust root, or when it cannot answer th
   };
   const bootProof = async () => assert.fail("no Boot Proof is looked up before the ping verifies");
   await assert.rejects(
-    verifyRelease({ ...cfg, turnkeyTrustRootId: "another-root" }, info, { bootProof, transport }),
+    verifyRelease({ ...cfg, turnkeyTrustRootId: "another-root" }, info, approved, { bootProof, transport }),
     /does not verify, so nothing was signed: ReleasePolicyInvalid/,
   );
   assert.deepEqual(requests, []);
   await assert.rejects(
-    verifyRelease(cfg, info, { bootProof, transport }),
+    verifyRelease(cfg, info, approved, { bootProof, transport }),
     /does not verify, so nothing was signed: BootProofUnverified/,
   );
-  assert.deepEqual(requests, ["/v1/ping"]);
+  assert.deepEqual(requests, ["/v2/ping"]);
+});
+
+test("the release identity comes from the authenticated approved QOS manifest", async () => {
+  const { manifest } = JSON.parse(readFileSync(new URL("../enclave/tests/fixtures/qos-0.12.1-manifest-envelope.json", import.meta.url)));
+  const expected = {
+    cfg, deployId: "reviewed-deployment",
+    expectedPivotDigest: manifest.pivot.hash, quorumPublicKey: manifest.namespace.quorumKey,
+  };
+  const credentials = { ...apiKey(), organizationId: "org", apiBaseUrl: "https://api.turnkey.example" };
+  const tvcDeployment = {
+    id: expected.deployId, organizationId: credentials.organizationId, appId: cfg.appId,
+    debugMode: false, qosVersion: cfg.qosVersion,
+    manifest: { manifest: Buffer.from(JSON.stringify(manifest)).toString("base64") },
+  };
+  const query = (deployment) => ({ fetch: async (url, init) => {
+    assert.equal(url.pathname, "/public/v1/query/get_tvc_deployment");
+    assert.deepEqual(JSON.parse(init.body), { organizationId: "org", deploymentId: expected.deployId });
+    assert.equal(stamps(init.headers["x-stamp"], init.body, credentials), true);
+    return Response.json({ tvcDeployment: deployment });
+  } });
+  assert.deepEqual(await approvedDeployment(expected, credentials, { transport: query(tvcDeployment) }), {
+    executableDigest: expected.expectedPivotDigest,
+    quorumPublicKey: expected.quorumPublicKey,
+    manifestDigest: "016748a03b94269ade9b75c7b4231a2940cc3c85aabade226a956ea80ab374b0",
+  });
+  for (const edit of [{ appId: "another-app" }, { id: "another-deploy" }, { organizationId: "another-org" },
+    { qosVersion: "another-runtime" }, { debugMode: true }, { delete: true }]) {
+    await assert.rejects(
+      approvedDeployment(expected, credentials, { transport: query({ ...tvcDeployment, ...edit }) }),
+      /does not match the approved app and QOS runtime/,
+    );
+  }
+  for (const [edit, mismatch] of [
+    [{ expectedPivotDigest: "11".repeat(32) }, /locally built executable/],
+    [{ quorumPublicKey: "04".repeat(130) }, /configured Quorum public key/],
+  ]) {
+    await assert.rejects(approvedDeployment({ ...expected, ...edit }, credentials, { transport: query(tvcDeployment) }), mismatch);
+  }
 });

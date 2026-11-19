@@ -36,7 +36,9 @@ export function verifySignedReleasePolicy(
   if (signed.policy.network !== network) {
     throw new DecryptionServiceError("NetworkMismatch");
   }
-  if (authorities.threshold < 1 || authorities.keys.length === 0) {
+  const { threshold, keys } = authorities;
+  if (!Number.isSafeInteger(threshold) || threshold < 1 || threshold > 255 ||
+      !Array.isArray(keys) || threshold > keys.length) {
     throw new DecryptionServiceError("ReleasePolicyInvalid");
   }
   if (signed.authoritySetId !== authorities.authoritySetId) {
@@ -61,11 +63,14 @@ export function verifySignedReleasePolicy(
   }
 
   const byId = new Map<string, Uint8Array>();
-  for (const key of authorities.keys) {
-    if (byId.has(key.keyId)) {
+  const publicKeys = new Set<string>();
+  for (const key of keys) {
+    if (byId.has(key.keyId) || publicKeys.has(key.publicKey)) {
       throw new DecryptionServiceError("ReleasePolicyInvalid");
     }
-    byId.set(key.keyId, decodeLowerHex(key.publicKey));
+    const publicKey = decodeLowerHex(key.publicKey);
+    publicKeys.add(key.publicKey);
+    byId.set(key.keyId, publicKey);
   }
 
   const seen = new Set<string>();
@@ -84,13 +89,13 @@ export function verifySignedReleasePolicy(
     verifyP256Prehash(publicKey, digest, decodeLowerHex(signature.signature));
     accepted += 1;
   }
-  if (accepted < authorities.threshold) {
+  if (accepted < threshold) {
     throw new DecryptionServiceError("ReleasePolicyInvalid");
   }
 }
 
 /**
- * Binds every security field of `/v1/info` to a policy that has already
+ * Binds every security field of `/v2/info` to a policy that has already
  * verified for the client's network, so discovery must name that network too.
  */
 export function bindDiscoveryToPolicy(

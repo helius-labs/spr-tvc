@@ -6,12 +6,10 @@
 //           publish-enclave-image pushed and writes the deployment
 //           descriptor
 //   deploy  creates the TVC deployment, approves and provisions it for every
-//           operator, makes it live, and waits for /v1/info to serve it
-//   policy  verifies the live replica's Boot Proof as a client would (the
-//           pinned QOS PCRs, the manifest digest and Quorum key /v1/info
-//           reports, the Turnkey trust root), then assembles the release
-//           policy from /v1/info, signs it with a one-time authority key, and
-//           updates the decryption client's release pin
+//           operator, makes it live, and waits for /v2/info to serve it
+//   policy  validates the authenticated deployment manifest against the
+//           configured Quorum key and built executable, then verifies live
+//           attestation and signs the SDK release pin
 //
 //   node scripts/release.mjs <build|deploy|policy|all> <release-id>
 //     --network <devnet|mainnet>
@@ -43,8 +41,10 @@ import { parseArgs } from "node:util";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const NETWORKS = ["devnet", "mainnet"];
-/** `API_VERSION` in protocol/src/constants.rs: the release policy and `/v1/info` version. */
-const API_VERSION = 1;
+/** `API_VERSION` in protocol/src/constants.rs: the release policy and `/v2/info` version. */
+const API_VERSION = 2;
+const MAX_HTTP_BYTES = 262_144;
+const SERVICE_PROOF_TYPE = "spr.tvc.decryption_service.v2";
 const APP = "decryption-service";
 const OPERATIONS = ["ServicePublicKeys", "ServiceDecrypt"];
 const deployDir = join(ROOT, "enclave", "deploy");
@@ -122,9 +122,6 @@ function config(network) {
   for (const key of ["imageRepository", "qosVersion", "turnkeyTrustRootId"]) {
     if (typeof shared[key] !== "string" || shared[key] === "") fail(`release.json: ${key} is required`);
   }
-  if (!Array.isArray(shared.turnkeyProofSchemaVersions) || shared.turnkeyProofSchemaVersions.length === 0) {
-    fail("release.json: turnkeyProofSchemaVersions is required");
-  }
   if (!Number.isSafeInteger(shared.policyValidityDays) || shared.policyValidityDays < 1) {
     fail("release.json: policyValidityDays must be a positive whole number");
   }
@@ -196,12 +193,12 @@ function pruneDeployments(cfg, deployId) {
 }
 
 async function fetchInfo(endpoint) {
-  const response = await fetch(new URL("v1/info", `${endpoint}/`));
+  const response = await fetch(new URL("v2/info", `${endpoint}/`));
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
 
-/** Waits until the endpoint serves this release, and returns its /v1/info. */
+/** Waits until the endpoint serves this release, and returns its /v2/info. */
 async function awaitRelease(releaseId, cfg) {
   const { expectedPivotDigest } = readJson(descriptorPath(cfg, releaseId));
   let info;
@@ -292,40 +289,40 @@ async function deploy(releaseId, cfg, { unattended, prune, seeds, metadata }) {
 
 /**
  * The unsigned release policy for `releaseId` as the enclave at `cfg.endpoint`
- * serves it (`info`, its /v1/info), checked against the release constants:
+ * serves it (`info`, its /v2/info), checked against the release constants:
  * the shape `ReleasePolicy` in protocol takes.
  */
-export function releasePolicy(releaseId, cfg, info, now) {
+export function releasePolicy(releaseId, cfg, info, approved, now) {
   const expect = (field, expected) => {
-    if (info[field] !== expected) fail(`/v1/info ${field} is ${info[field]}, expected ${expected}`);
+    if (info[field] !== expected) fail(`/v2/info ${field} is ${info[field]}, expected ${expected}`);
   };
   expect("version", API_VERSION);
+  expect("release_id", releaseId);
+  expect("proof_type", SERVICE_PROOF_TYPE);
+  expect("max_encrypted_request_bytes", String(MAX_HTTP_BYTES));
+  expect("max_encrypted_response_bytes", String(MAX_HTTP_BYTES));
   expect("network", cfg.network);
   expect("security_domain_id", cfg.securityDomainId);
   expect("quorum_key_id", cfg.quorumKeyId);
   expect("quorum_key_epoch", cfg.quorumKeyEpoch);
-  if (!HEX(32).test(info.manifest_digest)) fail("/v1/info manifest_digest is not 32-byte hex");
-  if (!HEX(32).test(info.executable_digest)) fail("/v1/info executable_digest is not 32-byte hex");
-  if (!HEX(130).test(info.quorum_public_key)) fail("/v1/info quorum_public_key is not a QOS public key");
-  if (!Array.isArray(info.supported_operations) || info.supported_operations.join() !== OPERATIONS.join()) {
-    fail(`/v1/info supported_operations are ${info.supported_operations}, expected ${OPERATIONS.join(", ")}`);
+  if (!Array.isArray(info.supported_operations) || info.supported_operations.length !== OPERATIONS.length ||
+      OPERATIONS.some((operation, i) => info.supported_operations[i] !== operation)) {
+    fail(`/v2/info supported_operations are ${info.supported_operations}, expected ${OPERATIONS.join(", ")}`);
   }
   return {
     version: API_VERSION,
     releaseId,
     network: cfg.network,
-    tvcApplicationId: cfg.appId,
     securityDomainId: cfg.securityDomainId,
-    acceptedManifestDigests: [info.manifest_digest],
-    acceptedExecutableDigests: [info.executable_digest],
+    acceptedManifestDigests: [approved.manifestDigest],
+    acceptedExecutableDigests: [approved.executableDigest],
     quorumKeyId: cfg.quorumKeyId,
     quorumKeyEpoch: cfg.quorumKeyEpoch,
-    quorumPublicKey: info.quorum_public_key,
+    quorumPublicKey: approved.quorumPublicKey,
     allowedOperations: OPERATIONS,
-    maxEncryptedRequestBytes: Number(info.max_encrypted_request_bytes),
-    maxEncryptedResponseBytes: Number(info.max_encrypted_response_bytes),
+    maxEncryptedRequestBytes: MAX_HTTP_BYTES,
+    maxEncryptedResponseBytes: MAX_HTTP_BYTES,
     turnkeyTrustRootId: cfg.turnkeyTrustRootId,
-    turnkeyProofSchemaVersions: cfg.turnkeyProofSchemaVersions,
     revocationEpoch: "0",
     validFromMs: String(now),
     expiresAtMs: String(now + cfg.policyValidityDays * 86_400_000),
@@ -419,14 +416,50 @@ export function turnkeyBootProofs(credentials, transport = { fetch }) {
   };
 }
 
-/**
- * Verifies the replica that serves `info` as a client will, before anything
- * is signed: it answers a challenge sealed to `info`'s Quorum key, and its Boot
- * Proof chains to the pinned AWS Nitro root, carries release.json's
- * `qosIdentityPcrs` and attests `info`'s manifest digest, under the trust root
- * the release names. `bootProof` defaults to Turnkey with the `tvc` login.
- */
-export async function verifyRelease(cfg, info, { bootProof, transport, nowMs } = {}) {
+export function inspectManifest(bytes) {
+  try {
+    return JSON.parse(execFileSync("cargo", [
+      "run", "--quiet", "--locked", "-p", "spr-tvc-decryption-service", "--example", "inspect-manifest",
+    ], { cwd: ROOT, input: bytes, encoding: "utf8" }));
+  } catch {
+    fail("could not decode the approved QOS manifest");
+  }
+}
+
+export async function approvedDeployment(
+  { cfg, deployId, expectedPivotDigest, quorumPublicKey }, credentials,
+  { transport = { fetch } } = {},
+) {
+  const body = JSON.stringify({ organizationId: credentials.organizationId, deploymentId: deployId });
+  const response = await transport.fetch(new URL("/public/v1/query/get_tvc_deployment", credentials.apiBaseUrl), {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-stamp": turnkeyStamp(body, credentials) },
+    body,
+  });
+  if (!response.ok) fail(`Turnkey answered the deployment query with ${response.status}`);
+  const { tvcDeployment: deployment } = await response.json();
+  if (deployment?.id !== deployId ||
+      deployment?.organizationId !== credentials.organizationId ||
+      deployment?.appId !== cfg.appId || deployment?.qosVersion !== cfg.qosVersion ||
+      deployment?.debugMode !== false || deployment?.delete === true) {
+    fail("Turnkey deployment does not match the approved app and QOS runtime");
+  }
+  const encoded = deployment.manifest?.manifest;
+  if (typeof encoded !== "string" || encoded.length === 0 || encoded.length > 1_048_576) {
+    fail("Turnkey deployment has no supported manifest");
+  }
+  const identity = inspectManifest(Buffer.from(encoded, "base64"));
+  if (identity.executableDigest !== expectedPivotDigest || !HEX(32).test(expectedPivotDigest)) {
+    fail("approved manifest does not match the locally built executable");
+  }
+  if (identity.quorumPublicKey !== quorumPublicKey || !HEX(130).test(quorumPublicKey)) {
+    fail("approved manifest does not match the configured Quorum public key");
+  }
+  return identity;
+}
+
+/** Verifies the approved release before signing its policy. */
+export async function verifyRelease(cfg, info, approved, { bootProof, transport, nowMs } = {}) {
   if (!existsSync(CLIENT_TESTING)) {
     fail(`${relative(ROOT, CLIENT_TESTING)} is missing: the policy phase verifies the replica with it, so build the decryption client first (npx pnpm build:ts)`);
   }
@@ -435,6 +468,7 @@ export async function verifyRelease(cfg, info, { bootProof, transport, nowMs } =
     await verifyLiveReplica({
       endpoint: new URL(cfg.endpoint),
       info,
+      approved,
       qosIdentityPcrs: cfg.qosIdentityPcrs,
       turnkeyTrustRootId: cfg.turnkeyTrustRootId,
       bootProof: bootProof ?? turnkeyBootProofs(tvcCredentials()),
@@ -453,9 +487,9 @@ export async function verifyRelease(cfg, info, { bootProof, transport, nowMs } =
  * (`info`): verified first, then signed. `verify` and `sign` are
  * `verifyRelease` and `signReleasePolicy`.
  */
-export async function verifiedReleaseFile(releaseId, cfg, info, now, { verify = verifyRelease, sign = signReleasePolicy } = {}) {
-  const unsigned = releasePolicy(releaseId, cfg, info, now);
-  await verify(cfg, info);
+export async function verifiedReleaseFile(releaseId, cfg, info, approved, now, { verify = verifyRelease, sign = signReleasePolicy } = {}) {
+  const unsigned = releasePolicy(releaseId, cfg, info, approved, now);
+  await verify(cfg, info, approved);
   const signed = sign(unsigned, `${releaseId}-${new Date(now).toISOString().slice(0, 7)}`);
   return {
     releasePolicy: signed.releasePolicy,
@@ -465,8 +499,13 @@ export async function verifiedReleaseFile(releaseId, cfg, info, now, { verify = 
 }
 
 async function policy(releaseId, cfg) {
+  const { deployId, live } = readJson(recordPath(cfg, releaseId));
+  if (!live || liveDeploymentId(cfg) !== deployId) fail("the recorded deployment is not live");
+  const { expectedPivotDigest } = readJson(descriptorPath(cfg, releaseId));
+  const { quorumPublicKey } = readJson(join(deployDir, cfg.network, `${APP}-${cfg.network}.app.json`));
+  const approved = await approvedDeployment({ cfg, deployId, expectedPivotDigest, quorumPublicKey }, tvcCredentials());
   const info = await awaitRelease(releaseId, cfg);
-  writeJson(pinPath(cfg), await verifiedReleaseFile(releaseId, cfg, info, Date.now()));
+  writeJson(pinPath(cfg), await verifiedReleaseFile(releaseId, cfg, info, approved, Date.now()));
 }
 
 const USAGE =

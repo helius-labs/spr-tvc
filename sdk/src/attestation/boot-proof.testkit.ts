@@ -130,8 +130,8 @@ export function bootProof(overrides: AttestationOverrides = {}): TurnkeyBootProo
 
 export function appProof(): TurnkeyAppProofWire {
   const proofPayload = canonicalizeJsonValue({
-    type: "spr.tvc.qos_ping.v1",
-    version: 1,
+    type: "spr.tvc.qos_ping.v2",
+    version: 2,
     challenge: encodeLowerHex(label("challenge")),
   });
   return {

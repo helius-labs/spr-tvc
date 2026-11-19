@@ -25,7 +25,12 @@ function parseRawLowS(signature: Uint8Array) {
     }
     throw new DecryptionServiceError("InvalidSignature");
   }
-  const sig = p256.Signature.fromCompact(signature);
+  let sig;
+  try {
+    sig = p256.Signature.fromCompact(signature);
+  } catch {
+    throw new DecryptionServiceError("InvalidSignature");
+  }
   if (sig.hasHighS()) {
     throw new DecryptionServiceError("HighSSignature");
   }

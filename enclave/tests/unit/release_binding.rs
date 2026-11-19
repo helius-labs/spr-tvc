@@ -15,7 +15,7 @@ fn a_request_is_bound_to_the_running_release() {
     assert!(call(&service, &base).is_ok());
 
     let edits: [fn(&mut ServiceRequest); 6] = [
-        |r| r.version = 2,
+        |r| r.version = 1,
         |r| r.target_release_id.push('x'),
         |r| r.target_manifest_digest[0] ^= 1,
         |r| r.target_executable_digest[0] ^= 1,
@@ -29,7 +29,7 @@ fn a_request_is_bound_to_the_running_release() {
     }
 
     let mut unknown = serde_json::to_value(envelope(&service, &base)).unwrap();
-    unknown["wallet_grant"] = serde_json::Value::Null;
+    unknown["unknown"] = serde_json::Value::Null;
     for body in [jcs_serialize(&unknown).unwrap(), "{}".to_owned()] {
         assert_eq!(
             execute(&service, body.as_bytes()).unwrap_err(),
@@ -44,7 +44,7 @@ async fn the_router_advertises_the_operations_and_serves_them() {
     let app = router(service.clone());
     let response = app
         .clone()
-        .oneshot(Request::get("/v1/info").body(Body::empty()).unwrap())
+        .oneshot(Request::get("/v2/info").body(Body::empty()).unwrap())
         .await
         .unwrap();
     let info: ServiceInfo = parse_strict_json(&testing::body(response).await).unwrap();
@@ -61,7 +61,7 @@ async fn the_router_advertises_the_operations_and_serves_them() {
     let body = jcs_serialize(&envelope(&service, &request)).unwrap();
     let response = app
         .oneshot(
-            Request::post("/v1/operations")
+            Request::post("/v2/operations")
                 .header(CONTENT_TYPE, "application/json")
                 .body(Body::from(body))
                 .unwrap(),

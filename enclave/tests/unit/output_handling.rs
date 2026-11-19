@@ -8,9 +8,8 @@ fn the_owner_decrypts_what_a_sender_encrypted_to_the_service_keys() {
     let (stranger, _) = service_keys(&service, &SigningKey::from_bytes(&[9; 32]));
     assert_ne!(viewing, stranger);
 
-    let mut relabeled = transfer_output(stranger, b"not ours", 4);
-    relabeled.viewing_public_key = viewing.to_vec();
-    let items = vec![transfer_output(viewing, b"ten usdc", 3), relabeled];
+    let foreign = transfer_output(stranger, b"not ours", 4);
+    let items = vec![transfer_output(viewing, b"ten usdc", 3), foreign];
     let request = decrypt(&service, &owner, NETWORK, items);
     let outputs = decrypted(&service, &request);
 
@@ -30,24 +29,26 @@ fn a_bad_output_rejects_the_entire_signed_batch() {
     let service = service();
     let owner = recipient_signer();
     let (viewing, _) = service_keys(&service, &owner);
-    let (stranger, _) = service_keys(&service, &SigningKey::from_bytes(&[9; 32]));
     let valid = transfer_output(viewing, b"ten usdc", 0);
     let invalid = [
         (
-            "other recipient",
-            transfer_output(stranger, b"another recipient", 1),
+            "non-contributory ephemeral key",
+            DecryptItem {
+                ephemeral_viewing_public_key: [vec![4], vec![0; 32]].concat(),
+                ..valid.clone()
+            },
         ),
         (
             "sender key length",
             DecryptItem {
-                transaction_viewing_public_key: vec![0; 32],
+                ephemeral_viewing_public_key: vec![0; 32],
                 ..valid.clone()
             },
         ),
         (
             "sender key encoding",
             DecryptItem {
-                transaction_viewing_public_key: vec![0; 33],
+                ephemeral_viewing_public_key: vec![0; 33],
                 ..valid.clone()
             },
         ),
@@ -118,8 +119,7 @@ fn a_ring_deposit_uses_its_own_cipher_and_requires_slot_zero() {
         ciphertext: transaction
             .encrypt_ring_deposit(&X25519Pubkey::from_bytes(viewing).unwrap(), plaintext, salt)
             .unwrap(),
-        viewing_public_key: viewing.to_vec(),
-        transaction_viewing_public_key: transaction.pubkey().as_bytes().to_vec(),
+        ephemeral_viewing_public_key: transaction.pubkey().as_bytes().to_vec(),
         salt: salt.to_vec(),
         slot_index: 0,
         label: DecryptLabel::RingDeposit,

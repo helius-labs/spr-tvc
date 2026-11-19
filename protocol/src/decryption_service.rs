@@ -9,11 +9,11 @@ use crate::encoding::{self, canonicalize_json_value, decimal_u64, encode_lower_h
 use crate::error::{ErrorCode, TvcError};
 use crate::types::{DecryptItem, Network, OperationKind};
 
-pub const SERVICE_PROOF_TYPE: &str = "spr.tvc.decryption_service.v1";
-pub const SERVICE_REQUEST_DIGEST_DOMAIN: &[u8] = b"SPR_TVC_DECRYPTION_SERVICE_REQUEST_V1";
+pub const SERVICE_PROOF_TYPE: &str = "spr.tvc.decryption_service.v2";
+pub const SERVICE_REQUEST_DIGEST_DOMAIN: &[u8] = b"SPR_TVC_DECRYPTION_SERVICE_REQUEST_V2";
 
 /// Label of the message that authorizes a `Decrypt`.
-pub const DECRYPT_LABEL: &str = "TSPP/decryption-service/decrypt/v1";
+pub const DECRYPT_LABEL: &str = "TSPP/decryption-service/decrypt/v2";
 
 pub const ADDRESS_LEN: usize = 32;
 pub const X25519_PUBLIC_KEY_LEN: usize = 33;

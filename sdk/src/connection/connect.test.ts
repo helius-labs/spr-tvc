@@ -68,18 +68,10 @@ function oversizedResponse(onPull: () => void): Response {
 
 function connectFixture() {
   const quorumEncryptionSecret = secret("connect-quorum-encryption");
-  const quorumSigningSecret = secret("connect-quorum-signing");
   const ephemeralEncryptionSecret = secret("connect-ephemeral-encryption");
   const ephemeralSigningSecret = secret("connect-ephemeral-signing");
-  const discoveryEphemeralPublicKey = qosPublic(
-    secret("connect-discovery-ephemeral-encryption"),
-    secret("connect-discovery-ephemeral-signing")
-  );
   const authoritySecret = secret("connect-release-authority");
-  const quorumPublicKey = qosPublic(
-    quorumEncryptionSecret,
-    quorumSigningSecret
-  );
+  const quorumPublicKey = qosPublic(quorumEncryptionSecret, secret("connect-quorum-signing"));
   const ephemeralPublicKey = qosPublic(
     ephemeralEncryptionSecret,
     ephemeralSigningSecret
@@ -88,10 +80,9 @@ function connectFixture() {
   const executableDigest = "22".repeat(32);
 
   const policy: ReleasePolicy = {
-    version: 1,
+    version: 2,
     releaseId: "connect-poc",
     network: "devnet",
-    tvcApplicationId: "wallet-dev",
     securityDomainId: "33".repeat(32),
     acceptedManifestDigests: [manifestDigest],
     acceptedExecutableDigests: [executableDigest],
@@ -102,7 +93,6 @@ function connectFixture() {
     maxEncryptedRequestBytes: 262_144,
     maxEncryptedResponseBytes: 262_144,
     turnkeyTrustRootId: "aws-nitro-root-g1",
-    turnkeyProofSchemaVersions: ["turnkey.boot_proof.v1"],
     validFromMs: "1700000000000",
     expiresAtMs: "1800000000000",
     revocationEpoch: "0",
@@ -131,7 +121,7 @@ function connectFixture() {
     ],
   };
   const info: ServiceInfo = {
-    version: 1,
+    version: 2,
     network: "devnet",
     security_domain_id: policy.securityDomainId,
     release_id: policy.releaseId,
@@ -140,12 +130,11 @@ function connectFixture() {
     quorum_public_key: quorumPublicKey,
     quorum_key_id: policy.quorumKeyId,
     quorum_key_epoch: policy.quorumKeyEpoch,
-    // /v1/info and /v1/ping may be served by different healthy replicas.
-    ephemeral_public_key: discoveryEphemeralPublicKey,
+    // /v2/info and /v2/ping may be served by different healthy replicas.
     supported_operations: ["ServicePublicKeys", "ServiceDecrypt"],
     max_encrypted_request_bytes: "262144",
     max_encrypted_response_bytes: "262144",
-    proof_type: "spr.tvc.decryption_service.v1",
+    proof_type: "spr.tvc.decryption_service.v2",
   };
   const expectedPcrs = {
     0: "44".repeat(48),
@@ -170,7 +159,7 @@ function connectFixture() {
       qosDecrypt(quorumEncryptionSecret, decodeLowerHex(encryptedChallenge))
     );
     return canonicalizeJsonValue({
-      version: 1,
+      version: 2,
       tvc_app_proof: {
         scheme: "SIGNATURE_SCHEME_EPHEMERAL_KEY_P256",
         public_key: ephemeralPublicKey,
@@ -223,10 +212,10 @@ describe("verification", () => {
       nowMs: () => 1_750_000_000_000n,
       transport: {
         fetch: async (url, init) => {
-          if (url.pathname === "/api/tvc/v1/info") {
+          if (url.pathname === "/api/tvc/v2/info") {
             return new Response(canonicalizeJsonValue(info), { status: 200 });
           }
-          expect(url.pathname).toBe("/api/tvc/v1/ping");
+          expect(url.pathname).toBe("/api/tvc/v2/ping");
           expect(init?.method).toBe("POST");
           const request = JSON.parse(String(init?.body)) as {
             encrypted_challenge: string;
@@ -245,7 +234,7 @@ describe("verification", () => {
       expect.objectContaining({ bootProofLookupKey: ephemeralPublicKey })
     );
     expect(verifyBootProofMock).toHaveBeenCalledWith({
-      appProof: expect.objectContaining({ publicKey: ephemeralPublicKey }),
+      ephemeralPublicKey,
       bootProof,
       allowedManifestSha256: [manifestDigest],
       expectedPcrs,
@@ -296,7 +285,7 @@ describe("verification", () => {
       nowMs: () => 1_750_000_000_000n,
       transport: {
         fetch: async (url) =>
-          url.pathname.endsWith("/v1/info")
+          url.pathname.endsWith("/v2/info")
             ? new Response(canonicalizeJsonValue(info), { status: 200 })
             : oversizedResponse(() => (pingPulls += 1)),
       },
@@ -369,7 +358,7 @@ describe("the client's network", () => {
       nowMs: () => 1_750_000_000_000n,
       transport: {
         fetch: async (url, init) => {
-          if (url.pathname === "/v1/info") return Response.json({ ...info, network: "mainnet" });
+          if (url.pathname === "/v2/info") return Response.json({ ...info, network: "mainnet" });
           const { encrypted_challenge } = JSON.parse(String(init?.body)) as { encrypted_challenge: string };
           return new Response(pingAnswer(encrypted_challenge));
         },
@@ -384,7 +373,7 @@ describe("a live replica, before its release is signed", () => {
 
   function enclave(answer: (encryptedChallenge: string) => string) {
     const fetch = vi.fn(async (url: URL, init?: RequestInit) => {
-      expect(url.pathname).toBe("/v1/ping");
+      expect(url.pathname).toBe("/v2/ping");
       const request = JSON.parse(String(init?.body)) as { encrypted_challenge: string };
       try {
         return new Response(answer(request.encrypted_challenge), { status: 200 });
@@ -396,12 +385,13 @@ describe("a live replica, before its release is signed", () => {
     return { fetch };
   }
 
-  it("answers the ping under the Quorum key info names, and its Boot Proof attests info's manifest", async () => {
+  it("pings the approved Quorum key and attests the approved manifest", async () => {
     const { ephemeralPublicKey, manifestDigest, info, expectedPcrs, bootProof, pingAnswer } = connectFixture();
     const lookup = vi.fn().mockResolvedValue(bootProof);
     await verifyLiveReplica({
       endpoint: new URL("https://app.example"),
       info,
+      approved: { manifestDigest: info.manifest_digest, executableDigest: info.executable_digest, quorumPublicKey: info.quorum_public_key },
       qosIdentityPcrs: expectedPcrs,
       turnkeyTrustRootId: "aws-nitro-root-g1",
       bootProof: lookup,
@@ -410,7 +400,7 @@ describe("a live replica, before its release is signed", () => {
     });
     expect(lookup).toHaveBeenCalledWith(ephemeralPublicKey, undefined);
     expect(verifyBootProofMock).toHaveBeenCalledWith({
-      appProof: expect.objectContaining({ publicKey: ephemeralPublicKey }),
+      ephemeralPublicKey,
       bootProof,
       allowedManifestSha256: [manifestDigest],
       expectedPcrs,
@@ -423,17 +413,21 @@ describe("a live replica, before its release is signed", () => {
     const input = {
       endpoint: new URL("https://app.example"),
       info,
+      approved: { manifestDigest: info.manifest_digest, executableDigest: info.executable_digest, quorumPublicKey: info.quorum_public_key },
       qosIdentityPcrs: expectedPcrs,
       turnkeyTrustRootId: "aws-nitro-root-g1",
       bootProof: vi.fn().mockResolvedValue(bootProof),
       transport: enclave(pingAnswer),
     };
-    // A Quorum key the replica does not hold: it cannot read the challenge.
-    const { info: otherRelease } = connectFixture();
-    const otherQuorum = qosPublic(secret("another-quorum-encryption"), secret("another-quorum-signing"));
-    await expect(
-      verifyLiveReplica({ ...input, info: { ...otherRelease, quorum_public_key: otherQuorum } }),
-    ).rejects.toMatchObject({ code: "BootProofUnverified", status: 400 });
+    const fetchUnapproved = vi.fn();
+    for (const field of ["quorum_public_key", "manifest_digest", "executable_digest"] as const) {
+      await expect(verifyLiveReplica({
+        ...input, info: { ...info, [field]: "00" + info[field].slice(2) },
+        transport: { fetch: fetchUnapproved },
+      })).rejects.toMatchObject({ code: "ReleaseBindingMismatch" });
+    }
+    expect(fetchUnapproved).not.toHaveBeenCalled();
+    expect(input.bootProof).not.toHaveBeenCalled();
     // An answer to another challenge.
     const replayed = enclave(() => pingAnswer(encodeLowerHex(qosEncrypt(
       p256.getPublicKey(secret("connect-quorum-encryption"), false),

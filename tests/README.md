@@ -1,37 +1,34 @@
 # Test invariants
 
-Rust implementation lives in each crate's `src/`. Unit tests live in
-`tests/unit/` and retain access to private code through test-only module
-declarations. Integration tests live under `tests/`, and TypeScript tests
-live beside their implementations.
-
-`just ci` runs workspace tests and checks the wire fixtures.
-`just decryption-e2e` exercises the SDK against the local enclave testkit.
-`just headless-e2e` also exercises the Solana, indexer, and prover paths.
+`just ci` runs the Rust and TypeScript suites. `just decryption-e2e` runs the
+SDK against a loopback enclave. `just headless-e2e` adds the Solana validator,
+indexer, and prover. Rust tests live under each crate's `tests/` and
+TypeScript unit tests sit beside the implementation.
 
 ## Decryption service
 
-| Invariant | Tests |
+| Invariant | Coverage |
 | --- | --- |
-| Address eligibility and ownership | Public lookup accepts an eligible Ed25519 address. Both operations reject malformed, off-curve, and small-order addresses. Decrypt rejects the wrong network or signer and missing, forged, or noncanonical signatures, including for empty batches. [Owner authorization](../enclave/tests/unit/owner_authorization.rs) |
-| Keys bind to the address and Quorum key | Fixed derivation vectors cover both keys. Changing the address or Quorum key changes the keys. Replicas sharing the Quorum key produce identical keys. [Derivation](../enclave/tests/unit/key_derivation.rs) · [Release binding](../enclave/tests/unit/release_binding.rs) |
-| Approval binds the exact request | Changes to the request ID or to any item field invalidate the signature. The enclave checks the version, release ID, manifest, executable, and Quorum ID and epoch. It rejects unknown fields and malformed envelopes. Rust and TypeScript share request-digest and message vectors. [Owner authorization](../enclave/tests/unit/owner_authorization.rs) · [Release binding](../enclave/tests/unit/release_binding.rs) · [Rust vectors](../protocol/tests/unit/decryption_request_binding.rs) · [TypeScript vectors](../sdk/src/protocol/decryption.test.ts) · [SDK request](../sdk/src/client/decryption.test.ts) |
-| Only the signed response key opens the reply | A second key cannot decrypt replies, including after replay. The original signature fails if the response key changes. Invalid and compressed response keys are rejected. Replies carry an App Proof bound to the request, operation, and encrypted result. [Response privacy](../enclave/tests/unit/response_privacy.rs) · [Reply assertions](../enclave/tests/unit/decrypt_flow.rs) |
-| Each batch uses only the signer's viewing key | Valid items return in order. A batch with a different declared recipient, malformed sender key or salt, or out-of-range transfer slot fails as a whole. Relabeling a foreign ciphertext yields no foreign plaintext. Ring deposits use a separate cipher domain and slot zero. [Output handling](../enclave/tests/unit/output_handling.rs) |
-| Batch and result bounds | 256 items succeed and 257 fail. A signed empty batch returns a nullifier secret that matches the public lookup. Shared HTTP tests check the request byte ceiling. [Output handling](../enclave/tests/unit/output_handling.rs) · [HTTP limits](../enclave/tests/unit/http_and_ping.rs) |
-| Attestation binds the replica to the release | The production loader reports the QOS manifest and executable digests and rejects a mismatched Quorum key. SDK tests reject a wrong network, root, PCR, manifest, or App Proof key. [QOS startup](../enclave/tests/unit/qos_startup.rs) · [Connection](../sdk/src/connection/connect.test.ts) · [Boot Proof](../sdk/src/attestation/boot-proof.test.ts) |
-| Wallet accepts outputs with matching commitments | The SDK derives the service identity and asks for distinct approvals for empty and nonempty batches. The direct end-to-end test drops a decrypted output with a mismatched indexed commitment. The localnet example checks amounts and note counts after claim and sweep. [Wallet keys](../sdk/src/client/keys.test.ts) · [Direct E2E](../example/tests/decryption.test.ts) · [Localnet example](../example/index.ts) |
-| Turnkey signs the SDK’s exact bytes | The adapter requests raw Ed25519 signing and rejects another account’s signature or a changed transaction message. [Turnkey signer](../example/tests/turnkey.test.ts) |
+| Only a signer-capable Solana address gets service keys. | Lookup and decrypt reject malformed, off-curve, and small-order addresses. Forged, missing, and noncanonical signatures fail even for empty batches. [Owner authorization](../enclave/tests/unit/owner_authorization.rs) |
+| The address and Quorum seed determine the service keys. | Fixed derivation vectors, address and seed separation, and agreement across replicas. [Derivation](../enclave/tests/unit/key_derivation.rs) · [Release binding](../enclave/tests/unit/release_binding.rs) |
+| The owner approves the ordered batch for one network and release. | A change to the signer, request ID, item field, item order, item count, network, or response key invalidates approval. The enclave rejects mismatched release pins, legacy versions, and unknown fields. Rust and TypeScript agree on the digest and signed Solana message. [Owner authorization](../enclave/tests/unit/owner_authorization.rs) · [Release binding](../enclave/tests/unit/release_binding.rs) · [Rust vectors](../protocol/tests/unit/decryption_request_binding.rs) · [SDK vectors](../sdk/src/protocol/decryption.test.ts) |
+| Only the signed response key opens the reply, including after replay. | A second key cannot open the reply or replace the signed key. Invalid and compressed response keys fail. [Response privacy](../enclave/tests/unit/response_privacy.rs) |
+| The enclave uses only the verified signer's viewing key. | An output for another address yields unrelated bytes. Wrong ephemeral key encoding, low-order points, malformed salt, and invalid slots fail the entire batch. Ring deposits use their own cipher domain and require slot zero. [Output handling](../enclave/tests/unit/output_handling.rs) |
+| Batch and byte limits apply before work crosses the next boundary. | The enclave accepts 256 items, rejects 257, and bounds HTTP bodies and encrypted results. The SDK splits at 256 or on the serialized byte limit before signing or sending an oversized request. It preserves order and rejects incomplete results. [Enclave batches](../enclave/tests/unit/output_handling.rs) · [HTTP limits](../enclave/tests/unit/http_and_ping.rs) · [Result limit](../enclave/tests/unit/app_proof_signature.rs) · [SDK batching](../sdk/src/client/items.test.ts) · [Before signing](../sdk/src/client/decryption.test.ts) |
+| The SDK opens only the authenticated reply to its request. | Wrong proof type, version, signature, request ID, request digest, result digest, operation, scheme, or signing replica fails. The SDK rejects oversized ciphertext, the wrong response key, noncanonical plaintext, and unknown proof fields. [Operation replies](../sdk/src/connection/operations.test.ts) |
+| Decrypted notes must match their indexed commitments. | The SDK opens empty and nonempty batches with separate approvals. It discards a note with a mismatched commitment. The localnet example checks the amount and note count after claim and sweep. [SDK keys](../sdk/src/client/keys.test.ts) · [Direct E2E](../example/tests/decryption.test.ts) · [Localnet example](../example/index.ts) |
 
-The tests use fixture keys and simulated attestation inputs. The
-[service spec](../enclave/SPEC.md#key-custody-and-trust)
-states the remaining trust assumptions for a live deployment.
+## Release and transport
 
-## Enclave and wire protocol
-
-| Invariant | Cases and coverage |
+| Invariant | Coverage |
 | --- | --- |
-| **Discovery binds to the loaded QOS manifest.** | The production loader reads a QOS 0.12.1 v2 manifest envelope and the local key files, reports the manifest and executable digests, and refuses a valid Quorum key that differs from the one in the manifest. [QOS startup](../enclave/tests/unit/qos_startup.rs) |
-| **Discovery, ping, and errors have a stable HTTP contract.** | Exact health response, runtime keys in discovery, Quorum-only ping decryption, exact signed ping bytes, generic malformed requests, wrong methods, and oversized input rejection. [HTTP and ping](../enclave/tests/unit/http_and_ping.rs) |
-| **Canonical encoding yields stable signed bytes.** | JCS ordering, hex encoding, decimal `u64`, and typed bodies reject ambiguous forms. Error codes and discovery digests match the committed fixtures. [Canonical JSON](../protocol/tests/unit/canonical_json.rs) · [Wire errors](../protocol/tests/unit/wire_errors.rs) · [Conformance](../protocol/tests/conformance.rs) |
-| **Proofs and transport interoperate with QOS.** | ECDSA wire signatures use low-S, and malformed encodings fail. Incorrect keys and truncated envelopes fail. Rust QOS interop and shared vectors pin both implementations. [App Proof signatures](../enclave/tests/unit/app_proof_signature.rs) · [Conformance](../protocol/tests/conformance.rs) · [QOS interop](../protocol/tests/qos_crate_interop.rs) |
+| Only the approved deployment can supply a release pin. | The policy tool authenticates the Turnkey deployment query, checks app, organization, QOS version, debug mode, executable digest, and Quorum key, and uses the resulting manifest digest for live attestation. Discovery that supplies different identity fields is rejected before ping or Boot Proof lookup. A failed verification reaches no signing step. [Policy tooling](../scripts/release.test.mjs) · [Connection](../sdk/src/connection/connect.test.ts) |
+| Release policy authorization requires a valid threshold of distinct keys. | Signed policies fail on another network, expiry, revocation, tampering, or missing signatures. Duplicate signer IDs do not count. Malformed thresholds and the same key under two authority IDs are rejected. [Rust conformance](../protocol/tests/conformance.rs) · [SDK conformance](../sdk/src/protocol/conformance.test.ts) · [SDK release policy](../sdk/src/protocol/releases.test.ts) |
+| Discovery and replies are bound to the running QOS replica. | The loader rejects a Quorum key outside its manifest. The SDK checks a current signed ping, the Nitro root and COSE signature, pinned PCR0–3, PCR17, manifest, and replica key. [QOS loader](../enclave/tests/unit/qos_startup.rs) · [Ping](../sdk/src/connection/connect.test.ts) · [Boot Proof](../sdk/src/attestation/boot-proof.test.ts) · [Root certificate](../sdk/src/attestation/boot-proof-chain.test.ts) |
+| Canonical wire bytes agree across Rust, TypeScript, and QOS. | Strict JSON, numeric and hex encodings, P-256 low-S signatures, envelope authentication, and size checks. The public health route exposes readiness only. [Wire fixtures](../protocol/tests/conformance.rs) · [QOS interoperability](../protocol/tests/qos_crate_interop.rs) · [SDK conformance](../sdk/src/protocol/conformance.test.ts) |
+| Cancellation and deadlines bound verification and HTTP reads. | Shared verification survives one caller leaving, ignores late results, and refreshes an expired policy. The SDK stops stalled responses and cancelled owner approvals, wipes the response key, and refuses a request if the release expires during signing. [Session lifetime](../sdk/src/connection/session.test.ts) · [HTTP limits](../sdk/src/connection/http.test.ts) · [Boot Proof lookup](../sdk/src/connection/connect.test.ts) · [Owner approval](../sdk/src/client/decryption.test.ts) |
+| Turnkey signs the exact SDK bytes for the expected account. | The adapter uses raw Ed25519 for approvals. It refuses another account's signature and changed transaction messages. [Turnkey signer](../example/tests/turnkey.test.ts) |
+
+The tests use fixtures and simulated attestation inputs. The
+[service spec](../enclave/SPEC.md#key-custody-and-trust) describes the trust
+required of Quorum operators and the release authorities.

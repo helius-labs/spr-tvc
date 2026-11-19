@@ -32,7 +32,7 @@ impl Display for Network {
     }
 }
 
-/// What a request asks for, as advertised by `/v1/info` and named in the App
+/// What a request asks for, as advertised by `/v2/info` and named in the App
 /// Proof.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -70,8 +70,6 @@ pub struct ServiceInfo {
     pub quorum_key_id: String,
     #[serde(with = "decimal_u64")]
     pub quorum_key_epoch: u64,
-    #[serde(with = "hex")]
-    pub ephemeral_public_key: Vec<u8>,
     pub supported_operations: Vec<OperationKind>,
     #[serde(with = "decimal_u64")]
     pub max_encrypted_request_bytes: u64,
@@ -93,12 +91,9 @@ pub enum DecryptLabel {
 pub struct DecryptItem {
     #[serde(with = "hex")]
     pub ciphertext: Vec<u8>,
-    /// Declared recipient viewing key. The enclave checks it against its own key.
-    #[serde(with = "hex")]
-    pub viewing_public_key: Vec<u8>,
     /// The sender's ephemeral X25519 viewing key from the transaction or deposit.
     #[serde(with = "hex")]
-    pub transaction_viewing_public_key: Vec<u8>,
+    pub ephemeral_viewing_public_key: Vec<u8>,
     #[serde(with = "hex")]
     pub salt: Vec<u8>,
     /// Zero for a ring deposit, which carries one envelope.
@@ -179,9 +174,6 @@ pub struct OperationProofPayload {
     #[serde(with = "hex")]
     pub result_digest: [u8; 32],
     pub operation: OperationKind,
-    /// The decryption-service v1 proof sets this field to zero.
-    #[serde(with = "hex")]
-    pub sealed_seed_digest: [u8; 32],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,7 +182,6 @@ pub struct ReleasePolicy {
     pub version: u8,
     pub release_id: String,
     pub network: Network,
-    pub tvc_application_id: String,
     #[serde(with = "hex")]
     pub security_domain_id: [u8; 32],
     pub accepted_manifest_digests: Vec<String>,
@@ -204,7 +195,6 @@ pub struct ReleasePolicy {
     pub max_encrypted_request_bytes: u32,
     pub max_encrypted_response_bytes: u32,
     pub turnkey_trust_root_id: String,
-    pub turnkey_proof_schema_versions: Vec<String>,
     #[serde(with = "decimal_u64")]
     pub valid_from_ms: u64,
     #[serde(with = "decimal_u64")]

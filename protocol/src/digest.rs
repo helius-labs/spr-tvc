@@ -16,12 +16,12 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
-/// `request_digest` omits only `authorization.signature`; `client_key_id` stays.
+/// Digest of the encrypted result signed in the operation proof.
 pub fn result_digest(encrypted_result: &[u8]) -> [u8; 32] {
     domain_separated_hash(RESULT_DIGEST_DOMAIN, encrypted_result)
 }
 
-/// Digest of the exact sealed-seed wire bytes.
+/// Digest of the canonical release policy.
 pub fn release_policy_digest(policy_jcs: &[u8]) -> [u8; 32] {
     domain_separated_hash(RELEASE_POLICY_DOMAIN, policy_jcs)
 }

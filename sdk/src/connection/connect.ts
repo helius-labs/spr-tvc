@@ -104,11 +104,7 @@ export function verifyQosPingAnswer(text: string, challenge: QosPingChallenge): 
   if (proof.scheme !== TVC_APP_PROOF_SCHEME || proof.proof_payload !== challenge.payload) {
     throw new DecryptionServiceError("TurnkeyEvidenceInvalid");
   }
-  // `proof.public_key` is self-asserted here and carries no weight until
-  // verifyBootProof ties it to a pinned-PCR Nitro attestation. Discovery's
-  // own `ephemeral_public_key` is never used as a verification input: /v1/info
-  // and /v1/ping may be served by different healthy replicas, so it is an
-  // advertisement.
+  // The signature proves possession. The Boot Proof authenticates this key.
   verifyP256Message(
     parseQosP256Public(requireQosPublicKey(proof.public_key)).signing,
     new TextEncoder().encode(proof.proof_payload),
@@ -123,11 +119,19 @@ export function verifyQosPingAnswer(text: string, challenge: QosPingChallenge): 
 }
 
 /** What a release tool checks of a live replica before it signs a release policy for it. */
+export type ApprovedDeployment = {
+  readonly manifestDigest: string;
+  readonly executableDigest: string;
+  readonly quorumPublicKey: string;
+};
+
 export type VerifyLiveReplicaInput = {
   /** The enclave's public ingress. */
   readonly endpoint: URL;
-  /** `/v1/info` as the enclave served it: the manifest digest and Quorum key to sign. */
+  /** Discovery from the data plane. */
   readonly info: ServiceInfo;
+  /** Identity derived from the authenticated deployment manifest. */
+  readonly approved: ApprovedDeployment;
   /** The PCR0-3 pinned for the QOS version, never read from the enclave. */
   readonly qosIdentityPcrs: QosIdentityPcrs;
   /** The trust root the release names; only the one this package pins verifies. */
@@ -139,30 +143,28 @@ export type VerifyLiveReplicaInput = {
   readonly signal?: AbortSignal;
 };
 
-/**
- * For release tooling, before any release policy exists: the replica that
- * answers at `endpoint` decrypts a challenge sealed to `info`'s Quorum key and
- * signs it with an ephemeral key whose Boot Proof chains to the pinned AWS
- * Nitro root, carries the pinned PCR0-3, and attests the manifest digest
- * `info` reports. The QOS manifest names the Quorum key, so this verifies
- * both values a release policy pins. Throws `DecryptionServiceError` otherwise.
- */
 export async function verifyLiveReplica(input: VerifyLiveReplicaInput): Promise<void> {
   if (input.turnkeyTrustRootId !== EXPECTED_TURNKEY_TRUST_ROOT_ID) {
     throw new DecryptionServiceError("ReleasePolicyInvalid", `this client pins the trust root ${EXPECTED_TURNKEY_TRUST_ROOT_ID}`);
   }
   const info = parseServiceInfo(JSON.stringify(input.info));
+  if (info.version !== API_VERSION ||
+      info.manifest_digest !== input.approved.manifestDigest ||
+      info.executable_digest !== input.approved.executableDigest ||
+      info.quorum_public_key !== input.approved.quorumPublicKey) {
+    throw new DecryptionServiceError("ReleaseBindingMismatch");
+  }
   const transport = input.transport ?? createDefaultTransport();
-  const challenge = qosPingChallenge(info.quorum_public_key);
+  const challenge = qosPingChallenge(input.approved.quorumPublicKey);
   const appProof = verifyQosPingAnswer(
     await fetchPing(input.endpoint, challenge.body, transport, input.signal),
     challenge,
   );
   const bootProof = await awaitWithSignal(input.bootProof(appProof.publicKey, input.signal), input.signal);
   await verifyBootProof({
-    appProof,
+    ephemeralPublicKey: appProof.publicKey,
     bootProof,
-    allowedManifestSha256: [info.manifest_digest],
+    allowedManifestSha256: [input.approved.manifestDigest],
     expectedPcrs: input.qosIdentityPcrs,
     nowMs: input.nowMs ?? BigInt(Date.now()),
   });
@@ -184,7 +186,7 @@ export async function connectAndVerifyTvc(
     verificationNow: bigint,
     verifySignal?: AbortSignal,
   ) => awaitWithSignal(verifyBootProof({
-    appProof,
+    ephemeralPublicKey: appProof.publicKey,
     bootProof: await lookupBootProof(backend, appProof, verifySignal),
     allowedManifestSha256: releasePolicy.policy.acceptedManifestDigests,
     expectedPcrs: qosIdentityPcrs,

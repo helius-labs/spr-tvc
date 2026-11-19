@@ -17,7 +17,7 @@ describe("Boot Proof AWS Nitro chain", () => {
   it("fails closed on an attestation that is not chained to the pinned AWS root", async () => {
     await expect(
       verifyBootProof({
-        appProof: appProof(),
+        ephemeralPublicKey: appProof().publicKey,
         bootProof: bootProof(),
         allowedManifestSha256: [encodeLowerHex(MANIFEST_DIGEST)],
         expectedPcrs: EXPECTED_PCRS,

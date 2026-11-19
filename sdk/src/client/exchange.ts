@@ -7,6 +7,7 @@ import {
   requireCurrentReleasePolicy,
   sealedExchange,
 } from "../connection/operations.js";
+import { awaitWithSignal } from "../connection/request.js";
 import { API_VERSION } from "../protocol/constants.js";
 import { DecryptionServiceError } from "../protocol/error.js";
 import { encodeLowerHex } from "../protocol/hex.js";
@@ -46,6 +47,7 @@ export async function executeServiceCall<T extends ServiceCall>(
   signal: AbortSignal,
 ): Promise<ServiceCallResult<T>> {
   const { info } = context;
+  signal.throwIfAborted();
   requireCurrentReleasePolicy(context, context.nowMs());
   const responseSecret = p256.utils.randomPrivateKey();
   try {
@@ -80,7 +82,11 @@ export async function executeServiceCall<T extends ServiceCall>(
         info.network,
         requestDigest,
       );
-      const [signatures] = await owner.signMessages([createSignableMessage(message)]);
+      signal.throwIfAborted();
+      const [signatures] = await awaitWithSignal(
+        owner.signMessages([createSignableMessage(message)], { abortSignal: signal }),
+        signal,
+      );
       const signature = signatures?.[address];
       if (signature?.length !== ED25519_SIGNATURE_BYTES) {
         throw new DecryptionServiceError("InvalidSignature");
@@ -88,6 +94,7 @@ export async function executeServiceCall<T extends ServiceCall>(
       request = { ...request, operation: { ...operation, signature: encodeLowerHex(signature) } };
     }
 
+    requireCurrentReleasePolicy(context, context.nowMs());
     const plaintext = await sealedExchange(context, {
       request,
       requestDigest,

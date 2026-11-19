@@ -55,7 +55,7 @@ export async function fetchPing(
   transport: DecryptionServiceTransport,
   signal?: AbortSignal,
 ): Promise<string> {
-  const ping = await postJson(transport, endpointUrl(endpoint, "/v1/ping"), pingBody, signal);
+  const ping = await postJson(transport, endpointUrl(endpoint, "/v2/ping"), pingBody, signal);
   return readAnswer(ping, "BootProofUnverified", MAX_PING_RESPONSE_BYTES, signal);
 }
 
@@ -66,7 +66,7 @@ export async function fetchSession(
   signal?: AbortSignal,
 ): Promise<{ infoText: string; pingText: string }> {
   const { endpoint } = backend;
-  const info = await fetchWithSignal(transport, endpointUrl(endpoint, "/v1/info"), undefined, signal);
+  const info = await fetchWithSignal(transport, endpointUrl(endpoint, "/v2/info"), undefined, signal);
   const infoText = await readAnswer(info, "DiscoveryUntrusted", MAX_DISCOVERY_RESPONSE_BYTES, signal);
   return { infoText, pingText: await fetchPing(endpoint, pingBody, transport, signal) };
 }
@@ -96,7 +96,7 @@ export async function sendToEnclave(
   signal?: AbortSignal,
 ): Promise<string> {
   const response = await postJson(
-    transport, endpointUrl(endpoint, "/v1/operations"), canonicalizeJsonValue(request), signal,
+    transport, endpointUrl(endpoint, "/v2/operations"), canonicalizeJsonValue(request), signal,
   );
   const code = response.status >= 500 ? "OperationUnavailable" : "OperationRejected";
   return readAnswer(response, code, maxAnswerBytes, signal);

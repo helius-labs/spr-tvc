@@ -29,8 +29,7 @@ export function operationOptions(context: RequestContext | undefined): Decryptio
 export function decryptItem(request: DecryptRequest): DecryptItem {
   return {
     ciphertext: encodeLowerHex(request.ciphertext),
-    viewing_public_key: encodeLowerHex(request.viewingPublicKey.toBytes()),
-    transaction_viewing_public_key: encodeLowerHex(request.txViewingPublicKey.toBytes()),
+    ephemeral_viewing_public_key: encodeLowerHex(request.txViewingPublicKey.toBytes()),
     salt: encodeLowerHex(request.salt),
     slot_index: String(request.slotIndex),
     label: LABELS[request.label],

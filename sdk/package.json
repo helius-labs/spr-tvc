@@ -1,6 +1,6 @@
 {
   "name": "@heliuslabs/spr-decryption-service",
-  "version": "0.1.0-alpha.0",
+  "version": "0.2.0-alpha.0",
   "description": "Client for the attested Solana Privacy Rings decryption service",
   "license": "Apache-2.0",
   "repository": {

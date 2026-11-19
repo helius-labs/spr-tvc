@@ -36,13 +36,13 @@ pub fn encrypt_request(info: &ServiceInfo, plaintext: &str) -> EncryptedRequest 
 
 /// Opens an answer as a client does: checks the App Proof, then decrypts.
 pub fn open_response(
-    info: &ServiceInfo,
+    expected_ephemeral: &[u8],
     response: &str,
     response_secret: &[u8; 32],
 ) -> (OperationProofPayload, Zeroizing<Vec<u8>>) {
     let response: EncryptedResponse = parse_strict_json(response).expect("response");
     let proof = response.tvc_app_proof;
-    assert_eq!(proof.public_key, info.ephemeral_public_key);
+    assert_eq!(proof.public_key, expected_ephemeral);
     let ephemeral = QosP256Public::from_bytes(&proof.public_key).expect("ephemeral key");
     verify_p256_message(
         &ephemeral.signing,

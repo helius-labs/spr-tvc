@@ -7,6 +7,8 @@ wallet.
 
 ## Devnet
 
+Run this example against a deployed v2 enclave with a signed SDK release pin.
+
 1. Create or select a funded Turnkey Solana account with no SPR registry record.
 2. Copy [`client.env.example`](client.env.example) to `.env` in this directory.
    Fill in the wallet's Turnkey credentials and the decryption app's

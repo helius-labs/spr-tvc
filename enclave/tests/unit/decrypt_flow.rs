@@ -37,7 +37,7 @@ fn other(network: Network) -> Network {
 fn service_with_quorum_seed(quorum_seed: u8) -> Service {
     let quorum = P256Pair::from_master_seed(&Zeroizing::new([quorum_seed; 32])).unwrap();
     let ephemeral = P256Pair::generate().unwrap();
-    let info = testing::release().service_info([0x22; 32], [0x33; 32], &quorum, &ephemeral);
+    let info = testing::release().service_info([0x22; 32], [0x33; 32], &quorum);
     Service::new(info, ephemeral, quorum)
 }
 
@@ -67,7 +67,11 @@ fn envelope(service: &Service, request: &ServiceRequest) -> EncryptedRequest {
 
 /// Opens an answer as a client does.
 fn open(service: &Service, request: &ServiceRequest, response: &str) -> ServiceResult {
-    let (payload, plaintext) = testing::open_response(&service.info, response, &RESPONSE_SECRET);
+    let (payload, plaintext) = testing::open_response(
+        &service.ephemeral.public_key().to_bytes(),
+        response,
+        &RESPONSE_SECRET,
+    );
     assert_eq!(payload.r#type, SERVICE_PROOF_TYPE);
     assert_eq!(payload.request_id, request.request_id);
     assert_eq!(
@@ -75,7 +79,6 @@ fn open(service: &Service, request: &ServiceRequest, response: &str) -> ServiceR
         service_request_digest(request).unwrap()
     );
     assert_eq!(payload.operation, request.operation.kind());
-    assert_eq!(payload.sealed_seed_digest, [0; 32]);
     parse_strict_json(std::str::from_utf8(&plaintext).unwrap()).unwrap()
 }
 
@@ -167,8 +170,7 @@ fn transfer_output(viewing_public_key: [u8; 33], plaintext: &[u8], slot: u32) ->
                 slot,
             )
             .unwrap(),
-        viewing_public_key: viewing_public_key.to_vec(),
-        transaction_viewing_public_key: transaction.pubkey().as_bytes().to_vec(),
+        ephemeral_viewing_public_key: transaction.pubkey().as_bytes().to_vec(),
         salt: salt.to_vec(),
         slot_index: slot.into(),
         label: DecryptLabel::Transfer,

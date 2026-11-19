@@ -21,3 +21,34 @@ fn qos_signatures_are_normalized_to_low_s_for_the_wire() {
     }
     panic!("fixed QOS seed corpus did not produce a high-S signature");
 }
+
+#[test]
+fn an_encrypted_result_must_fit_the_response_ceiling() {
+    use spr_tvc_protocol::decryption_service::{DecryptedOutputs, ServiceOperation};
+
+    let pair = P256Pair::generate().unwrap();
+    let request = ServiceRequest {
+        version: API_VERSION,
+        request_id: [1; 32],
+        target_release_id: "release".into(),
+        target_manifest_digest: [2; 32],
+        target_executable_digest: [3; 32],
+        quorum_key_id: "quorum".into(),
+        quorum_key_epoch: 1,
+        client_response_public_key: Vec::new(),
+        operation: ServiceOperation::Decrypt {
+            signer: "unused".into(),
+            signature: [0; 64],
+            items: Vec::new(),
+        },
+    };
+    let response_key = P256EncryptPublic::from_bytes(&pair.public_key().to_bytes()[..65]).unwrap();
+    let oversized = ServiceResult::Decrypt(DecryptedOutputs {
+        nullifier_secret: [0; 31],
+        plaintexts: vec![vec![0; MAX_ENCRYPTED_RESPONSE_BYTES as usize / 2]],
+    });
+    assert_eq!(
+        respond(&pair, &request, [0; 32], &response_key, &oversized).unwrap_err(),
+        Failure::Unavailable,
+    );
+}

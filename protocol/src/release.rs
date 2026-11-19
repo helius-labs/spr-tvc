@@ -59,7 +59,7 @@ pub fn verify_signed_release_policy(
     if signed.policy.network != network {
         return Err(TvcError::new(ErrorCode::NetworkMismatch));
     }
-    if authorities.threshold == 0 || authorities.keys.is_empty() {
+    if authorities.threshold == 0 || usize::from(authorities.threshold) > authorities.keys.len() {
         return Err(TvcError::new(ErrorCode::ReleasePolicyInvalid));
     }
     if signed.authority_set_id != authorities.authority_set_id {
@@ -79,10 +79,12 @@ pub fn verify_signed_release_policy(
     }
 
     let mut by_id = HashMap::new();
+    let mut public_keys = HashSet::new();
     for key in &authorities.keys {
-        if by_id
-            .insert(key.key_id.as_str(), key.public_key.as_slice())
-            .is_some()
+        if !public_keys.insert(key.public_key.as_slice())
+            || by_id
+                .insert(key.key_id.as_str(), key.public_key.as_slice())
+                .is_some()
         {
             return Err(TvcError::new(ErrorCode::ReleasePolicyInvalid));
         }

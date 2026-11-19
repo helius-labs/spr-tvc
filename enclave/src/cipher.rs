@@ -16,15 +16,11 @@ pub(crate) fn open_ciphertexts(
     if items.len() as u64 > MAX_ITEMS_PER_BATCH {
         return Err(Failure::Invalid);
     }
-    let recipient_key = viewing.pubkey();
     // Wipe plaintexts already opened if a later item fails.
     let mut plaintexts = Zeroizing::new(Vec::with_capacity(items.len()));
     for item in items {
-        if recipient_key.as_bytes() != item.viewing_public_key.as_slice() {
-            return Err(Failure::Invalid);
-        }
         let sender_key_bytes = item
-            .transaction_viewing_public_key
+            .ephemeral_viewing_public_key
             .as_slice()
             .try_into()
             .map_err(|_| Failure::Invalid)?;

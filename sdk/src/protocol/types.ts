@@ -22,7 +22,6 @@ export type ServiceInfo = {
   quorum_public_key: string;
   quorum_key_id: string;
   quorum_key_epoch: string;
-  ephemeral_public_key: string;
   supported_operations: OperationKind[];
   /** Maximum UTF-8 bytes of the entire encrypted HTTP request envelope. */
   max_encrypted_request_bytes: string;
@@ -34,7 +33,6 @@ export type ReleasePolicy = {
   version: typeof API_VERSION;
   releaseId: string;
   network: Network;
-  tvcApplicationId: string;
   securityDomainId: string;
   acceptedManifestDigests: readonly string[];
   acceptedExecutableDigests: readonly string[];
@@ -46,7 +44,6 @@ export type ReleasePolicy = {
   maxEncryptedRequestBytes: number;
   maxEncryptedResponseBytes: number;
   turnkeyTrustRootId: string;
-  turnkeyProofSchemaVersions: readonly string[];
   validFromMs: string;
   expiresAtMs: string;
   revocationEpoch: string;
@@ -86,8 +83,7 @@ export type DecryptLabel = "Transfer" | "RingDeposit";
 export type DecryptItem = {
   ciphertext: string;
   /** Which of the wallet's viewing keys opens it; the enclave holds one. */
-  viewing_public_key: string;
-  transaction_viewing_public_key: string;
+  ephemeral_viewing_public_key: string;
   salt: string;
   /** Zero for a ring deposit, which carries one envelope. */
   slot_index: string;
@@ -105,7 +101,6 @@ export const SERVICE_INFO_KEYS = [
   "quorum_public_key",
   "quorum_key_id",
   "quorum_key_epoch",
-  "ephemeral_public_key",
   "supported_operations",
   "max_encrypted_request_bytes",
   "max_encrypted_response_bytes",

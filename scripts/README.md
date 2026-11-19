@@ -26,11 +26,11 @@ manifest review during approval and local share re-encryption. Devnet's
 | --- | --- |
 | `build` | Checks the image's network tag, records its digest and the SHA-256 of `/tvc_app`, and writes a deployment descriptor. |
 | `deploy` | Creates the deployment, collects approvals, provisions shares, sets the release live, and waits for matching discovery. A retry resumes from the deployment record. |
-| `policy` | Verifies a live replica against the pinned QOS measurements and manifest, then signs the release policy and updates the client's pin. |
+| `policy` | Reads the recorded live deployment's manifest through the authenticated Turnkey API, checks it against the local build digest and app Quorum key, and verifies the live Boot Proof before signing the SDK pin. |
 
 Run an individual phase with
 `node scripts/release.mjs <phase> <release-id> --network devnet`.
-Commit the deployment records and signed pin. Turnkey allows three
+Commit the deployment records and the signed v2 pin under `sdk/releases/`. Turnkey allows three
 deployments per application. The explicit `--prune-deployments` flag can
 remove older inactive deployments to make room.
 
