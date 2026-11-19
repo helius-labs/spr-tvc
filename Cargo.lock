@@ -2469,31 +2469,14 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "hkdf",
- "p256",
- "qos_p256",
- "serde_json",
- "sha2",
- "solana-pubkey",
- "spr-keypair",
- "spr-tvc-enclave",
- "spr-tvc-protocol",
- "tokio",
- "tower",
- "zeroize",
-]
-
-[[package]]
-name = "spr-tvc-enclave"
-version = "0.1.0"
-dependencies = [
- "axum",
- "clap",
  "http-body-util",
  "p256",
  "qos_core",
  "qos_p256",
  "serde",
  "serde_json",
+ "sha2",
+ "solana-pubkey",
  "spr-keypair",
  "spr-tvc-protocol",
  "strum",

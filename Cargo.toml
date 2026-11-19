@@ -1,9 +1,5 @@
 [workspace]
-members = [
-    "apps/decryption-service",
-    "crates/enclave",
-    "crates/protocol",
-]
+members = ["enclave", "protocol"]
 resolver = "2"
 
 [workspace.package]

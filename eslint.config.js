@@ -3,7 +3,7 @@ import tsPlugin from "@typescript-eslint/eslint-plugin";
 import tsParser from "@typescript-eslint/parser";
 
 const TURNKEY_PROOF_SEAM =
-  "packages/decryption-service/src/verify/internal/turnkey-proof-seam.ts";
+  "sdk/src/attestation/turnkey.ts";
 
 export default [
   {
@@ -12,8 +12,8 @@ export default [
   js.configs.recommended,
   {
     files: [
-      "packages/decryption-service/**/*.{ts,tsx}",
-      "examples/typescript-client/{src,examples}/**/*.{ts,tsx}",
+      "sdk/**/*.{ts,tsx}",
+      "example/**/*.{ts,tsx}",
     ],
     languageOptions: {
       parser: tsParser,
@@ -56,7 +56,7 @@ export default [
   {
     // The client example signs Solana transactions with the wallet's own
     // Turnkey API key; the restriction above guards the package's proof seam.
-    files: ["examples/typescript-client/src/turnkey.ts", "examples/typescript-client/src/lib.ts"],
+    files: ["example/turnkey.ts"],
     rules: {
       "no-restricted-imports": "off",
     },

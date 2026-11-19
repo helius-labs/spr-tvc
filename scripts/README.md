@@ -6,7 +6,7 @@ Build the TypeScript client with `just setup build-ts` and log the Turnkey
 `tvc` CLI (0.19.0 or later) into the decryption app's organization. Docker
 must be able to run the published `linux/amd64` image.
 
-[The release config](../apps/decryption-service/deploy/release.json) pins the
+[The release config](../enclave/deploy/release.json) pins the
 hosted runtime's QOS version and PCR0–3. Cargo independently pins the QOS
 library that the application links. Run `publish-enclave-image` for the
 network, then use the digest-pinned reference from its summary.

@@ -20,7 +20,7 @@
 //
 // Turnkey is driven through the `tvc` CLI and its active login; the policy
 // phase reads that login's API key to fetch the Boot Proof, and verifies it
-// with the decryption client's build (packages/decryption-service/dist). Approvals are
+// with the decryption client's build (sdk/dist). Approvals are
 // interactive: the CLI shows the QOS manifest for each operator to confirm.
 // --unattended approves without that review, on devnet only.
 // --prune-deployments deletes the oldest deployments that are neither live nor
@@ -28,9 +28,9 @@
 // --operator-seeds holds the key files of the operators who act here
 // (`operator-<n>.seed` for the n-th of `operatorIds`) and
 // --quorum-key-metadata the encrypted shares. The constants are in
-// apps/decryption-service/deploy/release.json, shared at the top and per network under
+// enclave/deploy/release.json, shared at the top and per network under
 // `networks`; each network's deployment files are in
-// apps/decryption-service/deploy/<network>/.
+// enclave/deploy/<network>/.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createECDH, createPrivateKey, sign } from "node:crypto";
@@ -43,21 +43,21 @@ import { parseArgs } from "node:util";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const NETWORKS = ["devnet", "mainnet"];
-/** `API_VERSION` in crates/protocol/src/constants.rs: the release policy and `/v1/info` version. */
+/** `API_VERSION` in protocol/src/constants.rs: the release policy and `/v1/info` version. */
 const API_VERSION = 1;
 const APP = "decryption-service";
 const OPERATIONS = ["ServicePublicKeys", "ServiceDecrypt"];
-const deployDir = join(ROOT, "apps", APP, "deploy");
+const deployDir = join(ROOT, "enclave", "deploy");
 const HEX = (bytes) => new RegExp(`^[0-9a-f]{${2 * bytes}}$`);
 const WAIT_MS = 20 * 60_000;
 /** Turnkey's cap on deployable deployments per TVC app. */
 const DEPLOYABLE_LIMIT = 3;
 /** the decryption client's built `./testing` entry, whose `verifyLiveReplica` checks the replica before the policy is signed. */
-const CLIENT_TESTING = join(ROOT, "packages/decryption-service/dist/testing.js");
+const CLIENT_TESTING = join(ROOT, "sdk/dist/testing.js");
 const TURNKEY_API = "https://api.turnkey.com";
 
 /** The network's release pin in the decryption client. */
-const pinPath = (cfg) => join(ROOT, "packages/decryption-service/src/decryption-service/releases", `${cfg.network}.json`);
+const pinPath = (cfg) => join(ROOT, "sdk/releases", `${cfg.network}.json`);
 const descriptorPath = (cfg, releaseId) => join(deployDir, cfg.network, `${APP}-${releaseId}.deployment.json`);
 const recordPath = (cfg, releaseId) => join(deployDir, cfg.network, `${APP}-${releaseId}.deploy.json`);
 
@@ -293,7 +293,7 @@ async function deploy(releaseId, cfg, { unattended, prune, seeds, metadata }) {
 /**
  * The unsigned release policy for `releaseId` as the enclave at `cfg.endpoint`
  * serves it (`info`, its /v1/info), checked against the release constants:
- * the shape `ReleasePolicy` in crates/protocol takes.
+ * the shape `ReleasePolicy` in protocol takes.
  */
 export function releasePolicy(releaseId, cfg, info, now) {
   const expect = (field, expected) => {

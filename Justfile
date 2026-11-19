@@ -26,7 +26,7 @@ regenerate-protocol-fixtures:
 check-protocol-fixtures:
     #!/usr/bin/env sh
     set -eu
-    fixture_status="$(git status --porcelain --untracked-files=all -- crates/protocol/fixtures)"
+    fixture_status="$(git status --porcelain --untracked-files=all -- protocol/fixtures)"
     if [ -n "$fixture_status" ]; then
         echo "protocol fixtures differ from the committed conformance corpus" >&2
         echo "$fixture_status" >&2
@@ -84,12 +84,12 @@ headless-e2e port_offset="200":
     solana airdrop 10 "$(solana address --keypair "$wallet_keypair")" --url "$rpc_url" >/dev/null
     export ZOLANA_ENDPOINT="$rpc_url" ZOLANA_INDEXER_URL="$indexer_url" ZOLANA_PROVER_URL="$prover_url"
     export TVC_SOLANA_KEYPAIR_PATH="$wallet_keypair"
-    bash scripts/with-local-decryption.sh {{pnpm}} --filter spr-tvc-typescript-client-example example examples/unregistered_recipient.ts
+    bash scripts/with-local-decryption.sh {{pnpm}} --filter spr-tvc-typescript-client-example example
 
 ci: fmt-check lint test check-protocol-fixtures install-ts ci-ts
 
 image network="devnet":
-    docker build --platform linux/amd64 --provenance=false --build-arg SPR_NETWORK={{network}} -f apps/enclave.Dockerfile .
+    docker build --platform linux/amd64 --provenance=false --build-arg SPR_NETWORK={{network}} -f enclave/Dockerfile .
 
 decryption-e2e: install-ts build-ts
     bash scripts/with-local-decryption.sh {{pnpm}} --filter spr-tvc-typescript-client-example test
