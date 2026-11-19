@@ -9,10 +9,10 @@ fn qos_signatures_are_normalized_to_low_s_for_the_wire() {
         let pair = P256Pair::from_master_seed(&Zeroizing::new([seed_byte; 32])).unwrap();
         let raw = pair.sign(message).unwrap();
         let raw = Signature::from_slice(&raw).unwrap();
-        if raw.normalize_s().is_some() {
+        if raw.normalize_s() != raw {
             let normalized = sign_ephemeral_low_s(&pair, message).unwrap();
             let normalized = Signature::from_slice(&normalized).unwrap();
-            assert!(normalized.normalize_s().is_none());
+            assert_eq!(normalized.normalize_s(), normalized);
             pair.public_key()
                 .verify(message, &normalized.to_bytes())
                 .unwrap();

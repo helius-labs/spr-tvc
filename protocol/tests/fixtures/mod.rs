@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::SecretKey;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -310,7 +310,7 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
     let compressed = SecretKey::from_slice(&client_sk)
         .expect("client")
         .public_key()
-        .to_encoded_point(true)
+        .to_sec1_point(true)
         .as_bytes()
         .to_vec();
     let double_hash: [u8; 32] = Sha256::digest(digest).into();

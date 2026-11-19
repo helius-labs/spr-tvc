@@ -6,9 +6,9 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use hmac::{Hmac, Mac};
 use p256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
 use p256::ecdsa::{Signature, SigningKey, VerifyingKey};
-use p256::elliptic_curve::rand_core::OsRng;
-use p256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
-use p256::{EncodedPoint, PublicKey, SecretKey};
+use p256::elliptic_curve::sec1::ToSec1Point;
+use p256::elliptic_curve::Generate;
+use p256::{PublicKey, SecretKey};
 use sha2::{Digest, Sha256, Sha512};
 use zeroize::Zeroizing;
 
@@ -27,18 +27,11 @@ pub fn parse_uncompressed_sec1(bytes: &[u8]) -> Result<PublicKey, TvcError> {
     if bytes.len() != SEC1_UNCOMPRESSED_LEN || bytes[0] != 0x04 {
         return Err(TvcError::new(ErrorCode::InvalidPublicKey));
     }
-    let point =
-        EncodedPoint::from_bytes(bytes).map_err(|_| TvcError::new(ErrorCode::InvalidPublicKey))?;
-    if point.is_compressed() {
-        return Err(TvcError::new(ErrorCode::CompressedKeyRejected));
-    }
-    PublicKey::from_encoded_point(&point)
-        .into_option()
-        .ok_or_else(|| TvcError::new(ErrorCode::InvalidPublicKey))
+    PublicKey::from_sec1_bytes(bytes).map_err(|_| TvcError::new(ErrorCode::InvalidPublicKey))
 }
 
 pub fn public_key_uncompressed(public: &PublicKey) -> [u8; SEC1_UNCOMPRESSED_LEN] {
-    let point = public.to_encoded_point(false);
+    let point = public.to_sec1_point(false);
     let bytes = point.as_bytes();
     let mut out = [0u8; SEC1_UNCOMPRESSED_LEN];
     out.copy_from_slice(bytes);
@@ -106,15 +99,12 @@ fn verify_p256_raw(
     reject_der(signature)?;
     let parsed =
         Signature::from_slice(signature).map_err(|_| TvcError::new(ErrorCode::InvalidSignature))?;
-    let parsed = match (policy, parsed.normalize_s()) {
-        (SignaturePolicy::LowSOnly, Some(_)) => {
-            return Err(TvcError::new(ErrorCode::HighSSignature))
-        }
-        (SignaturePolicy::NormalizeHighS, Some(normalized)) => normalized,
-        (_, None) => parsed,
-    };
+    let normalized = parsed.normalize_s();
+    if matches!(policy, SignaturePolicy::LowSOnly) && normalized != parsed {
+        return Err(TvcError::new(ErrorCode::HighSSignature));
+    }
     verifying_key
-        .verify_prehash(digest, &parsed)
+        .verify_prehash(digest, &normalized)
         .map_err(|_| TvcError::new(ErrorCode::InvalidSignature))
 }
 
@@ -128,8 +118,7 @@ pub fn sign_p256_prehash(
     let signature: Signature = signing_key
         .sign_prehash(digest)
         .map_err(|_| TvcError::new(ErrorCode::InvalidSignature))?;
-    let normalized = signature.normalize_s().unwrap_or(signature);
-    Ok(normalized.to_bytes().into())
+    Ok(signature.normalize_s().to_bytes().into())
 }
 
 /// Verify a 64-byte raw low-S signature over an already hashed digest.
@@ -258,10 +247,11 @@ pub fn qos_encrypt_with(
 }
 
 pub fn qos_encrypt(receiver_encryption_sec1: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, TvcError> {
-    let ephemeral = SecretKey::random(&mut OsRng);
-    let ephemeral_bytes: [u8; 32] = ephemeral.to_bytes().into();
+    let ephemeral = SecretKey::try_generate()
+        .map_err(|_| TvcError::new(ErrorCode::InvalidEncryptedEnvelope))?;
+    let ephemeral_bytes = Zeroizing::new(ephemeral.to_bytes().into());
     let mut nonce = [0u8; AES_GCM_NONCE_LEN];
-    p256::elliptic_curve::rand_core::RngCore::fill_bytes(&mut OsRng, &mut nonce);
+    getrandom::fill(&mut nonce).map_err(|_| TvcError::new(ErrorCode::InvalidEncryptedEnvelope))?;
     qos_encrypt_with(
         receiver_encryption_sec1,
         plaintext,
@@ -279,11 +269,10 @@ pub fn qos_decrypt(
     if envelope.encrypted_message.len() < AES_GCM_TAG_LEN {
         return Err(TvcError::new(ErrorCode::InvalidEncryptedEnvelope));
     }
-    parse_uncompressed_sec1(&envelope.ephemeral_sender_public)?;
+    let ephemeral_public = parse_uncompressed_sec1(&envelope.ephemeral_sender_public)?;
     let receiver_secret = SecretKey::from_slice(receiver_secret)
         .map_err(|_| TvcError::new(ErrorCode::InvalidPublicKey))?;
     let receiver_public = public_key_uncompressed(&receiver_secret.public_key());
-    let ephemeral_public = parse_uncompressed_sec1(&envelope.ephemeral_sender_public)?;
     let shared = ecdh_x(&receiver_secret, &ephemeral_public);
     let cipher_key = create_cipher_key(
         &envelope.ephemeral_sender_public,
@@ -311,7 +300,7 @@ pub fn qos_public_from_secrets(
         .map_err(|_| TvcError::new(ErrorCode::InvalidPublicKey))?;
     let sign = SigningKey::from_slice(signing_secret)
         .map_err(|_| TvcError::new(ErrorCode::InvalidPublicKey))?;
-    let signing_point = sign.verifying_key().to_encoded_point(false);
+    let signing_point = sign.verifying_key().to_sec1_point(false);
     let mut signing = [0u8; SEC1_UNCOMPRESSED_LEN];
     signing.copy_from_slice(signing_point.as_bytes());
     Ok(QosP256Public {

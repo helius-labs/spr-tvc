@@ -25,7 +25,16 @@ jobs:
       - run: just decryption-e2e
 
   enclave-image:
+    name: ${{ matrix.check }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - network: devnet
+            check: enclave-image
+          - network: mainnet
+            check: mainnet-enclave-image
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,6 +46,6 @@ jobs:
           file: enclave/Dockerfile
           platforms: linux/amd64
           push: false
-          build-args: SPR_NETWORK=devnet
-          cache-from: type=gha,scope=decryption-service-devnet
-          cache-to: type=gha,mode=max,scope=decryption-service-devnet
+          build-args: SPR_NETWORK=${{ matrix.network }}
+          cache-from: type=gha,scope=decryption-service-${{ matrix.network }}
+          cache-to: type=gha,mode=max,scope=decryption-service-${{ matrix.network }}

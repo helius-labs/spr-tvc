@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::SecretKey;
 use sha2::{Digest, Sha256};
 use spr_tvc_protocol::constants::API_VERSION;
@@ -174,7 +174,7 @@ fn sign_prehash_is_stable_for_test_scalar() {
     let _ = SecretKey::from_slice(sk.as_slice())
         .unwrap()
         .public_key()
-        .to_encoded_point(false);
+        .to_sec1_point(false);
 }
 
 #[test]

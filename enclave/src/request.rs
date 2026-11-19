@@ -110,8 +110,7 @@ pub(crate) fn sign_ephemeral_low_s(
 ) -> Result<Vec<u8>, Failure> {
     let raw = ephemeral.sign(message).map_err(|_| Failure::Unavailable)?;
     let signature = Signature::from_slice(&raw).map_err(|_| Failure::Unavailable)?;
-    let normalized = signature.normalize_s().unwrap_or(signature);
-    Ok(normalized.to_bytes().to_vec())
+    Ok(signature.normalize_s().to_bytes().to_vec())
 }
 
 #[cfg(test)]

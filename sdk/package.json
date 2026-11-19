@@ -62,8 +62,9 @@
     "@heliuslabs/spr": "0.9.0-alpha",
     "@solana/kit": "^8.3.0",
     "@types/node": "^24.0.0",
-    "tsup": "^8.3.5",
+    "tsup": "^9.0.0",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
   }
 }

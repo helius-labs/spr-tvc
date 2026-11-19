@@ -47,7 +47,14 @@ separate Turnkey app and ingress for each release candidate. A serving
 app keeps its previous deployment while clients move to the new
 ingress and signed pin.
 
-Before the first release, configure the mainnet app, security domain, and
+Before the first release, review the pinned build's dependency advisories.
+QOS 0.16.3 still brings in the affected `crypto-bigint` for Quorum operations
+and pins `libc` below the version required by patched Tokio. Resolve those
+dependencies before provisioning production keys.
+[RustSec crypto-bigint advisory](https://rustsec.org/advisories/RUSTSEC-2026-0387.html)
+· [RustSec Tokio advisory](https://rustsec.org/advisories/RUSTSEC-2026-0386.html)
+
+Configure the mainnet app, security domain, and
 operator IDs in `enclave/deploy/release.json` and put the app descriptor in
 `enclave/deploy/mainnet/decryption-service-mainnet.app.json`. Use a separate
 mainnet Quorum key. Set threshold manifest approval and share recovery with
@@ -67,8 +74,9 @@ should determine the maximum policy lifetime and key domain before funding.
    `node scripts/release.mjs <phase> <release-id> --network mainnet --source-commit <sha>`.
    Add `--image <reference>` on build. The deploy phase creates the candidate and
    checks its manifest, including both Quorum thresholds. Operators independently
-   review and approve the manifest with `tvc deploy approve` and provision their
-   shares using the Turnkey CLI. Once Turnkey serves the app's first deployment,
+   verify the manifest against the reviewed source build, approve it with
+   `tvc deploy approve`, and provision their shares using the Turnkey CLI.
+   Once Turnkey serves the app's first deployment,
    run `prepare` with the same arguments. It verifies the candidate's attestation
    and writes the policy request with its signing digest.
 3. Independent authorities review and sign that digest as P-256 with

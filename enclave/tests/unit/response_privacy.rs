@@ -35,11 +35,11 @@ fn replay_keeps_the_signed_response_key_and_cannot_retarget_the_result() {
 
 #[test]
 fn rejects_invalid_and_compressed_response_keys() {
-    use p256::elliptic_curve::sec1::ToEncodedPoint as _;
+    use p256::elliptic_curve::sec1::ToSec1Point as _;
 
     let service = service();
     let mut request = public_keys(&service, &recipient_signer());
-    let compressed = response_public_key(&RESPONSE_SECRET).to_encoded_point(true);
+    let compressed = response_public_key(&RESPONSE_SECRET).to_sec1_point(true);
     for key in [compressed.as_bytes().to_vec(), vec![0; 65]] {
         request.client_response_public_key = key;
         refused(&service, &request);
