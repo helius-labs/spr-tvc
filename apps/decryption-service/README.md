@@ -29,8 +29,10 @@ and pass `--app decryption-service`.
   and [pool cipher checks](../../crates/enclave/src/cipher.rs) handle the
   individual trust boundaries.
 - [SDK connection verification](../../packages/tvc-wallet/src/client/connection.ts)
-  and the [service client](../../packages/tvc-wallet/src/decryption-service/client.ts)
-  verify the replica and construct signed requests.
+  checks the release and replica. The [operation exchange](../../packages/tvc-wallet/src/decryption-service/exchange.ts)
+  binds the request and response key before asking the owner to sign.
+- [SDK wallet keys](../../packages/tvc-wallet/src/decryption-service/keys.ts)
+  route decryption to the service and derive transaction keys locally.
 
 ```sh
 cargo test -p spr-tvc-decryption-service -p spr-tvc-enclave --locked

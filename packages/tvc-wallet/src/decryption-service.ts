@@ -4,5 +4,5 @@ export {
   createDecryptionService,
   type DecryptionService,
   type DecryptionServiceConfig,
-  type DecryptionServiceKeys,
 } from "./decryption-service/client.js";
+export type { DecryptionServiceKeys } from "./decryption-service/keys.js";
