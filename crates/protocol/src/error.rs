@@ -15,9 +15,6 @@ pub enum ErrorCode {
     InvalidEncryptedEnvelope,
     ReleaseBindingMismatch,
     QuorumKeyEpochMismatch,
-    InvalidWalletDescriptor,
-    WalletBindingMismatch,
-    UnauthorizedClient,
     ExpiredRequest,
     TurnkeyEvidenceInvalid,
     InvalidCanonicalJson,
@@ -36,7 +33,6 @@ pub enum ErrorCode {
     DiscoveryUntrusted,
     NetworkMismatch,
     ReleasePolicyInvalid,
-    DescriptorExpired,
 }
 
 impl ErrorCode {

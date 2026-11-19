@@ -9,9 +9,7 @@ use spr_tvc_enclave::{testing, NETWORK};
 use spr_tvc_protocol::crypto::public_key_uncompressed;
 use spr_tvc_protocol::decryption_service::decrypt_message;
 use spr_tvc_protocol::encoding::{jcs_serialize, parse_strict_json};
-use spr_tvc_protocol::types::{
-    DecryptItem, DecryptLabel, EncryptedRequest, Network, ServiceInfo, WalletGrant,
-};
+use spr_tvc_protocol::types::{DecryptItem, DecryptLabel, EncryptedRequest, Network, ServiceInfo};
 use tower::ServiceExt as _;
 use zeroize::Zeroizing;
 
@@ -63,7 +61,7 @@ fn request(service: &Service, operation: ServiceOperation) -> ServiceRequest {
 }
 
 fn envelope(service: &Service, request: &ServiceRequest) -> EncryptedRequest {
-    testing::encrypt_request(&service.info, &jcs_serialize(request).unwrap(), None)
+    testing::encrypt_request(&service.info, &jcs_serialize(request).unwrap())
 }
 
 /// Opens an answer as a client does.

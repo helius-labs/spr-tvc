@@ -8,19 +8,16 @@ use p256::SecretKey;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use spr_tvc_protocol::auth::{authorize_operation_request, verify_client_authorization};
 use spr_tvc_protocol::constants::{
     API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, MAX_ENCRYPTED_REQUEST_BYTES,
-    MAX_ENCRYPTED_RESPONSE_BYTES, QOS_P256_PUBLIC_LEN, TVC_APP_PROOF_TYPE,
+    MAX_ENCRYPTED_RESPONSE_BYTES, QOS_P256_PUBLIC_LEN,
 };
 use spr_tvc_protocol::crypto::{
     public_key_uncompressed, qos_decrypt, qos_encrypt_with, qos_public_from_secrets,
     sign_p256_prehash, verify_p256_prehash, verify_turnkey_app_proof_p256_message, QosP256Public,
 };
-use spr_tvc_protocol::digest::{
-    client_auth_digest, client_auth_message, descriptor_digest, request_digest, request_id_hash,
-    result_digest, sealed_seed_digest, wallet_grant_digest, wallet_id_hash,
-};
+use spr_tvc_protocol::decryption_service::SERVICE_PROOF_TYPE;
+use spr_tvc_protocol::digest::result_digest;
 use spr_tvc_protocol::encoding::{
     canonicalize_json_str, canonicalize_json_value, encode_decimal_u64, encode_lower_hex,
     jcs_serialize,
@@ -31,17 +28,13 @@ use spr_tvc_protocol::release::{
     ReleaseAuthorityKey,
 };
 use spr_tvc_protocol::types::{
-    ClientAuthorization, ClientGrant, HealthResponse, HealthStatus, Network, Operation,
-    OperationKind, OperationRequest, ReleaseAuthoritySignature, ReleasePolicy, ServiceInfo,
-    SignedReleasePolicy, WalletDescriptor, WalletGrant,
+    HealthResponse, HealthStatus, Network, OperationKind, ReleaseAuthoritySignature, ReleasePolicy,
+    ServiceInfo, SignedReleasePolicy,
 };
 
-const OPERATIONS: [OperationKind; 5] = [
-    OperationKind::Bootstrap,
-    OperationKind::Decrypt,
-    OperationKind::Derive,
-    OperationKind::TransactionKeys,
-    OperationKind::Prove,
+const OPERATIONS: [OperationKind; 2] = [
+    OperationKind::ServicePublicKeys,
+    OperationKind::ServiceDecrypt,
 ];
 
 const P256_N: [u8; 32] = [
@@ -98,7 +91,7 @@ pub fn bind_discovery_to_policy(
     if info.version != API_VERSION {
         return Err(TvcError::new(ErrorCode::UnsupportedVersion));
     }
-    if info.proof_type != TVC_APP_PROOF_TYPE {
+    if info.proof_type != SERVICE_PROOF_TYPE {
         return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch));
     }
     if info.release_id != policy.release_id {
@@ -187,23 +180,6 @@ fn der_encode_signature(raw: &[u8; 64]) -> Vec<u8> {
     out
 }
 
-fn sample_descriptor(client_public: &[u8], security_domain: [u8; 32]) -> WalletDescriptor {
-    WalletDescriptor {
-        version: API_VERSION,
-        security_domain_id: security_domain,
-        network: Network::Devnet,
-        turnkey_organization_id: "child-org".to_owned(),
-        turnkey_wallet_id: "turnkey-wallet".to_owned(),
-        address: "4E2agEUkMiuP3ABYbYTYXuU7bYyqPb3uGsLqs7RDd1U5".to_owned(),
-        allowed_clients: vec![ClientGrant {
-            client_public_key: client_public.to_vec(),
-            allowed_operations: OPERATIONS.to_vec(),
-        }],
-        expires_at_ms: 1_800_086_400_000,
-        provisioning_signature: vec![0u8; 64],
-    }
-}
-
 /// The release a sample request is bound to.
 struct Running {
     release_id: String,
@@ -212,28 +188,6 @@ struct Running {
     security_domain_id: [u8; 32],
     quorum_key_id: String,
     quorum_key_epoch: u64,
-}
-
-fn sample_request(client_public: &[u8], running: &Running) -> OperationRequest {
-    OperationRequest {
-        version: API_VERSION,
-        request_id: sha256_label("spr-tvc-test-request-id"),
-        issued_at_ms: 1_700_000_000_000,
-        expires_at_ms: 1_700_000_300_000,
-        target_release_id: running.release_id.clone(),
-        target_manifest_digest: running.manifest_digest,
-        target_executable_digest: running.executable_digest,
-        quorum_key_id: running.quorum_key_id.clone(),
-        quorum_key_epoch: running.quorum_key_epoch,
-        wallet_descriptor: sample_descriptor(client_public, running.security_domain_id),
-        sealed_seed: None,
-        client_response_public_key: client_public.to_vec(),
-        operation: Operation::Bootstrap,
-        authorization: ClientAuthorization {
-            client_key_id: "client-1".to_owned(),
-            signature: Vec::new(),
-        },
-    }
 }
 
 fn sample_running() -> Running {
@@ -263,7 +217,7 @@ fn sample_info(quorum: &QosP256Public, ephemeral: &QosP256Public) -> ServiceInfo
         supported_operations: OPERATIONS.to_vec(),
         max_encrypted_request_bytes: MAX_ENCRYPTED_REQUEST_BYTES,
         max_encrypted_response_bytes: MAX_ENCRYPTED_RESPONSE_BYTES,
-        proof_type: TVC_APP_PROOF_TYPE.to_owned(),
+        proof_type: SERVICE_PROOF_TYPE.to_owned(),
     }
 }
 
@@ -272,7 +226,7 @@ fn sample_policy(info: &ServiceInfo) -> ReleasePolicy {
         version: API_VERSION,
         release_id: info.release_id.clone(),
         network: info.network,
-        tvc_application_id: "spr-tvc-privacy-wallet".to_owned(),
+        tvc_application_id: "spr-tvc-decryption-service".to_owned(),
         security_domain_id: info.security_domain_id,
         accepted_manifest_digests: vec![encode_lower_hex(&info.manifest_digest)],
         accepted_executable_digests: vec![encode_lower_hex(&info.executable_digest)],
@@ -317,14 +271,6 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
     );
     let quorum = qos_public_from_secrets(&encryption_sk, &signing_sk)?;
     let ephemeral = qos_public_from_secrets(&ephemeral_sk, &signing_sk)?;
-    let running = sample_running();
-    let request =
-        authorize_operation_request(sample_request(&client_public, &running), &client_sk)?;
-    let request_digest_bytes = request_digest(&request)?;
-    let client_auth_text = client_auth_message(&request_digest_bytes);
-    let client_auth = client_auth_digest(&request_digest_bytes);
-    verify_client_authorization(&request, &client_public).expect("signed request verifies");
-
     let plaintext = b"qos-envelope-plaintext";
     let envelope = qos_encrypt_with(&quorum.encryption, plaintext, &ephemeral_sk, &nonce)?;
     let decrypted = qos_decrypt(&encryption_sk, &envelope)?;
@@ -359,34 +305,10 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
         ,
     );
 
-    files.insert(
-        "request-digest.json".to_owned(),
-        fixture_json(&json!({
-            "id": "request-digest",
-            "request": serde_json::to_value(&request).expect("request"),
-            "request_digest": encode_lower_hex(&request_digest_bytes),
-            "client_auth_message": client_auth_text,
-            "client_auth_digest": encode_lower_hex(&client_auth),
-            "includes_client_key_id": true,
-            "excludes_signature_only": true,
-        })),
-    );
-
-    let mut mutated_key = request.clone();
-    mutated_key.authorization.client_key_id = "client-2".to_owned();
-    files.insert(
-        "authorization-mutation.json".to_owned(),
-        fixture_json(&json!({
-            "id": "authorization-mutation",
-            "original_digest": encode_lower_hex(&request_digest_bytes),
-            "mutated_client_key_id_digest": encode_lower_hex(&request_digest(&mutated_key)?),
-            "mutated_client_key_id_verifies": verify_client_authorization(&mutated_key, &client_public).is_ok(),
-        }))
-        ,
-    );
-
-    let raw_sig = sign_p256_prehash(&client_sk, &client_auth)?;
-    verify_p256_prehash(&client_public, &client_auth, &raw_sig).expect("raw sig");
+    let message = "spr-tvc-test-signature";
+    let digest: [u8; 32] = Sha256::digest(message.as_bytes()).into();
+    let raw_sig = sign_p256_prehash(&client_sk, &digest)?;
+    verify_p256_prehash(&client_public, &digest, &raw_sig).expect("raw sig");
     let der = der_encode_signature(&raw_sig);
     let high = high_s_signature(&raw_sig);
     let compressed = SecretKey::from_slice(&client_sk)
@@ -395,7 +317,7 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
         .to_encoded_point(true)
         .as_bytes()
         .to_vec();
-    let double_hash: [u8; 32] = Sha256::digest(client_auth).into();
+    let double_hash: [u8; 32] = Sha256::digest(digest).into();
     let double_sig = sign_p256_prehash(&client_sk, &double_hash)?;
 
     files.insert(
@@ -403,14 +325,14 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
         fixture_json(&json!({
             "id": "p256-signatures",
             "public_key": encode_lower_hex(&client_public),
-            "digest": encode_lower_hex(&client_auth),
+            "digest": encode_lower_hex(&digest),
             "raw_low_s": encode_lower_hex(&raw_sig),
             "der": encode_lower_hex(&der),
             "high_s": encode_lower_hex(&high),
             "compressed_public_key": encode_lower_hex(&compressed),
             "double_hash_digest": encode_lower_hex(&double_hash),
             "double_hash_signature": encode_lower_hex(&double_sig),
-            "message": client_auth_text,
+            "message": message,
         })),
     );
 
@@ -508,10 +430,7 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
         "digests.json".to_owned(),
         fixture_json(&json!({
             "id": "digests",
-            "wallet_id_hash": encode_lower_hex(&wallet_id_hash("wallet-phase0-1")),
-            "request_id_hash": encode_lower_hex(&request_id_hash(&request.request_id)),
             "result_digest": encode_lower_hex(&result_digest(b"encrypted-result")),
-            "sealed_seed_digest": encode_lower_hex(&sealed_seed_digest(b"sealed-seed-bytes")),
         })),
     );
 
@@ -522,7 +441,7 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
     ] {
         verify_turnkey_app_proof(payload, &quorum.to_bytes(), signature)?;
     }
-    reject_double_hashed_signature(&client_public, &client_auth, &double_sig)?;
+    reject_double_hashed_signature(&client_public, &digest, &double_sig)?;
 
     let authority_sk1 = sha256_label("spr-tvc-test-release-authority-1");
     let authority_sk2 = sha256_label("spr-tvc-test-release-authority-2");
@@ -703,35 +622,6 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
             "policy": policy,
             "info": info,
             "cases": binding_cases,
-        })),
-    );
-
-    let descriptor = sample_descriptor(&client_public, sample_running().security_domain_id);
-    let descriptor_digest = descriptor_digest(&descriptor)?;
-    files.insert(
-        "descriptor-digest.json".to_owned(),
-        fixture_json(&json!({
-            "id": "descriptor-digest",
-            "descriptor": descriptor,
-            "descriptor_digest": encode_lower_hex(&descriptor_digest),
-        })),
-    );
-
-    let grant = WalletGrant {
-        version: API_VERSION,
-        descriptor_digest,
-        client_key_id: "spr-client-p256-00112233445566778899aabbccddeeff".to_owned(),
-        project_id: "project-1".to_owned(),
-        issued_at_ms: 1_800_000_000_000,
-        expires_at_ms: 1_800_000_900_000,
-        signature: vec![0u8; 64],
-    };
-    files.insert(
-        "wallet-grant-digest.json".to_owned(),
-        fixture_json(&json!({
-            "id": "wallet-grant-digest",
-            "grant": grant,
-            "grant_digest": encode_lower_hex(&wallet_grant_digest(&grant)?),
         })),
     );
 

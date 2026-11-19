@@ -29,9 +29,9 @@ pub(crate) fn handle(service: &Service, body: &[u8]) -> Response<Body> {
 }
 
 fn execute(service: &Service, body: &[u8]) -> Result<String, Failure> {
-    let (grant, plaintext) = open_envelope(&service.info, &service.quorum, body)?;
+    let plaintext = open_envelope(&service.info, &service.quorum, body)?;
     let request = parse_service_request(&plaintext).map_err(|_| Failure::Invalid)?;
-    if grant.is_some() || !targets_release(&request, &service.info) {
+    if !targets_release(&request, &service.info) {
         return Err(Failure::Invalid);
     }
     let response_key = P256EncryptPublic::from_bytes(&request.client_response_public_key)
@@ -72,8 +72,6 @@ fn execute(service: &Service, body: &[u8]) -> Result<String, Failure> {
         request_id: request.request_id,
         request_digest,
         operation: request.operation.kind(),
-        // Service keys come from the Quorum key.
-        sealed_seed_digest: [0; 32],
     };
     respond(&service.ephemeral, binding, &response_key, &result)
 }

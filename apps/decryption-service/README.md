@@ -6,20 +6,18 @@ address. The recipient signs the exact batch and a one-time response key.
 Only the holder of that response private key can open the reply.
 
 - [Send, receive, and trust model](SPEC.md)
-- [TypeScript client](../../packages/tvc-wallet/README.md#decryption-service)
+- [TypeScript client](../../packages/decryption-service/README.md#decryption-service)
 - [Wire protocol](../../crates/protocol/README.md#decryption-service)
 - [Test invariants](../../TEST_INVARIANTS.md#decryption-service)
 
 ## Devnet
 
 Connect to the devnet enclave endpoint in [`deploy/release.json`](deploy/release.json)
-with a Turnkey Boot Proof resolver. A gateway configured for `/v1/decryption`
-can supply those proofs. Devnet uses disposable funds.
+with a Turnkey Boot Proof resolver. Devnet uses disposable funds.
 
 The [devnet app](deploy/devnet/spr-decryption-service-devnet.app.json) has its
 own Quorum key, with a 2-of-3 split provisioned using devnet operator key
-files. For release steps, see [operator tooling](../../scripts/README.md#release)
-and pass `--app decryption-service`.
+files. See [operator tooling](../../scripts/README.md#release) for releases.
 
 ## Audit entry points
 
@@ -28,15 +26,15 @@ and pass `--app decryption-service`.
 - [Address eligibility](src/owner.rs), [service key derivation](src/keys.rs),
   and [pool cipher checks](../../crates/enclave/src/cipher.rs) handle the
   individual trust boundaries.
-- [SDK connection verification](../../packages/tvc-wallet/src/client/connection.ts)
-  checks the release and replica. The [operation exchange](../../packages/tvc-wallet/src/decryption-service/exchange.ts)
+- [SDK connection verification](../../packages/decryption-service/src/client/connection.ts)
+  checks the release and replica. The [operation exchange](../../packages/decryption-service/src/decryption-service/exchange.ts)
   binds the request and response key before asking the owner to sign.
-- [SDK wallet keys](../../packages/tvc-wallet/src/decryption-service/keys.ts)
+- [SDK wallet keys](../../packages/decryption-service/src/decryption-service/keys.ts)
   route decryption to the service and derive transaction keys locally.
 
 ```sh
 cargo test -p spr-tvc-decryption-service -p spr-tvc-enclave --locked
-just gateway-e2e
+just decryption-e2e
 just headless-e2e
 ```
 

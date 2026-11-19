@@ -64,7 +64,7 @@ using the Boot Proof for the replica that signed each answer.
 A matching recipient declaration carries no proof of the ciphertext's
 origin. A foreign ciphertext relabeled with the recipient's key is still
 opened under the recipient's key. The SDK's commitment check applies in both
-cases. These fields are shared with the privacy wallet.
+cases.
 
 ## Key custody and trust
 
@@ -72,9 +72,8 @@ cases. These fields are shared with the privacy wallet.
   labels and the recipient address separate viewing and nullifier keys.
   Replicas and releases under the same Quorum key derive the same keys.
   The viewing private key stays inside the approved enclave during operation.
-- A Helius API key admits traffic to the gateway. The Solana signature
-  authorizes decryption. The gateway handles encrypted bodies and can see
-  their sizes and timing. While the release serves a signed request, a
+- The Solana signature authorizes decryption. A relay can see encrypted
+  request sizes and timing. While the release serves a signed request, a
   replay can produce another reply to the same signed response key.
 - Anyone holding the corresponding response private key can read the reply.
   Approve a request only if your wallet generated that key. Disclosure of

@@ -14,7 +14,7 @@ use spr_tvc_protocol::digest::result_digest;
 use spr_tvc_protocol::encoding::{is_rfc8785, jcs_serialize};
 use spr_tvc_protocol::types::{
     parse_encrypted_request, AppProof, EncryptedResponse, OperationKind, OperationProofPayload,
-    ServiceInfo, WalletGrant,
+    ServiceInfo,
 };
 use zeroize::Zeroizing;
 
@@ -39,12 +39,12 @@ impl IntoResponse for Failure {
     }
 }
 
-/// Opens a request's envelope. Returns its grant and its canonical JSON plaintext.
+/// Opens a request's envelope and returns its canonical JSON plaintext.
 pub fn open_envelope(
     info: &ServiceInfo,
     quorum: &P256Pair,
     body: &[u8],
-) -> Result<(Option<WalletGrant>, Zeroizing<String>), Failure> {
+) -> Result<Zeroizing<String>, Failure> {
     let body = std::str::from_utf8(body).map_err(|_| Failure::Invalid)?;
     let encrypted = parse_encrypted_request(body).map_err(|_| Failure::Invalid)?;
     if encrypted.version != API_VERSION
@@ -62,7 +62,7 @@ pub fn open_envelope(
     if !is_rfc8785(plaintext) {
         return Err(Failure::Invalid);
     }
-    Ok((encrypted.wallet_grant, Zeroizing::new(plaintext.to_owned())))
+    Ok(Zeroizing::new(plaintext.to_owned()))
 }
 
 /// What an App Proof binds a result to.
@@ -71,7 +71,6 @@ pub struct ProofBinding {
     pub request_id: [u8; 32],
     pub request_digest: [u8; 32],
     pub operation: OperationKind,
-    pub sealed_seed_digest: [u8; 32],
 }
 
 /// Encrypts `result` to the response key under an App Proof the Ephemeral key signs.
@@ -96,7 +95,7 @@ pub fn respond<T: Serialize>(
         request_digest: binding.request_digest,
         result_digest: result_digest(&encrypted_result),
         operation: binding.operation,
-        sealed_seed_digest: binding.sealed_seed_digest,
+        sealed_seed_digest: [0; 32],
     })
     .map_err(|_| Failure::Unavailable)?;
     let signature = sign_ephemeral_low_s(ephemeral, proof_payload.as_bytes())?;

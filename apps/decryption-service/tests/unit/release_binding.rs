@@ -28,17 +28,9 @@ fn a_request_is_bound_to_the_running_release() {
         refused(&service, &request);
     }
 
-    let mut with_grant = envelope(&service, &base);
-    with_grant.wallet_grant = Some(WalletGrant {
-        version: API_VERSION,
-        descriptor_digest: [0; 32],
-        client_key_id: String::new(),
-        project_id: String::new(),
-        issued_at_ms: 0,
-        expires_at_ms: 0,
-        signature: Vec::new(),
-    });
-    for body in [jcs_serialize(&with_grant).unwrap(), "{}".to_owned()] {
+    let mut unknown = serde_json::to_value(envelope(&service, &base)).unwrap();
+    unknown["wallet_grant"] = serde_json::Value::Null;
+    for body in [jcs_serialize(&unknown).unwrap(), "{}".to_owned()] {
         assert_eq!(
             execute(&service, body.as_bytes()).unwrap_err(),
             Failure::Invalid

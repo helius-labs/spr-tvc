@@ -5,18 +5,11 @@
 //! ```sh
 //! cargo run -p spr-tvc-protocol --example sign-release-policy \
 //!     -- policy.json <authority-set-id>
-//! cargo run -p spr-tvc-protocol --example sign-release-policy \
-//!     -- --local-testkit <out-dir>
 //! ```
 //!
 //! `policy.json` is a `ReleasePolicy` in the same camelCase shape the client
 //! pins. The output is the two objects a client needs: the signed policy and
 //! the pinned authority set.
-//!
-//! `--local-testkit` signs a devnet policy for the unattested local testkit
-//! (`packages/tvc-wallet/src/local-testkit.json`), valid for 30 days, and
-//! writes `<out-dir>/release.json`, the release file a local gateway reads
-//! (`{releasePolicy, releaseAuthorities}`). Never deploy it.
 //!
 //! The signing key is generated here, used once, and never written anywhere.
 //! That is the property being bought: a policy cannot be quietly re-signed
@@ -30,26 +23,16 @@
 
 use std::fs;
 use std::io::Read;
-use std::path::Path;
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Deserialize;
 use zeroize::Zeroizing;
 
-use spr_tvc_protocol::constants::{API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID};
 use spr_tvc_protocol::crypto::public_key_uncompressed;
-use spr_tvc_protocol::digest::sha256;
 use spr_tvc_protocol::release::{
     sign_release_policy, verify_signed_release_policy, PinnedReleaseAuthorities,
     ReleaseAuthorityKey,
 };
-use spr_tvc_protocol::types::{
-    Network, OperationKind, ReleaseAuthoritySignature, ReleasePolicy, SignedReleasePolicy,
-};
-
-const LOCAL_TESTKIT: &str = include_str!("../../../packages/tvc-wallet/src/local-testkit.json");
-const LOCAL_VALIDITY_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
+use spr_tvc_protocol::types::{ReleaseAuthoritySignature, ReleasePolicy, SignedReleasePolicy};
 
 fn urandom_scalar() -> Result<Zeroizing<[u8; 32]>, String> {
     // A uniformly random 32-byte string is only a valid P-256 scalar when it
@@ -106,55 +89,6 @@ fn sign(
     Ok((signed, authorities))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Testkit {
-    release_id: String,
-    quorum_key_id: String,
-    security_domain_label: String,
-    manifest_label: String,
-    executable_label: String,
-    quorum_public_key: String,
-    operations: Vec<OperationKind>,
-}
-
-/// The local testkit's release, valid from an hour ago for 30 days.
-fn local_testkit_policy() -> Result<ReleasePolicy, String> {
-    let testkit: Testkit =
-        serde_json::from_str(LOCAL_TESTKIT).map_err(|error| error.to_string())?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| error.to_string())?
-        .as_millis();
-    let now = u64::try_from(now).map_err(|error| error.to_string())?;
-    Ok(ReleasePolicy {
-        version: API_VERSION,
-        release_id: testkit.release_id,
-        network: Network::Devnet,
-        tvc_application_id: "local-testkit".to_owned(),
-        security_domain_id: sha256(testkit.security_domain_label.as_bytes()),
-        accepted_manifest_digests: vec![hex::encode(sha256(testkit.manifest_label.as_bytes()))],
-        accepted_executable_digests: vec![hex::encode(sha256(testkit.executable_label.as_bytes()))],
-        quorum_key_id: testkit.quorum_key_id,
-        quorum_key_epoch: 1,
-        quorum_public_key: hex::decode(testkit.quorum_public_key)
-            .map_err(|error| error.to_string())?,
-        allowed_operations: testkit.operations,
-        max_encrypted_request_bytes: 262_144,
-        max_encrypted_response_bytes: 262_144,
-        turnkey_trust_root_id: EXPECTED_TURNKEY_TRUST_ROOT_ID.to_owned(),
-        turnkey_proof_schema_versions: vec!["turnkey.boot_proof.v1".to_owned()],
-        valid_from_ms: now.saturating_sub(60 * 60 * 1_000),
-        expires_at_ms: now.saturating_add(LOCAL_VALIDITY_MS),
-        revocation_epoch: 0,
-    })
-}
-
-fn write_json(path: &Path, value: &impl serde::Serialize) -> Result<(), String> {
-    let json = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
-    fs::write(path, json).map_err(|error| format!("{}: {error}", path.display()))
-}
-
 /// The signed policy and its authority set, as a release file holds them.
 fn release_file(
     signed: &SignedReleasePolicy,
@@ -169,15 +103,6 @@ fn release_file(
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
-        [flag, out_dir] if flag == "--local-testkit" => {
-            let (signed, authorities) = sign(local_testkit_policy()?, "local-testkit".to_owned())?;
-            let out_dir = Path::new(out_dir);
-            fs::create_dir_all(out_dir).map_err(|error| error.to_string())?;
-            write_json(
-                &out_dir.join("release.json"),
-                &release_file(&signed, &authorities),
-            )
-        }
         [path, authority_set_id, ..] => {
             let policy: ReleasePolicy = serde_json::from_str(
                 &fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))?,
@@ -189,11 +114,7 @@ fn run() -> Result<(), String> {
             println!("{output}");
             Ok(())
         }
-        _ => Err(
-            "usage: sign-release-policy <policy.json> <authority-set-id>\n       \
-             sign-release-policy --local-testkit <out-dir>"
-                .to_owned(),
-        ),
+        _ => Err("usage: sign-release-policy <policy.json> <authority-set-id>".to_owned()),
     }
 }
 

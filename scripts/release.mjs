@@ -11,17 +11,16 @@
 //           pinned QOS PCRs, the manifest digest and Quorum key /v1/info
 //           reports, the Turnkey trust root), then assembles the release
 //           policy from /v1/info, signs it with a one-time authority key, and
-//           pins it in tvc-wallet: src/releases/<network>.json for the
-//           privacy wallet, the file tvc-gateway reads too
+//           updates the decryption client's release pin
 //
 //   node scripts/release.mjs <build|deploy|policy|all> <release-id>
-//     --network <devnet|mainnet> [--app <privacy-wallet|decryption-service>]
+//     --network <devnet|mainnet>
 //     [--image <reference>] [--unattended] [--prune-deployments]
 //     [--operator-seeds <dir> --quorum-key-metadata <file>]
 //
 // Turnkey is driven through the `tvc` CLI and its active login; the policy
 // phase reads that login's API key to fetch the Boot Proof, and verifies it
-// with tvc-wallet's build (packages/tvc-wallet/dist). Approvals are
+// with the decryption client's build (packages/decryption-service/dist). Approvals are
 // interactive: the CLI shows the QOS manifest for each operator to confirm.
 // --unattended approves without that review, on devnet only.
 // --prune-deployments deletes the oldest deployments that are neither live nor
@@ -29,9 +28,9 @@
 // --operator-seeds holds the key files of the operators who act here
 // (`operator-<n>.seed` for the n-th of `operatorIds`) and
 // --quorum-key-metadata the encrypted shares. The constants are in
-// apps/<app>/deploy/release.json, shared at the top and per network under
+// apps/decryption-service/deploy/release.json, shared at the top and per network under
 // `networks`; each network's deployment files are in
-// apps/<app>/deploy/<network>/.
+// apps/decryption-service/deploy/<network>/.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createECDH, createPrivateKey, sign } from "node:crypto";
@@ -46,35 +45,21 @@ const ROOT = resolve(import.meta.dirname, "..");
 const NETWORKS = ["devnet", "mainnet"];
 /** `API_VERSION` in crates/protocol/src/constants.rs: the release policy and `/v1/info` version. */
 const API_VERSION = 1;
-/**
- * Each enclave application: its operations, in the order the enclave
- * advertises them and clients compare them, and its release pins in tvc-wallet.
- */
-const APPS = {
-  "privacy-wallet": {
-    operations: ["Bootstrap", "Decrypt", "Derive", "TransactionKeys", "Prove"],
-    pins: "packages/tvc-wallet/src/releases",
-  },
-  "decryption-service": {
-    operations: ["ServicePublicKeys", "ServiceDecrypt"],
-    pins: "packages/tvc-wallet/src/decryption-service/releases",
-  },
-};
-/** A `cfg` without an `app` is the privacy wallet's. */
-const appOf = (cfg) => cfg.app ?? "privacy-wallet";
-const deployDir = (cfg) => join(ROOT, "apps", appOf(cfg), "deploy");
+const APP = "decryption-service";
+const OPERATIONS = ["ServicePublicKeys", "ServiceDecrypt"];
+const deployDir = join(ROOT, "apps", APP, "deploy");
 const HEX = (bytes) => new RegExp(`^[0-9a-f]{${2 * bytes}}$`);
 const WAIT_MS = 20 * 60_000;
 /** Turnkey's cap on deployable deployments per TVC app. */
 const DEPLOYABLE_LIMIT = 3;
-/** tvc-wallet's built `./testing` entry, whose `verifyLiveReplica` checks the replica before the policy is signed. */
-const CLIENT_TESTING = join(ROOT, "packages/tvc-wallet/dist/testing.js");
+/** the decryption client's built `./testing` entry, whose `verifyLiveReplica` checks the replica before the policy is signed. */
+const CLIENT_TESTING = join(ROOT, "packages/decryption-service/dist/testing.js");
 const TURNKEY_API = "https://api.turnkey.com";
 
-/** The network's release pin in tvc-wallet. */
-const pinPath = (cfg) => join(ROOT, APPS[appOf(cfg)].pins, `${cfg.network}.json`);
-const descriptorPath = (cfg, releaseId) => join(deployDir(cfg), cfg.network, `${appOf(cfg)}-${releaseId}.deployment.json`);
-const recordPath = (cfg, releaseId) => join(deployDir(cfg), cfg.network, `${appOf(cfg)}-${releaseId}.deploy.json`);
+/** The network's release pin in the decryption client. */
+const pinPath = (cfg) => join(ROOT, "packages/decryption-service/src/decryption-service/releases", `${cfg.network}.json`);
+const descriptorPath = (cfg, releaseId) => join(deployDir, cfg.network, `${APP}-${releaseId}.deployment.json`);
+const recordPath = (cfg, releaseId) => join(deployDir, cfg.network, `${APP}-${releaseId}.deploy.json`);
 
 class ReleaseError extends Error {}
 
@@ -132,8 +117,8 @@ async function waitFor(label, ready) {
  * The shared constants of release.json with those of `network` on top, and
  * `network` itself. A network without an entry has no Turnkey app yet.
  */
-function config(network, app) {
-  const { networks, ...shared } = readJson(join(deployDir({ app }), "release.json"));
+function config(network) {
+  const { networks, ...shared } = readJson(join(deployDir, "release.json"));
   for (const key of ["imageRepository", "qosVersion", "turnkeyTrustRootId"]) {
     if (typeof shared[key] !== "string" || shared[key] === "") fail(`release.json: ${key} is required`);
   }
@@ -157,13 +142,13 @@ function config(network, app) {
   if (!Array.isArray(net.operatorIds) || net.operatorIds.length === 0) {
     fail(`release.json: networks.${network}.operatorIds is required`);
   }
-  return { ...shared, ...net, network, app };
+  return { ...shared, ...net, network };
 }
 
 function build(releaseId, cfg, image) {
   if (!image) fail("build needs --image, the reference publish-enclave-image reports");
   // The publish workflow tags each image with its application and the network it was built for.
-  const tag = `${cfg.imageRepository}:${appOf(cfg)}-${cfg.network}-`;
+  const tag = `${cfg.imageRepository}:${APP}-${cfg.network}-`;
   if (!image.startsWith(tag) || !/^[^@]+@sha256:[0-9a-f]{64}$/.test(image)) {
     fail(`--image must be ${tag}<commit>@sha256:<digest>, the ${cfg.network} image publish-enclave-image reports`);
   }
@@ -322,9 +307,8 @@ export function releasePolicy(releaseId, cfg, info, now) {
   if (!HEX(32).test(info.manifest_digest)) fail("/v1/info manifest_digest is not 32-byte hex");
   if (!HEX(32).test(info.executable_digest)) fail("/v1/info executable_digest is not 32-byte hex");
   if (!HEX(130).test(info.quorum_public_key)) fail("/v1/info quorum_public_key is not a QOS public key");
-  const { operations } = APPS[appOf(cfg)];
-  if (!Array.isArray(info.supported_operations) || info.supported_operations.join() !== operations.join()) {
-    fail(`/v1/info supported_operations are ${info.supported_operations}, expected ${operations.join(", ")}`);
+  if (!Array.isArray(info.supported_operations) || info.supported_operations.join() !== OPERATIONS.join()) {
+    fail(`/v1/info supported_operations are ${info.supported_operations}, expected ${OPERATIONS.join(", ")}`);
   }
   return {
     version: API_VERSION,
@@ -337,7 +321,7 @@ export function releasePolicy(releaseId, cfg, info, now) {
     quorumKeyId: cfg.quorumKeyId,
     quorumKeyEpoch: cfg.quorumKeyEpoch,
     quorumPublicKey: info.quorum_public_key,
-    allowedOperations: operations,
+    allowedOperations: OPERATIONS,
     maxEncryptedRequestBytes: Number(info.max_encrypted_request_bytes),
     maxEncryptedResponseBytes: Number(info.max_encrypted_response_bytes),
     turnkeyTrustRootId: cfg.turnkeyTrustRootId,
@@ -444,7 +428,7 @@ export function turnkeyBootProofs(credentials, transport = { fetch }) {
  */
 export async function verifyRelease(cfg, info, { bootProof, transport, nowMs } = {}) {
   if (!existsSync(CLIENT_TESTING)) {
-    fail(`${relative(ROOT, CLIENT_TESTING)} is missing: the policy phase verifies the replica with it, so build tvc-wallet first (npx pnpm build:ts)`);
+    fail(`${relative(ROOT, CLIENT_TESTING)} is missing: the policy phase verifies the replica with it, so build the decryption client first (npx pnpm build:ts)`);
   }
   const { verifyLiveReplica } = await import(pathToFileURL(CLIENT_TESTING).href);
   try {
@@ -487,7 +471,7 @@ async function policy(releaseId, cfg) {
 
 const USAGE =
   "usage: node scripts/release.mjs <build|deploy|policy|all> <release-id> --network <devnet|mainnet> " +
-  `[--app <${Object.keys(APPS).join("|")}>] [--image <reference>] [--unattended] [--prune-deployments] ` +
+  "[--image <reference>] [--unattended] [--prune-deployments] " +
   "[--operator-seeds <dir> --quorum-key-metadata <file>]";
 const PHASES = ["build", "deploy", "policy"];
 
@@ -498,7 +482,6 @@ async function main() {
       allowPositionals: true,
       options: {
         network: { type: "string" },
-        app: { type: "string", default: "privacy-wallet" },
         image: { type: "string" },
         "operator-seeds": { type: "string" },
         "quorum-key-metadata": { type: "string" },
@@ -517,11 +500,10 @@ async function main() {
   if (!NETWORKS.includes(network)) fail(`--network must be devnet or mainnet\n${USAGE}`);
   // Each operator reviews the QOS manifest of a mainnet deployment before approving it.
   if (values.unattended && network === "mainnet") fail("--unattended is refused on mainnet: every approval is reviewed");
-  if (!Object.hasOwn(APPS, values.app)) fail(`--app must be one of ${Object.keys(APPS).join(", ")}\n${USAGE}`);
   const seeds = values["operator-seeds"];
   const metadata = values["quorum-key-metadata"];
   if (Boolean(seeds) !== Boolean(metadata)) fail("--operator-seeds and --quorum-key-metadata go together");
-  const cfg = config(network, values.app);
+  const cfg = config(network);
   for (const step of phase === "all" ? PHASES : [phase]) {
     console.log(`\n== ${step} ${releaseId} (${network})`);
     if (step === "build") build(releaseId, cfg, values.image);
@@ -531,7 +513,7 @@ async function main() {
     if (step === "policy") await policy(releaseId, cfg);
   }
   console.log(
-    `\n${releaseId}: done. Commit ${relative(ROOT, join(deployDir(cfg), network))} and ${relative(ROOT, pinPath(cfg))}.`,
+    `\n${releaseId}: done. Commit ${relative(ROOT, join(deployDir, network))} and ${relative(ROOT, pinPath(cfg))}.`,
   );
 }
 

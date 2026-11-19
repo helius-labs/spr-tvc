@@ -1,15 +1,13 @@
-//! Wire types: discovery, requests, results, sealed seed, release policy.
+//! Discovery, encrypted operations, and signed release policies.
 
 use std::fmt::{Display, Formatter, Result as FmtResult};
 
-use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
-use crate::constants::MAX_CLOCK_SKEW_MS;
 use crate::encoding::{self, decimal_u64, hex};
-use crate::error::{ErrorCode, TvcError};
+use crate::error::TvcError;
 
-/// The Solana network a release, a descriptor and a running enclave serve.
+/// The Solana network the release serves.
 /// Every check is equality with the network the checker expects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase", deny_unknown_fields)]
@@ -35,15 +33,10 @@ impl Display for Network {
 }
 
 /// What a request asks for, as advertised by `/v1/info` and named in the App
-/// Proof. `Service*` are the decryption service's; a descriptor grants the rest.
+/// Proof.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum OperationKind {
-    Bootstrap,
-    Decrypt,
-    Derive,
-    TransactionKeys,
-    Prove,
     ServicePublicKeys,
     ServiceDecrypt,
 }
@@ -87,58 +80,6 @@ pub struct ServiceInfo {
     pub proof_type: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ClientGrant {
-    #[serde(with = "hex")]
-    pub client_public_key: Vec<u8>,
-    pub allowed_operations: Vec<OperationKind>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WalletDescriptor {
-    pub version: u8,
-    #[serde(with = "hex")]
-    pub security_domain_id: [u8; 32],
-    pub network: Network,
-    pub turnkey_organization_id: String,
-    pub turnkey_wallet_id: String,
-    pub address: String,
-    pub allowed_clients: Vec<ClientGrant>,
-    /// When the descriptor stops admitting its client key, in Unix ms. The
-    /// provisioning signature covers it.
-    #[serde(with = "decimal_u64")]
-    pub expires_at_ms: u64,
-    #[serde(with = "hex")]
-    pub provisioning_signature: Vec<u8>,
-}
-
-impl WalletDescriptor {
-    pub fn wallet_id(&self) -> String {
-        format!("wallet-{}", self.turnkey_wallet_id)
-    }
-
-    /// Refuses the descriptor once `now_ms` is more than the clock skew past
-    /// its expiry: `DescriptorExpired`.
-    pub fn check_current(&self, now_ms: u64) -> Result<(), TvcError> {
-        if now_ms > self.expires_at_ms.saturating_add(MAX_CLOCK_SKEW_MS) {
-            return Err(TvcError::new(ErrorCode::DescriptorExpired));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ClientAuthorization {
-    pub client_key_id: String,
-    #[serde(with = "hex")]
-    pub signature: Vec<u8>,
-}
-
-/// Which cipher a ciphertext was sealed under: the transfer cipher over a
-/// numbered output slot, or the ring-deposit envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum DecryptLabel {
@@ -166,133 +107,6 @@ pub struct DecryptItem {
     pub label: DecryptLabel,
 }
 
-/// One value the protocol derives from the nullifier secret.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", deny_unknown_fields)]
-pub enum DeriveItem {
-    /// The nullifier that spends the UTXO with this commitment and blinding.
-    Nullifier {
-        #[serde(with = "hex")]
-        utxo_hash: [u8; 32],
-        #[serde(with = "hex")]
-        blinding: [u8; 32],
-    },
-    /// The published nullifier of a padded merge slot.
-    MergeDummyNullifier {
-        #[serde(with = "hex")]
-        first_nullifier: [u8; 32],
-        #[serde(with = "decimal_u64")]
-        slot_index: u64,
-    },
-    /// The blinding of a merge's output.
-    MergeOutputBlinding {
-        #[serde(with = "hex")]
-        first_nullifier: [u8; 32],
-    },
-    /// The private-transaction hash blinding of a merge.
-    MergePrivateTxBlinding {
-        #[serde(with = "hex")]
-        first_nullifier: [u8; 32],
-    },
-    /// The key of a merge's output ciphertext.
-    MergeOutputKey {
-        #[serde(with = "hex")]
-        first_nullifier: [u8; 32],
-    },
-}
-
-/// One per-transaction viewing key, derived from a viewing key and the
-/// transaction's first nullifier. The derivation is one way, so the secret
-/// returned opens that transaction and nothing else.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TransactionKeyItem {
-    #[serde(with = "hex")]
-    pub viewing_public_key: Vec<u8>,
-    #[serde(with = "hex")]
-    pub first_nullifier: [u8; 32],
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", deny_unknown_fields)]
-pub enum Operation {
-    /// Derives the shielded identity and seals it to the Quorum key. The client
-    /// stores the opaque blob and presents it on every later request.
-    Bootstrap,
-    /// Opens ciphertexts with the wallet's viewing key.
-    Decrypt { items: Vec<DecryptItem> },
-    /// Derives nullifiers and merge values from the nullifier secret.
-    Derive { items: Vec<DeriveItem> },
-    /// Derives per-transaction viewing keys.
-    TransactionKeys { items: Vec<TransactionKeyItem> },
-    /// Completes a prover request and seals it to the attested prover
-    /// `prover` names. The body is the Zolana SDK's prover request with
-    /// `null` in every nullifier secret slot the enclave is to fill; the
-    /// enclave fills those slots and changes nothing else.
-    Prove {
-        request: serde_json::Value,
-        prover: Box<ProverSealing>,
-    },
-}
-
-/// The prover a `Prove` seals to: where the client posts the sealed request
-/// and the evidence that the key it is sealed to sits in a measured prover.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProverSealing {
-    /// The path the client posts the sealed request to: `/prove/<key>` under
-    /// any prefix, without a query. The encryption binds it.
-    pub target: String,
-    /// The nonce the attestation was requested with.
-    #[serde(with = "hex")]
-    pub nonce: [u8; 32],
-    /// The prover's answer to `GET /attestation`, as received.
-    pub attestation: serde_json::Value,
-    /// The network's signed prover policy file (zolana
-    /// `prover/tee/WIRE_CONTRACT.md`, "Signed policy"), as downloaded. The
-    /// enclave verifies it against the signers its image pins.
-    pub policy: serde_json::Value,
-}
-
-impl Operation {
-    pub fn kind(&self) -> OperationKind {
-        match self {
-            Self::Bootstrap => OperationKind::Bootstrap,
-            Self::Decrypt { .. } => OperationKind::Decrypt,
-            Self::Derive { .. } => OperationKind::Derive,
-            Self::TransactionKeys { .. } => OperationKind::TransactionKeys,
-            Self::Prove { .. } => OperationKind::Prove,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OperationRequest {
-    pub version: u8,
-    #[serde(with = "hex")]
-    pub request_id: [u8; 32],
-    #[serde(with = "decimal_u64")]
-    pub issued_at_ms: u64,
-    #[serde(with = "decimal_u64")]
-    pub expires_at_ms: u64,
-    pub target_release_id: String,
-    #[serde(with = "hex")]
-    pub target_manifest_digest: [u8; 32],
-    #[serde(with = "hex")]
-    pub target_executable_digest: [u8; 32],
-    pub quorum_key_id: String,
-    #[serde(with = "decimal_u64")]
-    pub quorum_key_epoch: u64,
-    pub wallet_descriptor: WalletDescriptor,
-    #[serde(with = "hex")]
-    pub sealed_seed: Option<Vec<u8>>,
-    #[serde(with = "hex")]
-    pub client_response_public_key: Vec<u8>,
-    pub operation: Operation,
-    pub authorization: ClientAuthorization,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EncryptedRequest {
@@ -301,39 +115,6 @@ pub struct EncryptedRequest {
     #[serde(with = "decimal_u64")]
     pub quorum_key_epoch: u64,
     #[serde(with = "hex")]
-    pub ciphertext: Vec<u8>,
-    /// The grant admitting the request's descriptor and client key, outside
-    /// the ciphertext so a gateway in front of the enclave can check it too.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wallet_grant: Option<WalletGrant>,
-}
-
-/// A short-lived grant, signed by the grant key the enclave is built with,
-/// that one descriptor and client key may operate. `project_id` names the
-/// account the issuer attributes the wallet to; the enclave does not read it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WalletGrant {
-    pub version: u8,
-    #[serde(with = "hex")]
-    pub descriptor_digest: [u8; 32],
-    pub client_key_id: String,
-    pub project_id: String,
-    #[serde(with = "decimal_u64")]
-    pub issued_at_ms: u64,
-    #[serde(with = "decimal_u64")]
-    pub expires_at_ms: u64,
-    #[serde(with = "hex")]
-    pub signature: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SealedSeed {
-    pub version: u8,
-    pub quorum_key_id: String,
-    pub quorum_key_epoch: u64,
-    pub wallet_id_hash: [u8; 32],
     pub ciphertext: Vec<u8>,
 }
 
@@ -386,75 +167,6 @@ pub struct EncryptedResponse {
     pub tvc_app_proof: AppProof,
 }
 
-/// Coarse, non-secret failure marker, returned only inside the encrypted result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FailureStage {
-    /// The prover's attestation or policy was refused.
-    Prover,
-    /// Turnkey declined to sign the derivation message.
-    TurnkeySigning,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", deny_unknown_fields)]
-pub enum OperationResult {
-    Bootstrap {
-        solana_address: String,
-        #[serde(with = "hex")]
-        shielded_owner_hash: [u8; 32],
-        #[serde(with = "hex")]
-        shielded_nullifier_public_key: [u8; 32],
-        #[serde(with = "hex")]
-        shielded_viewing_public_key: Vec<u8>,
-        /// The derivation seed sealed to the Quorum key: presented on every
-        /// later operation and reproducible by another bootstrap. Opaque to
-        /// the client but sensitive, since any current descriptor of the
-        /// wallet opens it in the enclave. No other secret appears in this
-        /// result.
-        #[serde(with = "hex")]
-        sealed_seed: Vec<u8>,
-        turnkey_activity_id: String,
-    },
-    /// One plaintext per item, in request order.
-    Decrypt {
-        #[serde(with = "hex")]
-        plaintexts: Vec<Vec<u8>>,
-    },
-    /// One value per item, in request order.
-    Derive {
-        #[serde(with = "hex")]
-        values: Vec<[u8; 32]>,
-    },
-    /// One per-transaction viewing secret per item, in request order.
-    TransactionKeys {
-        #[serde(with = "hex")]
-        secrets: Vec<[u8; 32]>,
-    },
-    /// The completed request sealed to the attested prover, for the client
-    /// to post to `target`, and the key that opens the prover's answer.
-    Prove { sealed: SealedProverRequest },
-    Failure {
-        operation: OperationKind,
-        stage: FailureStage,
-    },
-}
-
-/// One prover request under the encrypted prover wire contract: `ciphertext`
-/// is the body of `POST target` with `Spr-Tee: v1` and `Spr-Tee-Enc:
-/// enc`, and `response_key` opens the answer. The key is an HPKE export, so it
-/// opens no request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SealedProverRequest {
-    pub target: String,
-    #[serde(with = "hex")]
-    pub enc: [u8; 32],
-    #[serde(with = "hex")]
-    pub ciphertext: Vec<u8>,
-    #[serde(with = "hex")]
-    pub response_key: [u8; 32],
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationProofPayload {
@@ -467,6 +179,7 @@ pub struct OperationProofPayload {
     #[serde(with = "hex")]
     pub result_digest: [u8; 32],
     pub operation: OperationKind,
+    /// The decryption-service v1 proof sets this field to zero.
     #[serde(with = "hex")]
     pub sealed_seed_digest: [u8; 32],
 }
@@ -514,10 +227,6 @@ pub struct SignedReleasePolicy {
     pub policy: ReleasePolicy,
     pub authority_set_id: String,
     pub signatures: Vec<ReleaseAuthoritySignature>,
-}
-
-pub fn parse_operation_request(json: &str) -> Result<OperationRequest, TvcError> {
-    encoding::parse_strict_json(json)
 }
 
 pub fn parse_encrypted_request(json: &str) -> Result<EncryptedRequest, TvcError> {

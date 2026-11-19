@@ -8,7 +8,7 @@ use spr_tvc_protocol::crypto::{qos_decrypt, qos_encrypt, verify_p256_message, Qo
 use spr_tvc_protocol::digest::result_digest;
 use spr_tvc_protocol::encoding::parse_strict_json;
 use spr_tvc_protocol::types::{
-    EncryptedRequest, EncryptedResponse, OperationProofPayload, ServiceInfo, WalletGrant,
+    EncryptedRequest, EncryptedResponse, OperationProofPayload, ServiceInfo,
 };
 use zeroize::Zeroizing;
 
@@ -24,18 +24,13 @@ pub fn release() -> Release {
 }
 
 /// `plaintext` encrypted to the running Quorum key, as a client sends it.
-pub fn encrypt_request(
-    info: &ServiceInfo,
-    plaintext: &str,
-    wallet_grant: Option<WalletGrant>,
-) -> EncryptedRequest {
+pub fn encrypt_request(info: &ServiceInfo, plaintext: &str) -> EncryptedRequest {
     let quorum = QosP256Public::from_bytes(&info.quorum_public_key).expect("quorum key");
     EncryptedRequest {
         version: API_VERSION,
         quorum_key_id: info.quorum_key_id.clone(),
         quorum_key_epoch: info.quorum_key_epoch,
         ciphertext: qos_encrypt(&quorum.encryption, plaintext.as_bytes()).expect("encrypt"),
-        wallet_grant,
     }
 }
 

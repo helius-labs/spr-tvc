@@ -10,7 +10,7 @@ use crate::{App, NETWORK};
 
 fn info(quorum: &P256Pair, ephemeral: &P256Pair) -> ServiceInfo {
     let app = App {
-        operations: &[OperationKind::Decrypt],
+        operations: &[OperationKind::ServiceDecrypt],
         proof_type: "spr.tvc.test.v1",
     };
     crate::testing::release().service_info(&app, [0x22; 32], [0x33; 32], quorum, ephemeral)

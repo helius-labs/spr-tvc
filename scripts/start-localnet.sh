@@ -1,18 +1,15 @@
 #!/usr/bin/env bash
 # Starts a fresh Zolana localnet (validator, Photon, prover) from the sibling
-# zolana checkout and mints one SPL test asset for the client example; see
-# `just headless-e2e`.
+# zolana checkout for `just headless-e2e`.
 set -euo pipefail
 
-if [[ "$#" -ne 4 ]]; then
-  echo "usage: start-localnet.sh PORT_OFFSET SOLANA_KEYPAIR FIXTURE_DIR OUTPUT_ENV" >&2
+if [[ "$#" -ne 2 ]]; then
+  echo "usage: start-localnet.sh PORT_OFFSET FIXTURE_DIR" >&2
   exit 2
 fi
 
 port_offset="$1"
-solana_keypair="$2"
-fixture_dir="$3"
-output_env="$4"
+fixture_dir="$2"
 
 tvc_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 zolana_root="$tvc_root/../zolana"
@@ -29,8 +26,6 @@ if [[ -e "$fixture_dir" ]]; then
 fi
 mkdir -p "$fixture_dir"
 fixture_dir="$(cd "$fixture_dir" && pwd)"
-solana_keypair="$(cd "$(dirname "$solana_keypair")" && pwd)/$(basename "$solana_keypair")"
-output_env="$(cd "$(dirname "$output_env")" && pwd)/$(basename "$output_env")"
 
 cd "$zolana_root"
 ZOLANA_PORT_OFFSET="$port_offset" just build-programs build-prover-server build-cli ensure-photon
@@ -59,28 +54,4 @@ cargo run -q -p xtask -- generate-account-snapshots \
 "$bin" config set --rpc-url "$rpc_url" --indexer-url "$indexer_url" \
   --prover-url "$prover_url" >/dev/null
 
-"$bin" wallet new --outfile "$fixture_dir/mint-authority.json" >/dev/null
-"$bin" wallet new --outfile "$fixture_dir/mint-wallet.json" \
-  --funding-keypair "$solana_keypair" >/dev/null
-mint_output="$("$bin" dev pool test-mint \
-  --keypair "$fixture_dir/mint-wallet.json" \
-  --authority-path "$fixture_dir/mint-authority.json" \
-  --airdrop-lamports 20000000000 --amount 1000000)"
-spl_mint="$(sed -n 's/^ok test_mint mint=\([^ ]*\).*/\1/p' <<<"$mint_output")"
-spl_asset_id="$(sed -n 's/^ok test_mint .* asset_id=\([^ ]*\).*/\1/p' <<<"$mint_output")"
-spl_token_account="$(sed -n 's/^ok test_mint .* token_account=\([^ ]*\).*/\1/p' <<<"$mint_output")"
-: "${spl_mint:?test-mint did not emit a mint}"
-: "${spl_asset_id:?test-mint did not emit an asset id}"
-: "${spl_token_account:?test-mint did not emit a token account}"
-
-printf '%s\n' \
-  "SPL_MINT=$spl_mint" \
-  "SPL_ASSET_ID=$spl_asset_id" \
-  "SPL_TOKEN_ACCOUNT=$spl_token_account" >"$output_env"
-
-echo
-echo "localnet ready"
-echo "  rpc       $rpc_url"
-echo "  photon    $indexer_url"
-echo "  prover    $prover_url"
-echo "  SPL mint  $spl_mint (asset $spl_asset_id)"
+printf "localnet ready\n  RPC      %s\n  indexer  %s\n  prover   %s\n" "$rpc_url" "$indexer_url" "$prover_url"

@@ -1,15 +1,8 @@
-//! Domain-separated SHA-256 digest constructors.
+//! Domain-separated wire digests.
 
 use sha2::{Digest, Sha256};
 
-use crate::constants::{
-    CLIENT_AUTH_DOMAIN, PROVISIONING_AUTH_DOMAIN, RELEASE_POLICY_DOMAIN, REQUEST_DIGEST_DOMAIN,
-    REQUEST_ID_HASH_DOMAIN, RESULT_DIGEST_DOMAIN, SEALED_SEED_DIGEST_DOMAIN, WALLET_BINDING_DOMAIN,
-    WALLET_GRANT_DOMAIN, WALLET_ID_HASH_DOMAIN,
-};
-use crate::encoding::{self, canonicalize_json_value, encode_lower_hex};
-use crate::error::{ErrorCode, TvcError};
-use crate::types::{OperationRequest, WalletDescriptor};
+use crate::constants::{RELEASE_POLICY_DOMAIN, RESULT_DIGEST_DOMAIN};
 
 pub fn domain_separated_hash(domain: &[u8], payload: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
@@ -24,107 +17,11 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
 }
 
 /// `request_digest` omits only `authorization.signature`; `client_key_id` stays.
-pub fn request_digest(request: &OperationRequest) -> Result<[u8; 32], TvcError> {
-    let mut value = encoding::to_canonical_value(request)?;
-    let authorization = value
-        .get_mut("authorization")
-        .and_then(|v| v.as_object_mut())
-        .ok_or_else(|| TvcError::new(ErrorCode::InvalidCanonicalJson))?;
-    if authorization.remove("signature").is_none() {
-        return Err(TvcError::new(ErrorCode::InvalidCanonicalJson));
-    }
-    if !authorization.contains_key("client_key_id") {
-        return Err(TvcError::new(ErrorCode::InvalidCanonicalJson));
-    }
-    let canonical = canonicalize_json_value(&value)?;
-    Ok(domain_separated_hash(
-        REQUEST_DIGEST_DOMAIN,
-        canonical.as_bytes(),
-    ))
-}
-
-/// The text a client key signs for a request:
-/// `spr-tvc-client-auth-v1:<request digest in lowercase hex>`.
-pub fn client_auth_message(request_digest_bytes: &[u8; 32]) -> String {
-    format!(
-        "{CLIENT_AUTH_DOMAIN}:{}",
-        encode_lower_hex(request_digest_bytes)
-    )
-}
-
-/// SHA-256 of the UTF-8 [`client_auth_message`]: the digest ECDSA signs.
-pub fn client_auth_digest(request_digest_bytes: &[u8; 32]) -> [u8; 32] {
-    sha256(client_auth_message(request_digest_bytes).as_bytes())
-}
-
-/// The provisioner signs the descriptor without its own signature field.
-pub fn descriptor_digest(descriptor: &WalletDescriptor) -> Result<[u8; 32], TvcError> {
-    let mut value = encoding::to_canonical_value(descriptor)?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| TvcError::new(ErrorCode::InvalidCanonicalJson))?;
-    object.remove("provisioning_signature");
-    let canonical = canonicalize_json_value(&value)?;
-    Ok(domain_separated_hash(
-        PROVISIONING_AUTH_DOMAIN,
-        canonical.as_bytes(),
-    ))
-}
-
-/// Names the wallet a descriptor is for, and nothing about its clients: the
-/// network, security domain, Turnkey organization and wallet, and address. A
-/// sealed seed carries it, so any descriptor of the wallet opens the seed,
-/// whichever client key it lists.
-pub fn wallet_binding_digest(descriptor: &WalletDescriptor) -> Result<[u8; 32], TvcError> {
-    let wallet = serde_json::json!({
-        "network": descriptor.network,
-        "security_domain_id": encode_lower_hex(&descriptor.security_domain_id),
-        "turnkey_organization_id": descriptor.turnkey_organization_id,
-        "turnkey_wallet_id": descriptor.turnkey_wallet_id,
-        "address": descriptor.address,
-    });
-    let canonical = canonicalize_json_value(&wallet)?;
-    Ok(domain_separated_hash(
-        WALLET_BINDING_DOMAIN,
-        canonical.as_bytes(),
-    ))
-}
-
-/// The grant key signs the grant without its own signature field.
-pub fn wallet_grant_digest(grant: &crate::types::WalletGrant) -> Result<[u8; 32], TvcError> {
-    let mut value = encoding::to_canonical_value(grant)?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| TvcError::new(ErrorCode::InvalidCanonicalJson))?;
-    object.remove("signature");
-    let canonical = canonicalize_json_value(&value)?;
-    Ok(domain_separated_hash(
-        WALLET_GRANT_DOMAIN,
-        canonical.as_bytes(),
-    ))
-}
-
 pub fn result_digest(encrypted_result: &[u8]) -> [u8; 32] {
     domain_separated_hash(RESULT_DIGEST_DOMAIN, encrypted_result)
 }
 
 /// Digest of the exact sealed-seed wire bytes.
-pub fn sealed_seed_digest(sealed_seed: &[u8]) -> [u8; 32] {
-    domain_separated_hash(SEALED_SEED_DIGEST_DOMAIN, sealed_seed)
-}
-
-pub fn wallet_id_hash(wallet_id: &str) -> [u8; 32] {
-    domain_separated_hash(WALLET_ID_HASH_DOMAIN, wallet_id.as_bytes())
-}
-
-pub fn request_id_hash(request_id: &[u8; 32]) -> [u8; 32] {
-    domain_separated_hash(REQUEST_ID_HASH_DOMAIN, request_id)
-}
-
 pub fn release_policy_digest(policy_jcs: &[u8]) -> [u8; 32] {
     domain_separated_hash(RELEASE_POLICY_DOMAIN, policy_jcs)
 }
-
-#[cfg(test)]
-#[path = "../tests/unit/wallet_request_binding.rs"]
-mod tests;

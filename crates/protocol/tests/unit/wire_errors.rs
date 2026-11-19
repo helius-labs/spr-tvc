@@ -16,9 +16,6 @@ fn every_code_is_its_variant_name() {
             "InvalidEncryptedEnvelope",
             "ReleaseBindingMismatch",
             "QuorumKeyEpochMismatch",
-            "InvalidWalletDescriptor",
-            "WalletBindingMismatch",
-            "UnauthorizedClient",
             "ExpiredRequest",
             "TurnkeyEvidenceInvalid",
             "InvalidCanonicalJson",
@@ -37,7 +34,6 @@ fn every_code_is_its_variant_name() {
             "DiscoveryUntrusted",
             "NetworkMismatch",
             "ReleasePolicyInvalid",
-            "DescriptorExpired",
         ]
     );
     for code in ErrorCode::VARIANTS {

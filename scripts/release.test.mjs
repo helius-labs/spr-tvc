@@ -123,10 +123,10 @@ const info = {
   quorum_key_id: "quorum",
   quorum_key_epoch: "1",
   ephemeral_public_key: `04${"66".repeat(129)}`,
-  supported_operations: ["Bootstrap", "Decrypt", "Derive", "TransactionKeys", "Prove"],
+  supported_operations: ["ServicePublicKeys", "ServiceDecrypt"],
   max_encrypted_request_bytes: "262144",
   max_encrypted_response_bytes: "262144",
-  proof_type: "spr.tvc.wallet_operation.v1",
+  proof_type: "spr.tvc.decryption_service.v1",
 };
 
 test("nothing is signed for a replica that does not verify", async () => {
