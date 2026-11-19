@@ -13,13 +13,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::body::Body;
 use axum::http::Response;
 use axum::response::IntoResponse;
+use qos_p256::encrypt::P256EncryptPublic;
 use solana_pubkey::Pubkey;
 use spr_tvc_enclave::http::{self, PublicError};
 use spr_tvc_enclave::{open_envelope, respond, ProofBinding};
 use spr_tvc_protocol::constants::{
     API_VERSION, MAX_CLOCK_SKEW_MS, MAX_REQUEST_AGE_MS, TVC_APP_PROOF_TYPE,
 };
-use spr_tvc_protocol::crypto::{parse_uncompressed_sec1, verify_p256_prehash};
+use spr_tvc_protocol::crypto::verify_p256_prehash;
 use spr_tvc_protocol::digest::{descriptor_digest, request_digest, sealed_seed_digest};
 use spr_tvc_protocol::types::{
     parse_operation_request, FailureStage, Operation, OperationKind, OperationRequest,
@@ -118,7 +119,8 @@ async fn execute(state: &AppState, body: &[u8]) -> Result<String, Failure> {
     )
     .map_err(|_| Failure::Invalid)?;
     let request_hash = request_digest(&request).map_err(|_| Failure::Invalid)?;
-    parse_uncompressed_sec1(&request.client_response_public_key).map_err(|_| Failure::Invalid)?;
+    let response_key = P256EncryptPublic::from_bytes(&request.client_response_public_key)
+        .map_err(|_| Failure::Invalid)?;
 
     // Every result carries the digest of the sealed seed it was computed
     // against, so the App Proof binds the answer to one seed, not merely
@@ -149,7 +151,7 @@ async fn execute(state: &AppState, body: &[u8]) -> Result<String, Failure> {
     Ok(respond(
         &runtime.ephemeral,
         binding,
-        &request.client_response_public_key,
+        &response_key,
         &result,
     )?)
 }

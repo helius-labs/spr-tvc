@@ -22,7 +22,7 @@ borsh = { version = "=1.7.0", features = ["derive"] }
 clap = { version = "=4.5.53", features = ["derive"] }
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "zeroize"], optional = true }
 hex = "=0.4.3"
-qos_p256 = { version = "=0.12.1", default-features = false }
+qos_p256.workspace = true
 p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa"] }
 # The local stand-in prover's client; the enclave's Turnkey client brings its own.
 reqwest = { version = "=0.12.28", default-features = false, features = ["json", "rustls-tls-webpki-roots"], optional = true }

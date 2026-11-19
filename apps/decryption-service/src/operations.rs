@@ -3,11 +3,11 @@
 use axum::body::Body;
 use axum::http::Response;
 use axum::response::IntoResponse;
+use qos_p256::encrypt::P256EncryptPublic;
 use spr_tvc_enclave::{
     http, open_ciphertexts, open_envelope, respond, Failure, ProofBinding, Service,
 };
 use spr_tvc_protocol::constants::API_VERSION;
-use spr_tvc_protocol::crypto::parse_uncompressed_sec1;
 use spr_tvc_protocol::decryption_service::{
     parse_service_request, service_request_digest, DecryptedOutputs, ServiceOperation,
     ServiceRequest, ServiceResult, SERVICE_PROOF_TYPE,
@@ -35,7 +35,8 @@ fn execute(service: &Service, body: &[u8]) -> Result<String, Failure> {
     if grant.is_some() || !targets_running_release(&request, service) {
         return Err(Failure::Invalid);
     }
-    parse_uncompressed_sec1(&request.client_response_public_key).map_err(|_| Failure::Invalid)?;
+    let response_key = P256EncryptPublic::from_bytes(&request.client_response_public_key)
+        .map_err(|_| Failure::Invalid)?;
 
     let request_digest = service_request_digest(&request).map_err(|_| Failure::Invalid)?;
     let result = run(&request, &request_digest, service)?;
@@ -47,12 +48,7 @@ fn execute(service: &Service, body: &[u8]) -> Result<String, Failure> {
         // The Quorum key names the seed; there is no sealed one.
         sealed_seed_digest: [0; 32],
     };
-    respond(
-        &service.ephemeral,
-        binding,
-        &request.client_response_public_key,
-        &result,
-    )
+    respond(&service.ephemeral, binding, &response_key, &result)
 }
 
 fn targets_running_release(request: &ServiceRequest, service: &Service) -> bool {

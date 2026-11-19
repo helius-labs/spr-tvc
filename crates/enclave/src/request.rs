@@ -4,12 +4,12 @@ use axum::body::Body;
 use axum::http::Response;
 use axum::response::IntoResponse;
 use p256::ecdsa::Signature;
+use qos_p256::encrypt::P256EncryptPublic;
 use qos_p256::P256Pair;
 use serde::Serialize;
 use spr_tvc_protocol::constants::{
     API_VERSION, MAX_ENCRYPTED_RESPONSE_BYTES, TVC_APP_PROOF_SCHEME,
 };
-use spr_tvc_protocol::crypto::qos_encrypt;
 use spr_tvc_protocol::digest::result_digest;
 use spr_tvc_protocol::encoding::{is_rfc8785, jcs_serialize};
 use spr_tvc_protocol::types::{
@@ -78,11 +78,12 @@ pub struct ProofBinding {
 pub fn respond<T: Serialize>(
     ephemeral: &P256Pair,
     binding: ProofBinding,
-    client_response_public_key: &[u8],
+    response_key: &P256EncryptPublic,
     result: &T,
 ) -> Result<String, Failure> {
     let plaintext = Zeroizing::new(jcs_serialize(result).map_err(|_| Failure::Unavailable)?);
-    let encrypted_result = qos_encrypt(client_response_public_key, plaintext.as_bytes())
+    let encrypted_result = response_key
+        .encrypt(plaintext.as_bytes())
         .map_err(|_| Failure::Unavailable)?;
     if encrypted_result.len() as u64 > MAX_ENCRYPTED_RESPONSE_BYTES {
         return Err(Failure::Unavailable);
