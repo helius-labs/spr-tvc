@@ -11,13 +11,13 @@ Pre-production. Use disposable funds on devnet.
 | Helius devnet endpoint | Purpose |
 | --- | --- |
 | `https://devnet.helius-rpc.com/v1/private-wallet` | Private wallet sessions, enrollment, and operations |
-| `https://devnet.helius-rpc.com/v1/decryption` | Decryption service sessions and operations |
 | `https://devnet.helius-rpc.com/v1/spr` | Indexer and TEE prover |
 
 The [gateway](apps/tvc-gateway) authenticates Helius API keys and forwards
-enclave traffic with Boot Proofs. See the
-[decryption service flow](apps/decryption-service/SPEC.md) for recipient
-authorization and the [test invariants](TEST_INVARIANTS.md) for audit scope.
+enclave traffic with Boot Proofs. For devnet decryption, use the
+[direct enclave connection](apps/decryption-service/README.md#devnet).
+The [decryption service flow](apps/decryption-service/SPEC.md) explains recipient
+authorization, and the [test invariants](TEST_INVARIANTS.md) map it to coverage.
 
 ## Privacy wallet flow
 

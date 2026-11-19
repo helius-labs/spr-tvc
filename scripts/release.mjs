@@ -231,14 +231,16 @@ async function awaitRelease(releaseId, cfg) {
  * Re-encrypts one operator's share of a local Quorum key to the deployment's
  * enclave, once tvc has verified its attestation, and posts it.
  */
-function postLocalShare(deployId, operatorId, { seed, metadata }) {
+function postLocalShare(deployId, operatorId, { seed, metadata, unattended }) {
   const scratch = mkdtempSync(join(tmpdir(), "spr-tvc-share-"));
   try {
     const bundle = join(scratch, "bundle.json");
     const share = join(scratch, "share.json");
     tvc("deploy", "provisioning-details", "--deploy-id", deployId, "--provision-bundle-out", bundle);
-    tvc("keys", "re-encrypt-local-share", "--quorum-key-metadata", metadata, "--provision-bundle", bundle,
-      "--operator-seed-path", seed, "--re-encrypted-out", share);
+    const reencrypt = ["keys", "re-encrypt-local-share", "--quorum-key-metadata", metadata,
+      "--provision-bundle", bundle, "--operator-seed-path", seed, "--re-encrypted-out", share];
+    if (unattended) tvc(...reencrypt, "--dangerous-skip-interactive");
+    else run("tvc", reencrypt);
     tvc("deploy", "post-share", "--re-encrypted-share", share, "--share-operator-id", operatorId);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -279,7 +281,7 @@ async function deploy(releaseId, cfg, { unattended, prune, seeds, metadata }) {
     await waitFor("the provisioning attestation", () => tvcSucceeds("deploy", "provisioning-details", "--deploy-id", deployId));
   }
   for (const operatorId of unprovisioned) {
-    if (seeds) postLocalShare(deployId, operatorId, { seed: seedOf(operatorId), metadata });
+    if (seeds) postLocalShare(deployId, operatorId, { seed: seedOf(operatorId), metadata, unattended });
     else tvc("deploy", "provision", "--deploy-id", deployId, "--operator-id", operatorId);
     record.provisioned.push(operatorId);
     save();

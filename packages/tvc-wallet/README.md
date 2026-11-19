@@ -387,14 +387,12 @@ a wallet.
 ```ts
 import { createDecryptionService } from "@heliuslabs/spr-embedded-wallet/decryption-service";
 
-// Use the devnet gateway to receive Boot Proofs with responses.
+// Use the devnet enclave endpoint and an authenticated Turnkey Boot Proof resolver.
 const service = createDecryptionService({
-  network,
-  endpoint: new URL("https://devnet.helius-rpc.com/v1/decryption?api-key=…"),
+  network: "devnet",
+  endpoint: new URL(decryptionServiceUrl),
+  resolveBootProof,
 });
-
-// Or the enclave directly, with a Turnkey Boot Proof lookup:
-// createDecryptionService({ network, endpoint, resolveBootProof });
 
 // Sender: the shielded address of a recipient without a registry record.
 const recipient = await service.address(solanaAddress);
@@ -404,6 +402,11 @@ const keys = await service.open(owner, client.proofService);
 const received = new Wallet({ identity: keys.address() });
 await syncWallet({ client, wallet: received, keys });
 ```
+
+For the devnet endpoint and resolver setup, see the
+[service README](../../apps/decryption-service/README.md#devnet) and
+[example client](../../examples/typescript-client/src/lib.ts).
+For a gateway configured for `/v1/decryption`, use its URL and omit `resolveBootProof`.
 
 `owner` is the destination address's `@solana/kit` `MessagePartialSigner`.
 `open` signs an empty decrypt batch for the nullifier secret, and sync signs

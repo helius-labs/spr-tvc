@@ -140,12 +140,12 @@ notes with that address's signature. Point at the service in one of three ways
 
 | Mode | Env | Credentials |
 | --- | --- | --- |
-| Hosted gateway (default) | `API_KEY`; optional `DECRYPTION_SERVICE_GATEWAY_URL` | Helius API key only |
 | Direct enclave | `DECRYPTION_SERVICE_URL`, `TVC_ORG_ID`, `TVC_API_KEY_PUBLIC`, `TVC_API_KEY_PRIVATE` | Turnkey Boot Proof keys of the TVC org |
+| Configured gateway | `DECRYPTION_SERVICE_GATEWAY_URL`, `API_KEY` | Helius API key |
 | Local testkit | `DECRYPTION_SERVICE_LOCAL_ENDPOINT` | none |
 
-Testers on the hosted path need only `API_KEY` (and the usual wallet Turnkey
-vars for `setup()`). No `TVC_ORG_ID` or Turnkey Boot Proof keys.
+For devnet, set `DECRYPTION_SERVICE_URL` to the
+[direct enclave endpoint](../../apps/decryption-service/README.md#devnet).
 
 ```bash
 pnpm example examples/unregistered_recipient.ts
