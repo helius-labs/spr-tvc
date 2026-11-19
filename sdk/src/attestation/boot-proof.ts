@@ -33,7 +33,7 @@ type QosIdentityPcrIndex = 0 | 1 | 2 | 3;
 
 /**
  * Independently trusted Nitro measurements for the expected QOS deployment.
- * Never populate these values from `/v2/info` or from the Boot Proof itself.
+ * Never populate these values from `/v1/info` or from the Boot Proof itself.
  */
 export type QosIdentityPcrs = Readonly<Record<QosIdentityPcrIndex, string>>;
 

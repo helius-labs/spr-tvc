@@ -405,7 +405,7 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
         })),
     );
 
-    // What the enclave answers to `GET /health` and `GET /v2/info`.
+    // What the enclave answers to `GET /health` and `GET /v1/info`.
     let info = sample_info(&quorum);
     let health = jcs_serialize(&HealthResponse {
         status: HealthStatus::Healthy,

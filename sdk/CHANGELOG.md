@@ -2,7 +2,7 @@
 
 ## 0.2.0-alpha.0
 
-Wire v2 removes redundant decrypt and proof fields and requires a v2 release pin.
+Simplify the v1 wire format and bind release signing to the approved deployment manifest.
 
 ## 0.1.0-alpha.0
 

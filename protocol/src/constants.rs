@@ -1,11 +1,11 @@
 //! Wire versions, domains, and limits.
 
-pub const API_VERSION: u8 = 2;
+pub const API_VERSION: u8 = 1;
 pub const TVC_APP_PROOF_SCHEME: &str = "SIGNATURE_SCHEME_EPHEMERAL_KEY_P256";
-pub const TVC_QOS_PING_PROOF_TYPE: &str = "spr.tvc.qos_ping.v2";
+pub const TVC_QOS_PING_PROOF_TYPE: &str = "spr.tvc.qos_ping.v1";
 pub const EXPECTED_TURNKEY_TRUST_ROOT_ID: &str = "aws-nitro-root-g1";
-pub const RESULT_DIGEST_DOMAIN: &[u8] = b"SPR_TVC_RESULT_V2";
-pub const RELEASE_POLICY_DOMAIN: &[u8] = b"SPR_TVC_RELEASE_POLICY_V2";
+pub const RESULT_DIGEST_DOMAIN: &[u8] = b"SPR_TVC_RESULT_V1";
+pub const RELEASE_POLICY_DOMAIN: &[u8] = b"SPR_TVC_RELEASE_POLICY_V1";
 pub const MAX_ENCRYPTED_REQUEST_BYTES: u64 = 262_144;
 pub const MAX_ENCRYPTED_RESPONSE_BYTES: u64 = 262_144;
 pub const MAX_ITEMS_PER_BATCH: u64 = 256;

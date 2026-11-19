@@ -1,4 +1,4 @@
-//! What a release is, and what it advertises at `/v2/info`.
+//! What a release is, and what it advertises at `/v1/info`.
 
 use qos_p256::P256Pair;
 use spr_tvc_protocol::constants::{

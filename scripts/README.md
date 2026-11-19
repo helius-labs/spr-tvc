@@ -30,7 +30,7 @@ manifest review during approval and local share re-encryption. Devnet's
 
 Run an individual phase with
 `node scripts/release.mjs <phase> <release-id> --network devnet`.
-Commit the deployment records and the signed v2 pin under `sdk/releases/`. Turnkey allows three
+Commit the deployment records and the signed pin under `sdk/releases/`. Turnkey allows three
 deployments per application. The explicit `--prune-deployments` flag can
 remove older inactive deployments to make room.
 

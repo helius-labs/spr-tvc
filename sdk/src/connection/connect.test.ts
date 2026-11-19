@@ -80,7 +80,7 @@ function connectFixture() {
   const executableDigest = "22".repeat(32);
 
   const policy: ReleasePolicy = {
-    version: 2,
+    version: 1,
     releaseId: "connect-poc",
     network: "devnet",
     securityDomainId: "33".repeat(32),
@@ -121,7 +121,7 @@ function connectFixture() {
     ],
   };
   const info: ServiceInfo = {
-    version: 2,
+    version: 1,
     network: "devnet",
     security_domain_id: policy.securityDomainId,
     release_id: policy.releaseId,
@@ -130,11 +130,11 @@ function connectFixture() {
     quorum_public_key: quorumPublicKey,
     quorum_key_id: policy.quorumKeyId,
     quorum_key_epoch: policy.quorumKeyEpoch,
-    // /v2/info and /v2/ping may be served by different healthy replicas.
+    // /v1/info and /v1/ping may be served by different healthy replicas.
     supported_operations: ["ServicePublicKeys", "ServiceDecrypt"],
     max_encrypted_request_bytes: "262144",
     max_encrypted_response_bytes: "262144",
-    proof_type: "spr.tvc.decryption_service.v2",
+    proof_type: "spr.tvc.decryption_service.v1",
   };
   const expectedPcrs = {
     0: "44".repeat(48),
@@ -159,7 +159,7 @@ function connectFixture() {
       qosDecrypt(quorumEncryptionSecret, decodeLowerHex(encryptedChallenge))
     );
     return canonicalizeJsonValue({
-      version: 2,
+      version: 1,
       tvc_app_proof: {
         scheme: "SIGNATURE_SCHEME_EPHEMERAL_KEY_P256",
         public_key: ephemeralPublicKey,
@@ -212,10 +212,10 @@ describe("verification", () => {
       nowMs: () => 1_750_000_000_000n,
       transport: {
         fetch: async (url, init) => {
-          if (url.pathname === "/api/tvc/v2/info") {
+          if (url.pathname === "/api/tvc/v1/info") {
             return new Response(canonicalizeJsonValue(info), { status: 200 });
           }
-          expect(url.pathname).toBe("/api/tvc/v2/ping");
+          expect(url.pathname).toBe("/api/tvc/v1/ping");
           expect(init?.method).toBe("POST");
           const request = JSON.parse(String(init?.body)) as {
             encrypted_challenge: string;
@@ -285,7 +285,7 @@ describe("verification", () => {
       nowMs: () => 1_750_000_000_000n,
       transport: {
         fetch: async (url) =>
-          url.pathname.endsWith("/v2/info")
+          url.pathname.endsWith("/v1/info")
             ? new Response(canonicalizeJsonValue(info), { status: 200 })
             : oversizedResponse(() => (pingPulls += 1)),
       },
@@ -358,7 +358,7 @@ describe("the client's network", () => {
       nowMs: () => 1_750_000_000_000n,
       transport: {
         fetch: async (url, init) => {
-          if (url.pathname === "/v2/info") return Response.json({ ...info, network: "mainnet" });
+          if (url.pathname === "/v1/info") return Response.json({ ...info, network: "mainnet" });
           const { encrypted_challenge } = JSON.parse(String(init?.body)) as { encrypted_challenge: string };
           return new Response(pingAnswer(encrypted_challenge));
         },
@@ -373,7 +373,7 @@ describe("a live replica, before its release is signed", () => {
 
   function enclave(answer: (encryptedChallenge: string) => string) {
     const fetch = vi.fn(async (url: URL, init?: RequestInit) => {
-      expect(url.pathname).toBe("/v2/ping");
+      expect(url.pathname).toBe("/v1/ping");
       const request = JSON.parse(String(init?.body)) as { encrypted_challenge: string };
       try {
         return new Response(answer(request.encrypted_challenge), { status: 200 });
@@ -426,6 +426,10 @@ describe("a live replica, before its release is signed", () => {
         transport: { fetch: fetchUnapproved },
       })).rejects.toMatchObject({ code: "ReleaseBindingMismatch" });
     }
+    const prereleaseInfo = { ...info, ephemeral_public_key: bootProof.ephemeralPublicKeyHex };
+    await expect(verifyLiveReplica({
+      ...input, info: prereleaseInfo, transport: { fetch: fetchUnapproved },
+    })).rejects.toMatchObject({ code: "UnknownJsonField" });
     expect(fetchUnapproved).not.toHaveBeenCalled();
     expect(input.bootProof).not.toHaveBeenCalled();
     // An answer to another challenge.

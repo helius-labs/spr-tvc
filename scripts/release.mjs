@@ -6,7 +6,7 @@
 //           publish-enclave-image pushed and writes the deployment
 //           descriptor
 //   deploy  creates the TVC deployment, approves and provisions it for every
-//           operator, makes it live, and waits for /v2/info to serve it
+//           operator, makes it live, and waits for /v1/info to serve it
 //   policy  validates the authenticated deployment manifest against the
 //           configured Quorum key and built executable, then verifies live
 //           attestation and signs the SDK release pin
@@ -41,10 +41,10 @@ import { parseArgs } from "node:util";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const NETWORKS = ["devnet", "mainnet"];
-/** `API_VERSION` in protocol/src/constants.rs: the release policy and `/v2/info` version. */
-const API_VERSION = 2;
+/** `API_VERSION` in protocol/src/constants.rs: the release policy and `/v1/info` version. */
+const API_VERSION = 1;
 const MAX_HTTP_BYTES = 262_144;
-const SERVICE_PROOF_TYPE = "spr.tvc.decryption_service.v2";
+const SERVICE_PROOF_TYPE = "spr.tvc.decryption_service.v1";
 const APP = "decryption-service";
 const OPERATIONS = ["ServicePublicKeys", "ServiceDecrypt"];
 const deployDir = join(ROOT, "enclave", "deploy");
@@ -193,12 +193,12 @@ function pruneDeployments(cfg, deployId) {
 }
 
 async function fetchInfo(endpoint) {
-  const response = await fetch(new URL("v2/info", `${endpoint}/`));
+  const response = await fetch(new URL("v1/info", `${endpoint}/`));
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
 
-/** Waits until the endpoint serves this release, and returns its /v2/info. */
+/** Waits until the endpoint serves this release, and returns its /v1/info. */
 async function awaitRelease(releaseId, cfg) {
   const { expectedPivotDigest } = readJson(descriptorPath(cfg, releaseId));
   let info;
@@ -289,12 +289,12 @@ async function deploy(releaseId, cfg, { unattended, prune, seeds, metadata }) {
 
 /**
  * The unsigned release policy for `releaseId` as the enclave at `cfg.endpoint`
- * serves it (`info`, its /v2/info), checked against the release constants:
+ * serves it (`info`, its /v1/info), checked against the release constants:
  * the shape `ReleasePolicy` in protocol takes.
  */
 export function releasePolicy(releaseId, cfg, info, approved, now) {
   const expect = (field, expected) => {
-    if (info[field] !== expected) fail(`/v2/info ${field} is ${info[field]}, expected ${expected}`);
+    if (info[field] !== expected) fail(`/v1/info ${field} is ${info[field]}, expected ${expected}`);
   };
   expect("version", API_VERSION);
   expect("release_id", releaseId);
@@ -307,7 +307,7 @@ export function releasePolicy(releaseId, cfg, info, approved, now) {
   expect("quorum_key_epoch", cfg.quorumKeyEpoch);
   if (!Array.isArray(info.supported_operations) || info.supported_operations.length !== OPERATIONS.length ||
       OPERATIONS.some((operation, i) => info.supported_operations[i] !== operation)) {
-    fail(`/v2/info supported_operations are ${info.supported_operations}, expected ${OPERATIONS.join(", ")}`);
+    fail(`/v1/info supported_operations are ${info.supported_operations}, expected ${OPERATIONS.join(", ")}`);
   }
   return {
     version: API_VERSION,

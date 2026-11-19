@@ -5,9 +5,9 @@ import { encodeLowerHex } from "./hex.js";
 import { canonicalizeJsonValue } from "./jcs.js";
 import type { DecryptItem, Network } from "./types.js";
 
-export const SERVICE_PROOF_TYPE = "spr.tvc.decryption_service.v2";
-const SERVICE_REQUEST_DIGEST_DOMAIN = "SPR_TVC_DECRYPTION_SERVICE_REQUEST_V2";
-const DECRYPT_LABEL = "TSPP/decryption-service/decrypt/v2";
+export const SERVICE_PROOF_TYPE = "spr.tvc.decryption_service.v1";
+const SERVICE_REQUEST_DIGEST_DOMAIN = "SPR_TVC_DECRYPTION_SERVICE_REQUEST_V1";
+const DECRYPT_LABEL = "TSPP/decryption-service/decrypt/v1";
 
 const te = new TextEncoder();
 

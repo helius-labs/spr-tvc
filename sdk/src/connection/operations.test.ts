@@ -85,7 +85,7 @@ describe("operation replies", () => {
   });
 
   it.each([
-    ["type", "wrong"], ["version", 1], ["request_id", "00".repeat(32)], ["request_digest", "00".repeat(32)],
+    ["type", "wrong"], ["version", API_VERSION + 1], ["request_id", "00".repeat(32)], ["request_digest", "00".repeat(32)],
     ["result_digest", "00".repeat(32)], ["operation", "ServiceDecrypt"],
   ])("rejects an attested proof with a wrong %s", async (field, value) => {
     const f = fixture();
@@ -105,9 +105,9 @@ describe("operation replies", () => {
     expect(oversized.verifyOperationAppProof).not.toHaveBeenCalled();
   });
 
-  it("rejects retired reply versions, malformed proof JSON, and the wrong scheme", async () => {
+  it("rejects unsupported reply versions, malformed proof JSON, and the wrong scheme", async () => {
     const old = fixture();
-    Object.assign(old.response, { version: 1 });
+    Object.assign(old.response, { version: API_VERSION + 1 });
     await expect(sealedExchange(old.context, old.exchange)).rejects.toMatchObject({ code: "ReleaseBindingMismatch" });
 
     const malformed = fixture();
@@ -119,7 +119,7 @@ describe("operation replies", () => {
     await expect(sealedExchange(wrong.context, wrong.exchange)).rejects.toMatchObject({ code: "TurnkeyEvidenceInvalid" });
 
     const extra = fixture();
-    extra.sign({ ...extra.payload, unknown: 0 });
+    extra.sign({ ...extra.payload, sealed_seed_digest: "00".repeat(32) });
     await expect(sealedExchange(extra.context, extra.exchange)).rejects.toMatchObject({ code: "UnknownJsonField" });
   });
 

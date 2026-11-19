@@ -96,22 +96,22 @@ async fn dispatch(State(service): State<Arc<Service>>, request: Request<Body>) -
     };
 
     match (parts.method.as_str(), parts.uri.path()) {
-        ("POST", "/v2/ping" | "/v2/operations") if !has_json_content_type(&parts.headers) => {
+        ("POST", "/v1/ping" | "/v1/operations") if !has_json_content_type(&parts.headers) => {
             PublicError::InvalidRequest.into_response()
         }
-        ("POST", "/v2/ping") => handle_ping(&service, &body),
-        ("POST", "/v2/operations") => operations::handle(&service, &body),
+        ("POST", "/v1/ping") => handle_ping(&service, &body),
+        ("POST", "/v1/operations") => operations::handle(&service, &body),
         ("GET", "/health") => match jcs_serialize(&HealthResponse {
             status: HealthStatus::Healthy,
         }) {
             Ok(body) => http::ok(body),
             Err(_) => PublicError::Unavailable.into_response(),
         },
-        ("GET", "/v2/info") => match jcs_serialize(&service.info) {
+        ("GET", "/v1/info") => match jcs_serialize(&service.info) {
             Ok(body) => http::ok(body),
             Err(_) => PublicError::InvalidRequest.into_response(),
         },
-        (_, "/v2/ping" | "/v2/operations" | "/health" | "/v2/info") => {
+        (_, "/v1/ping" | "/v1/operations" | "/health" | "/v1/info") => {
             PublicError::MethodNotAllowed.into_response()
         }
         _ => PublicError::NotFound.into_response(),

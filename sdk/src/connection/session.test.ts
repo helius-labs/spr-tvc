@@ -4,7 +4,7 @@ import { sessionFromConnector } from "./session.js";
 function runtime(label: string, nowMs: () => bigint = () => 1n): ConnectedTvcRuntime {
   return {
     backend: { endpoint: new URL("https://tvc.example") },
-    info: { version: 2, network: "devnet", security_domain_id: "00".repeat(32), release_id: label,
+    info: { version: 1, network: "devnet", security_domain_id: "00".repeat(32), release_id: label,
       manifest_digest: "11".repeat(32), executable_digest: "22".repeat(32), quorum_public_key: "", quorum_key_id: "quorum", quorum_key_epoch: "1",
       supported_operations: [], max_encrypted_request_bytes: "262144", max_encrypted_response_bytes: "262144", proof_type: "" },
     transport: { fetch: vi.fn() }, releasePolicyValidFromMs: 0n,

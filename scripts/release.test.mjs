@@ -106,7 +106,7 @@ const cfg = {
   qosIdentityPcrs: { 0: "aa".repeat(48), 1: "bb".repeat(48), 2: "cc".repeat(48), 3: "dd".repeat(48) },
 };
 const info = {
-  version: 2,
+  version: 1,
   network: "devnet",
   security_domain_id: cfg.securityDomainId,
   release_id: "release",
@@ -125,7 +125,7 @@ const info = {
   supported_operations: ["ServicePublicKeys", "ServiceDecrypt"],
   max_encrypted_request_bytes: "262144",
   max_encrypted_response_bytes: "262144",
-  proof_type: "spr.tvc.decryption_service.v2",
+  proof_type: "spr.tvc.decryption_service.v1",
 };
 
 const approved = {
@@ -172,7 +172,7 @@ test("a replica is refused under another trust root, or when it cannot answer th
     verifyRelease(cfg, info, approved, { bootProof, transport }),
     /does not verify, so nothing was signed: BootProofUnverified/,
   );
-  assert.deepEqual(requests, ["/v2/ping"]);
+  assert.deepEqual(requests, ["/v1/ping"]);
 });
 
 test("the release identity comes from the authenticated approved QOS manifest", async () => {

@@ -32,7 +32,7 @@ impl Display for Network {
     }
 }
 
-/// What a request asks for, as advertised by `/v2/info` and named in the App
+/// What a request asks for, as advertised by `/v1/info` and named in the App
 /// Proof.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -21,5 +21,4 @@ just headless-e2e
 ```
 
 The [release guide](scripts/README.md#release) covers image publication,
-provisioning, and signing the SDK pin. Hosted v2 requires a deployment and
-a signed pin for its network.
+provisioning, and signing the SDK pin. Hosted use requires a signed pin for the approved deployment.

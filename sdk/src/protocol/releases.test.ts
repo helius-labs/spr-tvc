@@ -71,7 +71,7 @@ describe("the committed release files", () => {
 describe("a release file", () => {
   const authority = p256.utils.randomPrivateKey();
   const policy: ReleasePolicy = {
-    version: 2,
+    version: 1,
     releaseId: "decryption-service-devnet-test",
     network: "devnet",
     securityDomainId: "33".repeat(32),

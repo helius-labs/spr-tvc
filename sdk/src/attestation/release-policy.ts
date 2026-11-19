@@ -95,7 +95,7 @@ export function verifySignedReleasePolicy(
 }
 
 /**
- * Binds every security field of `/v2/info` to a policy that has already
+ * Binds every security field of `/v1/info` to a policy that has already
  * verified for the client's network, so discovery must name that network too.
  */
 export function bindDiscoveryToPolicy(
