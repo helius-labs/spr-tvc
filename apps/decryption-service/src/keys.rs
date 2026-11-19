@@ -11,10 +11,13 @@ const VIEWING_KEY_LABEL: &[u8] = b"TSPP/decryption-service/view_key/x25519/v1";
 const NULLIFIER_KEY_LABEL: &[u8] = b"TSPP/decryption-service/nf_key/v1";
 const MASTER_SEED_LABEL: &[u8] = b"TSPP/decryption-service/seed/v1";
 
-pub(crate) const MASTER_SEED_LEN: usize = 32;
+const MASTER_SEED_LEN: usize = 32;
 
-/// The master seed, derived from the Quorum key so that it lives and is recovered with it.
-pub(crate) fn master_seed(quorum: &P256Pair) -> Zeroizing<[u8; MASTER_SEED_LEN]> {
+pub(crate) fn for_address(quorum: &P256Pair, address: &[u8; ADDRESS_LEN]) -> ServiceKeys {
+    derive(&master_seed(quorum), address)
+}
+
+fn master_seed(quorum: &P256Pair) -> Zeroizing<[u8; MASTER_SEED_LEN]> {
     let mut seed = Zeroizing::new([0u8; MASTER_SEED_LEN]);
     Hkdf::<Sha256>::new(None, quorum.to_master_seed().as_slice())
         .expand(MASTER_SEED_LABEL, seed.as_mut_slice())
@@ -28,7 +31,7 @@ pub(crate) struct ServiceKeys {
 }
 
 /// HKDF-SHA256 over the master seed, one Expand per key with the address in the info.
-pub(crate) fn derive(seed: &[u8; MASTER_SEED_LEN], address: &[u8; ADDRESS_LEN]) -> ServiceKeys {
+fn derive(seed: &[u8; MASTER_SEED_LEN], address: &[u8; ADDRESS_LEN]) -> ServiceKeys {
     let hkdf = Hkdf::<Sha256>::new(None, seed);
     let mut viewing = Zeroizing::new([0u8; 32]);
     hkdf.expand_multi_info(&[VIEWING_KEY_LABEL, address], viewing.as_mut_slice())

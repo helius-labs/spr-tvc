@@ -27,17 +27,15 @@ fn other(network: Network) -> Network {
     }
 }
 
-fn service_on(network: Network, quorum_seed: u8) -> Service {
+fn service_with_quorum_seed(quorum_seed: u8) -> Service {
     let quorum = P256Pair::from_master_seed(&Zeroizing::new([quorum_seed; 32])).unwrap();
     let ephemeral = P256Pair::generate().unwrap();
-    let mut info =
-        testing::release().service_info(&APP, [0x22; 32], [0x33; 32], &quorum, &ephemeral);
-    info.network = network;
+    let info = testing::release().service_info(&APP, [0x22; 32], [0x33; 32], &quorum, &ephemeral);
     Service::new(info, ephemeral, quorum)
 }
 
 fn service() -> Service {
-    service_on(NETWORK, 1)
+    service_with_quorum_seed(1)
 }
 
 fn request(service: &Service, operation: ServiceOperation) -> ServiceRequest {
@@ -77,6 +75,13 @@ fn open(service: &Service, request: &ServiceRequest, response: &str) -> ServiceR
 fn call(service: &Service, request: &ServiceRequest) -> Result<ServiceResult, Failure> {
     let response = encrypted_response(service, request)?;
     Ok(open(service, request, &response))
+}
+
+fn decrypted(service: &Service, request: &ServiceRequest) -> DecryptedOutputs {
+    match call(service, request).unwrap() {
+        ServiceResult::Decrypt(outputs) => outputs,
+        ServiceResult::PublicKeys { .. } => panic!("expected a Decrypt result"),
+    }
 }
 
 fn encrypted_response(service: &Service, request: &ServiceRequest) -> Result<String, Failure> {
@@ -143,8 +148,7 @@ fn decrypt(
     request
 }
 
-/// `plaintext` as a sender encrypts it to `viewing_public_key` in one slot.
-fn sent(viewing_public_key: [u8; 33], named: [u8; 33], plaintext: &[u8], slot: u32) -> DecryptItem {
+fn transfer_output(viewing_public_key: [u8; 33], plaintext: &[u8], slot: u32) -> DecryptItem {
     let transaction = ViewingKey::new();
     let salt = random_salt();
     DecryptItem {
@@ -156,7 +160,7 @@ fn sent(viewing_public_key: [u8; 33], named: [u8; 33], plaintext: &[u8], slot: u
                 slot,
             )
             .unwrap(),
-        viewing_public_key: named.to_vec(),
+        viewing_public_key: viewing_public_key.to_vec(),
         transaction_viewing_public_key: transaction.pubkey().as_bytes().to_vec(),
         salt: salt.to_vec(),
         slot_index: slot.into(),

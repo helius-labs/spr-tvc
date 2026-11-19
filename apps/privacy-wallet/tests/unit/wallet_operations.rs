@@ -59,12 +59,8 @@ fn runtime() -> Runtime {
         quorum,
         provisioning_public: NET.provisioning,
         grant_public: NET.grant,
-        prover: production_prover_trust(),
+        prover: ProverTrust::image(),
     }
-}
-
-fn production_prover_trust() -> ProverTrust {
-    ProverTrust::image()
 }
 
 const POLICY_SEED: [u8; 32] = [0x99; 32];

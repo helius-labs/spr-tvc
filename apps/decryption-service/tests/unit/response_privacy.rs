@@ -12,7 +12,7 @@ fn replay_keeps_the_signed_response_key_and_cannot_retarget_the_result() {
         &service,
         &owner,
         NETWORK,
-        vec![sent(viewing, viewing, b"ten usdc", 0)],
+        vec![transfer_output(viewing, b"ten usdc", 0)],
     );
     let other_secret = [0x43; 32];
     let other_key = p256::SecretKey::from_slice(&other_secret).unwrap();

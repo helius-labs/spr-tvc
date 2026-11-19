@@ -4,9 +4,8 @@ use super::*;
 fn the_service_keys_follow_the_quorum_key_and_nothing_else() {
     let owner = SigningKey::from_bytes(&[5; 32]);
     let keys = service_keys(&service(), &owner);
-    // Another release or replica under the same Quorum key.
-    assert_eq!(service_keys(&service_on(NETWORK, 1), &owner), keys);
-    assert_ne!(service_keys(&service_on(NETWORK, 2), &owner), keys);
+    assert_eq!(service_keys(&service(), &owner), keys);
+    assert_ne!(service_keys(&service_with_quorum_seed(2), &owner), keys);
 }
 
 #[test]

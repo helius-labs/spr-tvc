@@ -21,18 +21,19 @@ pub fn open_ciphertexts(
     items: &[DecryptItem],
 ) -> Result<Vec<Vec<u8>>, Failure> {
     check_batch(items)?;
+    let viewing_public_key = viewing.pubkey();
     items
         .iter()
         .map(|item| {
-            if viewing.pubkey().as_bytes() != item.viewing_public_key.as_slice() {
+            if viewing_public_key.as_bytes() != item.viewing_public_key.as_slice() {
                 return Err(Failure::Invalid);
             }
-            let transaction_key: [u8; 33] = item
+            let transaction_key = item
                 .transaction_viewing_public_key
                 .as_slice()
                 .try_into()
                 .map_err(|_| Failure::Invalid)?;
-            let transaction_key =
+            let ephemeral_viewing_key =
                 X25519Pubkey::from_bytes(transaction_key).map_err(|_| Failure::Invalid)?;
             let salt: Salt = item
                 .salt
@@ -42,13 +43,13 @@ pub fn open_ciphertexts(
             match item.label {
                 DecryptLabel::Transfer => {
                     let slot = u32::try_from(item.slot_index).map_err(|_| Failure::Invalid)?;
-                    viewing.decrypt_utxo(&item.ciphertext, &transaction_key, salt, slot)
+                    viewing.decrypt_utxo(&item.ciphertext, &ephemeral_viewing_key, salt, slot)
                 }
                 DecryptLabel::RingDeposit => {
                     if item.slot_index != 0 {
                         return Err(Failure::Invalid);
                     }
-                    viewing.decrypt_ring_deposit(&item.ciphertext, &transaction_key, salt)
+                    viewing.decrypt_ring_deposit(&item.ciphertext, &ephemeral_viewing_key, salt)
                 }
             }
             .map_err(|_| Failure::Invalid)

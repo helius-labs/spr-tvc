@@ -70,10 +70,10 @@ fn run(
     request_digest: &[u8; 32],
     service: &Service,
 ) -> Result<ServiceResult, Failure> {
-    let seed = keys::master_seed(&service.quorum);
     match &request.operation {
         ServiceOperation::PublicKeys { address } => {
-            let keys = keys::derive(&seed, &owner::address_key(address)?.to_bytes());
+            let address = owner::address_key(address)?.to_bytes();
+            let keys = keys::for_address(&service.quorum, &address);
             Ok(ServiceResult::PublicKeys {
                 viewing_public_key: *keys.viewing.pubkey().as_bytes(),
                 nullifier_public_key: keys.nullifier.pubkey().map_err(|_| Failure::Unavailable)?,
@@ -86,8 +86,8 @@ fn run(
         } => {
             let signer =
                 owner::authorized(signer, signature, service.info.network, request_digest)?;
-            let keys = keys::derive(&seed, &signer);
-            // No item: the owner asks for the nullifier secret alone.
+            let keys = keys::for_address(&service.quorum, &signer);
+            // An empty batch retrieves the nullifier secret.
             let plaintexts = if items.is_empty() {
                 Vec::new()
             } else {

@@ -4,28 +4,14 @@
 //! secret, and no answer is interpreted here: the client decodes plaintexts
 //! and matches derived values against what the chain published.
 
-use spr_keypair::ViewingKey;
 use spr_transaction::instructions::merge::{
     merge_dummy_nullifier, merge_output_blinding, merge_output_key, merge_private_tx_blinding,
 };
-use spr_tvc_enclave::open_ciphertexts;
+use spr_tvc_enclave::{check_batch, open_ciphertexts};
 use spr_tvc_protocol::types::{DecryptItem, DeriveItem, OperationResult, TransactionKeyItem};
 
 use super::sealed::Roles;
 use super::Failure;
-
-fn check_batch<T>(items: &[T]) -> Result<(), Failure> {
-    Ok(spr_tvc_enclave::check_batch(items)?)
-}
-
-/// The viewing key `public_key` names. This wallet holds one, so a request
-/// under any other key is not a request about this wallet.
-fn viewing_key<'a>(roles: &'a Roles, public_key: &[u8]) -> Result<&'a ViewingKey, Failure> {
-    if roles.viewing_key.pubkey().as_bytes() != public_key {
-        return Err(Failure::Invalid);
-    }
-    Ok(&roles.viewing_key)
-}
 
 pub(super) fn decrypt(roles: &Roles, items: &[DecryptItem]) -> Result<OperationResult, Failure> {
     Ok(OperationResult::Decrypt {
@@ -78,11 +64,15 @@ pub(super) fn transaction_keys(
     items: &[TransactionKeyItem],
 ) -> Result<OperationResult, Failure> {
     check_batch(items)?;
+    let viewing_public_key = roles.viewing_key.pubkey();
     let secrets = items
         .iter()
         .map(|item| {
-            let viewing = viewing_key(roles, &item.viewing_public_key)?;
-            viewing
+            if viewing_public_key.as_bytes() != item.viewing_public_key.as_slice() {
+                return Err(Failure::Invalid);
+            }
+            roles
+                .viewing_key
                 .get_transaction_viewing_key(&item.first_nullifier)
                 .map(|key| *key.secret_bytes())
                 .map_err(|_| Failure::Invalid)

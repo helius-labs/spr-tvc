@@ -8,15 +8,11 @@ fn the_owner_decrypts_what_a_sender_encrypted_to_the_service_keys() {
     let (stranger, _) = service_keys(&service, &SigningKey::from_bytes(&[9; 32]));
     assert_ne!(viewing, stranger);
 
-    // The second output is for another key, as a dummy under the owner's tag is.
-    let items = vec![
-        sent(viewing, viewing, b"ten usdc", 3),
-        sent(stranger, viewing, b"not ours", 4),
-    ];
+    let mut relabeled = transfer_output(stranger, b"not ours", 4);
+    relabeled.viewing_public_key = viewing.to_vec();
+    let items = vec![transfer_output(viewing, b"ten usdc", 3), relabeled];
     let request = decrypt(&service, &owner, NETWORK, items);
-    let ServiceResult::Decrypt(outputs) = call(&service, &request).unwrap() else {
-        panic!("expected a Decrypt result");
-    };
+    let outputs = decrypted(&service, &request);
 
     assert_eq!(outputs.plaintexts[0], b"ten usdc");
     assert_eq!(outputs.plaintexts[1].len(), b"not ours".len());
@@ -35,11 +31,9 @@ fn a_batch_holds_items_under_the_signers_service_viewing_key() {
     let owner = SigningKey::from_bytes(&[5; 32]);
     let (viewing, _) = service_keys(&service, &owner);
     let (stranger, _) = service_keys(&service, &SigningKey::from_bytes(&[9; 32]));
-    let named_for_another = vec![sent(viewing, stranger, b"ten usdc", 0)];
-    refused(
-        &service,
-        &decrypt(&service, &owner, NETWORK, named_for_another),
-    );
+    let mut output = transfer_output(viewing, b"ten usdc", 0);
+    output.viewing_public_key = stranger.to_vec();
+    refused(&service, &decrypt(&service, &owner, NETWORK, vec![output]));
 }
 
 #[test]
@@ -48,9 +42,7 @@ fn a_decrypt_of_nothing_returns_the_nullifier_secret() {
     let owner = SigningKey::from_bytes(&[5; 32]);
     let (_, nullifier) = service_keys(&service, &owner);
     let request = decrypt(&service, &owner, NETWORK, Vec::new());
-    let ServiceResult::Decrypt(outputs) = call(&service, &request).unwrap() else {
-        panic!("expected a Decrypt result");
-    };
+    let outputs = decrypted(&service, &request);
     assert!(outputs.plaintexts.is_empty());
     assert_eq!(
         NullifierKey::from_secret(outputs.nullifier_secret)
@@ -65,11 +57,9 @@ fn accepts_256_outputs_and_rejects_257() {
     let service = service();
     let owner = SigningKey::from_bytes(&[5; 32]);
     let (viewing, _) = service_keys(&service, &owner);
-    let output = sent(viewing, viewing, b"amount", 0);
+    let output = transfer_output(viewing, b"amount", 0);
     let full = decrypt(&service, &owner, NETWORK, vec![output.clone(); 256]);
-    let ServiceResult::Decrypt(result) = call(&service, &full).unwrap() else {
-        panic!("expected a Decrypt result");
-    };
+    let result = decrypted(&service, &full);
     assert_eq!(result.plaintexts, vec![b"amount".to_vec(); 256]);
 
     let overflow = decrypt(&service, &owner, NETWORK, vec![output; 257]);
@@ -99,9 +89,7 @@ fn a_ring_deposit_uses_its_own_cipher_and_requires_slot_zero() {
         ..output.clone()
     };
     let valid = decrypt(&service, &owner, NETWORK, vec![output.clone(), transfer]);
-    let ServiceResult::Decrypt(result) = call(&service, &valid).unwrap() else {
-        panic!("expected a Decrypt result");
-    };
+    let result = decrypted(&service, &valid);
     assert_eq!(result.plaintexts[0], plaintext);
     assert_ne!(result.plaintexts[1], plaintext);
 

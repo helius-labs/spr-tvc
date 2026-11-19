@@ -5,7 +5,7 @@ fn a_decrypt_needs_the_owner_signature_over_this_request_and_network() {
     let service = service();
     let owner = SigningKey::from_bytes(&[5; 32]);
     let (viewing, _) = service_keys(&service, &owner);
-    let items = vec![sent(viewing, viewing, b"ten usdc", 0)];
+    let items = vec![transfer_output(viewing, b"ten usdc", 0)];
     let valid = decrypt(&service, &owner, NETWORK, items.clone());
     assert!(call(&service, &valid).is_ok());
 

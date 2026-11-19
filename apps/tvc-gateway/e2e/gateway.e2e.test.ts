@@ -3,6 +3,7 @@ import { initializePoseidon, SOL_MINT, ViewingKey, Wallet } from "@heliuslabs/sp
 import { DEFAULT_TREE_ID } from "@heliuslabs/spr/interface";
 import { randomSalt } from "@heliuslabs/spr/keypair";
 import {
+  AssetRegistry,
   createProofOutput,
   decryptTransactions,
   encodeConfidentialSlots,
@@ -55,6 +56,22 @@ function gatekeeperHeaders(project = PROJECT_ID) {
   };
 }
 
+const gatewayTransport: SprEmbeddedWalletTransport = {
+  fetch: (url, init) => fetch(url, { ...init, headers: gatekeeperHeaders() }),
+};
+
+function recordGatewayTraffic() {
+  const sent: { path: string; body: string; answer: string }[] = [];
+  const transport: SprEmbeddedWalletTransport = {
+    async fetch(url, init) {
+      const response = await gatewayTransport.fetch(url, init);
+      sent.push({ path: url.pathname, body: String(init?.body ?? ""), answer: await response.clone().text() });
+      return response;
+    },
+  };
+  return { sent, transport };
+}
+
 async function post(path: string, body: unknown, project?: string) {
   const response = await fetch(`${privateWallet}${path}`, {
     method: "POST",
@@ -96,6 +113,15 @@ it("serves only /session, /enroll and /operations under private-wallet", async (
 });
 
 describe("the decryption service through the gateway", () => {
+  function decryptionClient(transport = gatewayTransport) {
+    return createLocalDecryptionService({
+      network: "devnet",
+      endpoint: new URL(decryptionServiceUrl),
+      gateway: true,
+      transport,
+    });
+  }
+
   async function postDecryption(path: string, body: unknown) {
     const response = await fetch(`${decryptionServiceUrl}${path}`, {
       method: "POST",
@@ -105,22 +131,9 @@ describe("the decryption service through the gateway", () => {
     return { status: response.status, headers: response.headers, body: await response.json() };
   }
 
-  const sent: { path: string; body: string; answer: string }[] = [];
-  const transport: SprEmbeddedWalletTransport = {
-    async fetch(url, init) {
-      const response = await fetch(url, { ...init, headers: gatekeeperHeaders() });
-      sent.push({ path: url.pathname, body: String(init?.body ?? ""), answer: await response.clone().text() });
-      return response;
-    },
-  };
-
   it("opens a session and answers PublicKeys with a Boot Proof, without a grant", async () => {
-    const service = createLocalDecryptionService({
-      network: "devnet",
-      endpoint: new URL(decryptionServiceUrl),
-      gateway: true,
-      transport,
-    });
+    const { sent, transport } = recordGatewayTraffic();
+    const service = decryptionClient(transport);
     const address = await service.address(ownerAddress);
     expect(address.viewingPublicKey).toBeDefined();
     expect(address.nullifierPublicKey).toBeDefined();
@@ -138,12 +151,7 @@ describe("the decryption service through the gateway", () => {
 
   it("signs each decrypt batch and keeps only outputs that match their commitments", async () => {
     await initializePoseidon();
-    const service = createLocalDecryptionService({
-      network: "devnet",
-      endpoint: new URL(decryptionServiceUrl),
-      gateway: true,
-      transport,
-    });
+    const service = decryptionClient();
     const signer = await generateKeyPairSigner();
     const signMessages = vi.fn(signer.signMessages);
     const owner = { address: signer.address, signMessages };
@@ -155,14 +163,12 @@ describe("the decryption service through the gateway", () => {
       expect(keys.address().nullifierPublicKey).toEqual(recipient.nullifierPublicKey);
       expect(signMessages).toHaveBeenCalledTimes(1);
 
-      const wallet = new Wallet({ identity: keys.address() });
       const output = (amount: bigint) => createProofOutput({ ownerAddress: recipient, asset: SOL_MINT, amount });
-      const valid = output(5n);
-      const mismatched = output(7n);
-      const commitments = [valid.hash(DEFAULT_TREE_ID), mismatched.hash(DEFAULT_TREE_ID)];
-      const wrongCommitment = output(8n).hash(DEFAULT_TREE_ID);
+      const outputs = [output(5n), output(7n)];
+      const commitments = outputs.map((note) => note.hash(DEFAULT_TREE_ID));
       const salt = randomSalt();
-      const slots = encodeConfidentialSlots([valid, mismatched], wallet.registry, senderKey, salt);
+      const slots = encodeConfidentialSlots(outputs, new AssetRegistry(), senderKey, salt);
+      const tree = address("3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3");
       const transaction: IndexedShieldedTransaction = {
         slot: 1n,
         txSignature: "1".repeat(64) as Signature,
@@ -171,36 +177,31 @@ describe("the decryption service through the gateway", () => {
         outputSlots: slots.map((slot, index) => ({
           viewTag: slot!.viewTag,
           payload: slot!.data,
-          outputContext: {
-            hash: index === 1 ? wrongCommitment : commitments[index]!,
-            tree: address("3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"),
-            leafIndex: BigInt(index),
-          },
+          outputContext: { hash: commitments[index]!, tree, leafIndex: BigInt(index) },
         })),
         messages: [],
         nullifiers: [],
         proofless: false,
       };
-      const report = await decryptTransactions({ wallet, keys, transactions: [transaction] });
-      expect(report).toMatchObject({ storedUtxos: 1, undecryptableCandidates: 1 });
-      expect(wallet.utxos().map(({ utxo }) => utxo.amount)).toEqual([5n]);
-      expect(signMessages).toHaveBeenCalledTimes(2);
 
-      const corrected = {
+      const wrongCommitment = output(8n).hash(DEFAULT_TREE_ID);
+      const secondSlot = transaction.outputSlots[1]!;
+      const invalid = {
         ...transaction,
-        outputSlots: transaction.outputSlots.map((slot, index) => ({
-          ...slot,
-          outputContext: { ...slot.outputContext, hash: commitments[index]! },
-        })),
+        outputSlots: [
+          transaction.outputSlots[0]!,
+          { ...secondSlot, outputContext: { ...secondSlot.outputContext, hash: wrongCommitment } },
+        ],
       };
-      const freshWallet = new Wallet({ identity: keys.address() });
-      const correctedReport = await decryptTransactions({
-        wallet: freshWallet,
-        keys,
-        transactions: [corrected],
-      });
-      expect(correctedReport).toMatchObject({ storedUtxos: 2, undecryptableCandidates: 0 });
-      expect(freshWallet.utxos().map(({ utxo }) => utxo.amount)).toEqual([5n, 7n]);
+      for (const [indexed, amounts, rejected] of [
+        [invalid, [5n], 1],
+        [transaction, [5n, 7n], 0],
+      ] as const) {
+        const scanned = new Wallet({ identity: keys.address() });
+        const report = await decryptTransactions({ wallet: scanned, keys, transactions: [indexed] });
+        expect(report).toMatchObject({ storedUtxos: amounts.length, undecryptableCandidates: rejected });
+        expect(scanned.utxos().map(({ utxo }) => utxo.amount)).toEqual(amounts);
+      }
       expect(signMessages).toHaveBeenCalledTimes(3);
       const approvals = signMessages.mock.calls.map(([messages]) => encodeLowerHex(messages[0]!.content));
       expect(new Set(approvals).size).toBe(3);
@@ -297,14 +298,7 @@ describe("enrollment", () => {
 });
 
 describe("a wallet enrolled through the gateway", () => {
-  const sent: { path: string; body: string; answer: string }[] = [];
-  const transport: SprEmbeddedWalletTransport = {
-    async fetch(url, init) {
-      const response = await fetch(url, { ...init, headers: gatekeeperHeaders() });
-      sent.push({ path: url.pathname, body: String(init?.body ?? ""), answer: await response.clone().text() });
-      return response;
-    },
-  };
+  const { sent, transport } = recordGatewayTraffic();
   let keys: SprEmbeddedWalletKeys;
   const firstSent = () => {
     const operation = sent.find(({ path }) => path.endsWith("/operations"));
@@ -451,7 +445,7 @@ describe("a Turnkey session key as the client key", () => {
   const transport: SprEmbeddedWalletTransport = {
     async fetch(url, init) {
       sent.push({ path: url.pathname, body: String(init?.body ?? "") });
-      return fetch(url, { ...init, headers: gatekeeperHeaders() });
+      return gatewayTransport.fetch(url, init);
     },
   };
   const paths = () => sent.map(({ path }) => path.replace("/v1/private-wallet", ""));

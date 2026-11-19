@@ -84,24 +84,12 @@ fn sealed_seed_hides_the_seed_and_is_bound_to_the_wallet_and_epoch() {
         assert_eq!(failure(unseal(&other_wallet, &runtime)), Failure::Invalid);
     }
 
-    let other_quorum = runtime_with_quorum(P256Pair::generate().expect("quorum"));
-    assert_eq!(failure(unseal(&request, &other_quorum)), Failure::Invalid);
+    let other_runtime = super::runtime();
+    assert_eq!(failure(unseal(&request, &other_runtime)), Failure::Invalid);
 
     let mut unsealed = request;
     unsealed.sealed_seed = None;
     assert_eq!(failure(unseal(&unsealed, &runtime)), Failure::Invalid);
-}
-
-fn runtime_with_quorum(quorum: P256Pair) -> Runtime {
-    let quorum = Arc::new(quorum);
-    Runtime {
-        ephemeral: Arc::new(P256Pair::generate().expect("ephemeral")),
-        custody: Arc::new(TurnkeyCustody::new(Arc::clone(&quorum))),
-        quorum,
-        provisioning_public: NET.provisioning,
-        grant_public: NET.grant,
-        prover: production_prover_trust(),
-    }
 }
 
 #[test]
