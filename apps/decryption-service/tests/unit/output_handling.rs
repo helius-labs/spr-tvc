@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn the_owner_decrypts_what_a_sender_encrypted_to_the_service_keys() {
     let service = service();
-    let owner = SigningKey::from_bytes(&[5; 32]);
+    let owner = recipient_signer();
     let (viewing, nullifier) = service_keys(&service, &owner);
     let (stranger, _) = service_keys(&service, &SigningKey::from_bytes(&[9; 32]));
     assert_ne!(viewing, stranger);
@@ -26,20 +26,60 @@ fn the_owner_decrypts_what_a_sender_encrypted_to_the_service_keys() {
 }
 
 #[test]
-fn a_batch_holds_items_under_the_signers_service_viewing_key() {
+fn a_bad_output_rejects_the_entire_signed_batch() {
     let service = service();
-    let owner = SigningKey::from_bytes(&[5; 32]);
+    let owner = recipient_signer();
     let (viewing, _) = service_keys(&service, &owner);
     let (stranger, _) = service_keys(&service, &SigningKey::from_bytes(&[9; 32]));
-    let mut output = transfer_output(viewing, b"ten usdc", 0);
-    output.viewing_public_key = stranger.to_vec();
-    refused(&service, &decrypt(&service, &owner, NETWORK, vec![output]));
+    let valid = transfer_output(viewing, b"ten usdc", 0);
+    let invalid = [
+        (
+            "other recipient",
+            transfer_output(stranger, b"another recipient", 1),
+        ),
+        (
+            "sender key length",
+            DecryptItem {
+                transaction_viewing_public_key: vec![0; 32],
+                ..valid.clone()
+            },
+        ),
+        (
+            "sender key encoding",
+            DecryptItem {
+                transaction_viewing_public_key: vec![0; 33],
+                ..valid.clone()
+            },
+        ),
+        (
+            "salt length",
+            DecryptItem {
+                salt: vec![0; 15],
+                ..valid.clone()
+            },
+        ),
+        (
+            "transfer slot overflow",
+            DecryptItem {
+                slot_index: u64::from(u32::MAX) + 1,
+                ..valid.clone()
+            },
+        ),
+    ];
+    for (case, bad) in invalid {
+        let request = decrypt(&service, &owner, NETWORK, vec![valid.clone(), bad]);
+        assert_eq!(
+            encrypted_response(&service, &request).unwrap_err(),
+            Failure::Invalid,
+            "{case}",
+        );
+    }
 }
 
 #[test]
-fn a_decrypt_of_nothing_returns_the_nullifier_secret() {
+fn a_signed_empty_batch_returns_the_nullifier_secret() {
     let service = service();
-    let owner = SigningKey::from_bytes(&[5; 32]);
+    let owner = recipient_signer();
     let (_, nullifier) = service_keys(&service, &owner);
     let request = decrypt(&service, &owner, NETWORK, Vec::new());
     let outputs = decrypted(&service, &request);
@@ -55,7 +95,7 @@ fn a_decrypt_of_nothing_returns_the_nullifier_secret() {
 #[test]
 fn accepts_256_outputs_and_rejects_257() {
     let service = service();
-    let owner = SigningKey::from_bytes(&[5; 32]);
+    let owner = recipient_signer();
     let (viewing, _) = service_keys(&service, &owner);
     let output = transfer_output(viewing, b"amount", 0);
     let full = decrypt(&service, &owner, NETWORK, vec![output.clone(); 256]);
@@ -69,7 +109,7 @@ fn accepts_256_outputs_and_rejects_257() {
 #[test]
 fn a_ring_deposit_uses_its_own_cipher_and_requires_slot_zero() {
     let service = service();
-    let owner = SigningKey::from_bytes(&[5; 32]);
+    let owner = recipient_signer();
     let (viewing, _) = service_keys(&service, &owner);
     let transaction = ViewingKey::new();
     let salt = random_salt();

@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn the_service_keys_follow_the_quorum_key_and_nothing_else() {
-    let owner = SigningKey::from_bytes(&[5; 32]);
+fn replicas_under_the_same_quorum_key_derive_the_same_keys() {
+    let owner = recipient_signer();
     let keys = service_keys(&service(), &owner);
     assert_eq!(service_keys(&service(), &owner), keys);
     assert_ne!(service_keys(&service_with_quorum_seed(2), &owner), keys);
@@ -11,17 +11,16 @@ fn the_service_keys_follow_the_quorum_key_and_nothing_else() {
 #[test]
 fn a_request_is_bound_to_the_running_release() {
     let service = service();
-    let base = public_keys(&service, &SigningKey::from_bytes(&[5; 32]));
+    let base = public_keys(&service, &recipient_signer());
     assert!(call(&service, &base).is_ok());
 
-    let edits: [fn(&mut ServiceRequest); 7] = [
+    let edits: [fn(&mut ServiceRequest); 6] = [
         |r| r.version = 2,
         |r| r.target_release_id.push('x'),
         |r| r.target_manifest_digest[0] ^= 1,
         |r| r.target_executable_digest[0] ^= 1,
         |r| r.quorum_key_id.push('x'),
         |r| r.quorum_key_epoch = 2,
-        |r| r.client_response_public_key = vec![0; 65],
     ];
     for edit in edits {
         let mut request = base.clone();
@@ -58,7 +57,7 @@ async fn the_router_advertises_the_operations_and_serves_them() {
     assert_eq!(info.supported_operations, OPERATIONS);
     assert_eq!(info.proof_type, SERVICE_PROOF_TYPE);
 
-    let request = public_keys(&service, &SigningKey::from_bytes(&[5; 32]));
+    let request = public_keys(&service, &recipient_signer());
     let body = jcs_serialize(&envelope(&service, &request)).unwrap();
     let response = router(service.clone())
         .oneshot(

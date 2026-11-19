@@ -20,6 +20,14 @@ use crate::{router, APP};
 
 const RESPONSE_SECRET: [u8; 32] = [0x42; 32];
 
+fn recipient_signer() -> SigningKey {
+    SigningKey::from_bytes(&[5; 32])
+}
+
+fn response_public_key(secret: &[u8; 32]) -> p256::PublicKey {
+    p256::SecretKey::from_slice(secret).unwrap().public_key()
+}
+
 fn other(network: Network) -> Network {
     match network {
         Network::Devnet => Network::Mainnet,
@@ -39,7 +47,6 @@ fn service() -> Service {
 }
 
 fn request(service: &Service, operation: ServiceOperation) -> ServiceRequest {
-    let response_secret = p256::SecretKey::from_slice(&RESPONSE_SECRET).unwrap();
     let info = &service.info;
     ServiceRequest {
         version: API_VERSION,
@@ -49,7 +56,8 @@ fn request(service: &Service, operation: ServiceOperation) -> ServiceRequest {
         target_executable_digest: info.executable_digest,
         quorum_key_id: info.quorum_key_id.clone(),
         quorum_key_epoch: info.quorum_key_epoch,
-        client_response_public_key: public_key_uncompressed(&response_secret.public_key()).to_vec(),
+        client_response_public_key: public_key_uncompressed(&response_public_key(&RESPONSE_SECRET))
+            .to_vec(),
         operation,
     }
 }

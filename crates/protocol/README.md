@@ -206,9 +206,8 @@ Service keys are HKDF-SHA256 over the master seed with an empty salt, one
 Expand per key: info `TSPP/decryption-service/view_key/x25519/v1 || address`
 for the 32-byte viewing secret, which is then clamped, and
 `TSPP/decryption-service/nf_key/v1 || address` for the 31-byte nullifier
-secret. `address` is the 32 raw bytes. Only an address that is a point on the
-Ed25519 curve outside the small-order subgroup has service keys, since no key
-can sign for any other.
+secret. `address` is the 32 raw bytes of an on-curve Ed25519 address. The
+service rejects small-order keys.
 
 `Decrypt` names the base58 `signer` and carries the signer's Ed25519
 `signature`, verified strictly, over a Solana off-chain message v0 (format 0,

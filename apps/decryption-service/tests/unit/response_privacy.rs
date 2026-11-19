@@ -6,7 +6,7 @@ use super::*;
 #[test]
 fn replay_keeps_the_signed_response_key_and_cannot_retarget_the_result() {
     let service = service();
-    let owner = SigningKey::from_bytes(&[5; 32]);
+    let owner = recipient_signer();
     let (viewing, _) = service_keys(&service, &owner);
     let request = decrypt(
         &service,
@@ -15,7 +15,6 @@ fn replay_keeps_the_signed_response_key_and_cannot_retarget_the_result() {
         vec![transfer_output(viewing, b"ten usdc", 0)],
     );
     let other_secret = [0x43; 32];
-    let other_key = p256::SecretKey::from_slice(&other_secret).unwrap();
     let body = jcs_serialize(&envelope(&service, &request)).unwrap();
 
     for _ in 0..2 {
@@ -30,6 +29,19 @@ fn replay_keeps_the_signed_response_key_and_cannot_retarget_the_result() {
 
     let mut retargeted = request;
     retargeted.client_response_public_key =
-        public_key_uncompressed(&other_key.public_key()).to_vec();
+        public_key_uncompressed(&response_public_key(&other_secret)).to_vec();
     refused(&service, &retargeted);
+}
+
+#[test]
+fn rejects_invalid_and_compressed_response_keys() {
+    use p256::elliptic_curve::sec1::ToEncodedPoint as _;
+
+    let service = service();
+    let mut request = public_keys(&service, &recipient_signer());
+    let compressed = response_public_key(&RESPONSE_SECRET).to_encoded_point(true);
+    for key in [compressed.as_bytes().to_vec(), vec![0; 65]] {
+        request.client_response_public_key = key;
+        refused(&service, &request);
+    }
 }

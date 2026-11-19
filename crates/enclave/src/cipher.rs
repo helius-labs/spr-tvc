@@ -4,6 +4,7 @@ use spr_keypair::viewing_key::Salt;
 use spr_keypair::{ViewingKey, X25519Pubkey};
 use spr_tvc_protocol::constants::MAX_ITEMS_PER_BATCH;
 use spr_tvc_protocol::types::{DecryptItem, DecryptLabel};
+use zeroize::Zeroizing;
 
 use crate::Failure;
 
@@ -15,44 +16,43 @@ pub fn check_batch<T>(items: &[T]) -> Result<(), Failure> {
     Ok(())
 }
 
-/// The pool cipher's output for each item under `viewing`; for another key's item, noise.
+/// Open every item under the supplied key. The pool cipher has no authentication tag.
 pub fn open_ciphertexts(
     viewing: &ViewingKey,
     items: &[DecryptItem],
 ) -> Result<Vec<Vec<u8>>, Failure> {
     check_batch(items)?;
-    let viewing_public_key = viewing.pubkey();
-    items
-        .iter()
-        .map(|item| {
-            if viewing_public_key.as_bytes() != item.viewing_public_key.as_slice() {
-                return Err(Failure::Invalid);
+    let recipient_key = viewing.pubkey();
+    // Wipe plaintexts already opened if a later item fails.
+    let mut plaintexts = Zeroizing::new(Vec::with_capacity(items.len()));
+    for item in items {
+        if recipient_key.as_bytes() != item.viewing_public_key.as_slice() {
+            return Err(Failure::Invalid);
+        }
+        let sender_key_bytes = item
+            .transaction_viewing_public_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| Failure::Invalid)?;
+        let sender_key =
+            X25519Pubkey::from_bytes(sender_key_bytes).map_err(|_| Failure::Invalid)?;
+        let salt: Salt = item
+            .salt
+            .as_slice()
+            .try_into()
+            .map_err(|_| Failure::Invalid)?;
+        let plaintext = match item.label {
+            DecryptLabel::Transfer => {
+                let slot = u32::try_from(item.slot_index).map_err(|_| Failure::Invalid)?;
+                viewing.decrypt_utxo(&item.ciphertext, &sender_key, salt, slot)
             }
-            let transaction_key = item
-                .transaction_viewing_public_key
-                .as_slice()
-                .try_into()
-                .map_err(|_| Failure::Invalid)?;
-            let ephemeral_viewing_key =
-                X25519Pubkey::from_bytes(transaction_key).map_err(|_| Failure::Invalid)?;
-            let salt: Salt = item
-                .salt
-                .as_slice()
-                .try_into()
-                .map_err(|_| Failure::Invalid)?;
-            match item.label {
-                DecryptLabel::Transfer => {
-                    let slot = u32::try_from(item.slot_index).map_err(|_| Failure::Invalid)?;
-                    viewing.decrypt_utxo(&item.ciphertext, &ephemeral_viewing_key, salt, slot)
-                }
-                DecryptLabel::RingDeposit => {
-                    if item.slot_index != 0 {
-                        return Err(Failure::Invalid);
-                    }
-                    viewing.decrypt_ring_deposit(&item.ciphertext, &ephemeral_viewing_key, salt)
-                }
+            DecryptLabel::RingDeposit if item.slot_index == 0 => {
+                viewing.decrypt_ring_deposit(&item.ciphertext, &sender_key, salt)
             }
-            .map_err(|_| Failure::Invalid)
-        })
-        .collect()
+            DecryptLabel::RingDeposit => return Err(Failure::Invalid),
+        }
+        .map_err(|_| Failure::Invalid)?;
+        plaintexts.push(plaintext);
+    }
+    Ok(std::mem::take(&mut *plaintexts))
 }

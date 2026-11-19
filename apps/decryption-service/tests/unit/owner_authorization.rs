@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn a_decrypt_needs_the_owner_signature_over_this_request_and_network() {
     let service = service();
-    let owner = SigningKey::from_bytes(&[5; 32]);
+    let owner = recipient_signer();
     let (viewing, _) = service_keys(&service, &owner);
     let items = vec![transfer_output(viewing, b"ten usdc", 0)];
     let valid = decrypt(&service, &owner, NETWORK, items.clone());
@@ -68,7 +68,7 @@ fn request_items(request: &mut ServiceRequest) -> &mut [DecryptItem] {
 #[test]
 fn even_an_empty_batch_requires_the_owners_signature() {
     let service = service();
-    let owner = SigningKey::from_bytes(&[5; 32]);
+    let owner = recipient_signer();
     let mut request = decrypt(&service, &owner, NETWORK, Vec::new());
     let message = decrypt_message(
         &owner.verifying_key().to_bytes(),
