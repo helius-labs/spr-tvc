@@ -45,6 +45,7 @@ describes those assumptions.
 
 | Invariant | Cases and coverage |
 | --- | --- |
+| **Discovery binds to the loaded QOS manifest.** | The production loader reads a QOS 0.12.1 v2 manifest envelope and the local key files, reports the manifest and executable digests, and refuses a valid Quorum key that differs from the one in the manifest. [QOS startup](crates/enclave/tests/unit/qos_startup.rs) |
 | **Discovery, ping, and errors have a stable HTTP contract.** | Exact health response, runtime keys in discovery, Quorum-only ping decryption, exact signed ping bytes, generic malformed requests, wrong methods, and oversized input rejection. [HTTP and ping](crates/enclave/tests/unit/http_and_ping.rs) |
 | **Canonical encoding yields stable signed bytes.** | JCS ordering, hex encoding, decimal `u64`, and typed bodies reject ambiguous forms. Error codes and discovery digests match the committed fixtures. [Canonical JSON](crates/protocol/tests/unit/canonical_json.rs) · [Wire errors](crates/protocol/tests/unit/wire_errors.rs) · [Conformance](crates/protocol/tests/conformance.rs) |
 | **Proofs and transport interoperate with QOS.** | ECDSA wire signatures use low-S, and malformed encodings fail. Incorrect keys and truncated envelopes fail. Rust QOS interop and shared vectors pin both implementations. [App Proof signatures](crates/enclave/tests/unit/app_proof_signature.rs) · [Conformance](crates/protocol/tests/conformance.rs) · [QOS interop](crates/protocol/tests/qos_crate_interop.rs) |

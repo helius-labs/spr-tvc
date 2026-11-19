@@ -46,12 +46,19 @@ impl Service {
 
     /// Loads the QOS keys from the canonical paths and binds discovery to the approved manifest.
     pub fn load(release: Release, app: &App) -> io::Result<Self> {
-        let handles = Handles::new(
-            EPHEMERAL_KEY_FILE.to_owned(),
-            QUORUM_FILE.to_owned(),
-            MANIFEST_FILE.to_owned(),
-            PIVOT_FILE.to_owned(),
-        );
+        Self::load_from(
+            release,
+            app,
+            &Handles::new(
+                EPHEMERAL_KEY_FILE.to_owned(),
+                QUORUM_FILE.to_owned(),
+                MANIFEST_FILE.to_owned(),
+                PIVOT_FILE.to_owned(),
+            ),
+        )
+    }
+
+    fn load_from(release: Release, app: &App, handles: &Handles) -> io::Result<Self> {
         let ephemeral = handles
             .get_ephemeral_key()
             .map_err(|_| io::Error::other("failed to load QOS ephemeral key"))?;
@@ -209,3 +216,7 @@ pub async fn serve(address: SocketAddr, router: Router) -> io::Result<()> {
 #[cfg(test)]
 #[path = "../tests/unit/http_and_ping.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/qos_startup.rs"]
+mod startup_tests;
