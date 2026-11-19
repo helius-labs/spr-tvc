@@ -44,7 +44,7 @@ tokio = { version = "=1.53.1", features = ["full"] }
 tower-http = { version = "=0.6.11", features = ["set-header"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json"] }
-turnkey_client = "=0.14.0"
+turnkey_client = "=0.19.0"
 utoipa = "=6.0.0"
 zeroize = "=1.9.0"
 spr-tvc-protocol = { path = "../../crates/protocol" }

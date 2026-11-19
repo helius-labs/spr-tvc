@@ -1,4 +1,4 @@
-//! Decrypt a canonical `qos_p256` 0.12.1 envelope with the TVC transcription,
+//! Decrypt a canonical `qos_p256` envelope with the TVC transcription,
 //! and encrypt a TVC envelope that the pinned crate can decrypt.
 
 use qos_p256::encrypt::P256EncryptPair;

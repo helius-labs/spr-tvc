@@ -15,6 +15,7 @@ fn params() -> SignRawPayloadIntentV2 {
         payload: "abcd".into(),
         encoding: PayloadEncoding::Hexadecimal,
         hash_function: HashFunction::NotApplicable,
+        external_signer_pubkey: None,
     }
 }
 

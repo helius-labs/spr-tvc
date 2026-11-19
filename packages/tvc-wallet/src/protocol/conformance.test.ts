@@ -522,9 +522,7 @@ describe("enclave verification", () => {
 describe("QOS live manifest PCR commitment", () => {
   // Derived from qos_nsm `nitro::LIVE_MANIFEST_COMMITMENT_PCR_INDEX` (17),
   // domain "qos-live-manifest-pcr-commitment-v1", extended from
-  // MANIFEST_COMMITMENT_INITIAL_PCR ([0u8; 48]). Verified byte-identical in
-  // qos_nsm 0.12.2 (the version this repo pins), 0.13.0, and 0.14.0, so the
-  // vector holds across the pinned version and every release since.
+  // MANIFEST_COMMITMENT_INITIAL_PCR ([0u8; 48]).
   it("matches the qos_nsm live-manifest PCR commitment", () => {
     const manifestDigest = new Uint8Array(32);
     const ephemeralPublicKey = new Uint8Array(130).fill(0x11);
