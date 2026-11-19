@@ -198,6 +198,15 @@ test("the release identity comes from the authenticated approved QOS manifest", 
     quorumPublicKey: expected.quorumPublicKey,
     manifestDigest: "016748a03b94269ade9b75c7b4231a2940cc3c85aabade226a956ea80ab374b0",
   });
+  const weak = { ...manifest, shareSet: { ...manifest.shareSet, threshold: "1" } };
+  await assert.rejects(
+    approvedDeployment({ ...expected, cfg: { ...cfg, network: "mainnet" } }, credentials, {
+      transport: query({
+        ...tvcDeployment, manifest: { manifest: Buffer.from(JSON.stringify(weak)).toString("base64") },
+      }),
+    }),
+    /threshold manifest approval and share recovery/,
+  );
   for (const edit of [{ appId: "another-app" }, { id: "another-deploy" }, { organizationId: "another-org" },
     { qosVersion: "another-runtime" }, { debugMode: true }, { delete: true }]) {
     await assert.rejects(

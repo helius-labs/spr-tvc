@@ -62,9 +62,10 @@ describe("the committed release files", () => {
       expect(() => releaseFor(network)).toThrowError(/ReleaseNotPinned/);
       return;
     }
-    const release = verifyReleaseFile(pinned, network, BigInt(Date.now()));
+    const bundled = releaseFor(network);
+    const release = verifyReleaseFile(bundled, network, BigInt(Date.now()));
     expect(release.releasePolicy.policy.network).toBe(network);
-    expect(releaseFor(network)).toEqual(pinned);
+    expect(network === "mainnet" ? release.releasePolicy : release).toEqual(pinned);
   });
 });
 

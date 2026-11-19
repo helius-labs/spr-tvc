@@ -1,9 +1,14 @@
 # Decryption service specification
 
-A private transfer can name a Solana address before its owner registers a
+A confidential transfer can name a Solana address before its owner registers a
 private wallet. The address controls spending. An attested enclave holds its
 service viewing key, and the address must sign each request to open outputs.
 Service calls are read-only. The wallet builds and submits the sweep transaction.
+
+The direct transfer puts the recipient's Solana owner tag on chain. It
+encrypts the note contents. Amounts and identities can also be inferred from
+public deposits, withdrawals, timing, and other transaction metadata. The
+[sample](../example/README.md) uses this confidential transfer path.
 
 ## Verify the enclave
 
@@ -23,6 +28,9 @@ API for the recorded live deployment. It checks the manifest's executable
 digest against the build descriptor and its Quorum key against the app
 configuration. The live Boot Proof must commit to that manifest. Discovery
 is checked against those values before the release policy is signed.
+For mainnet, the SDK supplies the authority set, revocation floor, Quorum key,
+security domain, and policy lifetime limit from its independent trust config.
+The release tool stages candidates on a separate ingress.
 
 ## Send and claim
 
@@ -88,7 +96,9 @@ the indexed commitment to accept only the expected note.
   confidentiality for all outputs encrypted under it.
 - Losing the Quorum key makes its outputs unreadable. Replacing it derives
   new service keys. Keep the original key available for decrypting existing
-  outputs until owners sweep them.
+  outputs until owners sweep them. Applications and the pool's admission
+  controls must bound incoming exposure. A sender with cached public service
+  keys can create new outputs without calling this service.
 
 See the [wire protocol](../protocol/README.md#decryption-service)
 for encodings and derivation labels, and the

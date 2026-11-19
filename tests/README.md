@@ -32,3 +32,12 @@ TypeScript unit tests sit beside the implementation.
 The tests use fixtures and simulated attestation inputs. The
 [service spec](../enclave/SPEC.md#key-custody-and-trust) describes the trust
 required of Quorum operators and the release authorities.
+
+## Mainnet release controls
+
+| Invariant | Coverage |
+| --- | --- |
+| An unapproved build cannot supply a production manifest. | The operator tool requires the reviewed source commit, expected GitHub workflow, protected source ref, and immutable image digest. [Provenance checks](../scripts/mainnet-release.test.mjs) |
+| The staged release cannot switch a serving app or replace the known Quorum domain. | Candidate selection permits the first deployment or resumption of the same deployment. The operator tool rejects a shared devnet identity, a different Quorum key, and a one-share manifest. [Release staging](../scripts/mainnet-release.test.mjs) · [Approved deployment](../scripts/release.test.mjs) |
+| A release bundle cannot choose its own mainnet trust anchors. | The SDK binds the policy to the independently pinned domain, Quorum key, distinct authority threshold, maximum lifetime, and revocation floor. [Mainnet pins](../sdk/src/protocol/mainnet-release.test.ts) |
+| The example does not submit mainnet transactions. | It checks the network configuration before contacting services. Hosted devnet also requires acknowledgement of the public owner tag and validates the RPC genesis. [Example preflight](../example/tests/setup.test.ts) |

@@ -32,7 +32,9 @@ use spr_tvc_protocol::release::{
     sign_release_policy, verify_signed_release_policy, PinnedReleaseAuthorities,
     ReleaseAuthorityKey,
 };
-use spr_tvc_protocol::types::{ReleaseAuthoritySignature, ReleasePolicy, SignedReleasePolicy};
+use spr_tvc_protocol::types::{
+    Network, ReleaseAuthoritySignature, ReleasePolicy, SignedReleasePolicy,
+};
 
 fn urandom_scalar() -> Result<Zeroizing<[u8; 32]>, String> {
     // A uniformly random 32-byte string is only a valid P-256 scalar when it
@@ -57,6 +59,9 @@ fn sign(
     policy: ReleasePolicy,
     authority_set_id: String,
 ) -> Result<(SignedReleasePolicy, PinnedReleaseAuthorities), String> {
+    if policy.network != Network::Devnet {
+        return Err("mainnet policies require independent release authorities".to_owned());
+    }
     let secret = urandom_scalar()?;
     let signing_key =
         p256::ecdsa::SigningKey::from_slice(secret.as_ref()).map_err(|error| error.to_string())?;

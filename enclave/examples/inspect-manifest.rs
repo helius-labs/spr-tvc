@@ -14,6 +14,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "manifestDigest": hex::encode(manifest.manifest_hash()),
             "executableDigest": hex::encode(manifest.pivot_hash()),
             "quorumPublicKey": hex::encode(&manifest.namespace().quorum_key),
+            "manifestThreshold": manifest.manifest_set().threshold,
+            "shareThreshold": manifest.share_set().threshold,
         })
     );
     Ok(())

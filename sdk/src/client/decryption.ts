@@ -9,7 +9,7 @@ import type { DecryptionServiceTransport } from "../connection/http.js";
 import { DecryptionServiceHttpError } from "../protocol/error.js";
 import { requireHex } from "../protocol/hex.js";
 import { requireNetwork } from "../protocol/network.js";
-import { releaseFor, type ReleaseTrust } from "../protocol/releases.js";
+import { releaseForConnection, type ReleaseTrust } from "../protocol/releases.js";
 import type { DecryptItem, Network } from "../protocol/types.js";
 import { checkHexList, operationOptions } from "./items.js";
 import { executeServiceCall, type ServiceCall, type ServiceCallResult } from "./exchange.js";
@@ -22,7 +22,9 @@ export type DecryptionServiceConfig = {
   readonly endpoint: URL;
   /** Fetches a replica's Boot Proof from the decryption app's Turnkey organization. */
   readonly resolveBootProof: BootProofResolver;
+  /** Mainnet uses only the policy from an override. The SDK pins its own trust anchors. */
   readonly release?: ReleaseTrust;
+  /** Verifier clock override for development. Mainnet uses the system clock. */
   readonly nowMs?: () => bigint;
   readonly transport?: DecryptionServiceTransport;
   readonly requestTimeoutMs?: number;
@@ -107,8 +109,8 @@ export function createDecryptionService(config: DecryptionServiceConfig): Decryp
     createDecryptionServiceSession({
       network,
       backend: { endpoint, resolveBootProof },
-      release: config.release ?? releaseFor(network),
-      ...(nowMs === undefined ? {} : { nowMs }),
+      release: releaseForConnection(network, config.release),
+      ...(network === "devnet" && nowMs !== undefined ? { nowMs } : {}),
       ...(transport === undefined ? {} : { transport }),
       ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
     }),

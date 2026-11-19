@@ -1,34 +1,7 @@
 #!/usr/bin/env node
-// Releases one enclave application of one network in three phases, each
-// resumable on its own:
-//
-//   build   reads the /tvc_app digest from the network's image that
-//           publish-enclave-image pushed and writes the deployment
-//           descriptor
-//   deploy  creates the TVC deployment, approves and provisions it for every
-//           operator, makes it live, and waits for /v1/info to serve it
-//   policy  validates the authenticated deployment manifest against the
-//           configured Quorum key and built executable, then verifies live
-//           attestation and signs the SDK release pin
-//
-//   node scripts/release.mjs <build|deploy|policy|all> <release-id>
-//     --network <devnet|mainnet>
-//     [--image <reference>] [--unattended] [--prune-deployments]
-//     [--operator-seeds <dir> --quorum-key-metadata <file>]
-//
-// Turnkey is driven through the `tvc` CLI and its active login; the policy
-// phase reads that login's API key to fetch the Boot Proof, and verifies it
-// with the decryption client's build (sdk/dist). Approvals are
-// interactive: the CLI shows the QOS manifest for each operator to confirm.
-// --unattended approves without that review, on devnet only.
-// --prune-deployments deletes the oldest deployments that are neither live nor
-// this release's until it fits under Turnkey's cap. With a local Quorum key,
-// --operator-seeds holds the key files of the operators who act here
-// (`operator-<n>.seed` for the n-th of `operatorIds`) and
-// --quorum-key-metadata the encrypted shares. The constants are in
-// enclave/deploy/release.json, shared at the top and per network under
-// `networks`; each network's deployment files are in
-// enclave/deploy/<network>/.
+// Builds a Turnkey deployment descriptor, stages an enclave, and verifies
+// live attestation before writing the SDK policy. See scripts/README.md for
+// the mainnet operator and signing steps.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createECDH, createPrivateKey, sign } from "node:crypto";
@@ -38,6 +11,8 @@ import { join, relative, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+
+import { requireCandidateApp, requireMainnetQuorum, signableMainnetPolicy, verifyMainnetImage, verifyMainnetPolicy } from "./mainnet-release.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const NETWORKS = ["devnet", "mainnet"];
@@ -56,9 +31,10 @@ const DEPLOYABLE_LIMIT = 3;
 const CLIENT_TESTING = join(ROOT, "sdk/dist/testing.js");
 const TURNKEY_API = "https://api.turnkey.com";
 
-/** The network's release pin in the decryption client. */
+const mainnetTrustPath = join(ROOT, "sdk/trust/mainnet.json");
 const pinPath = (cfg) => join(ROOT, "sdk/releases", `${cfg.network}.json`);
 const descriptorPath = (cfg, releaseId) => join(deployDir, cfg.network, `${APP}-${releaseId}.deployment.json`);
+const policyRequestPath = (cfg, releaseId) => join(deployDir, cfg.network, `${APP}-${releaseId}.policy-request.json`);
 const recordPath = (cfg, releaseId) => join(deployDir, cfg.network, `${APP}-${releaseId}.deploy.json`);
 
 class ReleaseError extends Error {}
@@ -142,14 +118,43 @@ function config(network) {
   return { ...shared, ...net, network };
 }
 
-function build(releaseId, cfg, image) {
+function verifyImage(cfg, image, sourceCommit) {
+  if (cfg.network === "mainnet") {
+    try {
+      verifyMainnetImage(image, cfg.imageRepository, sourceCommit);
+    } catch (error) {
+      fail(error.message);
+    }
+  }
+}
+
+function appConfig(network) {
+  return readJson(join(deployDir, network, `${APP}-${network}.app.json`));
+}
+
+function productionTrust(cfg) {
+  const trust = readJson(mainnetTrustPath);
+  const { networks: { devnet } } = readJson(join(deployDir, "release.json"));
+  try {
+    requireMainnetQuorum(
+      cfg, appConfig("mainnet"), trust, { ...devnet, ...appConfig("devnet") },
+      readJson(pinPath(cfg))?.policy,
+    );
+  } catch (error) {
+    fail(error.message);
+  }
+  return trust;
+}
+
+function build(releaseId, cfg, image, sourceCommit) {
   if (!image) fail("build needs --image, the reference publish-enclave-image reports");
   // The publish workflow tags each image with its application and the network it was built for.
   const tag = `${cfg.imageRepository}:${APP}-${cfg.network}-`;
   if (!image.startsWith(tag) || !/^[^@]+@sha256:[0-9a-f]{64}$/.test(image)) {
     fail(`--image must be ${tag}<commit>@sha256:<digest>, the ${cfg.network} image publish-enclave-image reports`);
   }
-  const pivotDigest = capture("docker", ["run", "--rm", "--platform", "linux/amd64", "--entrypoint", "sha256sum", image, "/tvc_app"]).split(" ")[0];
+  verifyImage(cfg, image, sourceCommit);
+  const pivotDigest = capture("docker", ["run", "--rm", "--network", "none", "--read-only", "--platform", "linux/amd64", "--entrypoint", "sha256sum", image, "/tvc_app"]).split(" ")[0];
   if (!HEX(32).test(pivotDigest)) fail(`could not read the /tvc_app digest: ${pivotDigest}`);
   writeJson(descriptorPath(cfg, releaseId), {
     appId: cfg.appId,
@@ -193,7 +198,7 @@ function pruneDeployments(cfg, deployId) {
 }
 
 async function fetchInfo(endpoint) {
-  const response = await fetch(new URL("v1/info", `${endpoint}/`));
+  const response = await fetch(new URL("v1/info", `${endpoint}/`), { signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
@@ -230,16 +235,34 @@ function postLocalShare(deployId, operatorId, { seed, metadata, unattended }) {
 }
 
 /** The deployment record is the phase's progress: a re-run continues where the last one stopped. */
-async function deploy(releaseId, cfg, { unattended, prune, seeds, metadata }) {
+async function deploy(releaseId, cfg, { unattended, prune, seeds, metadata, sourceCommit }) {
   const descriptor = descriptorPath(cfg, releaseId);
   if (!existsSync(descriptor)) fail(`no ${relative(ROOT, descriptor)}: run build first`);
   const path = recordPath(cfg, releaseId);
-  const record = existsSync(path)
-    ? readJson(path)
-    : { deployId: tvc("deploy", "create", "--config-file", descriptor).deploymentId, approved: [], provisioned: [], live: false };
+  const existing = existsSync(path) ? readJson(path) : undefined;
+  if (cfg.network === "mainnet") {
+    productionTrust(cfg);
+    verifyImage(cfg, readJson(descriptor).pivotContainerImageUrl, sourceCommit);
+    try {
+      requireCandidateApp(liveDeploymentId(cfg), existing?.deployId);
+    } catch (error) {
+      fail(error.message);
+    }
+  }
+  const record = existing ??
+    { deployId: tvc("deploy", "create", "--config-file", descriptor).deploymentId, approved: [], provisioned: [], live: false };
   const save = () => writeJson(path, record);
   save();
   const { deployId } = record;
+  if (cfg.network === "mainnet") {
+    const { expectedPivotDigest, pivotContainerImageUrl } = readJson(descriptor);
+    const { quorumPublicKey } = appConfig(cfg.network);
+    await approvedDeployment({
+      cfg, deployId, expectedPivotDigest, quorumPublicKey, expectedImage: pivotContainerImageUrl,
+    }, tvcCredentials());
+    console.log(`staged ${deployId}. Operators must approve and provision this candidate independently`);
+    return;
+  }
   if (prune) pruneDeployments(cfg, deployId);
 
   // With a local Quorum key, the operators whose key files are here act; a threshold of them is enough.
@@ -323,9 +346,9 @@ export function releasePolicy(releaseId, cfg, info, approved, now) {
     maxEncryptedRequestBytes: MAX_HTTP_BYTES,
     maxEncryptedResponseBytes: MAX_HTTP_BYTES,
     turnkeyTrustRootId: cfg.turnkeyTrustRootId,
-    revocationEpoch: "0",
+    revocationEpoch: cfg.revocationEpoch ?? "0",
     validFromMs: String(now),
-    expiresAtMs: String(now + cfg.policyValidityDays * 86_400_000),
+    expiresAtMs: String(now + (cfg.policyLifetimeMs ?? cfg.policyValidityDays * 86_400_000)),
   };
 }
 
@@ -427,7 +450,7 @@ export function inspectManifest(bytes) {
 }
 
 export async function approvedDeployment(
-  { cfg, deployId, expectedPivotDigest, quorumPublicKey }, credentials,
+  { cfg, deployId, expectedPivotDigest, quorumPublicKey, expectedImage }, credentials,
   { transport = { fetch } } = {},
 ) {
   const body = JSON.stringify({ organizationId: credentials.organizationId, deploymentId: deployId });
@@ -441,14 +464,18 @@ export async function approvedDeployment(
   if (deployment?.id !== deployId ||
       deployment?.organizationId !== credentials.organizationId ||
       deployment?.appId !== cfg.appId || deployment?.qosVersion !== cfg.qosVersion ||
-      deployment?.debugMode !== false || deployment?.delete === true) {
+      deployment?.debugMode !== false || deployment?.delete === true ||
+      (expectedImage !== undefined && deployment?.pivotContainer?.containerUrl !== expectedImage)) {
     fail("Turnkey deployment does not match the approved app and QOS runtime");
   }
   const encoded = deployment.manifest?.manifest;
   if (typeof encoded !== "string" || encoded.length === 0 || encoded.length > 1_048_576) {
     fail("Turnkey deployment has no supported manifest");
   }
-  const identity = inspectManifest(Buffer.from(encoded, "base64"));
+  const { manifestThreshold, shareThreshold, ...identity } = inspectManifest(Buffer.from(encoded, "base64"));
+  if (cfg.network === "mainnet" && (manifestThreshold < 2 || shareThreshold < 2)) {
+    fail("mainnet requires threshold manifest approval and share recovery");
+  }
   if (identity.executableDigest !== expectedPivotDigest || !HEX(32).test(expectedPivotDigest)) {
     fail("approved manifest does not match the locally built executable");
   }
@@ -488,6 +515,7 @@ export async function verifyRelease(cfg, info, approved, { bootProof, transport,
  * `verifyRelease` and `signReleasePolicy`.
  */
 export async function verifiedReleaseFile(releaseId, cfg, info, approved, now, { verify = verifyRelease, sign = signReleasePolicy } = {}) {
+  if (cfg.network !== "devnet") fail("mainnet policies require independent release authorities");
   const unsigned = releasePolicy(releaseId, cfg, info, approved, now);
   await verify(cfg, info, approved);
   const signed = sign(unsigned, `${releaseId}-${new Date(now).toISOString().slice(0, 7)}`);
@@ -498,21 +526,55 @@ export async function verifiedReleaseFile(releaseId, cfg, info, approved, now, {
   };
 }
 
-async function policy(releaseId, cfg) {
+async function releaseCandidate(releaseId, cfg, sourceCommit) {
   const { deployId, live } = readJson(recordPath(cfg, releaseId));
-  if (!live || liveDeploymentId(cfg) !== deployId) fail("the recorded deployment is not live");
-  const { expectedPivotDigest } = readJson(descriptorPath(cfg, releaseId));
-  const { quorumPublicKey } = readJson(join(deployDir, cfg.network, `${APP}-${cfg.network}.app.json`));
-  const approved = await approvedDeployment({ cfg, deployId, expectedPivotDigest, quorumPublicKey }, tvcCredentials());
-  const info = await awaitRelease(releaseId, cfg);
+  if ((cfg.network === "devnet" && !live) || liveDeploymentId(cfg) !== deployId) fail("the recorded deployment is not live");
+  const { expectedPivotDigest, pivotContainerImageUrl } = readJson(descriptorPath(cfg, releaseId));
+  verifyImage(cfg, pivotContainerImageUrl, sourceCommit);
+  const { quorumPublicKey } = appConfig(cfg.network);
+  const approved = await approvedDeployment({
+    cfg, deployId, expectedPivotDigest, quorumPublicKey,
+    ...(cfg.network === "mainnet" ? { expectedImage: pivotContainerImageUrl } : {}),
+  }, tvcCredentials());
+  return { info: await awaitRelease(releaseId, cfg), approved };
+}
+
+async function mainnetPolicy(releaseId, cfg, { sourceCommit, signedPolicyPath }) {
+  const trust = productionTrust(cfg);
+  const candidateConfig = {
+    ...cfg, revocationEpoch: trust.releaseAuthorities.minimumRevocationEpoch,
+    policyLifetimeMs: trust.maximumPolicyLifetimeMs,
+    qosIdentityPcrs: trust.qosIdentityPcrs,
+  };
+  const { info, approved } = await releaseCandidate(releaseId, candidateConfig, sourceCommit);
+  if (!existsSync(CLIENT_TESTING)) fail("build the decryption SDK before preparing or approving release policies");
+  const sdk = await import(pathToFileURL(CLIENT_TESTING).href);
+  if (!signedPolicyPath) {
+    await verifyRelease(candidateConfig, info, approved);
+    const policy = releasePolicy(releaseId, candidateConfig, info, approved, Date.now());
+    writeJson(policyRequestPath(cfg, releaseId), signableMainnetPolicy(policy, trust, sdk));
+    return;
+  }
+  const signed = readJson(signedPolicyPath);
+  const validFrom = Number(signed?.policy?.validFromMs);
+  if (!Number.isSafeInteger(validFrom) || validFrom <= 0) fail("invalid policy start time");
+  const expected = releasePolicy(releaseId, candidateConfig, info, approved, validFrom);
+  verifyMainnetPolicy(signed, expected, trust, sdk, BigInt(Date.now()));
+  await verifyRelease(candidateConfig, info, approved);
+  verifyMainnetPolicy(signed, expected, trust, sdk, BigInt(Date.now()));
+  writeJson(pinPath(cfg), signed);
+}
+
+async function policy(releaseId, cfg) {
+  const { info, approved } = await releaseCandidate(releaseId, cfg);
   writeJson(pinPath(cfg), await verifiedReleaseFile(releaseId, cfg, info, approved, Date.now()));
 }
 
 const USAGE =
-  "usage: node scripts/release.mjs <build|deploy|policy|all> <release-id> --network <devnet|mainnet> " +
+  "usage: node scripts/release.mjs <build|deploy|prepare|policy|all> <release-id> --network <devnet|mainnet> " +
   "[--image <reference>] [--unattended] [--prune-deployments] " +
-  "[--operator-seeds <dir> --quorum-key-metadata <file>]";
-const PHASES = ["build", "deploy", "policy"];
+  "[--operator-seeds <dir> --quorum-key-metadata <file>] [--source-commit <sha>] [--signed-policy <file>]";
+const PHASES = ["build", "deploy", "prepare", "policy"];
 
 async function main() {
   let args;
@@ -522,6 +584,8 @@ async function main() {
       options: {
         network: { type: "string" },
         image: { type: "string" },
+        "source-commit": { type: "string" },
+        "signed-policy": { type: "string" },
         "operator-seeds": { type: "string" },
         "quorum-key-metadata": { type: "string" },
         unattended: { type: "boolean", default: false },
@@ -539,17 +603,33 @@ async function main() {
   if (!NETWORKS.includes(network)) fail(`--network must be devnet or mainnet\n${USAGE}`);
   // Each operator reviews the QOS manifest of a mainnet deployment before approving it.
   if (values.unattended && network === "mainnet") fail("--unattended is refused on mainnet: every approval is reviewed");
+  if (network === "mainnet" && (phase === "all" || values["prune-deployments"])) {
+    fail("mainnet uses separate staging and signing phases and retains previous deployment apps");
+  }
+  if ((phase === "prepare" && network !== "mainnet") ||
+      (values["signed-policy"] && (network !== "mainnet" || phase !== "policy"))) fail(USAGE);
+  if (network === "mainnet" && phase === "policy" && !values["signed-policy"]) {
+    fail("mainnet policy requires --signed-policy from the pinned release authorities");
+  }
+  const sourceCommit = values["source-commit"];
   const seeds = values["operator-seeds"];
   const metadata = values["quorum-key-metadata"];
+  if (network === "mainnet" && (seeds || metadata)) {
+    fail("mainnet operators provision their shares independently with the Turnkey CLI");
+  }
   if (Boolean(seeds) !== Boolean(metadata)) fail("--operator-seeds and --quorum-key-metadata go together");
   const cfg = config(network);
-  for (const step of phase === "all" ? PHASES : [phase]) {
+  for (const step of phase === "all" ? ["build", "deploy", "policy"] : [phase]) {
     console.log(`\n== ${step} ${releaseId} (${network})`);
-    if (step === "build") build(releaseId, cfg, values.image);
+    if (step === "build") build(releaseId, cfg, values.image, sourceCommit);
     if (step === "deploy") {
-      await deploy(releaseId, cfg, { unattended: values.unattended, prune: values["prune-deployments"], seeds, metadata });
+      await deploy(releaseId, cfg, { unattended: values.unattended, prune: values["prune-deployments"], seeds, metadata, sourceCommit });
     }
-    if (step === "policy") await policy(releaseId, cfg);
+    if (step === "prepare" || (step === "policy" && network === "mainnet")) {
+      await mainnetPolicy(releaseId, cfg, { sourceCommit, signedPolicyPath: values["signed-policy"] });
+    } else if (step === "policy") {
+      await policy(releaseId, cfg);
+    }
   }
   console.log(
     `\n${releaseId}: done. Commit ${relative(ROOT, join(deployDir, network))} and ${relative(ROOT, pinPath(cfg))}.`,

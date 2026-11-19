@@ -39,10 +39,10 @@ function env(name: string): string {
   return value;
 }
 
-function networkFromEnv(): Network {
-  const network = process.env["SPR_NETWORK"]?.trim() || "devnet";
-  if (network !== "devnet" && network !== "mainnet") throw new Error("SPR_NETWORK must be devnet or mainnet");
-  return network;
+const DEVNET_GENESIS = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
+function loopback(url: string | URL | undefined): boolean {
+  return url !== undefined && ["127.0.0.1", "localhost", "[::1]"].includes(new URL(url).hostname);
 }
 
 function heliusUrl(network: Network, path: string): string {
@@ -53,7 +53,7 @@ function heliusUrl(network: Network, path: string): string {
 
 function clientConfig(network: Network): SprClientConfig {
   const proverUrl = process.env["ZOLANA_PROVER_URL"]?.trim() || heliusUrl(network, "/v1/spr");
-  const localProver = ["127.0.0.1", "localhost", "[::1]"].includes(new URL(proverUrl).hostname);
+  const localProver = loopback(proverUrl);
   return {
     solanaRpcUrl: process.env["ZOLANA_ENDPOINT"]?.trim() || heliusUrl(network, "/"),
     indexerUrl: process.env["ZOLANA_INDEXER_URL"]?.trim() || heliusUrl(network, "/v1/spr"),
@@ -64,10 +64,22 @@ function clientConfig(network: Network): SprClientConfig {
 }
 
 export async function setup() {
-  await initializePoseidon();
-  const network = networkFromEnv();
-  const zolana = await createSprClient(clientConfig(network));
+  const network = process.env["SPR_NETWORK"]?.trim() || "devnet";
+  if (network !== "devnet") throw new Error("the example is limited to devnet and localnet");
   const localEndpoint = process.env["DECRYPTION_SERVICE_LOCAL_ENDPOINT"]?.trim();
+  if (!localEndpoint && process.env["EXAMPLE_ACCEPT_PUBLIC_RECIPIENT"] !== "1") {
+    throw new Error("this flow publishes the recipient's Solana owner tag. Set EXAMPLE_ACCEPT_PUBLIC_RECIPIENT=1 to proceed");
+  }
+  const config = clientConfig(network);
+  if (localEndpoint && !loopback(config.solanaRpcUrl)) {
+    throw new Error("the local example requires loopback RPC");
+  }
+  await initializePoseidon();
+  const zolana = await createSprClient(config);
+  const genesis = await zolana.solanaRpc.getGenesisHash().send();
+  if (genesis === MAINNET_GENESIS || (!localEndpoint && genesis !== DEVNET_GENESIS)) {
+    throw new Error("the example requires a Solana devnet or localnet RPC");
+  }
   if (localEndpoint) {
     const secret = JSON.parse(await readFile(env("TVC_SOLANA_KEYPAIR_PATH"), "utf8")) as number[];
     const sender = await createKeyPairSignerFromBytes(new Uint8Array(secret));

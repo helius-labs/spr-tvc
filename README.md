@@ -1,8 +1,10 @@
 # spr-tvc
 
-Attested decryption for Solana Privacy Rings. A sender can make a private
+Attested decryption for Solana Privacy Rings. A sender can make a confidential
 transfer to a Turnkey Solana account before its owner registers a shielded
 wallet. The owner authorizes each decryption with that account's signature.
+In this flow the note contents are encrypted and the recipient's Solana
+owner tag is public.
 
 | Component | Role |
 | --- | --- |
@@ -21,4 +23,6 @@ just headless-e2e
 ```
 
 The [release guide](scripts/README.md#release) covers image publication,
-provisioning, and signing the SDK pin. Hosted use requires a signed pin for the approved deployment.
+provisioning, and signing the SDK pin. Hosted use requires a signed pin for the
+approved deployment. The [mainnet release procedure](scripts/README.md#mainnet)
+covers staging, independent signatures, and recovery.
