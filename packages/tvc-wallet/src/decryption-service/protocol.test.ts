@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { encodeLowerHex } from "../protocol/hex.js";
 import { decryptMessage, serviceRequestDigest, type ServiceRequest } from "./protocol.js";
 
-// The same request and vectors as `crates/protocol/src/decryption_service.rs`.
+// The same request and vectors as `crates/protocol/tests/unit/decryption_request_binding.rs`.
 const request: ServiceRequest = {
   version: 1,
   request_id: "01".repeat(32),

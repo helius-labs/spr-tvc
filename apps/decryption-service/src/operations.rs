@@ -102,4 +102,5 @@ fn run(
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/decrypt_flow.rs"]
 mod tests;

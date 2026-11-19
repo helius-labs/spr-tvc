@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
+import { initializePoseidon, SOL_MINT, ViewingKey, Wallet } from "@heliuslabs/spr";
+import { DEFAULT_TREE_ID } from "@heliuslabs/spr/interface";
+import { randomSalt } from "@heliuslabs/spr/keypair";
+import { createProofOutput, decryptTransactions, encodeConfidentialSlots } from "@heliuslabs/spr/transaction";
 import { ed25519 } from "@noble/curves/ed25519";
 import { p256 } from "@noble/curves/p256";
-import { getAddressDecoder } from "@solana/kit";
+import { address, generateKeyPairSigner, getAddressDecoder, type Signature } from "@solana/kit";
 import type { SprEmbeddedWalletKeys, SprEmbeddedWalletTransport, SprEmbeddedWalletTurnkey } from "@heliuslabs/spr-embedded-wallet";
 import {
   ENROLLMENT_DOMAINS,
@@ -125,6 +129,65 @@ describe("the decryption service through the gateway", () => {
     expect(operated).toHaveProperty("bootProof");
     expect(JSON.parse(sent[1]!.body)).not.toHaveProperty("descriptor");
     expect(JSON.parse(sent[1]!.body)).not.toHaveProperty("wallet_grant");
+  });
+
+  it("signs each decrypt batch and keeps only outputs that match their commitments", async () => {
+    await initializePoseidon();
+    const service = createLocalDecryptionService({
+      network: "devnet",
+      endpoint: new URL(decryptionServiceUrl),
+      gateway: true,
+      transport,
+    });
+    const signer = await generateKeyPairSigner();
+    const signMessages = vi.fn(signer.signMessages);
+    const owner = { address: signer.address, signMessages };
+    const keys = await service.open(owner, { prove: vi.fn(), proveMerge: vi.fn() });
+    const senderKey = ViewingKey.generate();
+    try {
+      const recipient = await service.address(owner.address);
+      expect(keys.address().viewingPublicKey.toBytes()).toEqual(recipient.viewingPublicKey.toBytes());
+      expect(keys.address().nullifierPublicKey).toEqual(recipient.nullifierPublicKey);
+      expect(signMessages).toHaveBeenCalledTimes(1);
+
+      const wallet = new Wallet({ identity: keys.address() });
+      const output = (amount: bigint) => createProofOutput({ ownerAddress: recipient, asset: SOL_MINT, amount });
+      const valid = output(5n);
+      const mismatched = output(7n);
+      const commitments = [valid.hash(DEFAULT_TREE_ID), output(8n).hash(DEFAULT_TREE_ID)];
+      const salt = randomSalt();
+      const slots = encodeConfidentialSlots([valid, mismatched], wallet.registry, senderKey, salt);
+      const report = await decryptTransactions({
+        wallet,
+        keys,
+        transactions: [{
+          slot: 1n,
+          txSignature: "1".repeat(64) as Signature,
+          txViewingPublicKey: senderKey.publicKey(),
+          salt,
+          outputSlots: slots.map((slot, index) => ({
+            viewTag: slot!.viewTag,
+            payload: slot!.data,
+            outputContext: {
+              hash: commitments[index]!,
+              tree: address("3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"),
+              leafIndex: BigInt(index),
+            },
+          })),
+          messages: [],
+          nullifiers: [],
+          proofless: false,
+        }],
+      });
+      expect(report).toMatchObject({ storedUtxos: 1, undecryptableCandidates: 1 });
+      expect(wallet.utxos().map(({ utxo }) => utxo.amount)).toEqual([5n]);
+      expect(signMessages).toHaveBeenCalledTimes(2);
+      expect(signMessages.mock.calls[1]?.[0][0]?.content)
+        .not.toEqual(signMessages.mock.calls[0]?.[0][0]?.content);
+    } finally {
+      senderKey.destroy();
+      keys.destroy();
+    }
   });
 
   it("refuses a wallet grant on operations", async () => {

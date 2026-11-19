@@ -37,6 +37,7 @@ mod keys;
 mod prove;
 mod sealed;
 #[cfg(test)]
+#[path = "../../tests/unit/wallet_operations.rs"]
 mod tests;
 
 #[cfg(any(test, feature = "local-dev"))]

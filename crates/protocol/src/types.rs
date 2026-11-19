@@ -152,9 +152,10 @@ pub enum DecryptLabel {
 pub struct DecryptItem {
     #[serde(with = "hex")]
     pub ciphertext: Vec<u8>,
-    /// The viewing key that opens it.
+    /// Declared recipient viewing key. The enclave checks it against its own key.
     #[serde(with = "hex")]
     pub viewing_public_key: Vec<u8>,
+    /// The sender's ephemeral X25519 viewing key from the transaction or deposit.
     #[serde(with = "hex")]
     pub transaction_viewing_public_key: Vec<u8>,
     #[serde(with = "hex")]

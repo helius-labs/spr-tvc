@@ -387,7 +387,7 @@ a wallet.
 ```ts
 import { createDecryptionService } from "@heliuslabs/spr-embedded-wallet/decryption-service";
 
-// Through tvc-gateway (Helius API key only): Boot Proofs arrive beside answers.
+// Use the devnet gateway to receive Boot Proofs with responses.
 const service = createDecryptionService({
   network,
   endpoint: new URL("https://devnet.helius-rpc.com/v1/decryption?api-key=…"),
@@ -405,13 +405,14 @@ const received = new Wallet({ identity: keys.address() });
 await syncWallet({ client, wallet: received, keys });
 ```
 
-`owner` is a `@solana/kit` `MessagePartialSigner`. It signs one off-chain
-message in `open` and one for every batch of outputs a sync opens. The service
-returns the nullifier secret, so proofs are made as `LocalKeys` makes them,
-through `client.proofService`. The recipient then moves the balance to its own
-wallet with `buildTransferTransaction`. Without `resolveBootProof`, `endpoint`
-is a tvc-gateway `/v1/decryption` URL and Boot Proofs come beside
-session and operation answers (testers need only a Helius API key).
+`owner` is the destination address's `@solana/kit` `MessagePartialSigner`.
+`open` signs an empty decrypt batch for the nullifier secret, and sync signs
+each ciphertext batch. The SDK generates each response key pair locally
+before signing. The signature binds the batch and the response public key.
+Sync checks decrypted UTXOs against their indexed commitments. Sweep them
+with `buildTransferTransaction` and the owner's transaction signature.
+The [complete example](../../examples/typescript-client/examples/unregistered_recipient.ts)
+shows the send, claim, and sweep.
 
 ## Entry points
 

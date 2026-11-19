@@ -1,45 +1,25 @@
 # spr-tvc
 
-Turnkey Verifiable Compute (TVC) applications and clients for Solana Privacy
-Rings: a privacy wallet whose keys live in an enclave, a decryption service for
-transfers to addresses that have not registered a wallet yet, the Helius-hosted
-gateway in front of both, and the shared protocol/enclave crates and TypeScript
-client.
+Turnkey Verifiable Compute (TVC) applications for Solana Privacy Rings.
+The [privacy wallet](apps/privacy-wallet) keeps wallet keys in an enclave.
+The [decryption service](apps/decryption-service) lets an unregistered Solana
+address receive private transfers. Both expose the SDK's `WalletKeys` interface
+through the [TypeScript client](packages/tvc-wallet).
 
-The privacy wallet answers the Zolana SDK's `WalletKeys` interface
-(`SprEmbeddedWalletKeys` in place of `LocalKeys`): sync, selection, transfers,
-withdrawals, splits, merges, rings, deposits, registration, signing, and
-submission. The decryption service returns viewing keys for an unregistered
-address and opens ciphertexts when the owner signs. Both apps share the enclave
-request envelope; the gateway adds Boot Proofs and project identity so clients
-use a Helius API key only.
+Pre-production. Use disposable funds on devnet.
 
-Pre-production, for disposable devnet funds. The witness, which holds the
-long-lived nullifier secret, reaches only an attested TEE prover; see
-[Network boundary](#network-boundary).
-
-On Helius devnet (and `beta-devnet`), with a Helius API key:
-
-- private wallet: `https://devnet.helius-rpc.com/v1/private-wallet`
-- decryption service: `https://devnet.helius-rpc.com/v1/decryption`
-- indexer and TEE prover: `https://devnet.helius-rpc.com/v1/spr`
-
-| Path | Purpose |
+| Helius devnet endpoint | Purpose |
 | --- | --- |
-| [`apps/privacy-wallet`](apps/privacy-wallet) | The TVC application and an unattested local testkit. |
-| [`apps/decryption-service`](apps/decryption-service) | Prototype TVC application: decryption for addresses without a registered wallet. |
-| [`apps/tvc-gateway`](apps/tvc-gateway) | The Helius-hosted backend at `/v1/private-wallet` (sessions, enrollment, grants) and `/v1/decryption` (sessions and operations with Boot Proofs, no enroll). |
-| [`packages/tvc-wallet`](packages/tvc-wallet) | TypeScript client: connection verification, the Turnkey session key as the client key, the five operations, `SprEmbeddedWalletKeys` for the Zolana SDK. |
-| [`crates/enclave`](crates/enclave) | What both TVC applications serve around their operations: routes, the request envelope, the proof-carrying response, the pool cipher. |
-| [`crates/protocol`](crates/protocol) | The protocol specification and its Rust implementation: wire types, JCS, digests, client authorization, QOS envelope, release policies, conformance fixtures. |
-| [`examples/typescript-client`](examples/typescript-client) | The client on a Turnkey API key, then SOL and SPL lifecycles and a merge, through the hosted gateway or against the local testkit. |
-| [`scripts`](scripts) | Operator tooling: per-network releases, service keys, the localnet for `just headless-e2e`. |
+| `https://devnet.helius-rpc.com/v1/private-wallet` | Private wallet sessions, enrollment, and operations |
+| `https://devnet.helius-rpc.com/v1/decryption` | Decryption service sessions and operations |
+| `https://devnet.helius-rpc.com/v1/spr` | Indexer and TEE prover |
 
-## Naming
+The [gateway](apps/tvc-gateway) authenticates Helius API keys and forwards
+enclave traffic with Boot Proofs. See the
+[decryption service flow](apps/decryption-service/SPEC.md) for recipient
+authorization and the [test invariants](TEST_INVARIANTS.md) for audit scope.
 
-This repository is [`helius-labs/spr-tvc`](https://github.com/helius-labs/spr-tvc). Rust crates and binaries use the `spr-tvc-*` prefix; wire proof types are `spr.tvc.*`. Historical deployment records under `apps/*/deploy/**/*.deployment.json` still point at previous GHCR image names.
-
-## Responsibility split
+## Privacy wallet flow
 
 ```mermaid
 flowchart LR
@@ -79,7 +59,7 @@ never signs a Solana transaction. Request and response semantics, the
 envelope, digests, descriptors, sealed seeds, and release policies are
 specified in [`crates/protocol`](crates/protocol/README.md).
 
-## Trust
+## Privacy wallet trust
 
 Trust material arrives out of band: a threshold-signed release policy, the
 authority public keys, and PCR pins, one release per network
@@ -143,7 +123,7 @@ at the commit
 
 Never commit Turnkey operator files, API keys, or `.env.local`.
 
-## Deployment
+## Privacy wallet deployment
 
 Each network, `devnet` or `mainnet`, has its own Turnkey TVC app, Quorum key,
 operators, `linux/amd64` image built for it and pinned by `@sha256:`, signed

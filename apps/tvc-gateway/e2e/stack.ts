@@ -46,7 +46,7 @@ const p256Public = (secretHex: string, compressed: boolean) =>
   hex(p256.getPublicKey(Buffer.from(secretHex, "hex"), compressed));
 
 function cargoBuild(...args: string[]) {
-  execFileSync("cargo", ["build", "--quiet", ...args], { stdio: "inherit" });
+  execFileSync("cargo", ["build", "--locked", "--quiet", ...args], { stdio: "inherit" });
 }
 
 async function freePort(): Promise<number> {

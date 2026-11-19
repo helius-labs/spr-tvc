@@ -14,6 +14,7 @@
     "@heliuslabs/spr-embedded-wallet": "workspace:*"
   },
   "devDependencies": {
+    "@heliuslabs/spr": "0.9.0-alpha",
     "@types/node": "^24.0.0",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

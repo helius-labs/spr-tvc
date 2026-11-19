@@ -215,14 +215,23 @@ can sign for any other.
 one signer) whose application domain is
 `SHA-256("TSPP/decryption-service/decrypt/v1")` and whose payload is
 `TSPP/decryption-service/decrypt/v1/<network>/<hex of the request digest>`.
-The request digest covers the items and the response key, so a signature
-authorizes one request and only the holder of that response key reads the
-answer. The signature is not a secret.
+The digest binds the items, release pins, request ID, and one-time response
+public key. The recipient client generates that key pair before asking the
+owner to sign. The reply is encrypted to the signed public key, including
+on replay. Reading it requires the corresponding private key.
 
-`Decrypt` takes the items of the wallet `Decrypt` operation, each naming the
-signer's service viewing public key, and answers every one: the pool cipher is
-unauthenticated, so the client adopts a plaintext only when its commitment
-equals the indexed one.
+`Decrypt` uses the same v1 item format as the wallet. The verified signer
+determines the service viewing key. Each item's `viewing_public_key` is a
+consistency check. Its `transaction_viewing_public_key` is the sender's
+ephemeral X25519 public key and is required to derive the shared secret.
+The pool cipher is unauthenticated. The client keeps a decoded UTXO only when
+its recomputed commitment equals the indexed output commitment.
+
+When sweeping service outputs, the TypeScript wallet derives its own
+transaction-key seed from the service nullifier secret via HKDF-SHA256 with
+empty salt and info `TSPP/decryption-service/tx_key/v1`. The service viewing
+private key remains in the enclave. See the
+[send and receive flow](../../apps/decryption-service/SPEC.md).
 
 ## Release policy
 
