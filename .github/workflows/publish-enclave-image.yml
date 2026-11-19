@@ -1,6 +1,5 @@
-# Publishes one enclave application into the GHCR package named by
-# `imageRepository` in its apps/<app>/deploy/release.json, tagged with the
-# network it was built for and the commit. Turnkey pulls it anonymously, so the
+# Publishes the decryption enclave to GHCR using its release config.
+# The image tag includes the network and commit. Turnkey pulls it anonymously, so the
 # package must be public. The release continues on an operator's machine with
 # the reference from the run summary:
 #   just release <network> <release-id> --image <reference>

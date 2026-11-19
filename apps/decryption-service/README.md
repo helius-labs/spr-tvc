@@ -6,7 +6,7 @@ address. The recipient signs the exact batch and a one-time response key.
 Only the holder of that response private key can open the reply.
 
 - [Send, receive, and trust model](SPEC.md)
-- [TypeScript client](../../packages/decryption-service/README.md#decryption-service)
+- [TypeScript client](../../packages/decryption-service/README.md)
 - [Wire protocol](../../crates/protocol/README.md#decryption-service)
 - [Test invariants](../../TEST_INVARIANTS.md#decryption-service)
 
