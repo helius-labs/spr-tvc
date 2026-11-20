@@ -1,7 +1,7 @@
-use spr_tvc_protocol::crypto::qos_decrypt;
 use spr_tvc_protocol::types::EncryptedResponse;
 
 use super::*;
+use crate::testing::response_key;
 
 #[test]
 fn replay_keeps_the_signed_response_key_and_cannot_retarget_the_result() {
@@ -20,7 +20,9 @@ fn replay_keeps_the_signed_response_key_and_cannot_retarget_the_result() {
     for _ in 0..2 {
         let response = execute(&service, body.as_bytes()).unwrap();
         let envelope: EncryptedResponse = parse_strict_json(&response).unwrap();
-        assert!(qos_decrypt(&other_secret, &envelope.encrypted_result).is_err());
+        assert!(response_key(&other_secret)
+            .decrypt(&envelope.encrypted_result)
+            .is_err());
         let ServiceResult::Decrypt(result) = open(&service, &request, &response) else {
             panic!("expected a Decrypt result");
         };

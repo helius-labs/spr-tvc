@@ -1,6 +1,6 @@
 use axum::http::StatusCode;
 use spr_tvc_protocol::constants::{QOS_P256_PUBLIC_LEN, RAW_P256_SIGNATURE_LEN};
-use spr_tvc_protocol::crypto::{verify_p256_message, QosP256Public};
+use spr_tvc_protocol::crypto::verify_p256_message;
 use spr_tvc_protocol::encoding::parse_strict_json;
 use spr_tvc_protocol::types::{QosPingChallenge, QosPingRequest};
 use tower::ServiceExt as _;
@@ -91,9 +91,8 @@ async fn ping_decrypts_with_quorum_and_signs_exact_utf8_with_ephemeral() {
     assert!(quorum_public
         .verify(proof.proof_payload.as_bytes(), &proof.signature)
         .is_err());
-    let parsed = QosP256Public::from_bytes(&proof.public_key).unwrap();
     verify_p256_message(
-        &parsed.signing,
+        &ephemeral_public.signing_public_key_bytes(),
         proof.proof_payload.as_bytes(),
         &proof.signature,
     )

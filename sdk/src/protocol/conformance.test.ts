@@ -75,6 +75,14 @@ describe("RFC 8785 / JCS", () => {
       )
     ).toBe(fixture.canonical_sha256);
   });
+
+  it("sorts by UTF-16 and rejects lone surrogates in keys and values", () => {
+    expect(canonicalizeJsonValue({ "\ue000": 1, "𝄞": "\u001b" })).toBe(
+      '{"𝄞":"\\u001b","\ue000":1}',
+    );
+    expect(isRfc8785('{"x":"\\ud800"}')).toBe(false);
+    expect(isRfc8785('{"\\ud800":1}')).toBe(false);
+  });
 });
 
 describe("canonical u64", () => {

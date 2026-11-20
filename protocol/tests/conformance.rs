@@ -7,9 +7,7 @@ use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::SecretKey;
 use sha2::{Digest, Sha256};
 use spr_tvc_protocol::constants::API_VERSION;
-use spr_tvc_protocol::crypto::{
-    parse_uncompressed_sec1, qos_decrypt, sign_p256_prehash, verify_p256_prehash,
-};
+use spr_tvc_protocol::crypto::{parse_uncompressed_sec1, sign_p256_prehash, verify_p256_prehash};
 use spr_tvc_protocol::encoding::{
     canonicalize_json_str, decode_decimal_u64, decode_lower_hex, parse_strict_json,
 };
@@ -48,8 +46,9 @@ fn regenerate_content_addressed_fixtures() {
 fn jcs_sorts_keys_and_round_trips() {
     let canonical = canonicalize_json_str(r#"{"b":1,"a":2}"#).unwrap();
     assert_eq!(canonical, r#"{"a":2,"b":1}"#);
-    let unicode = canonicalize_json_str(r#"{"é":1,"a":2}"#).unwrap();
-    assert!(unicode.starts_with('{'));
+    let unicode = canonicalize_json_str(r#"{"\ue000":1,"𝄞":"\u001B"}"#).unwrap();
+    assert_eq!(unicode, "{\"𝄞\":\"\\u001b\",\"\u{e000}\":1}");
+    assert!(canonicalize_json_str(r#"{"x":"\ud800"}"#).is_err());
 }
 
 #[test]
@@ -117,27 +116,6 @@ fn p256_rejects_der_high_s_compressed_and_double_hash() {
         ErrorCode::CompressedKeyRejected
     );
     reject_double_hashed_signature(&public, &digest, &double_sig).unwrap();
-}
-
-#[test]
-fn qos_envelope_rejects_truncation_and_wrong_key() {
-    verify_committed_fixtures();
-    let body = std::fs::read_to_string(fixtures_dir().join("qos-negative.json")).unwrap();
-    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
-    let truncated = decode_lower_hex(value["truncated_envelope"].as_str().unwrap()).unwrap();
-    let envelope = decode_lower_hex(value["envelope"].as_str().unwrap()).unwrap();
-    let wrong: [u8; 32] = decode_lower_hex(value["wrong_receiver_secret"].as_str().unwrap())
-        .unwrap()
-        .try_into()
-        .unwrap();
-    assert_eq!(
-        qos_decrypt(&wrong, &envelope).unwrap_err().code,
-        ErrorCode::InvalidEncryptedEnvelope
-    );
-    assert_eq!(
-        qos_decrypt(&wrong, &truncated).unwrap_err().code,
-        ErrorCode::InvalidEncryptedEnvelope
-    );
 }
 
 #[test]

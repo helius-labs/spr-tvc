@@ -1,7 +1,6 @@
 //! Strict JSON, RFC 8785 JCS, lowercase hex, and canonical decimal `u64`.
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 
 use serde::de::{self, DeserializeOwned, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::ser::Serialize;
@@ -272,69 +271,45 @@ pub fn to_canonical_value<T: Serialize>(value: &T) -> Result<Value, TvcError> {
     serde_json::to_value(value).map_err(|_| TvcError::new(ErrorCode::InvalidCanonicalJson))
 }
 
-fn utf16_units(s: &str) -> Vec<u16> {
-    s.encode_utf16().collect()
+fn write_json_string(out: &mut Vec<u8>, value: &str) -> Result<(), TvcError> {
+    serde_json::to_writer(out, value).map_err(|_| TvcError::new(ErrorCode::InvalidCanonicalJson))
 }
 
-fn cmp_utf16(a: &str, b: &str) -> std::cmp::Ordering {
-    utf16_units(a).cmp(&utf16_units(b))
-}
-
-fn append_json_string(out: &mut String, s: &str) {
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0C}' => out.push_str("\\f"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-}
-
-fn append_jcs(out: &mut String, value: &Value) -> Result<(), TvcError> {
+fn append_jcs(out: &mut Vec<u8>, value: &Value) -> Result<(), TvcError> {
     match value {
-        Value::Null => out.push_str("null"),
-        Value::Bool(true) => out.push_str("true"),
-        Value::Bool(false) => out.push_str("false"),
+        Value::Null => out.extend_from_slice(b"null"),
+        Value::Bool(true) => out.extend_from_slice(b"true"),
+        Value::Bool(false) => out.extend_from_slice(b"false"),
         Value::Number(n) => {
             if n.is_f64() {
                 return Err(TvcError::new(ErrorCode::InvalidCanonicalJson));
             }
-            out.push_str(&n.to_string());
+            out.extend_from_slice(n.to_string().as_bytes());
         }
-        Value::String(s) => append_json_string(out, s),
+        Value::String(s) => write_json_string(out, s)?,
         Value::Array(items) => {
-            out.push('[');
+            out.push(b'[');
             for (i, item) in items.iter().enumerate() {
                 if i > 0 {
-                    out.push(',');
+                    out.push(b',');
                 }
                 append_jcs(out, item)?;
             }
-            out.push(']');
+            out.push(b']');
         }
         Value::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort_by(|a, b| cmp_utf16(a, b));
-            out.push('{');
-            for (i, key) in keys.iter().enumerate() {
+            let mut pairs: Vec<_> = map.iter().collect();
+            pairs.sort_unstable_by(|(a, _), (b, _)| a.encode_utf16().cmp(b.encode_utf16()));
+            out.push(b'{');
+            for (i, (key, value)) in pairs.into_iter().enumerate() {
                 if i > 0 {
-                    out.push(',');
+                    out.push(b',');
                 }
-                append_json_string(out, key);
-                out.push(':');
-                append_jcs(out, &map[*key])?;
+                write_json_string(out, key)?;
+                out.push(b':');
+                append_jcs(out, value)?;
             }
-            out.push('}');
+            out.push(b'}');
         }
     }
     Ok(())
@@ -342,9 +317,9 @@ fn append_jcs(out: &mut String, value: &Value) -> Result<(), TvcError> {
 
 /// RFC 8785 JSON Canonicalization Scheme over a JSON value.
 pub fn canonicalize_json_value(value: &Value) -> Result<String, TvcError> {
-    let mut out = String::new();
+    let mut out = Vec::new();
     append_jcs(&mut out, value)?;
-    Ok(out)
+    String::from_utf8(out).map_err(|_| TvcError::new(ErrorCode::InvalidCanonicalJson))
 }
 
 pub fn canonicalize_json_str(input: &str) -> Result<String, TvcError> {

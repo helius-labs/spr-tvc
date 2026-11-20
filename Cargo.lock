@@ -927,7 +927,7 @@ dependencies = [
  "ff 0.13.1",
  "generic-array 0.14.7",
  "group 0.13.0",
- "hkdf 0.12.4",
+ "hkdf",
  "pkcs8 0.10.2",
  "rand_core 0.6.4",
  "sec1 0.7.3",
@@ -948,7 +948,6 @@ dependencies = [
  "digest 0.11.3",
  "ff 0.14.0",
  "group 0.14.0",
- "hkdf 0.13.0",
  "hybrid-array",
  "pkcs8 0.11.0",
  "rand_core 0.10.1",
@@ -1342,15 +1341,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
 dependencies = [
  "hmac 0.12.1",
-]
-
-[[package]]
-name = "hkdf"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4aaa26c720c68b866f2c96ef5c1264b3e6f473fe5d4ce61cd44bbe913e553018"
-dependencies = [
- "hmac 0.13.0",
 ]
 
 [[package]]
@@ -2146,7 +2136,7 @@ checksum = "df3c59d56dd4334f1b4539afecf90d717e0ba0450e521198ae39fe5e9baaf69c"
 dependencies = [
  "aes-gcm",
  "borsh",
- "hkdf 0.12.4",
+ "hkdf",
  "hmac 0.12.1",
  "p256 0.13.2",
  "qos_hex",
@@ -2796,7 +2786,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.17",
  "getrandom 0.3.4",
- "hkdf 0.12.4",
+ "hkdf",
  "rand 0.8.8",
  "sha2 0.10.9",
  "solana-address",
@@ -2816,7 +2806,7 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "hex",
- "hkdf 0.12.4",
+ "hkdf",
  "http-body-util",
  "p256 0.14.0",
  "qos_core",
@@ -2837,11 +2827,7 @@ dependencies = [
 name = "spr-tvc-protocol"
 version = "0.1.0"
 dependencies = [
- "aes-gcm",
- "borsh",
- "getrandom 0.4.3",
  "hex",
- "hmac 0.12.1",
  "p256 0.14.0",
  "qos_p256",
  "serde",
@@ -3505,6 +3491,7 @@ dependencies = [
  "hex",
  "p256 0.14.0",
  "qos_core",
+ "qos_p256",
  "serde",
  "serde_json",
  "spr-tvc-protocol",

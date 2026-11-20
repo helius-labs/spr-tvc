@@ -12,6 +12,3 @@ pub const MAX_ITEMS_PER_BATCH: u64 = 256;
 pub const SEC1_UNCOMPRESSED_LEN: usize = 65;
 pub const QOS_P256_PUBLIC_LEN: usize = 130;
 pub const RAW_P256_SIGNATURE_LEN: usize = 64;
-pub const AES_GCM_NONCE_LEN: usize = 12;
-pub const AES_GCM_TAG_LEN: usize = 16;
-pub const QOS_ENCRYPTION_HMAC_MESSAGE: &[u8] = b"qos_encryption_hmac_message";

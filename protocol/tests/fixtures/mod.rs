@@ -13,13 +13,12 @@ use spr_tvc_protocol::constants::{
     MAX_ENCRYPTED_RESPONSE_BYTES, QOS_P256_PUBLIC_LEN,
 };
 use spr_tvc_protocol::crypto::{
-    public_key_uncompressed, qos_decrypt, qos_encrypt_with, qos_public_from_secrets,
-    sign_p256_prehash, verify_p256_message, verify_p256_prehash, QosP256Public,
+    public_key_uncompressed, sign_p256_prehash, verify_p256_message, verify_p256_prehash,
 };
 use spr_tvc_protocol::decryption_service::SERVICE_PROOF_TYPE;
 use spr_tvc_protocol::digest::result_digest;
 use spr_tvc_protocol::encoding::{
-    canonicalize_json_value, encode_decimal_u64, encode_lower_hex, jcs_serialize,
+    canonicalize_json_value, decode_lower_hex, encode_decimal_u64, encode_lower_hex, jcs_serialize,
 };
 use spr_tvc_protocol::error::{ErrorCode, TvcError};
 use spr_tvc_protocol::release::{
@@ -30,6 +29,13 @@ use spr_tvc_protocol::types::{
     HealthResponse, HealthStatus, Network, OperationKind, OperationProofPayload,
     ReleaseAuthoritySignature, ReleasePolicy, ServiceInfo, SignedReleasePolicy,
 };
+
+// The SDK reproduces this fixed envelope and qos_p256 decrypts it.
+const QOS_ENVELOPE: &str = concat!(
+    "26018fef8da4e29fc11c20a604b636d5d32d823641eeb4f10a7b82d2f73697528ceb5bd81854283a",
+    "026cbbdbb7131bb86f456f3234e8305d2edaa8a3471ac31871f96112ecb853433106bc1234260000",
+    "002963d43dc6083407842edd32a554cc57d136c5f7e32b55a54a3d031375dbd5ff17ebb7dc3378",
+);
 
 const OPERATIONS: [OperationKind; 2] = [
     OperationKind::ServicePublicKeys,
@@ -182,7 +188,7 @@ fn sample_running() -> Running {
     }
 }
 
-fn sample_info(quorum: &QosP256Public) -> ServiceInfo {
+fn sample_info(quorum: Vec<u8>) -> ServiceInfo {
     let running = sample_running();
     ServiceInfo {
         version: API_VERSION,
@@ -191,7 +197,7 @@ fn sample_info(quorum: &QosP256Public) -> ServiceInfo {
         release_id: running.release_id,
         manifest_digest: running.manifest_digest,
         executable_digest: running.executable_digest,
-        quorum_public_key: quorum.to_bytes().to_vec(),
+        quorum_public_key: quorum,
         quorum_key_id: running.quorum_key_id,
         quorum_key_epoch: running.quorum_key_epoch,
         supported_operations: OPERATIONS.to_vec(),
@@ -247,11 +253,10 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
             .expect("test client scalar")
             .public_key(),
     );
-    let quorum = qos_public_from_secrets(&encryption_sk, &signing_sk)?;
-    let plaintext = b"qos-envelope-plaintext";
-    let envelope = qos_encrypt_with(&quorum.encryption, plaintext, &ephemeral_sk, &nonce)?;
-    let decrypted = qos_decrypt(&encryption_sk, &envelope)?;
-    assert_eq!(decrypted.as_slice(), plaintext);
+    let encryption_public = authority_public(&encryption_sk);
+    let signing_public = authority_public(&signing_sk);
+    let quorum = [encryption_public.as_slice(), signing_public.as_slice()].concat();
+    let envelope = decode_lower_hex(QOS_ENVELOPE)?;
 
     let mut files = BTreeMap::new();
 
@@ -317,10 +322,10 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
         "qos-p256-public.json".to_owned(),
         fixture_json(&json!({
             "id": "qos-p256-public",
-            "public_key": encode_lower_hex(&quorum.to_bytes()),
+            "public_key": encode_lower_hex(&quorum),
             "length": QOS_P256_PUBLIC_LEN,
-            "encryption_sec1": encode_lower_hex(&quorum.encryption),
-            "signing_sec1": encode_lower_hex(&quorum.signing),
+            "encryption_sec1": encode_lower_hex(&encryption_public),
+            "signing_sec1": encode_lower_hex(&signing_public),
         })),
     );
 
@@ -328,17 +333,16 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
         "qos-borsh-envelope.json".to_owned(),
         fixture_json(&json!({
             "id": "qos-borsh-envelope",
-            "receiver_encryption_public": encode_lower_hex(&quorum.encryption),
+            "receiver_encryption_public": encode_lower_hex(&encryption_public),
             "ephemeral_secret": encode_lower_hex(&ephemeral_sk),
             "nonce": encode_lower_hex(&nonce),
-            "plaintext": encode_lower_hex(plaintext),
+            "plaintext": encode_lower_hex(b"qos-envelope-plaintext"),
             "envelope": encode_lower_hex(&envelope),
         })),
     );
 
     let mut truncated = envelope.clone();
     truncated.truncate(envelope.len().saturating_sub(8));
-    let _wrong_plain = qos_decrypt(&wrong_sk, &envelope);
     files.insert(
         "qos-negative.json".to_owned(),
         fixture_json(&json!({
@@ -379,7 +383,7 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
             "id": "proof-payload-utf8",
             "proof_payload": proof_payload,
             "proof_payload_hex": encode_lower_hex(proof_payload.as_bytes()),
-            "public_key": encode_lower_hex(&quorum.to_bytes()),
+            "public_key": encode_lower_hex(&quorum),
             "signature": encode_lower_hex(&proof_sig),
             "high_s_signature": encode_lower_hex(&high_s_sig),
             "non_jcs_payload": non_jcs_payload,
@@ -388,7 +392,7 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
     );
 
     // What the enclave answers to `GET /health` and `GET /v1/info`.
-    let info = sample_info(&quorum);
+    let info = sample_info(quorum);
     let health = jcs_serialize(&HealthResponse {
         status: HealthStatus::Healthy,
     })?;
@@ -412,9 +416,9 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
         })),
     );
 
-    verify_p256_message(&quorum.signing, proof_payload.as_bytes(), &proof_sig)?;
+    verify_p256_message(&signing_public, proof_payload.as_bytes(), &proof_sig)?;
     assert_eq!(
-        verify_p256_message(&quorum.signing, proof_payload.as_bytes(), &high_s_sig)
+        verify_p256_message(&signing_public, proof_payload.as_bytes(), &high_s_sig)
             .unwrap_err()
             .code,
         ErrorCode::HighSSignature

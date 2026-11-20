@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 pub enum ErrorCode {
     UnsupportedVersion,
     RequestTooLarge,
-    InvalidEncryptedEnvelope,
     ReleaseBindingMismatch,
     QuorumKeyEpochMismatch,
     ExpiredRequest,

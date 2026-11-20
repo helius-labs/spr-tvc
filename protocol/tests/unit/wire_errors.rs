@@ -13,7 +13,6 @@ fn every_code_is_its_variant_name() {
         [
             "UnsupportedVersion",
             "RequestTooLarge",
-            "InvalidEncryptedEnvelope",
             "ReleaseBindingMismatch",
             "QuorumKeyEpochMismatch",
             "ExpiredRequest",

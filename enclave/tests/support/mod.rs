@@ -3,8 +3,9 @@
 use axum::body::Body;
 use axum::http::Response;
 use http_body_util::BodyExt as _;
+use qos_p256::{encrypt::P256EncryptPair, P256Public};
 use spr_tvc_protocol::constants::API_VERSION;
-use spr_tvc_protocol::crypto::{qos_decrypt, qos_encrypt, verify_p256_message, QosP256Public};
+use spr_tvc_protocol::crypto::verify_p256_message;
 use spr_tvc_protocol::digest::result_digest;
 use spr_tvc_protocol::encoding::parse_strict_json;
 use spr_tvc_protocol::types::{
@@ -25,12 +26,12 @@ pub fn release() -> Release {
 
 /// `plaintext` encrypted to the running Quorum key, as a client sends it.
 pub fn encrypt_request(info: &ServiceInfo, plaintext: &str) -> EncryptedRequest {
-    let quorum = QosP256Public::from_bytes(&info.quorum_public_key).expect("quorum key");
+    let quorum = P256Public::from_bytes(&info.quorum_public_key).expect("quorum key");
     EncryptedRequest {
         version: API_VERSION,
         quorum_key_id: info.quorum_key_id.clone(),
         quorum_key_epoch: info.quorum_key_epoch,
-        ciphertext: qos_encrypt(&quorum.encryption, plaintext.as_bytes()).expect("encrypt"),
+        ciphertext: quorum.encrypt(plaintext.as_bytes()).expect("encrypt"),
     }
 }
 
@@ -43,9 +44,9 @@ pub fn open_response(
     let response: EncryptedResponse = parse_strict_json(response).expect("response");
     let proof = response.tvc_app_proof;
     assert_eq!(proof.public_key, expected_ephemeral);
-    let ephemeral = QosP256Public::from_bytes(&proof.public_key).expect("ephemeral key");
+    let ephemeral = P256Public::from_bytes(&proof.public_key).expect("ephemeral key");
     verify_p256_message(
-        &ephemeral.signing,
+        &ephemeral.signing_public_key_bytes(),
         proof.proof_payload.as_bytes(),
         &proof.signature,
     )
@@ -57,8 +58,14 @@ pub fn open_response(
         payload.result_digest,
         result_digest(&response.encrypted_result)
     );
-    let plaintext = qos_decrypt(response_secret, &response.encrypted_result).expect("result");
+    let plaintext = response_key(response_secret)
+        .decrypt(&response.encrypted_result)
+        .expect("result");
     (payload, plaintext)
+}
+
+pub fn response_key(secret: &[u8; 32]) -> P256EncryptPair {
+    P256EncryptPair::from_bytes(&Zeroizing::new(secret.to_vec())).expect("response key")
 }
 
 pub async fn body(response: Response<Body>) -> String {

@@ -5,13 +5,14 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use p256::ecdsa::SigningKey;
 use p256::elliptic_curve::Generate;
 use qos_core::protocol::services::boot::manifest::{canonical_json_hash, ManifestV2};
+use qos_p256::P256Public;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use spr_tvc_protocol::constants::{
     API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, MAX_ENCRYPTED_REQUEST_BYTES,
     MAX_ENCRYPTED_RESPONSE_BYTES,
 };
-use spr_tvc_protocol::crypto::{parse_uncompressed_sec1, public_key_uncompressed, QosP256Public};
+use spr_tvc_protocol::crypto::{parse_uncompressed_sec1, public_key_uncompressed};
 use spr_tvc_protocol::decryption_service::SERVICE_PROOF_TYPE;
 use spr_tvc_protocol::encoding::hex as wire_hex;
 use spr_tvc_protocol::release::{
@@ -188,7 +189,8 @@ impl Release<'_> {
         )?)
         .context("decode authenticated Turnkey deployment")?;
         let app = app_config(self.network())?;
-        QosP256Public::from_bytes(&app.quorum_public_key)?;
+        P256Public::from_bytes(&app.quorum_public_key)
+            .map_err(|error| anyhow::anyhow!("invalid Turnkey app Quorum key ({error:?})"))?;
         deployment.approve(
             self,
             deploy_id,
@@ -377,7 +379,8 @@ impl MainnetTrust {
             (1..=MAX_SAFE_INTEGER).contains(&self.maximum_policy_lifetime_ms),
             "invalid mainnet policy lifetime"
         );
-        QosP256Public::from_bytes(&self.quorum_public_key)?;
+        P256Public::from_bytes(&self.quorum_public_key)
+            .map_err(|error| anyhow::anyhow!("invalid pinned Quorum key ({error:?})"))?;
         validate_pcrs(&self.qos_identity_pcrs)
     }
 }
