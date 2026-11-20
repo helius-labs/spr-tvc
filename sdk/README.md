@@ -1,8 +1,7 @@
 # @heliuslabs/spr-decryption-service
 
-TypeScript client for the attested decryption service. Each hosted network
-requires a signed pin for the approved deployment. Pass a Solana Kit
-`MessagePartialSigner` for the recipient and the SPR client's proof service.
+Connect to a hosted deployment with a matching signed release pin. Supply
+its [Boot Proof resolver](src/connection/backend.ts) and the SPR proof service.
 
 ```ts
 import { createDecryptionService } from "@heliuslabs/spr-decryption-service";
@@ -13,22 +12,21 @@ const service = createDecryptionService({
   resolveBootProof,
 });
 
-const recipient = await service.address(owner.address);
+// The sender looks up the destination for an unregistered owner.
+const recipient = await service.address(recipientAddress);
+
+// The recipient supplies a Solana Kit MessagePartialSigner for recipientAddress.
 const keys = await service.open(owner, spr.proofService);
 ```
 
-Senders encrypt note contents to `recipient`. The confidential transfer
-flow exposes the recipient's Solana owner tag. Recipients sync with the returned
-`WalletKeys` and sign each decrypt batch. Your application supplies the
-Turnkey signer, Boot Proof resolver, and SPR indexer, prover, and RPC endpoints.
-A browser can use a same-origin relay that forwards encrypted requests and
-returns Boot Proofs. The client verifies the proofs.
+Pass `recipient` to the SPR transfer builder. The transfer publishes the
+recipient's Solana address as its owner tag. `open` signs an empty batch to
+obtain the nullifier secret and returns SPR `WalletKeys`. Sync with those keys
+to sign and decrypt note batches. Call `keys.destroy()` when finished.
 
-For mainnet, the SDK pins the authority keys, approved Quorum key and
-security domain in [its trust configuration](trust/mainnet.json). A caller may
-supply a newly signed policy for that domain. The SDK uses its own trust
-anchors and system clock to verify it.
+A relay can forward ciphertexts and return Boot Proofs. The SDK verifies the
+release and signing replica itself. The supplied prover receives the spend
+witness. Mainnet uses the SDK's [independent trust anchors](trust/mainnet.json)
+and system clock, including when a caller supplies a fresh signed policy.
 
-See the [direct Turnkey example](../example) for an
-end-to-end integration and the [spec](../enclave/SPEC.md)
-for what the client verifies and which keys the enclave holds.
+[Direct Turnkey example](../example) · [Security flow](../enclave/SPEC.md)

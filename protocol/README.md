@@ -1,17 +1,14 @@
-# Decryption wire protocol
-
-The service uses `/v1` routes. The Rust and
-[TypeScript](../sdk/src/protocol.ts) implementations share the [conformance fixtures](#fixtures).
+# Decryption wire protocol v1
 
 ## Encoding
 
-JSON inputs reject unknown and duplicate fields. Digested objects use
-RFC 8785 canonical JSON (JCS). Binary fields are lowercase hex without
-`0x` unless stated otherwise. A `u64` is a canonical decimal string. P-256
-public keys are 65-byte uncompressed SEC1 and P-256 signatures are 64-byte
-raw low-S `r || s`. Viewing public keys are 33-byte tagged X25519 keys,
-`0x04 || u` with a canonical little-endian `u`. Solana addresses are
-base58. The network is `devnet` or `mainnet`.
+JSON rejects unknown and duplicate fields. Hashed objects use RFC 8785
+canonical JSON (JCS). Binary fields use lowercase hex without `0x`, and
+`u64` fields use canonical decimal strings. Solana addresses use base58.
+The network is `devnet` or `mainnet`. P-256 public keys are 65-byte
+uncompressed SEC1 points. P-256 signatures are 64-byte raw low-S `r || s`.
+A viewing public key is `0x04 || u`, with a canonical 32-byte little-endian
+X25519 coordinate `u`.
 
 `H(domain, payload) = SHA256(domain || 0x00 || payload)`.
 
@@ -21,98 +18,101 @@ base58. The network is `devnet` or `mainnet`.
 | `SPR_TVC_RESULT_V1` | Encrypted result bytes |
 | `SPR_TVC_RELEASE_POLICY_V1` | `JCS(policy)` |
 
-## Envelope
+## QOS request and reply envelopes
 
-The QOS P-256 public key pair is
-`encryption_sec1[65] || signing_sec1[65]`. An envelope uses AES-256-GCM
-with `HMAC-SHA512(key = ephemeral_pub || receiver_pub || ECDH_x, msg =
-"qos_encryption_hmac_message")[0..32]` as its key. The AAD is
-`ephemeral_pub || 0x41 || receiver_pub || 0x41`. Borsh encodes the frame
-as `nonce[12] || ephemeral_pub[65] || encrypted_message_len:u32le ||
-ciphertext || tag[16]`. The length includes the authentication tag.
+A QOS public key is `encryption_sec1[65] || signing_sec1[65]`. Each envelope
+uses a fresh sender P-256 key pair and a random 12-byte nonce. The receiver
+uses its encryption private key. In the frame below, `E` and `R` are the
+uncompressed sender and receiver public keys. `X` is the 32-byte P-256 ECDH
+x-coordinate.
+
+```text
+key = HMAC-SHA512(key = E || R || X, msg = "qos_encryption_hmac_message")[0..32]
+aad = E || 0x41 || R || 0x41
+frame = nonce[12] || E[65] || sealed_len:u32le || ciphertext || tag[16]
+```
+
+AES-256-GCM uses `key`, `nonce`, and `aad`. The Borsh length
+`sealed_len` includes the tag. The request receiver is the pinned Quorum
+key. The reply receiver is the client's one-time response key.
 
 ## Decryption service
 
-`POST /v1/operations` takes an `EncryptedRequest` with `version`,
-`quorum_key_id`, `quorum_key_epoch`, and `ciphertext`. Its plaintext is a
-`ServiceRequest` with `version`, a fresh 32-byte `request_id`,
-`target_release_id`, `target_manifest_digest`, `target_executable_digest`,
-`quorum_key_id`, `quorum_key_epoch`, `client_response_public_key` (one-time
-uncompressed P-256), and `operation`.
+`POST /v1/operations` takes `version`, `quorum_key_id`, `quorum_key_epoch`,
+and `ciphertext`. Its envelope contains canonical JSON with `version`,
+32-byte `request_id`, `target_release_id`, `target_manifest_digest`,
+`target_executable_digest`, `quorum_key_id`, `quorum_key_epoch`,
+`client_response_public_key` (P-256 SEC1), and `operation`.
 
-The `EncryptedResponse` echoes the request ID and contains the encrypted
-result and an App Proof. The replica's Ephemeral signing subkey signs the
-exact UTF-8 proof payload with P-256/SHA-256. The payload binds the type
-`spr.tvc.decryption_service.v1`, version, request ID, request and result
-digests, and operation (`ServicePublicKeys` or `ServiceDecrypt`). Verify
-the proof before opening the reply.
-The HTTP request body and encrypted result each have a 262,144-byte limit.
-Invalid operations return `InvalidRequest`.
-
-| Operation | Returns |
+| Operation | Result |
 | --- | --- |
-| `PublicKeys { address }` | The address's service viewing and nullifier public keys. |
-| `Decrypt { signer, signature, items }` | One plaintext per item, in order, and the nullifier secret. `items` may be empty. |
+| `PublicKeys { address }` | `viewing_public_key` and `nullifier_public_key` (32 bytes for the nullifier key) |
+| `Decrypt { signer, signature, items }` | `plaintexts` (one per item in order) and `nullifier_secret` (31 bytes). Accepts 0–256 items. |
 
-The master seed is
-`HKDF-Expand(HKDF-Extract(∅, quorum master seed), "TSPP/decryption-service/seed/v1", 32)`,
-so it is the same in every release and replica under the Quorum key, and
-clients name it by the Quorum public key the release policy pins. It is as
-durable as the Quorum key's shares.
+The operation and its result each carry a `type` tag. `Decrypt` requires the
+signer's 64-byte Ed25519 signature over a Solana off-chain message v0, format
+0, with one signer. Its application domain is
+`SHA256("TSPP/decryption-service/decrypt/v1")`.
+The payload is `TSPP/decryption-service/decrypt/v1/<network>/<hex request digest>`.
 
-Service keys are HKDF-SHA256 over the master seed with an empty salt, one
-Expand per key: info `TSPP/decryption-service/view_key/x25519/v1 || address`
-for the 32-byte viewing secret, which is then clamped, and
-`TSPP/decryption-service/nf_key/v1 || address` for the 31-byte nullifier
-secret. `address` is the 32 raw bytes of an on-curve Ed25519 address. The
-service rejects small-order keys.
+The response contains `version`, `request_id`, `encrypted_result`, and
+`tvc_app_proof`. The App Proof carries `scheme`
+(`SIGNATURE_SCHEME_EPHEMERAL_KEY_P256`), the replica's QOS `public_key`,
+`proof_payload` (a JCS string), and `signature`. The replica's ephemeral
+signing key signs the exact UTF-8 payload with P-256/SHA-256. The payload carries
+`type = spr.tvc.decryption_service.v1`, `version`, `request_id`,
+`request_digest`, `result_digest`, and `operation` (`ServicePublicKeys`
+or `ServiceDecrypt`). The SDK verifies the signature, replica attestation,
+and all bindings before opening the result. The HTTP request body and the
+binary encrypted result each have a 262,144-byte limit.
 
-`Decrypt` names the base58 `signer` and carries the signer's 64-byte Ed25519
-`signature` in lowercase hex, verified strictly, over a Solana off-chain message v0 (format 0,
-one signer) whose application domain is
-`SHA-256("TSPP/decryption-service/decrypt/v1")` and whose payload is
-`TSPP/decryption-service/decrypt/v1/<network>/<hex of the request digest>`.
-The digest binds the items, release pins, request ID, and one-time response
-public key. The recipient client generates that key pair before asking the
-owner to sign. The reply is encrypted to the signed public key, including
-on replay. Reading it requires the corresponding private key.
+## Key derivation and SPR note cipher
 
-`Decrypt` accepts up to 256 items. The verified signer determines the service
-viewing key. Each item's `ephemeral_viewing_public_key` is the sender's
-X25519 public key used to derive the shared secret.
-The pool cipher is unauthenticated. The client keeps a decoded UTXO only when
-its recomputed commitment equals the indexed output commitment.
+The following derivations use HKDF-SHA256 with no salt. The address in
+`info` is the verified signer's raw 32-byte Ed25519 public key for
+`Decrypt` and the requested address for `PublicKeys`.
 
-When sweeping service outputs, the TypeScript wallet derives its own
-transaction-key seed from the service nullifier secret via HKDF-SHA256 with
-empty salt and info `TSPP/decryption-service/tx_key/v1`. The service viewing
-private key remains in the enclave. See the
-[send and receive flow](../enclave/SPEC.md).
+| Input key material | `info` | Output |
+| --- | --- | --- |
+| QOS Quorum master seed | `TSPP/decryption-service/seed/v1` | 32-byte service seed |
+| Service seed | `TSPP/decryption-service/view_key/x25519/v1` followed by the address | 32-byte X25519 viewing secret, clamped by X25519 |
+| Service seed | `TSPP/decryption-service/nf_key/v1` followed by the address | 31-byte nullifier secret |
+| Nullifier secret | `TSPP/decryption-service/tx_key/v1` | 32-byte seed the wallet uses to derive local transaction viewing keys |
 
-## Release policy
+A decrypt item carries `ciphertext`, `ephemeral_viewing_public_key`, a
+16-byte `salt`, `slot_index`, and `label`. The enclave derives the
+recipient viewing key from the verified signer. SPR rejects an all-zero
+X25519 shared secret and uses the following key schedule.
 
-A release policy names the release ID, network, security domain, accepted manifest and executable
-digests, the Quorum key id, epoch and public key, the allowed operations, and
-the request and response size limits. Release authorities sign
-`H(SPR_TVC_RELEASE_POLICY_V1, JCS(policy))` with P-256; a client accepts
-the policy only for the network it expects (`NetworkMismatch` otherwise) and
-at a positive integer threshold of distinct authority keys. Unknown and
-repeated signer IDs do not count. The SDK obtains the authority keys and
-policy together from its release pin.
+```text
+ikm  = X25519_shared_secret || sender_tagged_public_key || recipient_tagged_public_key
+info = "TSPP/hpke/" || cipher_domain || salt || slot:u32be
+okm  = HKDF-SHA256(no salt, ikm, info, 44)
+```
 
-The trust material a client pins is the policy, the authority public keys,
-and the QOS identity PCRs. Before its first operation, the client in
-`@heliuslabs/spr-decryption-service` verifies the policy, binds every security
-field of `GET /v1/info` to it, including the network, completes the
-Quorum-encrypted `POST /v1/ping`, and verifies the Nitro Boot Proof against
-the PCRs and the accepted manifest digests. The client verifies the signing
-replica's attestation for each operation reply. `/health`
-reports process readiness.
+`Transfer` uses cipher domain `TSPP/tx` and the output slot as a `u32`.
+`RingDeposit` uses `TSPP/ring_deposit` and requires slot zero. AES-256-CTR
+uses the first 32 output bytes as its key, the last 12 as its nonce, and
+starts with counter `nonce || 0x00000002`. See the
+[pinned SPR implementation](https://github.com/helius-labs/zolana/blob/c5297afa13e8bfb6edadf6408304ef3fc2f8c676/sdk-libs/keypair/src/encryption.rs).
+
+## Release policy and connection
+
+The policy pins the release, network, security domain, manifest and
+executable digests, Quorum key identity and public key, operations, and
+byte limits. A threshold of distinct trusted release authorities signs the
+policy digest with P-256. The client enforces the policy's validity window
+and revocation floor. See the [trust and attestation flow](../enclave/SPEC.md#establish-trust-before-sending).
+
+- `GET /v1/info` returns discovery fields that the SDK checks against the policy.
+- `POST /v1/ping` takes `version` and `encrypted_challenge`. The decrypted
+  JSON has `type = spr.tvc.qos_ping.v1`, `version`, and a random 32-byte
+  `challenge`. The response contains `version` and an App Proof on the
+  exact challenge JSON.
+- `GET /health` reports process readiness.
 
 ## Fixtures
 
-`fixtures/` is generated by the conformance tests and hashed in
-`fixtures/MANIFEST.json`. The Rust and TypeScript implementations must
-produce these bytes. `just regenerate-protocol-fixtures` rewrites them; review
-fixture and manifest diffs together, since the TypeScript suite reads the
-committed files.
+`just regenerate-protocol-fixtures` updates the shared byte vectors in
+[`fixtures/`](fixtures) and their [SHA-256 manifest](fixtures/MANIFEST.json).
+Rust and TypeScript check the committed bytes.

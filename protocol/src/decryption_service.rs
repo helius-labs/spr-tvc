@@ -76,7 +76,7 @@ pub enum ServiceResult {
     Decrypt(DecryptedOutputs),
 }
 
-/// One plaintext per item, in order, and the secret that spends them.
+/// Ordered plaintexts and the recipient's service nullifier secret.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]
 pub struct DecryptedOutputs {

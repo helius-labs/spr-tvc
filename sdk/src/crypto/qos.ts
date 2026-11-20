@@ -74,21 +74,6 @@ function encodeU32Le(value: number): Uint8Array {
   return out;
 }
 
-function decodeU32Le(bytes: Uint8Array, offset: number): number {
-  // Bounded against the view, not the buffer behind it: a DataView built from
-  // `bytes.buffer` alone reads past a subarray's end into neighbouring memory.
-  // No current caller can reach that -- decodeQosEnvelope checks the header
-  // length first -- so this guards the function's own contract against a future
-  // caller or a weakened guard, and no test exercises it through the envelope.
-  if (offset < 0 || bytes.length - offset < 4) {
-    throw new DecryptionServiceError("InvalidEncryptedEnvelope");
-  }
-  return new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(
-    0,
-    true
-  );
-}
-
 function encodeQosEnvelope(
   nonce: Uint8Array,
   ephemeralPublic: Uint8Array,
@@ -111,16 +96,17 @@ function decodeQosEnvelope(bytes: Uint8Array): {
   encryptedMessage: Uint8Array;
 } {
   if (bytes.length < ENVELOPE_HEADER_LEN) throw new DecryptionServiceError("InvalidEncryptedEnvelope");
-  const nonce = bytes.slice(0, AES_GCM_NONCE_LEN);
-  const ephemeralSenderPublic = bytes.slice(AES_GCM_NONCE_LEN, ENVELOPE_HEADER_LEN - 4);
-  const messageLen = decodeU32Le(bytes, ENVELOPE_HEADER_LEN - 4);
-  if (bytes.length !== ENVELOPE_HEADER_LEN + messageLen)
-    throw new DecryptionServiceError("InvalidEncryptedEnvelope");
-  const encryptedMessage = bytes.slice(ENVELOPE_HEADER_LEN);
-  if (encryptedMessage.length < AES_GCM_TAG_LEN) {
+  const lengthOffset = AES_GCM_NONCE_LEN + SEC1_UNCOMPRESSED_LEN;
+  const frame = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const messageLen = frame.getUint32(lengthOffset, true);
+  if (messageLen < AES_GCM_TAG_LEN || bytes.length !== ENVELOPE_HEADER_LEN + messageLen) {
     throw new DecryptionServiceError("InvalidEncryptedEnvelope");
   }
-  return { nonce, ephemeralSenderPublic, encryptedMessage };
+  return {
+    nonce: bytes.slice(0, AES_GCM_NONCE_LEN),
+    ephemeralSenderPublic: bytes.slice(AES_GCM_NONCE_LEN, lengthOffset),
+    encryptedMessage: bytes.slice(ENVELOPE_HEADER_LEN),
+  };
 }
 
 export function qosEncryptWith(

@@ -9,10 +9,12 @@ const RECEIVER = secret("qos-receiver");
 const RECEIVER_PUBLIC = p256.getPublicKey(RECEIVER, false);
 
 describe("QOS envelope", () => {
-  it("round-trips through the public entry point", () => {
+  it("round-trips an envelope stored at a buffer offset", () => {
     const plaintext = new TextEncoder().encode("wallet operation");
-    const opened = qosDecrypt(RECEIVER, qosEncrypt(RECEIVER_PUBLIC, plaintext));
-    expect(new TextDecoder().decode(opened)).toBe("wallet operation");
+    const envelope = qosEncrypt(RECEIVER_PUBLIC, plaintext);
+    const backing = new Uint8Array(envelope.length + 2);
+    backing.set(envelope, 1);
+    expect(qosDecrypt(RECEIVER, backing.subarray(1, -1))).toEqual(plaintext);
   });
 
   it("rejects a nonce that is not exactly the AES-GCM length", () => {
@@ -26,9 +28,6 @@ describe("QOS envelope", () => {
   });
 
   it("rejects a truncated envelope, including one held inside a larger buffer", () => {
-    // These are caught by the header-length guard, before the length field is
-    // read. The bound inside decodeU32Le is defence in depth for its own
-    // contract and is not reachable through this path.
     const backing = new Uint8Array(256).fill(0xff);
     for (const length of [0, 12, 76, 80]) {
       const truncated = backing.subarray(0, length);

@@ -21,13 +21,6 @@ const QOS_LIVE_MANIFEST_PCR_COMMITMENT_DOMAIN = "qos-live-manifest-pcr-commitmen
 const QOS_LIVE_MANIFEST_COMMITMENT_PCR_INDEX = 17;
 const QOS_ATTESTABLE_PCR_COUNT = 32;
 const QOS_EPHEMERAL_PUBLIC_KEY_LENGTH = 130;
-/**
- * A Boot Proof is immutable evidence for one enclave boot and remains valid
- * for that replica's lifetime. Freshness comes from the unpredictable QOS
- * challenge (or the request-bound operation App Proof), which proves current
- * possession of the attested ephemeral key. Expiring the Boot Proof by wall
- * clock would make every healthy long-running replica unverifiable.
- */
 
 type QosIdentityPcrIndex = 0 | 1 | 2 | 3;
 
@@ -72,11 +65,7 @@ export async function verifyBootProof(input: VerifyBootProofInput): Promise<void
     stage = "bindings";
     verifyProofBindings(input, decoded.attestation);
 
-    // Last, because it is the only check that leaves this process and the only
-    // one that needs the pinned AWS root. Every check above is a local
-    // predicate on the same bytes, so running them first only rejects sooner.
-    // The chain must be valid on the verifier's clock, never on a timestamp
-    // the attestation document supplies about itself.
+    // Check certificate validity on the verifier's clock.
     stage = "aws-chain";
     await verifyTurnkeyAwsAttestation(
       decoded.coseSign1,
@@ -171,6 +160,7 @@ function assertAttestationFreshness(
     throw new DecryptionServiceError("BootProofUnverified");
   }
   const timestamp = BigInt(attestation.get("timestamp") as number);
+  // The signed challenge or operation reply proves live possession of the key.
   if (timestamp > nowMs + MAX_CLOCK_SKEW_MS) {
     throw new DecryptionServiceError("BootProofUnverified");
   }

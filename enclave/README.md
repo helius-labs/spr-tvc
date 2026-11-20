@@ -1,43 +1,22 @@
-# Decryption service
+# Decryption enclave
 
-The decryption service lets an unregistered Solana address receive a private
-transfer. The enclave derives a viewing key from the verified recipient
-address. The recipient signs the exact batch and a one-time response key.
-Only the holder of that response private key can open the reply.
+`PublicKeys` gives a sender the service viewing and nullifier public keys for
+a Solana address. `Decrypt` verifies the address owner's signature, opens the
+batch with that address's derived viewing key, and seals the result to the
+signed response key. See the [security specification](SPEC.md).
 
-- [Send, receive, and trust model](SPEC.md)
-- [TypeScript client](../sdk/README.md)
-- [Wire protocol](../protocol/README.md#decryption-service)
-- [Test invariants](../tests/README.md#decryption-service)
-
-## Devnet
-
-The [devnet endpoint](deploy/release.json) requires a release with a signed
-SDK pin. Run `just decryption-e2e` or `just headless-e2e` for local verification.
-
-The [devnet app](deploy/devnet/spr-decryption-service-devnet.app.json) has its
-own Quorum key, with a 2-of-3 split provisioned using devnet operator key
-files. See [operator tooling](../xtask/README.md) for releases.
-
-## Audit entry points
-
-- [Enclave request flow](src/operations.rs) checks the release and signature
-  before deriving the recipient's keys and sealing the response.
-- [Address eligibility](src/owner.rs), [service key derivation](src/keys.rs),
-  and [pool cipher checks](src/cipher.rs) handle the
-  individual trust boundaries.
-- [SDK connection verification](../sdk/src/connection/connect.ts)
-  checks the release and replica. The [operation exchange](../sdk/src/client/exchange.ts)
-  binds the request and response key before asking the owner to sign.
-- [SDK wallet keys](../sdk/src/client/keys.ts)
-  route decryption to the service and derive transaction keys locally.
+| Code | Responsibility |
+| --- | --- |
+| [`service.rs`](src/service.rs) | Load Turnkey's boot manifest and keys. Serve discovery, encrypted ping, and operations. |
+| [`operations.rs`](src/operations.rs) · [`owner.rs`](src/owner.rs) | Check release targeting and verify owner authorization before deriving service keys. |
+| [`keys.rs`](src/keys.rs) · [`cipher.rs`](src/cipher.rs) | Derive per-address keys and open SPR ciphertexts. |
+| [`request.rs`](src/request.rs) | Open the request envelope, seal the result, and sign its App Proof. |
 
 ```sh
-cargo test -p spr-tvc-decryption-service --locked
+cargo test --locked -p spr-tvc-decryption-service
 just decryption-e2e
-just headless-e2e
 ```
 
-The [unregistered-recipient example](../example/index.ts)
-sends, claims, and sweeps a transfer. `just headless-e2e` runs it on localnet
-with the unattested service testkit.
+Hosted devnet requires a deployment with a matching signed SDK pin. See the
+[release runbook](../xtask/README.md) and
+[test invariants](../tests/README.md#decryption-service).

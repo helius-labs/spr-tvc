@@ -1,107 +1,120 @@
-# Decryption service specification
+# Decryption service v1
 
-A confidential transfer can name a Solana address before its owner registers a
-private wallet. The address controls spending. An attested enclave holds its
-service viewing key, and the address must sign each request to open outputs.
-Service calls are read-only. The wallet builds and submits the sweep transaction.
+This service lets a sender encrypt a Solana Privacy Rings (SPR) note for a
+Solana address before its owner registers a shielded wallet. The owner
+already controls an Ed25519 signing key. The enclave supplies a stable public
+viewing key for that address and releases decrypted bytes only after the owner
+signs the request.
 
-The direct transfer puts the recipient's Solana owner tag on chain. It
-encrypts the note contents. Amounts and identities can also be inferred from
-public deposits, withdrawals, timing, and other transaction metadata. The
-[sample](../example/README.md) uses this confidential transfer path.
+## Establish trust before sending
 
-## Verify the enclave
+1. **Approve a deployment.** The release tool compares the authenticated
+   Turnkey deployment with the reviewed image digest, executable, launch
+   arguments, and configured Quorum key. Operators approve the manifest and
+   provision the Quorum key through Turnkey.
+2. **Start the enclave.** Turnkey's Quorum OS (QOS) writes `/qos.manifest` inside
+   the enclave. The JSON envelope contains the approved boot configuration
+   (`manifest.version = "v2"` in the QOS schema) and its approval signatures.
+   The service checks its loaded Quorum key against the manifest. It reports
+   that public key, the canonical digest of the inner manifest, and the
+   executable digest in `/v1/info`. The release tool verifies the live
+   replica before writing a signed SDK release pin.
+3. **Verify the endpoint.** The SDK checks the policy's authority signatures,
+   network, and validity window, then matches discovery to the policy. For
+   mainnet, the SDK independently pins the authority set, revocation floor,
+   Quorum key, security domain, and maximum policy lifetime. It encrypts a
+   fresh challenge to the approved Quorum key and verifies the replica's
+   signature on the exact challenge to prove live access to that Quorum key.
+4. **Authenticate the replica key.** The SDK verifies the Turnkey Boot Proof's
+   COSE signature and certificate chain up to the pinned AWS Nitro root. It
+   compares Nitro's PCR0–3 measurements with the pinned QOS identity and
+   compares the manifest digest in the attested user data with the release
+   policy. PCR17 must commit to that digest and the replica's ephemeral
+   public key. An operation may reach a different replica, so the SDK
+   verifies the Boot Proof for the key that signed each reply.
 
-The SDK checks the signed release policy for the selected network. The policy
-pins the Quorum public key, manifest and executable digests, and allowed
-operations. The SDK checks discovery against that policy.
+## Send, claim, and sweep
 
-The SDK sends a fresh challenge encrypted to the pinned Quorum key. It
-checks the signed answer and verifies the replica's Turnkey Boot Proof. The
-proof must chain to the pinned AWS Nitro root and match the expected PCR0–3.
-PCR17 commits to the approved manifest digest and the replica's ephemeral
-public key. The SDK verifies operation App Proofs against the same policy,
-using the Boot Proof for the replica that signed each answer.
+1. **Look up the recipient.** For a recipient without a registry record, the
+   sender can call `PublicKeys(address)` on the verified service. Anyone can
+   look up the service viewing and nullifier public keys. The enclave accepts
+   on-curve Ed25519 addresses and rejects small-order keys. Program-derived
+   addresses cannot authorize this flow.
+2. **Encrypt and publish.** The sender uses its ephemeral X25519 viewing
+   secret and the recipient's service viewing public key to encrypt the
+   note's asset ID, amount, blinding, and optional ring and application data.
+   The chain exposes the ciphertext, sender's ephemeral public key, cipher
+   salt, output position, and note commitment. The owner tag exposes the
+   recipient's Solana address. The commitment binds that address and service
+   nullifier public key through `owner_hash`.
+3. **Authorize the exact batch.** The recipient wallet uses the owner tag to
+   find candidate outputs. It generates a fresh P-256 response key pair and
+   keeps the private key. The owner signs a Solana off-chain message that
+   binds the network, target release and Quorum identity, fresh request ID,
+   ordered items, and response public key. The SDK seals the signed request
+   to the pinned Quorum encryption key. An empty batch uses the same
+   authorization to obtain the service nullifier secret.
+4. **Open inside the enclave.** The enclave authenticates the envelope,
+   checks that it targets the running release, and verifies the owner's
+   Ed25519 signature. The verified signer address alone selects the recipient
+   viewing secret for every item. Each item's ephemeral viewing public key
+   is the sender's X25519 input. The enclave accepts up to 256 items. Any
+   malformed item fails the entire batch.
+5. **Return and verify.** The enclave seals the ordered plaintexts and the
+   recipient's nullifier secret to the signed response public key. The
+   replica signs an App Proof binding the request ID, operation, request
+   digest, and encrypted result digest. The SDK verifies the proof before
+   opening the reply. The SPR wallet decodes each candidate and recomputes
+   its commitment before accepting it as a note.
+6. **Sweep.** The recipient wallet derives transaction viewing keys locally
+   from the service nullifier secret and can sweep the notes into its
+   shielded wallet using `transact`. `merge_transact` requires the registered
+   nullifier public key. The wallet supplies a witness to its configured
+   prover and the owner signs the Solana transaction.
 
-The release tool reads the candidate's manifest from the authenticated
-Turnkey API. It checks the image digest and the manifest's executable and
-launch arguments against the deployment descriptor, and compares the Quorum
-key with the app configuration. The enclave reads the QOS v2 JSON manifest
-envelope at startup and uses the same canonical manifest hash. Operators
-approve and provision through Turnkey. Before writing a pin, the tool checks
-discovery and a live Boot Proof bound to that manifest.
-For mainnet, the SDK supplies the authority set, revocation floor, Quorum key,
-security domain, and policy lifetime limit from its independent trust config.
-The release tool stages candidates on a separate ingress.
+## What protects the data
 
-## Send and claim
+- **Note on chain.** X25519 gives the sender and the enclave a shared secret.
+  SPR uses HKDF-SHA256 to derive an AES-256-CTR key and nonce from that secret,
+  both public keys, the cipher domain, salt, and slot. Confidentiality
+  requires private X25519 keys and a distinct key/nonce pair for each
+  plaintext. CTR has no authentication tag. Modified or wrong-recipient
+  ciphertext can yield bytes, so the wallet checks the decoded note against
+  its published commitment.
+- **Wallet to enclave.** The QOS envelope derives an AES-256-GCM key from
+  ephemeral P-256 ECDH. GCM authenticates the ciphertext and both public keys.
+  Anyone can encrypt to the Quorum public key, so the enclave separately
+  verifies the owner's signature. The relay sees the request version, Quorum
+  key ID and epoch, and the reply's App Proof, as well as sizes and timing.
+  The indexer sees the wallet's queries.
+- **Enclave to wallet.** The QOS envelope encrypts to the one-time response
+  key. A relay cannot change that key without invalidating the owner's
+  signature. A replay can elicit another reply to the original key. The App
+  Proof authenticates the reply, and the response private key opens it.
+- **Wallet to prover.** The configured prover receives the transaction
+  witness, including the service nullifier secret when proving a spend of a
+  service note. The wallet relies on the prover to protect that data.
 
-1. **Send.** The wallet checks the registry for the destination address. With
-   the sender's opt-in, it calls `PublicKeys(address)` for an unregistered
-   recipient. The lookup is public. The enclave returns that address's service
-   viewing and nullifier public keys. It accepts on-curve Ed25519 addresses
-   and rejects malformed and small-order keys. Program-derived addresses
-   cannot use this flow.
-   The sender encrypts the output to the service viewing key. The output
-   commitment binds the destination address and service nullifier public key
-   through `owner_hash`.
-2. **Authorize.** The recipient wallet finds candidate outputs under its
-   owner tag. For each batch, it generates a fresh P-256 response key pair
-   and retains the private half. The recipient signs a Solana off-chain
-   message that binds the network, release, request ID, full ordered batch,
-   and response public key. An empty batch uses the same authorization and
-   returns the recipient's service nullifier secret.
-3. **Decrypt.** The enclave opens the request under its Quorum key and
-   checks the release. It verifies the Ed25519 signature before deriving
-   service keys from the verified address. It rejects batches over 256 items
-   and opens every item under the derived private viewing key. A malformed
-   item yields an error for the whole batch.
-4. **Verify and sweep.** The enclave encrypts the ordered plaintexts and
-   nullifier secret to the signed response key. Its App Proof binds the
-   request and encrypted result. The SDK verifies the proof before opening
-   the reply. The pool cipher has no authentication tag, so the SDK accepts
-   a decoded note only when its recomputed commitment matches the indexed
-   output. The recipient can claim these notes after registration. Use
-   `transact` to sweep them with the owner's transaction signature.
-   `merge_transact` requires the registered nullifier public key.
-
-## Cipher inputs
-
-| Input | Purpose |
-| --- | --- |
-| `ciphertext` | Pool ciphertext from the indexed output. |
-| `ephemeral_viewing_public_key` | Sender's ephemeral X25519 key. The enclave combines it with the recipient viewing secret to derive the shared secret. |
-| `salt` | 16-byte pool cipher salt. |
-| `slot_index` | Transfer output index as a `u32`, or zero for a ring deposit. |
-| `label` | `Transfer` or `RingDeposit`, each with a separate cipher domain. |
-
-Every ciphertext is opened under the signer's derived service key. A
-ciphertext from a foreign recipient yields unrelated bytes. The SDK uses
-the indexed commitment to accept only the expected note.
+Deposits, withdrawals, and timing can reveal additional information about
+transfers.
 
 ## Key custody and trust
 
-- The service derives a master seed from the Quorum key. Distinct HKDF-SHA256
-  labels and the recipient address separate viewing and nullifier keys.
-  Replicas and releases under the same Quorum key derive the same keys.
-  The viewing private key stays inside the approved enclave during operation.
-- The Solana signature authorizes decryption. A relay can see encrypted
-  request sizes and timing. While the release serves a signed request, a
-  replay can produce another reply to the same signed response key.
-- Anyone holding the corresponding response private key can read the reply.
-  Approve a request only if your wallet generated that key. Disclosure of
-  the nullifier secret can link spends for outputs whose plaintext is known.
-  Spending requires the owner's transaction signature.
-- The release authorities and Quorum operators must approve trustworthy
-  code. Two of the three devnet shares can reconstruct the Quorum key.
-  An approved image can read that key, and key exposure compromises
-  confidentiality for all outputs encrypted under it.
-- Losing the Quorum key makes its outputs unreadable. Replacing it derives
-  new service keys. Keep the original key available for decrypting existing
-  outputs until owners sweep them. Applications and the pool's admission
-  controls must bound incoming exposure. A sender with cached public service
-  keys can create new outputs without calling this service.
+- **Owner Ed25519 key.** The wallet signer, such as Turnkey in the example,
+  authorizes decrypt batches and separately signs Solana transactions. The
+  wallet must generate and retain the response private key for its approval.
+- **Quorum key.** Approved replicas under the same Quorum seed derive the same
+  keys across releases. Separate HKDF labels and the raw address separate
+  viewing and nullifier secrets. The service viewing secret stays in the
+  enclave. The service exports the nullifier secret in an owner-authorized
+  encrypted reply. A leaked nullifier secret can link spends for known notes.
+- **Release and recovery.** Confidentiality depends on the approved image,
+  Nitro isolation, and Quorum custody. An approved image can read the Quorum
+  seed. Anyone who obtains the seed can derive every service viewing secret
+  under it and decrypt historical notes. Losing the seed makes unswept notes
+  unreadable. Rotation changes the service keys, so recipients need the
+  previous service until they sweep. Cached public keys let senders create
+  outputs without a service call, so exposure limits belong at admission.
 
-See the [wire protocol](../protocol/README.md#decryption-service)
-for encodings and derivation labels, and the
-[test invariants](../tests/README.md#decryption-service) for coverage.
+[Wire encodings and derivations](../protocol/README.md) ·
+[Test invariants](../tests/README.md) · [Release runbook](../xtask/README.md)
