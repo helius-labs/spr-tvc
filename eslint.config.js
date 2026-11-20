@@ -14,7 +14,7 @@ export default [
     files: [
       "sdk/**/*.{ts,tsx}",
       "example/**/*.{ts,tsx}",
-      "scripts/**/*.ts",
+      "xtask/*.ts",
     ],
     languageOptions: {
       parser: tsParser,
@@ -55,7 +55,7 @@ export default [
     },
   },
   {
-    files: ["example/turnkey.ts", "scripts/release-api.ts"],
+    files: ["example/turnkey.ts", "xtask/release-api.ts"],
     rules: {
       "no-restricted-imports": "off",
     },

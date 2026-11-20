@@ -21,5 +21,6 @@ struct Cli {
 async fn main() -> io::Result<()> {
     let cli = Cli::parse();
     let service = Service::load(cli.release)?;
-    serve(SocketAddr::new(cli.host, cli.port), service).await
+    let listener = tokio::net::TcpListener::bind(SocketAddr::new(cli.host, cli.port)).await?;
+    serve(listener, service).await
 }

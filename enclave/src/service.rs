@@ -1,7 +1,6 @@
 //! QOS startup, discovery, and HTTP routing.
 
 use std::io;
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
@@ -171,9 +170,8 @@ fn handle_ping(service: &Service, body: &[u8]) -> Response<Body> {
     }
 }
 
-/// Serves the enclave at `address` until SIGINT or SIGTERM, the signals QOS and a shell send.
-pub async fn serve(address: SocketAddr, service: Service) -> io::Result<()> {
-    let listener = tokio::net::TcpListener::bind(address).await?;
+/// Serves the enclave until SIGINT or SIGTERM.
+pub async fn serve(listener: tokio::net::TcpListener, service: Service) -> io::Result<()> {
     axum::serve(listener, router(Arc::new(service)))
         .with_graceful_shutdown(async {
             let mut terminate =

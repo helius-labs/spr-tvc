@@ -11,18 +11,13 @@ owner tag is public.
 | [Decryption enclave](enclave) | Derives per-address keys, verifies the owner, and encrypts replies to the signed response key. |
 | [Wire protocol](protocol) | Defines the signed request and encrypted reply, with shared Rust and TypeScript fixtures. |
 | [TypeScript client](sdk) | Verifies the release and replica, builds signed requests, and exposes the service identity as SPR `WalletKeys`. |
-| [Turnkey example](example) | Signs directly with a Turnkey Solana account and sends, claims, and sweeps notes. |
+| [Turnkey example](example) | Signs directly with Turnkey and sends, claims, and sweeps notes. |
+| [Release tooling](xtask) | Stages deployments and verifies live attestation before writing SDK pins. |
 
-The [specification](enclave/SPEC.md) describes the security boundaries.
-The [test invariants](tests/README.md) link each guarantee to its coverage.
+Run `just ci` for Rust and TypeScript tests, fixture verification, and a
+loopback SDK-to-enclave test. Run `just headless-e2e` for the full localnet
+send, claim, and sweep flow.
 
-```sh
-just ci
-just decryption-e2e
-just headless-e2e
-```
-
-The [release guide](scripts/README.md#release) covers image publication,
-provisioning, and signing the SDK pin. Hosted use requires a signed pin for the
-approved deployment. The [mainnet release procedure](scripts/README.md#mainnet)
-covers staging, independent signatures, and recovery.
+- [Security specification](enclave/SPEC.md)
+- [Tests and invariants](tests/README.md)
+- [Release runbook](xtask/README.md)

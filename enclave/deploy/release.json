@@ -16,12 +16,7 @@
       "endpoint": "https://app-67d544db-f727-4c8b-83fe-74a929ac763b.app.turnkey.cloud",
       "securityDomainId": "6d110d0f6ff414817ed4785cf5c2938a780ddbe2929d48abff6596628d2a5122",
       "quorumKeyId": "local-a3bff1d85778f146",
-      "quorumKeyEpoch": "1",
-      "operatorIds": [
-        "08092d0e-5d15-4a87-991b-11d859ebb419",
-        "53b11326-19cd-4b2d-8f66-28370a5de181",
-        "bd5c88d7-8e51-4e7f-8ab1-2edba52b88f1"
-      ]
+      "quorumKeyEpoch": "1"
     }
   }
 }

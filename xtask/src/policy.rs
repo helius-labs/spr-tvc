@@ -4,7 +4,7 @@ use anyhow::{ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use p256::ecdsa::SigningKey;
 use p256::elliptic_curve::Generate;
-use qos_core::protocol::services::boot::manifest::VersionedManifest;
+use qos_core::protocol::services::boot::manifest::{ManifestV2, VersionedManifest};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use spr_tvc_protocol::constants::{
@@ -24,7 +24,7 @@ use spr_tvc_protocol::types::{
 };
 use zeroize::Zeroizing;
 
-use crate::deploy::{Deployment, Descriptor};
+use crate::stage::{Deployment, Descriptor};
 use crate::tools::{capture, verify_live, Credentials};
 use crate::{app_config, lower_hex, read_json, write_json, Pcrs, Phase, Release};
 
@@ -100,20 +100,31 @@ impl TurnkeyDeployment {
                 && self.qos_version == release.qos_version(),
             "deployment does not match the approved app and QOS runtime"
         );
-        if mainnet {
-            ensure!(
-                self.pivot_container.as_ref().is_some_and(
-                    |pivot| pivot.container_url == descriptor.pivot_container_image_url
-                ),
-                "deployment does not match the attested image reference"
-            );
-        }
+        let tagged_image = &descriptor.pivot_container_image_url;
+        let (_, digest) = tagged_image
+            .split_once("@sha256:")
+            .context("missing image digest")?;
+        let canonical_image = format!("{}@sha256:{digest}", release.config.image_repository);
+        ensure!(
+            self.pivot_container
+                .as_ref()
+                .is_some_and(|pivot| &pivot.container_url == tagged_image
+                    || pivot.container_url == canonical_image),
+            "deployment does not match the reviewed image digest"
+        );
         let encoded = &self.manifest.manifest;
         ensure!(
             !encoded.is_empty() && encoded.len() <= 1_048_576,
             "deployment has no supported manifest"
         );
-        let manifest = VersionedManifest::V2(serde_json::from_slice(&STANDARD.decode(encoded)?)?);
+        let manifest: ManifestV2 = serde_json::from_slice(&STANDARD.decode(encoded)?)?;
+        ensure!(
+            manifest.pivot.args == descriptor.pivot_args
+                && !manifest.pivot.debug_mode
+                && manifest.pivot.env.is_empty(),
+            "measured launch arguments, environment, or debug mode differ from the descriptor"
+        );
+        let manifest = VersionedManifest::V2(manifest);
         if mainnet {
             ensure!(
                 manifest.manifest_set().threshold >= 2 && manifest.share_set().threshold >= 2,
@@ -267,15 +278,13 @@ impl Release<'_> {
         let trust = mainnet.then(|| self.production_trust()).transpose()?;
         let record: Deployment = read_json(&self.path("deploy"))?;
         ensure!(
-            (mainnet || record.live)
-                && self.live_deployment()?.as_deref() == Some(&record.deploy_id),
-            "the recorded deployment is not live"
+            self.live_deployment()?.as_deref() == Some(&record.deploy_id),
+            "the staged deployment is not live"
         );
-        let descriptor: Descriptor = read_json(&self.path("deployment"))?;
-        self.verify_image(&descriptor.pivot_container_image_url)?;
+        let descriptor = self.read_descriptor()?;
         let credentials = Credentials::load()?;
         let approved = self.approved_deployment(&record.deploy_id, &descriptor, &credentials)?;
-        let info = self.await_info(&descriptor)?;
+        let info = self.live_info()?;
         let signed: Option<SignedReleasePolicy> = self
             .args
             .signed_policy

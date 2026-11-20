@@ -2,8 +2,6 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::thread::sleep;
-use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -58,24 +56,6 @@ pub(crate) fn tvc_json<T: DeserializeOwned>(command: &mut Command) -> Result<T> 
         .next()
         .context("empty TVC response")?;
     serde_json::from_slice(line).context("decode TVC response")
-}
-
-pub(crate) fn tvc_quiet(command: &mut Command) -> Result<()> {
-    capture(command.args(["--message-format", "json"])).map(|_| ())
-}
-
-pub(crate) fn wait_for<T>(label: &str, mut ready: impl FnMut() -> Result<T>) -> Result<T> {
-    let deadline = Instant::now() + Duration::from_secs(20 * 60);
-    loop {
-        match ready() {
-            Ok(result) => return Ok(result),
-            Err(error) if Instant::now() >= deadline => {
-                return Err(error).with_context(|| format!("timed out waiting for {label}"));
-            }
-            Err(_) => println!("waiting for {label}"),
-        }
-        sleep(Duration::from_secs(15));
-    }
 }
 
 const TVC_ORG: &str = "TVC_ORG_ID";
@@ -160,7 +140,7 @@ impl Credentials {
 
 pub(crate) fn bridge(args: &[&str]) -> Command {
     let mut command = Command::new("node");
-    command.arg("scripts/release-api.ts").args(args);
+    command.arg("xtask/release-api.ts").args(args);
     command
 }
 

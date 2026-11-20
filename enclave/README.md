@@ -18,7 +18,7 @@ or `just headless-e2e` to run the service locally.
 
 The [devnet app](deploy/devnet/spr-decryption-service-devnet.app.json) has its
 own Quorum key, with a 2-of-3 split provisioned using devnet operator key
-files. See [operator tooling](../scripts/README.md#release) for releases.
+files. See [operator tooling](../xtask/README.md) for releases.
 
 ## Audit entry points
 

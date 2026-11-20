@@ -28,10 +28,13 @@ fn authentic_deployment_binds_app_runtime_image_and_manifest() {
     ))
     .unwrap();
     let mut manifest = envelope["manifest"].clone();
-    let descriptor = Descriptor {
-        pivot_container_image_url: "approved-image".into(),
-        expected_pivot_digest: manifest["pivot"]["hash"].as_str().unwrap().into(),
-    };
+    let repository = &config.image_repository;
+    let digest = "aa".repeat(32);
+    let tagged = format!("{repository}:decryption-service-devnet-0123456789ab@sha256:{digest}");
+    let canonical = format!("{repository}@sha256:{digest}");
+    let mut descriptor =
+        release.deployment_descriptor(&tagged, manifest["pivot"]["hash"].as_str().unwrap());
+    descriptor.pivot_args.clear();
     let key = hex::decode(manifest["namespace"]["quorumKey"].as_str().unwrap()).unwrap();
     let mut api = json!({
         "id": "deployment",
@@ -39,7 +42,7 @@ fn authentic_deployment_binds_app_runtime_image_and_manifest() {
         "appId": release.app.app_id,
         "qosVersion": release.config.qos_version,
         "debugMode": false,
-        "pivotContainer": { "containerUrl": descriptor.pivot_container_image_url },
+        "pivotContainer": { "containerUrl": canonical },
     });
     let approve = |release: &Release<'_>, api: &Value, manifest: &Value, key: &[u8]| {
         let mut api = api.clone();
@@ -57,6 +60,9 @@ fn authentic_deployment_binds_app_runtime_image_and_manifest() {
     manifest["manifestSet"]["threshold"] = json!("2");
     manifest["shareSet"]["threshold"] = json!("2");
     approve(&release, &api, &manifest, &key).unwrap();
+    let mut tagged_api = api.clone();
+    tagged_api["pivotContainer"]["containerUrl"] = json!(tagged);
+    approve(&release, &tagged_api, &manifest, &key).unwrap();
     assert!(approve(&release, &api, &manifest, &vec![0; key.len()]).is_err());
     for (field, value) in [
         ("appId", json!("other-app")),
@@ -65,7 +71,10 @@ fn authentic_deployment_binds_app_runtime_image_and_manifest() {
         ("qosVersion", json!("other-version")),
         ("debugMode", json!(true)),
         ("delete", json!(true)),
-        ("pivotContainer", json!({"containerUrl": "other-image"})),
+        (
+            "pivotContainer",
+            json!({"containerUrl": format!("{repository}@sha256:{}", "bb".repeat(32))}),
+        ),
     ] {
         let mut changed = api.clone();
         changed[field] = value;
@@ -73,6 +82,16 @@ fn authentic_deployment_binds_app_runtime_image_and_manifest() {
             approve(&release, &changed, &manifest, &key).is_err(),
             "{field}"
         );
+    }
+    for (field, value) in [
+        ("args", json!(["--unexpected"])),
+        ("debugMode", json!(true)),
+        ("hash", json!("ee".repeat(32))),
+        ("env", json!({"UNEXPECTED": {"plain": {"value": "value"}}})),
+    ] {
+        let mut changed = manifest.clone();
+        changed["pivot"][field] = value;
+        assert!(approve(&release, &api, &changed, &key).is_err(), "{field}");
     }
     manifest["shareSet"]["threshold"] = json!("1");
     assert!(approve(&release, &api, &manifest, &key).is_err());

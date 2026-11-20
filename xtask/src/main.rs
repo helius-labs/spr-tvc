@@ -1,11 +1,11 @@
-mod deploy;
 mod policy;
+mod stage;
 mod tools;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use clap::{Parser, ValueEnum};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -17,17 +17,16 @@ const DEPLOY_DIR: &str = "enclave/deploy";
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Phase {
-    Build,
-    Deploy,
+    Describe,
+    Stage,
     Prepare,
-    Policy,
-    All,
+    Pin,
 }
 
 #[derive(Parser)]
 #[command(
-    name = "cargo xtask",
-    about = "Build, stage, and verify an enclave release"
+    bin_name = "cargo xtask",
+    about = "Describe, stage, and pin an enclave release"
 )]
 struct Args {
     phase: Phase,
@@ -41,14 +40,6 @@ struct Args {
     source_commit: Option<String>,
     #[arg(long)]
     signed_policy: Option<PathBuf>,
-    #[arg(long)]
-    unattended: bool,
-    #[arg(long)]
-    prune_deployments: bool,
-    #[arg(long, requires = "quorum_key_metadata")]
-    operator_seeds: Option<PathBuf>,
-    #[arg(long, requires = "operator_seeds")]
-    quorum_key_metadata: Option<PathBuf>,
 }
 
 fn parse_network(value: &str) -> Result<Network, &'static str> {
@@ -73,33 +64,29 @@ fn release_id(value: &str) -> Result<String, &'static str> {
 
 impl Args {
     fn validate(&self) -> Result<()> {
+        ensure!(
+            self.image.is_some() == (self.phase == Phase::Describe),
+            "--image is required for describe and only used by that phase"
+        );
+        ensure!(
+            self.signed_policy.is_some()
+                == (self.network == Network::Mainnet && self.phase == Phase::Pin),
+            "--signed-policy is required for mainnet pin and only used by that phase"
+        );
         if self.network == Network::Mainnet {
-            ensure!(
-                !self.unattended && !self.prune_deployments && self.phase != Phase::All,
-                "mainnet requires separate phases and keeps previous deployments"
-            );
-            ensure!(
-                self.operator_seeds.is_none(),
-                "mainnet operators provision shares independently"
-            );
             ensure!(
                 self.source_commit
                     .as_deref()
                     .is_some_and(|sha| lower_hex(sha, 40)),
                 "mainnet requires --source-commit with the reviewed full commit hash"
             );
-            ensure!(
-                self.phase != Phase::Policy || self.signed_policy.is_some(),
-                "mainnet policy requires --signed-policy from the pinned release authorities"
-            );
         } else {
             ensure!(self.phase != Phase::Prepare, "prepare is a mainnet phase");
+            ensure!(
+                self.source_commit.is_none(),
+                "--source-commit is a mainnet input"
+            );
         }
-        ensure!(
-            self.signed_policy.is_none()
-                || (self.network == Network::Mainnet && self.phase == Phase::Policy),
-            "--signed-policy is only used by the mainnet policy phase"
-        );
         Ok(())
     }
 }
@@ -134,7 +121,6 @@ struct NetworkConfig {
     quorum_key_id: String,
     #[serde(with = "decimal_u64")]
     quorum_key_epoch: u64,
-    operator_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -165,7 +151,7 @@ impl Release<'_> {
     fn path(&self, suffix: &str) -> PathBuf {
         Path::new(DEPLOY_DIR)
             .join(self.network().as_str())
-            .join(format!("{APP}-{}.{suffix}.json", self.args.release_id))
+            .join(format!("{}.{suffix}.json", self.args.release_id))
     }
 
     fn pin_path(&self) -> PathBuf {
@@ -223,7 +209,7 @@ fn run(args: &Args) -> Result<()> {
         !app.app_id.is_empty()
             && !app.endpoint.is_empty()
             && !app.quorum_key_id.is_empty()
-            && !app.operator_ids.is_empty(),
+            && app.quorum_key_epoch > 0,
         "incomplete {} app config",
         args.network
     );
@@ -233,14 +219,9 @@ fn run(args: &Args) -> Result<()> {
         app,
     };
     match args.phase {
-        Phase::Build => release.build(),
-        Phase::Deploy => release.deploy(),
-        Phase::Prepare | Phase::Policy => release.policy(),
-        Phase::All => {
-            release.build()?;
-            release.deploy()?;
-            release.policy()
-        }
+        Phase::Describe => release.describe(),
+        Phase::Stage => release.stage(),
+        Phase::Prepare | Phase::Pin => release.policy(),
     }
 }
 
@@ -248,18 +229,8 @@ fn main() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .context("missing workspace root")?;
-    let args = Args::parse();
-    // Keep user-supplied file paths relative to the directory they were passed from.
-    let cwd = std::env::current_dir()?;
-    let args = Args {
-        operator_seeds: args.operator_seeds.map(|path| cwd.join(path)),
-        quorum_key_metadata: args.quorum_key_metadata.map(|path| cwd.join(path)),
-        signed_policy: args.signed_policy.map(|path| cwd.join(path)),
-        ..args
-    };
-    if !root.is_dir() {
-        bail!("workspace root is unavailable");
-    }
+    let mut args = Args::parse();
+    args.signed_policy = args.signed_policy.map(std::path::absolute).transpose()?;
     std::env::set_current_dir(root)?;
     run(&args)
 }

@@ -19,9 +19,11 @@ struct Cli {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let cli = Cli::parse();
-    let address = SocketAddr::new(cli.host, cli.port);
+    let listener = tokio::net::TcpListener::bind(SocketAddr::new(cli.host, cli.port)).await?;
+    let address = listener.local_addr()?;
     eprintln!(
         "LOCAL DEVELOPMENT ONLY: unattested decryption service on {address}; do not use funds"
     );
-    serve(address, local_unattested_service()).await
+    println!("{address}");
+    serve(listener, local_unattested_service()).await
 }
