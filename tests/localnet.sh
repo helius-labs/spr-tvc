@@ -14,8 +14,8 @@ fi
 offset=$((10#$offset))
 
 zolana_root="$(cd "${ZOLANA_DIR:-../zolana}" && pwd)"
-# This revision supports cleanup through process ownership receipts.
-if ! git -C "$zolana_root" merge-base --is-ancestor c5297afa13e8bfb6edadf6408304ef3fc2f8c676 HEAD; then
+# Older CLIs stop any listener on their ports. Require scoped process support.
+if ! git -C "$zolana_root" grep -q 'const PROCESS_SCOPE_ENV.*ZOLANA_PROCESS_SCOPE_DIR' -- cli/src; then
     echo "use a Zolana checkout with scoped localnet processes (see tests/README.md)" >&2
     exit 2
 fi
