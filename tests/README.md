@@ -41,6 +41,36 @@ The tests use fixtures and simulated attestation inputs. The
 [service spec](../enclave/SPEC.md#key-custody-and-trust) describes the trust
 required of Quorum operators and the release authorities.
 
+## Live devnet transfer
+
+The [Rust test](devnet/shielded_transfer.rs) creates two fresh wallets. It
+funds A with 0.01 devnet SOL, registers A, shields 0.001 SOL, and sends
+0.0004 SOL to unregistered B. B discovers the transfer by its public owner
+tag and opens the note through the attested decryption service on Gatekeeper.
+The test verifies devnet genesis, the deployed prover, and the signed service
+release before loading the payer.
+
+Populate `sdk/releases/devnet.json` with the signed pin for the release
+Gatekeeper serves. [Pinning instructions](../xtask/README.md#pin-devnet)
+
+Run from the repository root with a funded devnet payer and a Helius devnet
+API key in `HELIUS_API_KEY` or `API_KEY`. Each run funds a fresh sender
+and leaves its test balances on devnet.
+
+```sh
+SPR_E2E_PAYER=/path/to/devnet-keypair.json \
+  cargo test --locked --manifest-path tests/devnet/Cargo.toml -- --ignored --nocapture
+```
+
+| Invariant | Live check |
+| --- | --- |
+| The expected deployment answers each request. | The session signs a fresh challenge. Each operation proves its request and encrypted result. The replica key, signed release, Nitro chain, and PCRs all match. |
+| B can receive without registering or holding public SOL. | A's on-chain record matches its local wallet. B's record stays absent and its public balance stays unchanged. `PublicKeys` takes only the public address and returns stable, distinct viewing and nullifier keys for A and B. |
+| The transfer conserves shielded value. | The transfer spends A's deposit nullifier and leaves one exact change note. B recovers one note for the expected amount, and its commitment matches the confirmed Solana instruction. |
+| Only B authorizes decryption for B. | An unsigned request, A's signature for B, a changed slot index after signing, and a signed batch over 256 all fail. A's valid request for its own keys and B's local wallet cannot open B's note. |
+| A replay stays bound to the response key. | Replaying the same encrypted request yields the same encrypted answer. An unrelated response key fails to open it. |
+| A modified commitment cannot credit a balance. | The wallet discards the otherwise decryptable note when its indexed commitment is changed. |
+
 ## Mainnet release controls
 
 | Invariant | Coverage |
