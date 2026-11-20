@@ -1,7 +1,13 @@
 name: publish-tvc-gateway-image
+run-name: Publish gateway ${{ inputs.gateway_commit }}
 
 on:
   workflow_dispatch:
+    inputs:
+      gateway_commit:
+        description: Full commit SHA at the tip of private-wallet
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -13,8 +19,7 @@ concurrency:
 env:
   AWS_REGION: eu-north-1
   ECR_REPOSITORY: zolnet-tvc-gateway
-  # Reviewed gateway source preserved on private-wallet for the devnet rehearsal.
-  GATEWAY_COMMIT: a1e2847dd520ee135884f3f00af676fb5db29683
+  GATEWAY_COMMIT: ${{ inputs.gateway_commit }}
 
 jobs:
   publish:
@@ -26,15 +31,22 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - name: Verify gateway source
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch_commit=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/private-wallet" --jq .object.sha)
+          if [[ "$GATEWAY_COMMIT" != "$branch_commit" ]]; then
+            echo "::error::gateway_commit must match the current private-wallet tip"
+            exit 1
+          fi
+          echo "tag=tvc-gateway-${GATEWAY_COMMIT::12}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.GATEWAY_COMMIT }}
           persist-credentials: false
-
-      - id: source
-        run: |
-          test "$(git rev-parse HEAD)" = "$GATEWAY_COMMIT"
-          echo "tag=tvc-gateway-${GATEWAY_COMMIT::12}" >> "$GITHUB_OUTPUT"
 
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
