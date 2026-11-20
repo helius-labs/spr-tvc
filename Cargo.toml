@@ -1,5 +1,5 @@
 [workspace]
-members = ["enclave", "protocol"]
+members = ["enclave", "protocol", "xtask"]
 resolver = "2"
 
 [workspace.package]

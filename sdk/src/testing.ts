@@ -9,10 +9,8 @@ import { requireNetwork } from "./protocol/network.js";
 import type { Network, OperationKind } from "./protocol/types.js";
 import localTestkit from "../../tests/fixtures/local-testkit.json";
 
-export { policySigningDigest, verifySignedReleasePolicy } from "./attestation/release-policy.js";
 export type { QosIdentityPcrs } from "./attestation/boot-proof.js";
 export type { TurnkeyBootProofWire } from "./attestation/turnkey.js";
-export { bindMainnetRelease } from "./protocol/releases.js";
 export { verifyLiveReplica, type VerifyLiveReplicaInput } from "./connection/connect.js";
 
 const encoder = new TextEncoder();

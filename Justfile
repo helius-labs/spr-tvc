@@ -94,7 +94,7 @@ image network="devnet":
 decryption-e2e: install-ts build-ts
     bash scripts/with-local-decryption.sh {{pnpm}} --filter spr-tvc-typescript-client-example test
 
-# Deploy a network's published image, sign its release policy and pin it in the decryption client; see scripts/release.mjs.
+# Deploy and pin a published devnet image. Use cargo xtask for individual phases.
 release network release_id *flags:
-    node scripts/release.mjs all {{release_id}} --network {{network}} {{flags}}
+    cargo xtask all {{release_id}} --network {{network}} {{flags}}
 

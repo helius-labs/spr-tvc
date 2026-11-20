@@ -14,6 +14,7 @@ export default [
     files: [
       "sdk/**/*.{ts,tsx}",
       "example/**/*.{ts,tsx}",
+      "scripts/**/*.ts",
     ],
     languageOptions: {
       parser: tsParser,
@@ -54,9 +55,7 @@ export default [
     },
   },
   {
-    // The client example signs Solana transactions with the wallet's own
-    // Turnkey API key; the restriction above guards the package's proof seam.
-    files: ["example/turnkey.ts"],
+    files: ["example/turnkey.ts", "scripts/release-api.ts"],
     rules: {
       "no-restricted-imports": "off",
     },

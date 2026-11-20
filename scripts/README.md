@@ -2,9 +2,10 @@
 
 ## Release
 
-Build the TypeScript client with `just setup build-ts` and log the Turnkey
-`tvc` CLI (0.19.0 or later) into the decryption app's organization. Docker
-must be able to run the published `linux/amd64` image.
+Run `just setup build-ts` for the SDK's live attestation verifier. Log
+`tvc` into the decryption app's organization, or set `TVC_ORG_ID`,
+`TVC_API_KEY_PUBLIC`, and `TVC_API_KEY_PRIVATE`. Docker must be able to
+run the published `linux/amd64` image.
 
 [The release config](../enclave/deploy/release.json) pins the
 hosted runtime's QOS version and PCR0–3. Cargo independently pins the QOS
@@ -28,8 +29,7 @@ manifest review during approval and local share re-encryption. Devnet's
 | `deploy` | Creates the deployment, collects approvals, provisions shares, sets the release live, and waits for matching discovery. A retry resumes from the deployment record. |
 | `policy` | Reads the recorded live deployment's manifest through the authenticated Turnkey API, checks it against the local build digest and app Quorum key, and verifies the live Boot Proof before signing the SDK pin. |
 
-Run an individual phase with
-`node scripts/release.mjs <phase> <release-id> --network devnet`.
+Run an individual phase with `cargo xtask <phase> <release-id> --network devnet`.
 Commit the deployment records and the signed pin under `sdk/releases/`. Turnkey allows three
 deployments per application. The explicit `--prune-deployments` flag can
 remove older inactive deployments to make room.
@@ -56,7 +56,7 @@ dependencies before provisioning production keys.
 
 Configure the mainnet app, security domain, and
 operator IDs in `enclave/deploy/release.json` and put the app descriptor in
-`enclave/deploy/mainnet/decryption-service-mainnet.app.json`. Use a separate
+`enclave/deploy/mainnet/spr-decryption-service-mainnet.app.json`. Use a separate
 mainnet Quorum key. Set threshold manifest approval and share recovery with
 separate operators. Keep private keys and shares outside the repository.
 
@@ -71,7 +71,7 @@ should determine the maximum policy lifetime and key domain before funding.
    source commit and immutable image reference. `build`, `deploy`, and the
    policy phases check the published image's attestation against that commit.
 2. Run `build` and `deploy` using
-   `node scripts/release.mjs <phase> <release-id> --network mainnet --source-commit <sha>`.
+   `cargo xtask <phase> <release-id> --network mainnet --source-commit <sha>`.
    Add `--image <reference>` on build. The deploy phase creates the candidate and
    checks its manifest, including both Quorum thresholds. Operators independently
    verify the manifest against the reviewed source build, approve it with
