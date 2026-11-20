@@ -25,7 +25,7 @@ pub(crate) struct Descriptor {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Deployment {
     pub(crate) deploy_id: String,
 }

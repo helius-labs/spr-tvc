@@ -1,6 +1,8 @@
 //! QOS startup, discovery, and HTTP routing.
 
+use std::fs;
 use std::io;
+use std::path::Path;
 use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
@@ -9,8 +11,8 @@ use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, Response};
 use axum::response::IntoResponse;
 use axum::Router;
-use qos_core::handles::Handles;
-use qos_core::{EPHEMERAL_KEY_FILE, MANIFEST_FILE, PIVOT_FILE, QUORUM_FILE};
+use qos_core::protocol::services::boot::manifest::{canonical_json_hash, ManifestEnvelopeV2};
+use qos_core::{EPHEMERAL_KEY_FILE, MANIFEST_FILE, QUORUM_FILE};
 use qos_p256::P256Pair;
 use spr_tvc_protocol::constants::{
     API_VERSION, MAX_ENCRYPTED_REQUEST_BYTES, TVC_APP_PROOF_SCHEME, TVC_QOS_PING_PROOF_TYPE,
@@ -45,34 +47,32 @@ impl Service {
     pub fn load(release: Release) -> io::Result<Self> {
         Self::load_from(
             release,
-            &Handles::new(
-                EPHEMERAL_KEY_FILE.to_owned(),
-                QUORUM_FILE.to_owned(),
-                MANIFEST_FILE.to_owned(),
-                PIVOT_FILE.to_owned(),
-            ),
+            Path::new(EPHEMERAL_KEY_FILE),
+            Path::new(QUORUM_FILE),
+            Path::new(MANIFEST_FILE),
         )
     }
 
-    fn load_from(release: Release, handles: &Handles) -> io::Result<Self> {
-        let ephemeral = handles
-            .get_ephemeral_key()
+    fn load_from(
+        release: Release,
+        ephemeral_path: &Path,
+        quorum_path: &Path,
+        manifest_path: &Path,
+    ) -> io::Result<Self> {
+        let ephemeral = P256Pair::from_hex_file(ephemeral_path)
             .map_err(|_| io::Error::other("failed to load QOS ephemeral key"))?;
-        let quorum = handles
-            .get_quorum_key()
+        let quorum = P256Pair::from_hex_file(quorum_path)
             .map_err(|_| io::Error::other("failed to load QOS quorum key"))?;
-        let envelope = handles
-            .get_manifest_envelope()
-            .map_err(|_| io::Error::other("failed to load QOS manifest"))?;
-
-        let manifest_digest = envelope.manifest_hash();
-        let executable_digest = *envelope.pivot_hash();
-        if envelope.manifest().namespace().quorum_key != quorum.public_key().to_bytes() {
+        let envelope: ManifestEnvelopeV2 = serde_json::from_slice(&fs::read(manifest_path)?)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let manifest = envelope.manifest;
+        if manifest.namespace.quorum_key != quorum.public_key().to_bytes() {
             return Err(io::Error::other(
                 "QOS quorum key does not match the approved manifest",
             ));
         }
-        let info = release.service_info(manifest_digest, executable_digest, &quorum);
+        let info =
+            release.service_info(canonical_json_hash(&manifest), manifest.pivot.hash, &quorum);
         Ok(Self::new(info, ephemeral, quorum))
     }
 }

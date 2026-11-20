@@ -186,8 +186,7 @@ function verifyProofBindings(
   const allowed = input.allowedManifestSha256.map((value) =>
     decodeFixedLowerHex(value, SHA256_LEN),
   );
-  // QOS commits VersionedManifest::manifest_hash(), not SHA-256 over the
-  // serialized Borsh bytes carried in qosManifestB64.
+  // QOS puts the canonical JSON manifest digest in the attested user data.
   const manifestDigest = asBytes(attestation.get("user_data"));
   if (
     manifestDigest.length !== SHA256_LEN ||

@@ -1,5 +1,4 @@
 {
-  "package": "spr-tvc-decryption-service",
   "imageRepository": "ghcr.io/helius-labs/spr-tvc-decryption-service",
   "qosVersion": "0.12.1",
   "turnkeyTrustRootId": "aws-nitro-root-g1",

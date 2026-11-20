@@ -81,33 +81,6 @@ fn reject_der(signature: &[u8]) -> Result<(), TvcError> {
     Ok(())
 }
 
-/// Client authorization and release signatures stay low-S only, Turnkey app
-/// proofs arrive in either S half.
-enum SignaturePolicy {
-    LowSOnly,
-    NormalizeHighS,
-}
-
-fn verify_p256_raw(
-    public_sec1: &[u8],
-    digest: &[u8; 32],
-    signature: &[u8],
-    policy: SignaturePolicy,
-) -> Result<(), TvcError> {
-    let public = parse_uncompressed_sec1(public_sec1)?;
-    let verifying_key = VerifyingKey::from(public);
-    reject_der(signature)?;
-    let parsed =
-        Signature::from_slice(signature).map_err(|_| TvcError::new(ErrorCode::InvalidSignature))?;
-    let normalized = parsed.normalize_s();
-    if matches!(policy, SignaturePolicy::LowSOnly) && normalized != parsed {
-        return Err(TvcError::new(ErrorCode::HighSSignature));
-    }
-    verifying_key
-        .verify_prehash(digest, &normalized)
-        .map_err(|_| TvcError::new(ErrorCode::InvalidSignature))
-}
-
 /// Sign `digest` with a prehash API. The digest MUST already be SHA-256(message).
 pub fn sign_p256_prehash(
     secret: &[u8; 32],
@@ -127,7 +100,16 @@ pub fn verify_p256_prehash(
     digest: &[u8; 32],
     signature: &[u8],
 ) -> Result<(), TvcError> {
-    verify_p256_raw(public_sec1, digest, signature, SignaturePolicy::LowSOnly)
+    let public = parse_uncompressed_sec1(public_sec1)?;
+    reject_der(signature)?;
+    let signature =
+        Signature::from_slice(signature).map_err(|_| TvcError::new(ErrorCode::InvalidSignature))?;
+    if signature.normalize_s() != signature {
+        return Err(TvcError::new(ErrorCode::HighSSignature));
+    }
+    VerifyingKey::from(public)
+        .verify_prehash(digest, &signature)
+        .map_err(|_| TvcError::new(ErrorCode::InvalidSignature))
 }
 
 /// Hash-internally APIs receive the raw domain-separated message, not a digest.
@@ -146,20 +128,6 @@ pub fn verify_p256_message(
 ) -> Result<(), TvcError> {
     let digest: [u8; 32] = Sha256::digest(message).into();
     verify_p256_prehash(public_sec1, &digest, signature)
-}
-
-pub fn verify_turnkey_app_proof_p256_message(
-    public_sec1: &[u8],
-    message: &[u8],
-    signature: &[u8],
-) -> Result<(), TvcError> {
-    let digest: [u8; 32] = Sha256::digest(message).into();
-    verify_p256_raw(
-        public_sec1,
-        &digest,
-        signature,
-        SignaturePolicy::NormalizeHighS,
-    )
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Debug, PartialEq, Eq)]

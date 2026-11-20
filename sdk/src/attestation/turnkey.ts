@@ -1,40 +1,6 @@
-// THE SINGLE TURNKEY SEAM for @heliuslabs/spr-decryption-service.
-//
-// @turnkey/* may only be imported from this file. The composite verifier uses
-// Turnkey's AWS Nitro X.509 chain helper, then applies the Zolana release-policy
-// and PCR checks outside this seam.
-//
-// Why this does not just call `turnkeyCrypto.verify(appProof, bootProof)`,
-// which exists and looks like it would do the job — @turnkey/crypto's own
-// docstring on it says:
-//
-//   "WARNING: This is not full verification of a Turnkey enclave. It does not
-//    verify the enclave identity or image measurements [...] Any party with an
-//    AWS account can run their own Nitro enclave and produce attestations that
-//    pass this check. For full verification, callers must additionally pin and
-//    verify the expected PCR measurements and manifest content."
-//
-// `verifyBootProof` is that additional verification: pinned PCR0-3, the PCR17
-// live-manifest commitment, and the manifest digest checked against the signed
-// release policy. Three further deliberate divergences from the reference:
-//
-//   - Reference `verify()` passes `appProof.proofPayload.timestampMs` as the
-//     certificate-chain validation time. We pass the verifier's own clock, so
-//     no attacker-supplied value decides whether the chain authenticating that
-//     same attacker's document was valid.
-//   - Reference `verify()` recomputes the manifest digest as SHA-256 over the
-//     Borsh bytes in `qosManifestB64`. QOS commits
-//     `VersionedManifest::manifest_hash()`, which is not that, so we compare
-//     `user_data` against the policy's pinned digests instead.
-//   - `verifyCoseSign1Sig` is also exported by @turnkey/crypto, but it routes
-//     the Sig_structure through `cbor-js` (an unmaintained 2015 package that
-//     @turnkey/crypto still depends on). Our COSE check uses the strict
-//     deterministic codec in ./cbor.ts so that no attacker-controlled CBOR is
-//     parsed by that library on our path.
-//
-// The AWS Nitro root below is pinned here rather than imported from
-// @turnkey/crypto: a trust root is something you pin yourself, out of band.
-// It has been verified byte-identical to `constants.AWS_ROOT_CERT_PEM`.
+// Verify the Nitro COSE signature and certificate chain against the pinned AWS
+// root, using the verifier's clock. boot-proof.ts checks the replica key, PCRs,
+// and canonical QOS manifest digest against the release policy.
 
 import * as turnkeyCrypto from "@turnkey/crypto";
 import type { v1AppProof, v1BootProof } from "@turnkey/sdk-types";

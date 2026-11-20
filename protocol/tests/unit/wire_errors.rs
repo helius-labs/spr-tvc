@@ -29,7 +29,6 @@ fn every_code_is_its_variant_name() {
             "DerSignatureRejected",
             "CompressedKeyRejected",
             "DoubleHashRejected",
-            "UnsupportedProofPath",
             "BootProofUnverified",
             "DiscoveryUntrusted",
             "NetworkMismatch",

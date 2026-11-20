@@ -94,8 +94,8 @@ service endpoint.
   claim and sweep a note that predates the outage. Rotating the key requires
   keeping the old service available while recipients sweep.
 - Revoke with a higher `minimumRevocationEpoch` in the independently
-  distributed trust config. Older clients enforce that floor after updating
-  and can accept their cached policies until those policies expire.
+  distributed trust config. Clients apply the new floor after updating.
+  Until then, they can accept policies through their signed expiry.
 - Enforce funded canary limits at deposit or transfer admission. Sender
   wallets can reuse service public keys without contacting the enclave.
 - Before funding, verify send, claim, sweep, and withdrawal on the approved

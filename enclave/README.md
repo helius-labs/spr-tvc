@@ -12,9 +12,8 @@ Only the holder of that response private key can open the reply.
 
 ## Devnet
 
-The SDK requires a signed pin for the approved deployment before it connects to
-the [devnet endpoint](deploy/release.json). Use `just decryption-e2e`
-or `just headless-e2e` to run the service locally.
+The [devnet endpoint](deploy/release.json) requires a release with a signed
+SDK pin. Run `just decryption-e2e` or `just headless-e2e` for local verification.
 
 The [devnet app](deploy/devnet/spr-decryption-service-devnet.app.json) has its
 own Quorum key, with a 2-of-3 split provisioned using devnet operator key

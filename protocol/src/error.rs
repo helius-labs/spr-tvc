@@ -28,7 +28,6 @@ pub enum ErrorCode {
     DerSignatureRejected,
     CompressedKeyRejected,
     DoubleHashRejected,
-    UnsupportedProofPath,
     BootProofUnverified,
     DiscoveryUntrusted,
     NetworkMismatch,

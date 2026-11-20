@@ -26,9 +26,10 @@ using the Boot Proof for the replica that signed each answer.
 The release tool reads the candidate's manifest from the authenticated
 Turnkey API. It checks the image digest and the manifest's executable and
 launch arguments against the deployment descriptor, and compares the Quorum
-key with the app configuration. Operators approve and provision through
-Turnkey. Before writing a pin, the tool checks discovery and a live Boot
-Proof bound to that manifest.
+key with the app configuration. The enclave reads the QOS v2 JSON manifest
+envelope at startup and uses the same canonical manifest hash. Operators
+approve and provision through Turnkey. Before writing a pin, the tool checks
+discovery and a live Boot Proof bound to that manifest.
 For mainnet, the SDK supplies the authority set, revocation floor, Quorum key,
 security domain, and policy lifetime limit from its independent trust config.
 The release tool stages candidates on a separate ingress.

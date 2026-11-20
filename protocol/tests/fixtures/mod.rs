@@ -14,13 +14,12 @@ use spr_tvc_protocol::constants::{
 };
 use spr_tvc_protocol::crypto::{
     public_key_uncompressed, qos_decrypt, qos_encrypt_with, qos_public_from_secrets,
-    sign_p256_prehash, verify_p256_prehash, verify_turnkey_app_proof_p256_message, QosP256Public,
+    sign_p256_prehash, verify_p256_message, verify_p256_prehash, QosP256Public,
 };
 use spr_tvc_protocol::decryption_service::SERVICE_PROOF_TYPE;
 use spr_tvc_protocol::digest::result_digest;
 use spr_tvc_protocol::encoding::{
-    canonicalize_json_str, canonicalize_json_value, encode_decimal_u64, encode_lower_hex,
-    jcs_serialize,
+    canonicalize_json_value, encode_decimal_u64, encode_lower_hex, jcs_serialize,
 };
 use spr_tvc_protocol::error::{ErrorCode, TvcError};
 use spr_tvc_protocol::release::{
@@ -28,8 +27,8 @@ use spr_tvc_protocol::release::{
     ReleaseAuthorityKey,
 };
 use spr_tvc_protocol::types::{
-    HealthResponse, HealthStatus, Network, OperationKind, ReleaseAuthoritySignature, ReleasePolicy,
-    ServiceInfo, SignedReleasePolicy,
+    HealthResponse, HealthStatus, Network, OperationKind, OperationProofPayload,
+    ReleaseAuthoritySignature, ReleasePolicy, ServiceInfo, SignedReleasePolicy,
 };
 
 const OPERATIONS: [OperationKind; 2] = [
@@ -58,24 +57,6 @@ pub fn reject_double_hashed_signature(
         Err(error) if error.code == ErrorCode::InvalidSignature => Ok(()),
         Err(error) => Err(error),
     }
-}
-
-/// What the TypeScript client accepts as a Turnkey App Proof: a documented
-/// proof type, signed over the exact UTF-8 payload in either S half.
-fn verify_turnkey_app_proof(
-    proof_payload_utf8: &str,
-    qos_public_key: &[u8],
-    signature: &[u8],
-) -> Result<(), TvcError> {
-    let payload: Value = serde_json::from_str(proof_payload_utf8)
-        .map_err(|_| TvcError::new(ErrorCode::TurnkeyEvidenceInvalid))?;
-    match payload.get("type").and_then(Value::as_str) {
-        Some("APP_PROOF_TYPE_POLICY_OUTCOME" | "APP_PROOF_TYPE_ADDRESS_DERIVATION") => {}
-        _ => return Err(TvcError::new(ErrorCode::UnsupportedProofPath)),
-    }
-    let public = QosP256Public::from_bytes(qos_public_key)?;
-    verify_turnkey_app_proof_p256_message(&public.signing, proof_payload_utf8.as_bytes(), signature)
-        .map_err(|_| TvcError::new(ErrorCode::TurnkeyEvidenceInvalid))
 }
 
 /// What `discovery-binding.json` expects: check for check, the TypeScript
@@ -192,7 +173,7 @@ struct Running {
 
 fn sample_running() -> Running {
     Running {
-        release_id: "tvc-dev-phase0".to_owned(),
+        release_id: "fixture-devnet".to_owned(),
         manifest_digest: sha256_label("spr-tvc-test-manifest"),
         executable_digest: sha256_label("spr-tvc-test-executable"),
         security_domain_id: sha256_label("spr-tvc-test-security-domain"),
@@ -377,18 +358,19 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
         })),
     );
 
-    let proof_payload = canonicalize_json_str(
-        r#"{"outcome":"Completed","type":"APP_PROOF_TYPE_POLICY_OUTCOME","version":1}"#,
-    )?;
+    let proof = OperationProofPayload {
+        r#type: SERVICE_PROOF_TYPE.to_owned(),
+        version: API_VERSION,
+        request_id: [0x11; 32],
+        request_digest: [0x22; 32],
+        result_digest: result_digest(b"encrypted-result"),
+        operation: OperationKind::ServiceDecrypt,
+    };
+    let proof_payload = jcs_serialize(&proof)?;
     let proof_sig =
         spr_tvc_protocol::crypto::sign_p256_message(&signing_sk, proof_payload.as_bytes())?;
-    let parsed_proof_sig = p256::ecdsa::Signature::from_slice(&proof_sig).expect("signature");
-    let (proof_r, proof_s) = parsed_proof_sig.split_scalars();
-    let high_s_sig: [u8; 64] = p256::ecdsa::Signature::from_scalars(*proof_r, -*proof_s)
-        .expect("high-s signature")
-        .to_bytes()
-        .into();
-    let non_jcs_payload = r#"{"type":"APP_PROOF_TYPE_POLICY_OUTCOME","timestampMs":"1750000000000","policyOutcome":{}}"#;
+    let high_s_sig = high_s_signature(&proof_sig);
+    let non_jcs_payload = serde_json::to_string(&proof).unwrap();
     let non_jcs_sig =
         spr_tvc_protocol::crypto::sign_p256_message(&signing_sk, non_jcs_payload.as_bytes())?;
     files.insert(
@@ -418,7 +400,7 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
             "health_body": health,
             "info_status": 200,
             "info_body": jcs_serialize(&info)?,
-            "health_has_release_id": health.contains("tvc-dev-phase0"),
+            "health_has_release_id": health.contains(&info.release_id),
         })),
     );
 
@@ -430,13 +412,13 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
         })),
     );
 
-    for (payload, signature) in [
-        (proof_payload.as_str(), proof_sig.as_slice()),
-        (proof_payload.as_str(), high_s_sig.as_slice()),
-        (non_jcs_payload, non_jcs_sig.as_slice()),
-    ] {
-        verify_turnkey_app_proof(payload, &quorum.to_bytes(), signature)?;
-    }
+    verify_p256_message(&quorum.signing, proof_payload.as_bytes(), &proof_sig)?;
+    assert_eq!(
+        verify_p256_message(&quorum.signing, proof_payload.as_bytes(), &high_s_sig)
+            .unwrap_err()
+            .code,
+        ErrorCode::HighSSignature
+    );
     reject_double_hashed_signature(&client_public, &digest, &double_sig)?;
 
     let authority_sk1 = sha256_label("spr-tvc-test-release-authority-1");

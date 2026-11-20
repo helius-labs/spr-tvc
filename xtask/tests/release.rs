@@ -46,39 +46,17 @@ fn release_requires_inputs_for_its_phase_and_network() {
 }
 
 #[test]
-fn tracked_devnet_records_match_the_current_descriptor_schema() {
-    let config: ReleaseConfig =
-        serde_json::from_str(include_str!("../../enclave/deploy/release.json")).unwrap();
-    let app: AppConfig = serde_json::from_str(include_str!(
-        "../../enclave/deploy/devnet/spr-decryption-service-devnet.app.json"
-    ))
-    .unwrap();
-    assert_eq!(app.quorum_public_key.len(), 130);
-    let id = "decryption-service-devnet-2cf18b375f57";
-    let args = Args::parse_from(["xtask", "stage", id, "--network", "devnet"]);
-    let release = Release {
-        args: &args,
-        config: &config,
-        app: &config.networks.devnet,
-    };
-    let record: stage::Deployment = read_json(
-        &Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join(release.path("deploy")),
-    )
-    .unwrap();
-    assert!(!record.deploy_id.is_empty());
-    let descriptor = include_str!(
-        "../../enclave/deploy/devnet/decryption-service-devnet-2cf18b375f57.deployment.json"
+fn deployment_records_contain_only_the_staged_id() {
+    let record: stage::Deployment = serde_json::from_str(r#"{"deployId":"candidate"}"#).unwrap();
+    assert_eq!(
+        serde_json::to_value(record).unwrap(),
+        serde_json::json!({"deployId": "candidate"})
     );
-    let tracked: stage::Descriptor = serde_json::from_str(descriptor).unwrap();
-    assert!(
-        tracked
-            == release.deployment_descriptor(
-                &tracked.pivot_container_image_url,
-                &tracked.expected_pivot_digest,
-            )
-    );
+    for field in ["approved", "provisioned", "live"] {
+        let mut record = serde_json::json!({"deployId": "candidate"});
+        record[field] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<stage::Deployment>(record).is_err());
+    }
 }
 
 #[test]

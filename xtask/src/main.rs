@@ -94,7 +94,7 @@ impl Args {
 type Pcrs = std::collections::BTreeMap<u8, String>;
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ReleaseConfig {
     image_repository: String,
     qos_version: String,
@@ -105,13 +105,14 @@ struct ReleaseConfig {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Networks {
     devnet: NetworkConfig,
     mainnet: Option<NetworkConfig>,
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct NetworkConfig {
     app_id: String,
     endpoint: String,

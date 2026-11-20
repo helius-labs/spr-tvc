@@ -71,7 +71,7 @@ export async function fetchSession(
   return { infoText, pingText: await fetchPing(endpoint, pingBody, transport, signal) };
 }
 
-/** The Boot Proof of the replica that signed `appProof`, for an answer that carried none. */
+/** Looks up the Boot Proof for the replica that signed `appProof`. */
 export function lookupBootProof(
   backend: EnclaveBackend,
   appProof: TurnkeyAppProofWire,

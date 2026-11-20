@@ -18,32 +18,25 @@ impl Drop for FixtureDir {
     }
 }
 
-fn load(quorum_seed: u8) -> io::Result<Service> {
+fn load(quorum_seed: u8, envelope: &[u8]) -> io::Result<Service> {
     let id = encode_lower_hex(&*qos_p256::bytes_os_rng::<16>());
     let dir = std::env::temp_dir().join(format!("spr-tvc-qos-{id}"));
     fs::create_dir(&dir).unwrap();
     let dir = FixtureDir(dir);
-    let path = |name: &str| {
-        dir.0
-            .join(name.trim_start_matches('/'))
-            .to_str()
-            .unwrap()
-            .to_owned()
-    };
+    let path = |name: &str| dir.0.join(name.trim_start_matches('/'));
     let ephemeral = path(EPHEMERAL_KEY_FILE);
     let quorum = path(QUORUM_FILE);
     let manifest = path(MANIFEST_FILE);
     fs::write(&ephemeral, encode_lower_hex(&[EPHEMERAL_SEED; 32])).unwrap();
     fs::write(&quorum, encode_lower_hex(&[quorum_seed; 32])).unwrap();
-    fs::write(&manifest, ENVELOPE).unwrap();
+    fs::write(&manifest, envelope).unwrap();
 
-    let handles = Handles::new(ephemeral, quorum, manifest, path(PIVOT_FILE));
-    Service::load_from(crate::testing::release(), &handles)
+    Service::load_from(crate::testing::release(), &ephemeral, &quorum, &manifest)
 }
 
 #[test]
 fn loads_hosted_qos_manifest_and_reports_its_digests() {
-    let service = load(0x11).unwrap();
+    let service = load(0x11, ENVELOPE).unwrap();
     assert_eq!(
         encode_lower_hex(&service.info.manifest_digest),
         "016748a03b94269ade9b75c7b4231a2940cc3c85aabade226a956ea80ab374b0"
@@ -62,11 +55,28 @@ fn loads_hosted_qos_manifest_and_reports_its_digests() {
 
 #[test]
 fn refuses_a_valid_quorum_key_from_another_manifest() {
-    let Err(error) = load(0x44) else {
+    let Err(error) = load(0x44, ENVELOPE) else {
         panic!("startup accepted a quorum key that differs from the manifest");
     };
     assert_eq!(
         error.to_string(),
         "QOS quorum key does not match the approved manifest"
     );
+}
+
+#[test]
+fn startup_requires_the_current_qos_envelope_schema() {
+    let mut envelope: serde_json::Value = serde_json::from_slice(ENVELOPE).unwrap();
+    let manifest = envelope["manifest"].as_object_mut().unwrap();
+    assert!(manifest.remove("version").is_some());
+    for version in [None, Some("v1")] {
+        if let Some(version) = version {
+            envelope["manifest"]["version"] = version.into();
+        }
+        let encoded = serde_json::to_vec(&envelope).unwrap();
+        let Err(error) = load(0x11, &encoded) else {
+            panic!("startup accepted QOS manifest schema {version:?}");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
 }

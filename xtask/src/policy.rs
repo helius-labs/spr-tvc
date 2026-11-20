@@ -4,7 +4,7 @@ use anyhow::{ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use p256::ecdsa::SigningKey;
 use p256::elliptic_curve::Generate;
-use qos_core::protocol::services::boot::manifest::{ManifestV2, VersionedManifest};
+use qos_core::protocol::services::boot::manifest::{canonical_json_hash, ManifestV2};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use spr_tvc_protocol::constants::{
@@ -124,24 +124,23 @@ impl TurnkeyDeployment {
                 && manifest.pivot.env.is_empty(),
             "measured launch arguments, environment, or debug mode differ from the descriptor"
         );
-        let manifest = VersionedManifest::V2(manifest);
         if mainnet {
             ensure!(
-                manifest.manifest_set().threshold >= 2 && manifest.share_set().threshold >= 2,
+                manifest.manifest_set.threshold >= 2 && manifest.share_set.threshold >= 2,
                 "mainnet requires threshold manifest approval and share recovery"
             );
         }
-        let executable_digest = hex::encode(manifest.pivot_hash());
+        let executable_digest = hex::encode(manifest.pivot.hash);
         ensure!(
             executable_digest == descriptor.expected_pivot_digest,
             "approved manifest does not match the locally built executable"
         );
         ensure!(
-            manifest.namespace().quorum_key == quorum_public_key,
+            manifest.namespace.quorum_key == quorum_public_key,
             "approved manifest does not match the configured Quorum public key"
         );
         Ok(Approved {
-            manifest_digest: hex::encode(manifest.manifest_hash()),
+            manifest_digest: hex::encode(canonical_json_hash(&manifest)),
             executable_digest,
             quorum_public_key: quorum_public_key.to_vec(),
         })

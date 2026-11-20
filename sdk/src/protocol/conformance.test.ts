@@ -224,7 +224,7 @@ describe("bindings and HTTP skeleton", () => {
       String(fixture.info_body),
       SERVICE_INFO_KEYS
     );
-    expect(info.release_id).toBe("tvc-dev-phase0");
+    expect(info.release_id).toBe("fixture-devnet");
   });
 });
 
