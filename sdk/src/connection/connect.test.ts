@@ -15,7 +15,7 @@ import type {
   SignedReleasePolicy,
 } from "../protocol/types.js";
 import { policySigningDigest } from "../attestation/release-policy.js";
-import { verifyLiveReplica, type DecryptionServiceConnectionConfig } from "./connect.js";
+import { fetchLiveServiceInfo, verifyLiveReplica, type DecryptionServiceConnectionConfig } from "./connect.js";
 import { requestScope, type DecryptionServiceRequestOptions } from "./request.js";
 import { createDecryptionServiceSession } from "./session.js";
 
@@ -374,7 +374,9 @@ describe("the client's network", () => {
 });
 
 describe("a live replica, before its release is signed", () => {
-  beforeEach(() => verifyBootProofMock.mockReset().mockResolvedValue(undefined));
+  beforeEach(() => {
+    verifyBootProofMock.mockReset().mockResolvedValue(undefined);
+  });
 
   function enclave(answer: (encryptedChallenge: string) => string) {
     const fetch = vi.fn(async (url: URL, init?: RequestInit) => {
@@ -389,6 +391,23 @@ describe("a live replica, before its release is signed", () => {
     });
     return { fetch };
   }
+
+  it("bounds release discovery before parsing the response", async () => {
+    const { info } = connectFixture();
+    const endpoint = new URL("https://app.example/base");
+    const fetch = vi.fn(async (url: URL) => {
+      expect(url.href).toBe("https://app.example/base/v1/info");
+      return Response.json(info);
+    });
+    await expect(fetchLiveServiceInfo(endpoint, undefined, { fetch })).resolves.toEqual(info);
+
+    let pulls = 0;
+    fetch.mockResolvedValueOnce(oversizedResponse(() => { pulls += 1; }));
+    await expect(fetchLiveServiceInfo(endpoint, undefined, { fetch })).rejects.toMatchObject({
+      code: "ResponseTooLarge",
+    });
+    expect(pulls).toBeLessThan(4);
+  });
 
   it("pings the approved Quorum key and attests the approved manifest", async () => {
     const { ephemeralPublicKey, manifestDigest, info, expectedPcrs, bootProof, pingAnswer } = connectFixture();
@@ -412,6 +431,33 @@ describe("a live replica, before its release is signed", () => {
       nowMs: 1_750_000_000_000n,
     });
   });
+
+  it.each(["ping", "Boot Proof lookup", "Boot Proof verification"])(
+    "enforces the release deadline during %s",
+    async (stage) => {
+      const { info, expectedPcrs, bootProof, pingAnswer } = connectFixture();
+      const deadline = new AbortController();
+      const stalled = vi.fn(() => new Promise<never>(() => {}));
+      const transport = stage === "ping" ? { fetch: stalled } : enclave(pingAnswer);
+      const lookup = stage === "Boot Proof lookup" ? stalled : async () => bootProof;
+      if (stage === "Boot Proof verification") verifyBootProofMock.mockImplementation(stalled);
+      const pending = verifyLiveReplica({
+        endpoint: new URL("https://app.example"),
+        info,
+        approved: { manifestDigest: info.manifest_digest, executableDigest: info.executable_digest, quorumPublicKey: info.quorum_public_key },
+        qosIdentityPcrs: expectedPcrs,
+        turnkeyTrustRootId: "aws-nitro-root-g1",
+        bootProof: lookup,
+        transport,
+        signal: deadline.signal,
+      });
+      const timeout = new DOMException("release verification timed out", "TimeoutError");
+      const rejected = expect(pending).rejects.toBe(timeout);
+      await vi.waitFor(() => expect(stalled).toHaveBeenCalledOnce());
+      deadline.abort(timeout);
+      await rejected;
+    },
+  );
 
   it("is refused when another key answers, the Boot Proof fails, or the trust root is not the pinned one", async () => {
     const { info, expectedPcrs, bootProof, pingAnswer } = connectFixture();

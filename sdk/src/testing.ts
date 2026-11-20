@@ -11,7 +11,7 @@ import localTestkit from "../../tests/fixtures/local-testkit.json";
 
 export type { QosIdentityPcrs } from "./attestation/boot-proof.js";
 export type { TurnkeyBootProofWire } from "./attestation/turnkey.js";
-export { verifyLiveReplica, type VerifyLiveReplicaInput } from "./connection/connect.js";
+export { fetchLiveServiceInfo, verifyLiveReplica, type VerifyLiveReplicaInput } from "./connection/connect.js";
 
 const encoder = new TextEncoder();
 const digest = (label: string) => encodeLowerHex(sha256(encoder.encode(label)));

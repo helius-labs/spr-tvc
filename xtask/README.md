@@ -51,6 +51,11 @@ live deployment and Boot Proof before signing with a one-time devnet
 authority and writing `sdk/releases/devnet.json`. Record the deployment and
 pin together.
 
+Discovery and ping responses are capped at 64 KiB each. Discovery has 10
+seconds. A single 30-second deadline covers ping, Boot Proof lookup, and
+attestation verification. Cargo terminates a release check subprocess that
+is still running after 60 seconds.
+
 ## Mainnet
 
 Use independently held operator keys and a threshold for both manifest

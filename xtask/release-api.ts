@@ -10,10 +10,9 @@ function requiredEnv(name: string): string {
 
 const [operation, value] = process.argv.slice(2);
 if (operation === "info" && value) {
-  const endpoint = new URL("v1/info", value.endsWith("/") ? value : `${value}/`);
-  const response = await fetch(endpoint, { signal: AbortSignal.timeout(10_000) });
-  if (!response.ok) throw new Error(`discovery returned HTTP ${response.status}`);
-  console.log(JSON.stringify(await response.json()));
+  const { fetchLiveServiceInfo } = await import("../sdk/dist/testing.js");
+  const info = await fetchLiveServiceInfo(new URL(value), AbortSignal.timeout(10_000));
+  console.log(JSON.stringify(info));
 } else {
   const { Turnkey } = await import("@turnkey/sdk-server");
   const organizationId = requiredEnv("TVC_ORG_ID");
@@ -30,11 +29,12 @@ if (operation === "info" && value) {
     console.log(JSON.stringify(tvcDeployment));
   } else if (operation === "verify") {
     const input = JSON.parse(readFileSync(0, "utf8")) as
-      Omit<VerifyLiveReplicaInput, "endpoint" | "bootProof"> & { endpoint: string };
+      Omit<VerifyLiveReplicaInput, "endpoint" | "bootProof" | "signal"> & { endpoint: string };
     const { verifyLiveReplica } = await import("../sdk/dist/testing.js");
     await verifyLiveReplica({
       ...input,
       endpoint: new URL(input.endpoint),
+      signal: AbortSignal.timeout(30_000),
       async bootProof(ephemeralKey) {
         const { bootProof } = await turnkey.getBootProof({ organizationId, ephemeralKey });
         if (!bootProof) throw new Error("Turnkey returned no Boot Proof");

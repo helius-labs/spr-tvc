@@ -22,7 +22,7 @@ import type {
   TurnkeyBootProofWire,
 } from "../attestation/turnkey.js";
 import { bindDiscoveryToPolicy, verifySignedReleasePolicy } from "../attestation/release-policy.js";
-import { fetchPing, fetchSession, lookupBootProof, type EnclaveBackend } from "./backend.js";
+import { fetchDiscovery, fetchPing, fetchSession, lookupBootProof, type EnclaveBackend } from "./backend.js";
 import { requireCurrentReleasePolicy } from "./operations.js";
 
 const PING_RESPONSE_KEYS = ["version", "tvc_app_proof"] as const;
@@ -66,6 +66,14 @@ export type ConnectedTvcRuntime = {
 
 export function parseServiceInfo(text: string): ServiceInfo {
   return parseStrictJson<ServiceInfo>(text, SERVICE_INFO_KEYS);
+}
+
+export async function fetchLiveServiceInfo(
+  endpoint: URL,
+  signal?: AbortSignal,
+  transport = createDefaultTransport(),
+): Promise<ServiceInfo> {
+  return parseServiceInfo(await fetchDiscovery(endpoint, transport, signal));
 }
 
 function requireQosPublicKey(value: string): Uint8Array {
@@ -141,6 +149,8 @@ export type VerifyLiveReplicaInput = {
 };
 
 export async function verifyLiveReplica(input: VerifyLiveReplicaInput): Promise<void> {
+  const { signal } = input;
+  signal?.throwIfAborted();
   if (input.turnkeyTrustRootId !== EXPECTED_TURNKEY_TRUST_ROOT_ID) {
     throw new DecryptionServiceError("ReleasePolicyInvalid", `this client pins the trust root ${EXPECTED_TURNKEY_TRUST_ROOT_ID}`);
   }
@@ -154,17 +164,17 @@ export async function verifyLiveReplica(input: VerifyLiveReplicaInput): Promise<
   const transport = input.transport ?? createDefaultTransport();
   const challenge = qosPingChallenge(input.approved.quorumPublicKey);
   const appProof = verifyQosPingAnswer(
-    await fetchPing(input.endpoint, challenge.body, transport, input.signal),
+    await fetchPing(input.endpoint, challenge.body, transport, signal),
     challenge,
   );
-  const bootProof = await awaitWithSignal(input.bootProof(appProof.publicKey, input.signal), input.signal);
-  await verifyBootProof({
+  const bootProof = await awaitWithSignal(input.bootProof(appProof.publicKey, signal), signal);
+  await awaitWithSignal(verifyBootProof({
     ephemeralPublicKey: appProof.publicKey,
     bootProof,
     allowedManifestSha256: [input.approved.manifestDigest],
     expectedPcrs: input.qosIdentityPcrs,
     nowMs: input.nowMs ?? BigInt(Date.now()),
-  });
+  }), signal);
 }
 
 export async function connectAndVerifyTvc(

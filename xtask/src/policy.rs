@@ -26,7 +26,7 @@ use spr_tvc_protocol::types::{
 use zeroize::Zeroizing;
 
 use crate::stage::{Deployment, Descriptor};
-use crate::tools::{capture, verify_live, Credentials};
+use crate::tools::{capture_check, verify_live, Credentials};
 use crate::{app_config, lower_hex, read_json, write_json, Pcrs, Phase, Release};
 
 const OPERATIONS: [OperationKind; 2] = [
@@ -184,7 +184,7 @@ impl Release<'_> {
         descriptor: &Descriptor,
         credentials: &Credentials,
     ) -> Result<Approved> {
-        let deployment: TurnkeyDeployment = serde_json::from_slice(&capture(
+        let deployment: TurnkeyDeployment = serde_json::from_slice(&capture_check(
             &mut credentials.bridge(&["deployment", deploy_id]),
         )?)
         .context("decode authenticated Turnkey deployment")?;

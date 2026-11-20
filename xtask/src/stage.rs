@@ -4,7 +4,7 @@ use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use spr_tvc_protocol::types::{Network, ServiceInfo};
 
-use crate::tools::{bridge, capture, run, tvc, tvc_json, Credentials};
+use crate::tools::{bridge, capture, capture_check, run, tvc, tvc_json, Credentials};
 use crate::{lower_hex, read_json, write_json, Release, APP};
 
 const PIVOT_PATH: &str = "/tvc_app";
@@ -187,7 +187,7 @@ impl Release<'_> {
             id: String,
             live_deployment_id: Option<String>,
         }
-        let apps: Apps = tvc_json(&mut tvc(&["app", "list"]))?;
+        let apps: Apps = tvc_json(&mut tvc(&["app", "list"]), capture_check)?;
         Ok(apps
             .apps
             .into_iter()
@@ -198,7 +198,7 @@ impl Release<'_> {
     }
 
     pub(crate) fn live_info(&self) -> Result<ServiceInfo> {
-        let output = capture(&mut bridge(&["info", &self.app.endpoint]))?;
+        let output = capture_check(&mut bridge(&["info", &self.app.endpoint]))?;
         serde_json::from_slice(&output).context("decode live discovery")
     }
 
@@ -227,8 +227,10 @@ impl Release<'_> {
             struct CreatedDeployment {
                 deployment_id: String,
             }
-            let created: CreatedDeployment =
-                tvc_json(tvc(&["deploy", "create", "--config-file"]).arg(self.path("deployment")))?;
+            let created: CreatedDeployment = tvc_json(
+                tvc(&["deploy", "create", "--config-file"]).arg(self.path("deployment")),
+                capture,
+            )?;
             let record = Deployment {
                 deploy_id: created.deployment_id,
             };

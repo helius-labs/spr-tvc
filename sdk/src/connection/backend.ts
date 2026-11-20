@@ -59,6 +59,15 @@ export async function fetchPing(
   return readAnswer(ping, "BootProofUnverified", MAX_PING_RESPONSE_BYTES, signal);
 }
 
+export async function fetchDiscovery(
+  endpoint: URL,
+  transport: DecryptionServiceTransport,
+  signal?: AbortSignal,
+): Promise<string> {
+  const response = await fetchWithSignal(transport, endpointUrl(endpoint, "/v1/info"), undefined, signal);
+  return readAnswer(response, "DiscoveryUntrusted", MAX_DISCOVERY_RESPONSE_BYTES, signal);
+}
+
 export async function fetchSession(
   backend: EnclaveBackend,
   pingBody: string,
@@ -66,8 +75,7 @@ export async function fetchSession(
   signal?: AbortSignal,
 ): Promise<{ infoText: string; pingText: string }> {
   const { endpoint } = backend;
-  const info = await fetchWithSignal(transport, endpointUrl(endpoint, "/v1/info"), undefined, signal);
-  const infoText = await readAnswer(info, "DiscoveryUntrusted", MAX_DISCOVERY_RESPONSE_BYTES, signal);
+  const infoText = await fetchDiscovery(endpoint, transport, signal);
   return { infoText, pingText: await fetchPing(endpoint, pingBody, transport, signal) };
 }
 
