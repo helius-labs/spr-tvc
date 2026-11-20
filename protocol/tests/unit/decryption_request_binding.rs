@@ -79,6 +79,9 @@ fn the_request_digest_covers_everything_but_the_signature() {
     let mut other_key = request(decrypt([0; 64], 0));
     other_key.client_response_public_key = vec![5; 65];
     assert_ne!(digest, service_request_digest(&other_key).unwrap());
+    let mut other_release = request(decrypt([0; 64], 0));
+    other_release.target_release_id = "release-2".to_owned();
+    assert_ne!(digest, service_request_digest(&other_release).unwrap());
 }
 
 #[test]

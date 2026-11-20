@@ -41,4 +41,9 @@ describe("the decryption service's request", () => {
     const message = decryptMessage(new Uint8Array(32).fill(7), "mainnet", new Uint8Array(32).fill(9));
     expect(encodeLowerHex(message)).toBe(MESSAGE);
   });
+
+  it("binds the release ID and rejects invalid Unicode before hashing", () => {
+    expect(encodeLowerHex(serviceRequestDigest({ ...request, target_release_id: "release-2" }))).not.toBe(DIGEST);
+    expect(() => serviceRequestDigest({ ...request, target_release_id: "\ud800" })).toThrow("InvalidCanonicalJson");
+  });
 });

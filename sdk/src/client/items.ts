@@ -1,6 +1,5 @@
-import type { DecryptRequest, RequestContext } from "@heliuslabs/spr";
+import type { DecryptRequest } from "@heliuslabs/spr";
 
-import type { DecryptionServiceRequestOptions } from "../connection/request.js";
 import { DecryptionServiceError } from "../protocol/error.js";
 import { encodeLowerHex, requireHex } from "../protocol/hex.js";
 import type { DecryptItem, DecryptLabel } from "../protocol/types.js";
@@ -11,19 +10,6 @@ const LABELS: Record<DecryptRequest["label"], DecryptLabel> = {
   transfer: "Transfer",
   ringDeposit: "RingDeposit",
 };
-
-/**
- * The SDK's cancellation and deadline, as one signal for the enclave call. Built
- * once per SDK request, so a deadline covers every batch the request splits into.
- */
-export function operationOptions(context: RequestContext | undefined): DecryptionServiceRequestOptions {
-  const signals: AbortSignal[] = [];
-  if (context?.signal) signals.push(context.signal);
-  if (context?.timeoutMs !== undefined) signals.push(AbortSignal.timeout(context.timeoutMs));
-  if (signals.length === 0) return {};
-  return { signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals),
-    ...(context?.timeoutMs === undefined ? {} : { timeoutMs: context.timeoutMs }) };
-}
 
 /** One SDK decrypt request on the wire's terms. */
 export function decryptItem(request: DecryptRequest): DecryptItem {

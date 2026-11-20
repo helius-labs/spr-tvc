@@ -82,7 +82,7 @@ export type DecryptLabel = "Transfer" | "RingDeposit";
  */
 export type DecryptItem = {
   ciphertext: string;
-  /** Which of the wallet's viewing keys opens it; the enclave holds one. */
+  /** The sender's ephemeral X25519 public key from the transaction or deposit. */
   ephemeral_viewing_public_key: string;
   salt: string;
   /** Zero for a ring deposit, which carries one envelope. */
@@ -90,7 +90,6 @@ export type DecryptItem = {
   label: DecryptLabel;
 };
 
-/** One value the protocol derives from the nullifier secret. */
 export const SERVICE_INFO_KEYS = [
   "version",
   "network",

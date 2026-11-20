@@ -11,7 +11,7 @@ import { requireHex } from "../protocol/hex.js";
 import { requireNetwork } from "../protocol/network.js";
 import { releaseForConnection, type ReleaseTrust } from "../protocol/releases.js";
 import type { DecryptItem, Network } from "../protocol/types.js";
-import { checkHexList, operationOptions } from "./items.js";
+import { batched, checkHexList } from "./items.js";
 import { executeServiceCall, type ServiceCall, type ServiceCallResult } from "./exchange.js";
 import { ServiceKeys, type DecryptionServiceKeys } from "./keys.js";
 const addressEncoder = getAddressEncoder();
@@ -48,27 +48,33 @@ export function decryptionServiceFromSession(
   session: DecryptionServiceSession,
   requestTimeoutMs?: number,
 ): DecryptionService {
-  async function call<T extends ServiceCall>(
-    operation: T,
-    options?: DecryptionServiceRequestOptions,
-  ): Promise<ServiceCallResult<T>> {
+  async function withinRequest<T>(
+    options: DecryptionServiceRequestOptions | undefined,
+    run: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
     const scope = requestScope(options, requestTimeoutMs);
     try {
-      const context = await session.context({ ...options, signal: scope.signal });
-      try {
-        return await executeServiceCall(context, operation, scope.signal);
-      } catch (error) {
-        // A refused or failed exchange may mean the release moved on.
-        if (error instanceof DecryptionServiceHttpError && error.status !== 429) session.forget(context);
-        throw error;
-      }
+      return await run(scope.signal);
     } finally {
       scope.dispose();
     }
   }
 
-  async function address(owner: Address, options?: DecryptionServiceRequestOptions): Promise<ShieldedAddress> {
-    const keys = await call({ type: "PublicKeys", address: owner }, options);
+  async function call<T extends ServiceCall>(
+    operation: T,
+    signal: AbortSignal,
+  ): Promise<ServiceCallResult<T>> {
+    const context = await session.context(signal);
+    try {
+      return await executeServiceCall(context, operation, signal);
+    } catch (error) {
+      if (error instanceof DecryptionServiceHttpError && error.status !== 429) session.forget(context);
+      throw error;
+    }
+  }
+
+  async function address(owner: Address, signal: AbortSignal): Promise<ShieldedAddress> {
+    const keys = await call({ type: "PublicKeys", address: owner }, signal);
     return ShieldedAddress.fromPublicKeys(
       ShieldedPublicKey.fromEd25519(new Uint8Array(addressEncoder.encode(owner)) as Bytes32),
       requireHex(keys.nullifier_public_key, 32) as Bytes32,
@@ -79,24 +85,31 @@ export function decryptionServiceFromSession(
   async function decrypt(
     owner: MessagePartialSigner,
     items: readonly DecryptItem[],
-    options?: DecryptionServiceRequestOptions,
+    signal: AbortSignal,
   ) {
-    const result = await call({ type: "Decrypt", owner, items }, options);
+    const result = await call({ type: "Decrypt", owner, items }, signal);
     checkHexList(result.plaintexts, items.length);
     return result;
   }
 
   return {
-    address,
-    async open(owner, proofs, options) {
-      const shielded = await address(owner.address, options);
-      const nullifierSecret = requireHex((await decrypt(owner, [], options)).nullifier_secret, 31) as Bytes31;
-      try {
-        return new ServiceKeys(shielded, nullifierSecret, proofs, async (items, context) =>
-          (await decrypt(owner, items, operationOptions(context))).plaintexts);
-      } finally {
-        nullifierSecret.fill(0);
-      }
+    address(owner, options) {
+      return withinRequest(options, (signal) => address(owner, signal));
+    },
+    open(owner, proofs, options) {
+      return withinRequest(options, async (signal) => {
+        const shielded = await address(owner.address, signal);
+        const bootstrap = await decrypt(owner, [], signal);
+        const nullifierSecret = requireHex(bootstrap.nullifier_secret, 31) as Bytes31;
+        try {
+          return new ServiceKeys(shielded, nullifierSecret, proofs, (items, context) =>
+            withinRequest(context, (batchSignal) =>
+              batched(items, async (batch) => (await decrypt(owner, batch, batchSignal)).plaintexts)),
+          );
+        } finally {
+          nullifierSecret.fill(0);
+        }
+      });
     },
   };
 }
@@ -112,7 +125,6 @@ export function createDecryptionService(config: DecryptionServiceConfig): Decryp
       release: releaseForConnection(network, config.release),
       ...(network === "devnet" && nowMs !== undefined ? { nowMs } : {}),
       ...(transport === undefined ? {} : { transport }),
-      ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
     }),
     requestTimeoutMs,
   );

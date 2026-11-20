@@ -1,6 +1,6 @@
 import { DecryptionServiceError } from "../protocol/error.js";
 
-/** Applies to one verification or enclave operation, including its proof lookup. */
+/** Applies to the whole SDK call, including verification and any decrypt batches. */
 export interface DecryptionServiceRequestOptions {
   readonly signal?: AbortSignal;
   /** Total time allowed in milliseconds. Defaults to the client setting, or two minutes. */

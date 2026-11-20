@@ -17,7 +17,7 @@ import { sha256 } from "@noble/hashes/sha256";
 
 import { decodeLowerHex } from "../protocol/hex.js";
 import type { DecryptItem } from "../protocol/types.js";
-import { batched, decryptItem } from "./items.js";
+import { decryptItem } from "./items.js";
 
 const TRANSACTION_KEY_LABEL = new TextEncoder().encode("TSPP/decryption-service/tx_key/v1");
 
@@ -77,7 +77,8 @@ export class ServiceKeys implements DecryptionServiceKeys {
     requests: readonly DecryptRequest[],
     context?: RequestContext,
   ): Promise<readonly Uint8Array[]> {
-    const plaintexts = await batched(requests.map(decryptItem), (items) => this.#decrypt(items, context));
+    if (requests.length === 0) return [];
+    const plaintexts = await this.#decrypt(requests.map(decryptItem), context);
     return plaintexts.map(decodeLowerHex);
   }
 

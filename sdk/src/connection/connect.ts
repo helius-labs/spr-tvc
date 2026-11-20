@@ -51,8 +51,6 @@ export type DecryptionServiceConnectionConfig = {
    */
   nowMs?: () => bigint;
   transport?: DecryptionServiceTransport;
-  /** Total deadline for each verification or operation, including proof lookup. Defaults to two minutes. */
-  requestTimeoutMs?: number;
 };
 
 /** What one verification established: the release's discovery, bound to the policy, and how to check each answer. */
@@ -64,7 +62,6 @@ export type ConnectedTvcRuntime = {
   readonly releasePolicyExpiresAtMs: bigint;
   readonly nowMs: () => bigint;
   readonly trustVerifier: { verifyOperationAppProof(proof: TurnkeyAppProofWire, signal?: AbortSignal): Promise<void> };
-  readonly requestTimeoutMs?: number;
 };
 
 export function parseServiceInfo(text: string): ServiceInfo {
@@ -222,6 +219,5 @@ export async function connectAndVerifyTvc(
     releasePolicyExpiresAtMs,
     nowMs,
     trustVerifier,
-    ...(config.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: config.requestTimeoutMs }),
   };
 }

@@ -16,7 +16,7 @@ import type {
 } from "../protocol/types.js";
 import { policySigningDigest } from "../attestation/release-policy.js";
 import { verifyLiveReplica, type DecryptionServiceConnectionConfig } from "./connect.js";
-import type { DecryptionServiceRequestOptions } from "./request.js";
+import { requestScope, type DecryptionServiceRequestOptions } from "./request.js";
 import { createDecryptionServiceSession } from "./session.js";
 
 const verifyBootProofMock = vi.hoisted(() => vi.fn());
@@ -27,8 +27,13 @@ vi.mock("../attestation/boot-proof.js", async (importOriginal) => ({
 }));
 
 /** What the client verifies on first use: a fresh session's connection. */
-function verify(config: DecryptionServiceConnectionConfig, options?: DecryptionServiceRequestOptions) {
-  return createDecryptionServiceSession(config).context(options);
+async function verify(config: DecryptionServiceConnectionConfig, options?: DecryptionServiceRequestOptions) {
+  const scope = requestScope(options);
+  try {
+    return await createDecryptionServiceSession(config).context(scope.signal);
+  } finally {
+    scope.dispose();
+  }
 }
 
 function secret(label: string): Uint8Array {

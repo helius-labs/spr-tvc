@@ -1,4 +1,4 @@
-import { awaitWithSignal, requestScope, type DecryptionServiceRequestOptions } from "./request.js";
+import { awaitWithSignal } from "./request.js";
 import {
   connectAndVerifyTvc,
   type ConnectedTvcRuntime,
@@ -12,7 +12,7 @@ import {
  */
 export type DecryptionServiceSession = {
   /** The verified connection, verifying first when there is none or it no longer holds. */
-  context(options?: DecryptionServiceRequestOptions): Promise<ConnectedTvcRuntime>;
+  context(signal: AbortSignal): Promise<ConnectedTvcRuntime>;
   /** Drops `context` if it is still the current one, so the next call verifies again. */
   forget(context: ConnectedTvcRuntime): void;
   /** Drops the current connection and any verification in flight, so the next call verifies anew. */
@@ -27,18 +27,16 @@ function holds(context: ConnectedTvcRuntime): boolean {
 
 export function sessionFromConnector(
   connect: (signal: AbortSignal) => Promise<ConnectedTvcRuntime>,
-  requestTimeoutMs?: number,
 ): DecryptionServiceSession {
   let active: ConnectedTvcRuntime | null = null;
   type Flight = { controller: AbortController; promise: Promise<ConnectedTvcRuntime>; users: number };
   let pending: Flight | null = null;
 
   return {
-    async context(options): Promise<ConnectedTvcRuntime> {
-      const scope = requestScope(options, requestTimeoutMs);
+    async context(signal): Promise<ConnectedTvcRuntime> {
       let flight: Flight | undefined;
       try {
-        scope.signal.throwIfAborted();
+        signal.throwIfAborted();
         if (active && holds(active)) return active;
         active = null;
         if (!pending) {
@@ -56,13 +54,12 @@ export function sessionFromConnector(
         }
         flight = pending;
         flight.users += 1;
-        return await awaitWithSignal(flight.promise, scope.signal);
+        return await awaitWithSignal(flight.promise, signal);
       } finally {
-        scope.dispose();
         if (flight && --flight.users === 0 && pending === flight) {
           pending = null;
           // One cancelled caller must not cancel another caller's verification.
-          flight.controller.abort(scope.signal.reason);
+          flight.controller.abort(signal.reason);
         }
       }
     },
@@ -80,5 +77,5 @@ export function sessionFromConnector(
 
 export function createDecryptionServiceSession(config: DecryptionServiceConnectionConfig): DecryptionServiceSession {
   // Single-flighted: concurrent first calls share one verification.
-  return sessionFromConnector((signal) => connectAndVerifyTvc(config, signal), config.requestTimeoutMs);
+  return sessionFromConnector((signal) => connectAndVerifyTvc(config, signal));
 }
