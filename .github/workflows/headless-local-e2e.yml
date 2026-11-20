@@ -65,11 +65,5 @@ jobs:
         with:
           path: zolana/prover/server/proving-keys
           key: proving-keys-${{ hashFiles('zolana/prover/server/prover/provingkeys/proving-keys.lock') }}
-      - name: Install and verify TypeScript
-        run: |
-          corepack enable
-          corepack prepare pnpm@9.15.0 --activate
-          pnpm install --frozen-lockfile
-          pnpm ci:ts
       - name: Send, claim and sweep on localnet
         run: just headless-e2e

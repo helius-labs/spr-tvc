@@ -1,0 +1,139 @@
+import { DecryptionServiceError } from "./error.js";
+
+function skipWs(text: string, i: number): number {
+  while (i < text.length && /\s/.test(text[i] ?? "")) i += 1;
+  return i;
+}
+
+function parseString(text: string, start: number): { value: string; next: number } {
+  if (text[start] !== '"') throw new DecryptionServiceError("InvalidCanonicalJson");
+  let i = start + 1;
+  let value = "";
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"') return { value, next: i + 1 };
+    if (ch === "\\") {
+      const next = text[i + 1];
+      const map: Record<string, string> = {
+        '"': '"',
+        "\\": "\\",
+        "/": "/",
+        b: "\b",
+        f: "\f",
+        n: "\n",
+        r: "\r",
+        t: "\t",
+      };
+      if (next && map[next] !== undefined) {
+        value += map[next];
+        i += 2;
+        continue;
+      }
+      if (next === "u") {
+        const hex = text.slice(i + 2, i + 6);
+        value += String.fromCharCode(Number.parseInt(hex, 16));
+        i += 6;
+        continue;
+      }
+      throw new DecryptionServiceError("InvalidCanonicalJson");
+    }
+    value += ch;
+    i += 1;
+  }
+  throw new DecryptionServiceError("InvalidCanonicalJson");
+}
+
+function parseValue(text: string, start: number): { next: number } {
+  let i = skipWs(text, start);
+  const ch = text[i];
+  if (ch === "{") {
+    i += 1;
+    i = skipWs(text, i);
+    const seen = new Set<string>();
+    if (text[i] === "}") return { next: i + 1 };
+    while (i < text.length) {
+      i = skipWs(text, i);
+      const key = parseString(text, i);
+      if (seen.has(key.value)) throw new DecryptionServiceError("DuplicateJsonField");
+      seen.add(key.value);
+      i = skipWs(text, key.next);
+      if (text[i] !== ":") throw new DecryptionServiceError("InvalidCanonicalJson");
+      const nested = parseValue(text, i + 1);
+      i = skipWs(text, nested.next);
+      if (text[i] === ",") {
+        i += 1;
+        continue;
+      }
+      if (text[i] === "}") return { next: i + 1 };
+      throw new DecryptionServiceError("InvalidCanonicalJson");
+    }
+    throw new DecryptionServiceError("InvalidCanonicalJson");
+  }
+  if (ch === "[") {
+    i += 1;
+    i = skipWs(text, i);
+    if (text[i] === "]") return { next: i + 1 };
+    while (i < text.length) {
+      const nested = parseValue(text, i);
+      i = skipWs(text, nested.next);
+      if (text[i] === ",") {
+        i += 1;
+        continue;
+      }
+      if (text[i] === "]") return { next: i + 1 };
+      throw new DecryptionServiceError("InvalidCanonicalJson");
+    }
+    throw new DecryptionServiceError("InvalidCanonicalJson");
+  }
+  if (ch === '"') return { next: parseString(text, i).next };
+  if (ch === "t" || ch === "f" || ch === "n" || ch === "-" || (ch !== undefined && ch >= "0" && ch <= "9")) {
+    while (i < text.length && /[0-9eE+.\-truefalsn]/.test(text[i] ?? "")) i += 1;
+    return { next: i };
+  }
+  throw new DecryptionServiceError("InvalidCanonicalJson");
+}
+
+/**
+ * Parses JSON, rejecting duplicate keys and trailing data. When `exactKeys` is
+ * given, the top-level object must carry exactly those keys, mirroring serde's
+ * `deny_unknown_fields` plus its required-field checks on the Rust side.
+ */
+export function parseStrictJson<T>(text: string, exactKeys?: readonly string[]): T {
+  let value: unknown;
+  try {
+    value = JSON.parse(text) as unknown;
+    const scanned = parseValue(text, 0);
+    if (skipWs(text, scanned.next) !== text.length) {
+      throw new DecryptionServiceError("InvalidCanonicalJson");
+    }
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof RangeError) {
+      throw new DecryptionServiceError("InvalidCanonicalJson");
+    }
+    throw error;
+  }
+  if (exactKeys) assertExactObjectKeys(value, exactKeys, "InvalidCanonicalJson");
+  return value as T;
+}
+
+/**
+ * Requires the object's own keys to be exactly `expected`. Rejecting only
+ * unknown keys would let a peer omit a field and surface it downstream as an
+ * `undefined` read rather than a protocol error.
+ */
+export function assertExactObjectKeys(
+  value: unknown,
+  expected: readonly string[],
+  invalidObjectCode: string,
+): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new DecryptionServiceError(invalidObjectCode);
+  }
+  const keys = Object.keys(value);
+  for (const key of keys) {
+    if (!expected.includes(key)) throw new DecryptionServiceError("UnknownJsonField");
+  }
+  // serde surfaces a missing required field as a plain deserialization
+  // failure, which the Rust protocol maps to InvalidCanonicalJson.
+  if (keys.length !== expected.length) throw new DecryptionServiceError("InvalidCanonicalJson");
+}

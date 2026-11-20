@@ -1,0 +1,21 @@
+{
+  "imageRepository": "ghcr.io/helius-labs/spr-tvc-decryption-service",
+  "qosVersion": "0.12.1",
+  "turnkeyTrustRootId": "aws-nitro-root-g1",
+  "qosIdentityPcrs": {
+    "0": "a16c37b49023089be139b667cf87a32c796a9ccacacf9f0c87bf1a2f58546f2b46218ee6c0a17885f8a7d1b8cccff078",
+    "1": "a16c37b49023089be139b667cf87a32c796a9ccacacf9f0c87bf1a2f58546f2b46218ee6c0a17885f8a7d1b8cccff078",
+    "2": "21b9efbc184807662e966d34f390821309eeac6802309798826296bf3e8bec7c10edb30948c90ba67310f7b964fc500a",
+    "3": "321c3cd57bd9dc5549f349c315b93167fca1adbaf19fbb9c548101bae757970fe269e530ba684826e2f5fb043319a20f"
+  },
+  "policyValidityDays": 365,
+  "networks": {
+    "devnet": {
+      "appId": "67d544db-f727-4c8b-83fe-74a929ac763b",
+      "endpoint": "https://app-67d544db-f727-4c8b-83fe-74a929ac763b.app.turnkey.cloud",
+      "securityDomainId": "6d110d0f6ff414817ed4785cf5c2938a780ddbe2929d48abff6596628d2a5122",
+      "quorumKeyId": "local-a3bff1d85778f146",
+      "quorumKeyEpoch": "1"
+    }
+  }
+}

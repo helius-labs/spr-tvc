@@ -11,19 +11,20 @@
   },
   "scripts": {
     "build:ts": "pnpm --filter @heliuslabs/spr-decryption-service build",
-    "lint:ts": "eslint packages/decryption-service examples/typescript-client/src examples/typescript-client/examples eslint.config.js --max-warnings 0",
+    "lint:ts": "eslint sdk example xtask eslint.config.js --max-warnings 0",
     "test:ts": "pnpm --filter @heliuslabs/spr-decryption-service test",
     "typecheck:ts": "pnpm --filter @heliuslabs/spr-decryption-service typecheck",
-    "ci:ts": "pnpm lint:ts && pnpm typecheck:ts && pnpm test:ts && pnpm build:ts && pnpm test:scripts && pnpm typecheck:examples && pnpm test:examples",
+    "ci:ts": "pnpm lint:ts && pnpm typecheck:ts && pnpm test:ts && pnpm build:ts && tsc -p xtask && pnpm typecheck:examples && pnpm test:examples",
     "typecheck:examples": "pnpm --filter spr-tvc-typescript-client-example typecheck",
-    "test:examples": "pnpm --filter spr-tvc-typescript-client-example test",
-    "test:scripts": "node --test \"scripts/*.test.mjs\""
+    "test:examples": "pnpm --filter spr-tvc-typescript-client-example test"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@typescript-eslint/eslint-plugin": "^8.68.0",
-    "@typescript-eslint/parser": "^8.68.0",
-    "eslint": "^10.9.1",
+    "@turnkey/sdk-server": "8.3.0",
+    "@types/node": "^24.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.73.0",
+    "@typescript-eslint/parser": "^8.73.0",
+    "eslint": "^10.15.0",
     "typescript": "^5.9.3"
   }
 }
