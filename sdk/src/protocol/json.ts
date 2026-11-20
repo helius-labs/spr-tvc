@@ -99,19 +99,21 @@ function parseValue(text: string, start: number): { next: number } {
  * `deny_unknown_fields` plus its required-field checks on the Rust side.
  */
 export function parseStrictJson<T>(text: string, exactKeys?: readonly string[]): T {
-  const scanned = parseValue(text, 0);
-  if (skipWs(text, scanned.next) !== text.length) {
-    throw new DecryptionServiceError("InvalidCanonicalJson");
-  }
-  const value = JSON.parse(text) as T;
-  if (exactKeys && value && typeof value === "object" && !Array.isArray(value)) {
-    const keys = Object.keys(value as object);
-    for (const key of keys) {
-      if (!exactKeys.includes(key)) throw new DecryptionServiceError("UnknownJsonField");
+  let value: unknown;
+  try {
+    value = JSON.parse(text) as unknown;
+    const scanned = parseValue(text, 0);
+    if (skipWs(text, scanned.next) !== text.length) {
+      throw new DecryptionServiceError("InvalidCanonicalJson");
     }
-    if (keys.length !== exactKeys.length) throw new DecryptionServiceError("InvalidCanonicalJson");
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof RangeError) {
+      throw new DecryptionServiceError("InvalidCanonicalJson");
+    }
+    throw error;
   }
-  return value;
+  if (exactKeys) assertExactObjectKeys(value, exactKeys, "InvalidCanonicalJson");
+  return value as T;
 }
 
 /**

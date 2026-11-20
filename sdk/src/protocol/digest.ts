@@ -19,6 +19,3 @@ export function resultDigest(encryptedResult: Uint8Array): Uint8Array {
 export function releasePolicyDigest(policyJcs: Uint8Array): Uint8Array {
   return domainSeparatedHash(RELEASE_POLICY_DOMAIN, policyJcs);
 }
-
-
-/** Exact `WalletDescriptor` digest the provisioner signs. */

@@ -4,6 +4,7 @@ import {
 } from "../protocol/constants.js";
 import { canonicalizeJsonValue } from "../protocol/jcs.js";
 import { releasePolicyDigest } from "../protocol/digest.js";
+import { decodeDecimalU64 } from "../protocol/decimal.js";
 import { decodeLowerHex } from "../protocol/hex.js";
 import { DecryptionServiceError } from "../protocol/error.js";
 import type {
@@ -48,13 +49,13 @@ export function verifySignedReleasePolicy(
     throw new DecryptionServiceError("ReleasePolicyInvalid");
   }
   if (
-    BigInt(signed.policy.revocationEpoch) <
-    BigInt(authorities.minimumRevocationEpoch)
+    decodeDecimalU64(signed.policy.revocationEpoch) <
+    decodeDecimalU64(authorities.minimumRevocationEpoch)
   ) {
     throw new DecryptionServiceError("ReleasePolicyInvalid");
   }
-  const validFrom = BigInt(signed.policy.validFromMs);
-  const expires = BigInt(signed.policy.expiresAtMs);
+  const validFrom = decodeDecimalU64(signed.policy.validFromMs);
+  const expires = decodeDecimalU64(signed.policy.expiresAtMs);
   if (nowMs < validFrom || nowMs > expires) {
     throw new DecryptionServiceError("ExpiredRequest");
   }
@@ -142,9 +143,9 @@ export function bindDiscoveryToPolicy(
     throw new DecryptionServiceError("ReleaseBindingMismatch");
   }
   if (
-    BigInt(info.max_encrypted_request_bytes) !==
+    decodeDecimalU64(info.max_encrypted_request_bytes) !==
       BigInt(policy.maxEncryptedRequestBytes) ||
-    BigInt(info.max_encrypted_response_bytes) !==
+    decodeDecimalU64(info.max_encrypted_response_bytes) !==
       BigInt(policy.maxEncryptedResponseBytes)
   ) {
     throw new DecryptionServiceError("ReleaseBindingMismatch");

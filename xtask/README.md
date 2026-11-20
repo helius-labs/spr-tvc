@@ -65,6 +65,11 @@ Configure the app, Quorum key, and domain in
 `enclave/deploy/mainnet/spr-decryption-service-mainnet.app.json`. Pin the
 same `quorumPublicKey` and `securityDomainId`, approved `qosIdentityPcrs`
 (PCR0–3), and `maximumPolicyLifetimeMs` in `sdk/trust/mainnet.json`.
+Use the deployed QOS release's published `nitro.pcrs` for PCR0–2.
+Turnkey's [QOS 0.12.1 release](https://github.com/tkhq/qos/releases/tag/qos_core-v0.12.1)
+publishes matching PCR0 and PCR1. Pin PCR3 separately for the intended
+deployment's parent IAM role. [AWS Nitro PCRs](https://docs.aws.amazon.com/enclaves/latest/user/set-up-attestation.html)
+
 `releaseAuthorities` holds `authoritySetId`, `minimumRevocationEpoch`,
 `threshold`, and `keys` as `{keyId, publicKey}` entries. The threshold
 requires at least two distinct keys.

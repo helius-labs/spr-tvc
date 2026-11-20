@@ -124,6 +124,14 @@ describe("a release file", () => {
     expect(() => verifyReleaseFile(signed, "devnet", now)).toThrowError(/ReleasePolicyInvalid/);
   });
 
+  it("rejects noncanonical decimals in a signed policy and its authority set", () => {
+    const signed = file({ ...policy, revocationEpoch: "0x0" });
+    expect(() => verifyReleaseFile(signed, "devnet", now)).toThrowError("InvalidDecimal");
+    const noncanonical = file(policy);
+    noncanonical.releaseAuthorities.minimumRevocationEpoch = "00";
+    expect(() => verifyReleaseFile(noncanonical, "devnet", now)).toThrowError("InvalidDecimal");
+  });
+
   it("is refused tampered, expired, in another shape, or with a field the protocol does not have", () => {
     const tampered = file(policy);
     tampered.releasePolicy.policy = { ...policy, releaseId: "other" };

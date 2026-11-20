@@ -183,6 +183,12 @@ describe("JSON reject", () => {
       )
     ).toThrowError(/DuplicateJsonField/);
   });
+
+  it("reports malformed primitives and wrong top-level types as protocol errors", () => {
+    expect(() => parseStrictJson("[truee]")).toThrowError(DecryptionServiceError);
+    expect(() => parseStrictJson("[truee]")).toThrowError("InvalidCanonicalJson");
+    expect(() => parseStrictJson<HealthResponse>("[]", HEALTH_KEYS)).toThrowError("InvalidCanonicalJson");
+  });
 });
 
 describe("bindings and HTTP skeleton", () => {
@@ -199,6 +205,13 @@ describe("bindings and HTTP skeleton", () => {
   it("accepts discovery that matches the pinned policy", () => {
     const { info, signed } = discoveryFixtures();
     expect(() => bindDiscoveryToPolicy(info, signed)).not.toThrow();
+  });
+
+  it("rejects alternate numeric encodings in discovery", () => {
+    const { info, signed } = discoveryFixtures();
+    expect(() => bindDiscoveryToPolicy(
+      { ...info, max_encrypted_request_bytes: "0x40000" }, signed,
+    )).toThrowError("InvalidDecimal");
   });
 
   it("rejects every discovery drift case the Rust binder rejects", () => {
