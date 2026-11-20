@@ -14,9 +14,9 @@ fi
 offset=$((10#$offset))
 
 zolana_root="$(cd "${ZOLANA_DIR:-../zolana}" && pwd)"
-# Older CLIs stop any listener on their ports. Require scoped process support.
+# Scoped cleanup stops only the services started by this run.
 if ! git -C "$zolana_root" grep -q 'const PROCESS_SCOPE_ENV.*ZOLANA_PROCESS_SCOPE_DIR' -- cli/src; then
-    echo "use a Zolana checkout with scoped localnet processes (see tests/README.md)" >&2
+    echo "Zolana checkout must support scoped process cleanup (see tests/README.md)" >&2
     exit 2
 fi
 
