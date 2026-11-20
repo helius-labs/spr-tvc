@@ -80,7 +80,8 @@ signs the request.
   requires private X25519 keys and a distinct key/nonce pair for each
   plaintext. CTR has no authentication tag. Modified or wrong-recipient
   ciphertext can yield bytes, so the wallet checks the decoded note against
-  its published commitment.
+  its published commitment. Encrypted memos sit outside the commitment and
+  remain untrusted.
 - **Wallet to enclave.** The QOS envelope derives an AES-256-GCM key from
   ephemeral P-256 ECDH. GCM authenticates the ciphertext and both public keys.
   Anyone can encrypt to the Quorum public key, so the enclave separately
@@ -104,17 +105,18 @@ transfers.
   authorizes decrypt batches and separately signs Solana transactions. The
   wallet must generate and retain the response private key for its approval.
 - **Quorum key.** Approved replicas under the same Quorum seed derive the same
-  keys across releases. Separate HKDF labels and the raw address separate
-  viewing and nullifier secrets. The service viewing secret stays in the
-  enclave. The service exports the nullifier secret in an owner-authorized
-  encrypted reply. A leaked nullifier secret can link spends for known notes.
+  keys across releases. HKDF binds each key to its address and separates the
+  two purposes. The viewing secret stays in the enclave. The owner-authorized
+  reply exports the nullifier secret, which can link spends for known notes
+  if leaked.
 - **Release and recovery.** Confidentiality depends on the approved image,
   Nitro isolation, and Quorum custody. An approved image can read the Quorum
-  seed. Anyone who obtains the seed can derive every service viewing secret
-  under it and decrypt historical notes. Losing the seed makes unswept notes
-  unreadable. Rotation changes the service keys, so recipients need the
-  previous service until they sweep. Cached public keys let senders create
-  outputs without a service call, so exposure limits belong at admission.
+  seed. Anyone who obtains it can decrypt recorded requests and derive
+  every service viewing secret under it to decrypt historical notes.
+  Losing the seed makes unswept notes unreadable. Rotation changes the
+  service keys, so recipients need the previous service until they sweep.
+  Cached public keys let senders create outputs without a service call,
+  so exposure limits belong at admission.
 
 [Wire encodings and derivations](../protocol/README.md) ·
 [Test invariants](../tests/README.md) · [Release runbook](../xtask/README.md)
