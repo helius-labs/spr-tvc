@@ -9,6 +9,7 @@ from approval import canonical, file_digest, hex_digest, read_json
 
 REPO = "helius-labs/spr-tvc"
 WORKFLOW = f"{REPO}/.github/workflows/native-eif.yml"
+MAIN_REF = "refs/heads/main"
 
 
 def describe(build, network, source_commit):
@@ -25,14 +26,17 @@ def describe(build, network, source_commit):
     }
 
 
-def verify(build, network, source_commit):
+def verify(build, network, source_commit, source_ref=MAIN_REF):
+    if (not re.fullmatch(r"refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", source_ref) or
+            (network == "mainnet" and source_ref != MAIN_REF)):
+        raise ValueError("expected a reviewed branch ref; mainnet requires refs/heads/main")
     manifest = build / "provenance.json"
     if read_json(manifest) != describe(build, network, source_commit):
         raise ValueError("artifact does not match the reviewed build attestation")
     subprocess.run([
         "gh", "attestation", "verify", str(manifest), "--bundle", str(build / "provenance.intoto.jsonl"),
-        "--repo", REPO, "--signer-workflow", WORKFLOW, "--source-ref", "refs/heads/main",
-        "--source-digest", source_commit, "--deny-self-hosted-runners",
+        "--repo", REPO, "--signer-workflow", WORKFLOW, "--source-ref", source_ref,
+        "--source-digest", source_commit, "--signer-digest", source_commit, "--deny-self-hosted-runners",
     ], check=True, timeout=30, stdout=subprocess.DEVNULL)
 
 

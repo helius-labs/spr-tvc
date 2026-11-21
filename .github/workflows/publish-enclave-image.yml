@@ -13,6 +13,10 @@ on:
         type: choice
         options: [devnet, mainnet]
         required: true
+      native_configuration:
+        description: Reviewed configuration.json for a native Nitro EIF. Leave empty for the hosted image.
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -23,6 +27,7 @@ concurrency:
 
 jobs:
   publish:
+    if: inputs.native_configuration == ''
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: image-publish
@@ -93,3 +98,14 @@ jobs:
             echo "source commit:   $GITHUB_SHA"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  native:
+    if: inputs.native_configuration != ''
+    uses: ./.github/workflows/native-eif.yml
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    with:
+      network: ${{ inputs.network }}
+      configuration: ${{ inputs.native_configuration }}

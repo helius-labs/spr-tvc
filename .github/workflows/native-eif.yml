@@ -10,13 +10,12 @@ on:
       - enclave/src/**
       - protocol/**
       - rust-toolchain.toml
-  workflow_dispatch:
+  workflow_call:
     inputs:
       network:
         description: Network compiled into the enclave
         required: true
-        type: choice
-        options: [devnet, mainnet]
+        type: string
       configuration:
         description: Reviewed configuration.json contents
         required: true
@@ -27,7 +26,11 @@ permissions:
 
 jobs:
   build:
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' &&
+       ((inputs.network == 'devnet' && startsWith(github.ref, 'refs/heads/')) ||
+        (inputs.network == 'mainnet' && github.ref == 'refs/heads/main' && github.ref_protected)))
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     outputs:
@@ -81,10 +84,10 @@ jobs:
           if-no-files-found: error
 
   attest:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-24.04
-    environment: native-eif-${{ inputs.network }}
+    environment: ${{ inputs.network == 'mainnet' && 'image-publish' || 'native-eif-devnet' }}
     permissions:
       contents: read
       id-token: write

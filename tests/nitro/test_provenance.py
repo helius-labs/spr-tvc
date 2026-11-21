@@ -33,7 +33,27 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(args[args.index("--signer-workflow") + 1], WORKFLOW)
         self.assertEqual(args[args.index("--source-ref") + 1], "refs/heads/main")
         self.assertEqual(args[args.index("--source-digest") + 1], COMMIT)
+        self.assertEqual(args[args.index("--signer-digest") + 1], COMMIT)
         self.assertIn("--deny-self-hosted-runners", args)
+
+    @patch("provenance.subprocess.run")
+    def test_devnet_accepts_an_explicit_reviewed_branch_and_mainnet_rejects_it(self, run):
+        branch = "refs/heads/review/nitro-devnet"
+        with self.assertRaisesRegex(ValueError, "mainnet requires"):
+            verify(self.build, "mainnet", COMMIT, branch)
+        run.assert_not_called()
+        self.manifest.write_bytes(canonical(describe(self.build, "devnet", COMMIT)))
+        verify(self.build, "devnet", COMMIT, branch)
+        args = run.call_args.args[0]
+        self.assertEqual(args[args.index("--source-ref") + 1], branch)
+
+    @patch("provenance.subprocess.run")
+    def test_rejects_pr_merge_refs_and_tags_for_devnet_commissioning(self, run):
+        self.manifest.write_bytes(canonical(describe(self.build, "devnet", COMMIT)))
+        for ref in ("refs/pull/61/merge", "refs/tags/v1", "main", "https://example.com/ref"):
+            with self.subTest(ref=ref), self.assertRaisesRegex(ValueError, "reviewed branch ref"):
+                verify(self.build, "devnet", COMMIT, ref)
+        run.assert_not_called()
 
     @patch("provenance.subprocess.run")
     def test_substituted_code_config_measurement_eif_or_network_never_qualifies(self, run):

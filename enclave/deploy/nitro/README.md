@@ -50,16 +50,18 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
 1. Create `configuration.json` with `releaseId`, `securityDomainId` and
    `deployment`. Initialization uses `{"mode":"initialize","recipientPublicKeys":[...]}`.
    Each recipient is the lowercase-hex DER SPKI of its RSA recovery key, in roster order.
-   Build from the reviewed `main` commit with the **Build native Nitro EIF**
-   workflow. Configure required reviewers for the `native-eif-devnet` and
-   `native-eif-mainnet` environments before commissioning. Download the run's
-   `native-eif-<network>-<commit>` artifact into the build directory. Keep the
-   workflow's exact application, configuration, EIF, measurements and
-   attestation bundle together. Start the measured EIF in normal mode.
+   Dispatch `publish-enclave-image.yml` with the public configuration. For
+   devnet, use the reviewed branch and record its full Git ref and commit SHA
+   independently of the build. Mainnet builds require protected `main` and use
+   the `image-publish` environment's required reviewers. Download the run's
+   `native-eif-<network>-<commit>` artifact. Keep the application, configuration,
+   EIF, measurements and attestation bundle together. Start the measured EIF in
+   normal mode.
 
    ```sh
-   gh workflow run native-eif.yml --ref main -f network=devnet \
-     -f configuration="$(cat configuration.json)"
+   source_ref="refs/heads/$reviewed_branch"
+   gh workflow run publish-enclave-image.yml --ref "$reviewed_branch" -f network=devnet \
+     -F native_configuration=@configuration.json
    gh run download "$build_run" --name "native-eif-devnet-$reviewed_commit" --dir "$build_dir"
    nitro-cli run-enclave --enclave-name spr-decrypt --eif-path "$build_dir/enclave.eif" \
      --enclave-cid 16 --cpu-count 2 --memory 512
@@ -76,16 +78,16 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
      "$host_role" roster.json > epoch-draft.json
    ```
 
-3. Two approval signers each run `sign` with the measured build and the full
-   Git commit SHA from review. The command verifies the GitHub build attestation,
-   archived AWS evidence and six KMS public keys. Pass each
+3. Two approval signers each run `sign` with the measured build, Git ref and
+   full commit SHA from review. The command verifies the GitHub build
+   attestation, archived AWS evidence and six KMS public keys. Pass each
    updated document to the next signer. Each custodian then acknowledges in its
    own account, after decrypting and checking its committed share. Publish the
    fully acknowledged document with the dedicated publisher role.
 
    ```sh
    python3 "$nitro/custody_ledger.py" trust.json sign epoch-draft.json "$build_dir" "$approval_key" \
-     epoch-signed.json --source-commit "$reviewed_commit"
+     epoch-signed.json --source-commit "$reviewed_commit" --source-ref "$source_ref"
    python3 "$nitro/custody_ledger.py" trust.json acknowledge epoch-signed.json "$share_index" epoch-ack.json
    python3 "$nitro/custody_ledger.py" trust.json publish epoch-ack.json
    python3 "$nitro/custody_ledger.py" trust.json read 1 > receipt.json
@@ -122,7 +124,7 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    python3 "$nitro/deployment.py" trust.json "$build_dir" draft "$host_role" wrapping-keys.json \
      "$approval_deadline" > target-draft.json
    python3 "$nitro/deployment.py" trust.json "$build_dir" sign target-draft.json "$approval_key" \
-     target-signed.json --source-commit "$reviewed_commit"
+     target-signed.json --source-commit "$reviewed_commit" --source-ref "$source_ref"
    python3 "$nitro/deployment.py" trust.json "$build_dir" register target-signed.json
    python3 "$nitro/wrap_share.py" trust.json target-signed.json "$build_dir" "$share_index" share.kms
    ```

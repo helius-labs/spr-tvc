@@ -14,7 +14,7 @@ from approval import (
     sha256, signing_key,
 )
 from kms_policy import acknowledgement_policy, context, recovery_policy, validate_custodian_roles
-from provenance import verify as verify_build
+from provenance import MAIN_REF, verify as verify_build
 
 LABEL = "custody-epoch"
 ACKNOWLEDGEMENT = "custodian-acknowledgement"
@@ -249,7 +249,7 @@ def open_share(custodian, receipt, index):
     return share
 
 
-def sign_epoch(trust, document, key, build, source_commit):
+def sign_epoch(trust, document, key, build, source_commit, source_ref):
     receipt, custodians = record(trust, document)
     check_previous(trust, document, receipt)
     authorization = document["authorization"]
@@ -261,7 +261,7 @@ def sign_epoch(trust, document, key, build, source_commit):
     if (capture["configuration"] != read_json(build / "configuration.json") or capture["pcrs"] != pins or
             manifest["ceremonyEifSha256"] != file_digest(build / "enclave.eif")):
         raise ValueError("captured ceremony does not match the reviewed build")
-    verify_build(build, receipt["network"], source_commit)
+    verify_build(build, receipt["network"], source_commit, source_ref)
     root = Path(__file__).resolve().parents[3]
     subprocess.run(["pnpm", "--dir", str(root / "example"), "exec", "tsx",
                     str(root / "xtask/nitro-ceremony.ts"), "verify"],
@@ -319,6 +319,7 @@ def main():
     sign.add_argument("key")
     sign.add_argument("output", type=Path)
     sign.add_argument("--source-commit", required=True)
+    sign.add_argument("--source-ref", default=MAIN_REF)
     ack = commands.add_parser("acknowledge")
     ack.add_argument("candidate", type=Path)
     ack.add_argument("share", type=int, choices=range(1, 7))
@@ -373,7 +374,7 @@ def main():
         if args.command == "publish":
             publish(trust, document)
             return
-        signed = (sign_epoch(trust, document, args.key, args.build, args.source_commit) if args.command == "sign"
+        signed = (sign_epoch(trust, document, args.key, args.build, args.source_commit, args.source_ref) if args.command == "sign"
                   else acknowledge(trust, document, args.share))
         with args.output.open("xb") as output:
             output.write(canonical(signed) + b"\n")

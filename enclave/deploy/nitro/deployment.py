@@ -15,7 +15,7 @@ from custody_ledger import (
     check_acknowledgement_key, check_recovery_key, list_objects, load_epoch, read_object, validate_roster, write_once,
 )
 from kms_policy import context, key_policy
-from provenance import verify as verify_build
+from provenance import MAIN_REF, verify as verify_build
 
 LABEL = "target-approval"
 
@@ -163,6 +163,7 @@ def main():
     sign.add_argument("key")
     sign.add_argument("output", type=Path)
     sign.add_argument("--source-commit", required=True)
+    sign.add_argument("--source-ref", default=MAIN_REF)
     register = commands.add_parser("register")
     register.add_argument("target", type=Path)
     args = parser.parse_args()
@@ -195,7 +196,7 @@ def main():
             register_target(trust, document)
             return
         require_active_epoch(trust, receipt["custody"]["epoch"])
-        verify_build(args.build, receipt["network"], args.source_commit)
+        verify_build(args.build, receipt["network"], args.source_commit, args.source_ref)
         for key, fingerprint in next_keys:
             check_recovery_key(key, fingerprint)
         for custodian in document["manifest"]["nextCustodians"] or ():
