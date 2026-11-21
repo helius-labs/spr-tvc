@@ -15,7 +15,7 @@ use aws_nitro_enclaves_nsm_api::{
 use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, Request, State},
-    http::{header::CONTENT_TYPE, StatusCode},
+    http::{header, header::CONTENT_TYPE, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -35,6 +35,7 @@ use spr_tvc_protocol::{
 };
 use tokio::sync::{oneshot, Semaphore};
 use tokio_vsock::{VsockAddr, VsockListener, VsockStream, VMADDR_CID_ANY};
+use tower_http::cors::{Any, CorsLayer};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -174,6 +175,10 @@ async fn serve(
         quorum: KeyPair::Native(transport),
         note_seed,
     });
+    axum::serve(ParentListener::bind(44030)?, serving_router(service)).await
+}
+
+fn serving_router(service: Arc<Service>) -> Router {
     let attestation = Router::new()
         .route("/v1/nitro/attestation", post(client_attestation))
         .layer(DefaultBodyLimit::max(32))
@@ -182,15 +187,21 @@ async fn serve(
             Arc::new(Semaphore::new(MAX_ATTESTATION_REQUESTS)),
             limit_serving_request,
         ));
-    let app = Router::new()
+    Router::new()
         .fallback(dispatch)
         .layer(middleware::from_fn_with_state(
             Arc::new(Semaphore::new(MAX_SERVING_REQUESTS)),
             limit_serving_request,
         ))
         .merge(attestation)
-        .with_state(service);
-    axum::serve(ParentListener::bind(44030)?, app).await
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([Method::POST])
+                .allow_headers([CONTENT_TYPE])
+                .expose_headers([header::RETRY_AFTER]),
+        )
+        .with_state(service)
 }
 
 async fn limit_serving_request(

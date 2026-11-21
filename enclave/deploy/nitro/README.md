@@ -146,6 +146,9 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    Bound request sizes and ingress concurrency, keep each HTTPS slot tied to
    one boot at a time, and qualify it with wallet attestation and an
    owner-signed canary.
+   Forward browser `OPTIONS` requests for `/v1/nitro/attestation` and
+   `/v1/operations`. The enclave supplies the CORS headers for public,
+   credential-free `POST` requests. Preserve those headers through ingress.
 
 ## Rotate custody and activate releases
 

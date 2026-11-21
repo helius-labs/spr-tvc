@@ -4,6 +4,57 @@ use tower::ServiceExt;
 use super::*;
 
 #[tokio::test]
+async fn wallet_preflight_allows_only_credential_free_json_and_attestation_posts() {
+    let transport = NativePair::generate().unwrap();
+    let service = Arc::new(Service {
+        info: Release {
+            security_domain_id: [1; 32],
+            release_id: "fixture".into(),
+            quorum_key_id: "fixture".into(),
+            quorum_key_epoch: 1,
+        }
+        .service_info([2; 32], [3; 32], transport.public.clone()),
+        quorum: KeyPair::Native(transport),
+        ephemeral: KeyPair::Native(NativePair::generate().unwrap()),
+        note_seed: NoteSeed(Zeroizing::new([4; 32])),
+    });
+    let router = serving_router(service);
+    for path in ["/v1/nitro/attestation", "/v1/operations"] {
+        let request = Request::builder()
+            .method(Method::OPTIONS)
+            .uri(path)
+            .header(header::ORIGIN, "https://wallet.example")
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+            .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "content-type")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert!(response.status().is_success());
+        assert_eq!(response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+        assert_eq!(
+            response.headers()[header::ACCESS_CONTROL_ALLOW_METHODS],
+            "POST"
+        );
+        assert_eq!(
+            response.headers()[header::ACCESS_CONTROL_ALLOW_HEADERS],
+            "content-type"
+        );
+        assert!(response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+            .is_none());
+    }
+
+    let request = Request::post("/v1/nitro/attestation")
+        .header(header::ORIGIN, "https://wallet.example")
+        .body(Body::empty())
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+}
+
+#[tokio::test]
 async fn cancelled_attestation_cannot_admit_another_kernel_call() {
     let worker = Arc::new(Semaphore::new(1));
     let (started, wait_for_worker) = oneshot::channel();
