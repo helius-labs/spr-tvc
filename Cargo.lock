@@ -634,6 +634,7 @@ dependencies = [
  "hybrid-array",
  "num-traits",
  "rand_core 0.10.1",
+ "serdect 0.4.3",
  "subtle",
  "zeroize",
 ]
@@ -963,11 +964,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1de2b6fae800f08032a6ea32995b52925b1d451bff9d445c8ab2932323277faf"
 dependencies = [
  "elliptic-curve 0.13.8",
- "heapless",
+ "heapless 0.8.0",
  "hex",
  "multiexp",
  "serde",
  "zeroize",
+]
+
+[[package]]
+name = "elliptic-curve-tools"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a0d5e534f103b079a71ef1d66c6e62c89413f1b62709ca11f744429b4afe5b4"
+dependencies = [
+ "elliptic-curve 0.14.3",
+ "heapless 0.9.4",
+ "serde",
+ "serdect 0.4.3",
 ]
 
 [[package]]
@@ -1334,6 +1347,16 @@ name = "heapless"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
+]
+
+[[package]]
+name = "heapless"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "411fdef4df93751117bd9ef8caa0e7f99c65dafec5bd84313eb8e2fdd75e32f2"
 dependencies = [
  "hash32",
  "stable_deref_trait",
@@ -2154,7 +2177,7 @@ dependencies = [
  "rand 0.9.5",
  "sha2 0.10.9",
  "thiserror 2.0.18",
- "vsss-rs",
+ "vsss-rs 5.4.0",
  "zeroize",
 ]
 
@@ -2879,6 +2902,7 @@ dependencies = [
  "axum",
  "clap",
  "ed25519-dalek",
+ "getrandom 0.4.3",
  "hex",
  "hkdf",
  "http-body-util",
@@ -2886,6 +2910,7 @@ dependencies = [
  "p256 0.14.0",
  "qos_core",
  "qos_p256",
+ "rand_core 0.10.1",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2896,6 +2921,7 @@ dependencies = [
  "tokio",
  "tokio-vsock",
  "tower",
+ "vsss-rs 6.0.1",
  "zeroize",
 ]
 
@@ -3256,7 +3282,7 @@ checksum = "6ec751bdcc8bda099e269b24cc6b4ad14f9ce8b0490c1599174070e792ecd70c"
 dependencies = [
  "crypto-bigint 0.6.1",
  "elliptic-curve 0.13.8",
- "elliptic-curve-tools",
+ "elliptic-curve-tools 0.2.0",
  "generic-array 1.4.5",
  "hex",
  "hybrid-array",
@@ -3264,6 +3290,24 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "sha3",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "vsss-rs"
+version = "6.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6bfc736cfd88115aedb95ba84bc2d428fe351e92a56f69fce090af301402d91"
+dependencies = [
+ "crypto-bigint 0.7.11",
+ "elliptic-curve-tools 0.3.0",
+ "ff 0.14.0",
+ "generic-array 1.4.5",
+ "hex",
+ "hybrid-array",
+ "rand_core 0.10.1",
+ "serde",
  "subtle",
  "zeroize",
 ]

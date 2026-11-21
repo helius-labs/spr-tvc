@@ -6,18 +6,21 @@ import json
 import re
 
 
-def context(network, domain, release, share):
+def context(network, domain, release, epoch, share):
     if network not in {"devnet", "mainnet"}:
         raise ValueError("invalid network")
     if not re.fullmatch(r"[0-9a-f]{64}", domain) or int(domain, 16) == 0:
         raise ValueError("invalid security domain")
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", release) or share not in {1, 2}:
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", release) or share not in range(1, 7):
         raise ValueError("invalid release or share")
+    if not isinstance(epoch, str) or not re.fullmatch(r"[1-9][0-9]{0,19}", epoch) or int(epoch) > 2**64-1:
+        raise ValueError("invalid custody epoch")
     return {
         "purpose": "spr-note-share",
         "network": network,
         "security-domain": domain,
         "release": release,
+        "custody-epoch": epoch,
         "share": str(share),
     }
 
@@ -68,9 +71,10 @@ def main():
     parser.add_argument("--network", required=True)
     parser.add_argument("--security-domain", required=True)
     parser.add_argument("--release", required=True)
+    parser.add_argument("--custody-epoch", required=True)
     parser.add_argument("--share", required=True, type=int)
     args = parser.parse_args()
-    ctx = context(args.network, args.security_domain, args.release, args.share)
+    ctx = context(args.network, args.security_domain, args.release, args.custody_epoch, args.share)
     measurements = json.load(args.measurements)["Measurements"]
     print(json.dumps(key_policy(args.host_role, args.custodian_role, args.key_admin_role, measurements, ctx), indent=2))
 

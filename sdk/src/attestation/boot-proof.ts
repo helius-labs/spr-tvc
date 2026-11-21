@@ -94,28 +94,51 @@ export async function verifyNativeNitroEvidence(
   nowMs: bigint,
 ): Promise<string> {
   try {
-    const decoded = decodeAttestation(document);
-    const attestation = decoded.attestation;
-    validateAwsAttestationShape(attestation);
-    assertAttestationFreshness(attestation, nowMs);
-    const timestamp = BigInt(attestation.get("timestamp") as number);
-    if (!(decoded.unprotected instanceof Map) || decoded.unprotected.size !== 0 ||
-      nowMs - timestamp > MAX_CLOCK_SKEW_MS ||
-      !bytesEqual(nonce, asBytes(attestation.get("nonce"))) ||
-      !bytesEqual(discoveryBinding, asBytes(attestation.get("user_data")))) {
-      throw new DecryptionServiceError("BootProofUnverified");
-    }
-    verifyIdentityPcrs(attestation, expectedPcrs);
+    const attestation = await verifyNativeBinding(document, nonce, discoveryBinding, expectedPcrs, nowMs);
     const publicKey = asBytes(attestation.get("public_key"));
-    if (publicKey.length !== QOS_EPHEMERAL_PUBLIC_KEY_LENGTH) {
-      throw new DecryptionServiceError("BootProofUnverified");
-    }
     parseQosP256Public(publicKey);
-    await verifyAwsNitroAttestation(decoded.coseSign1, decoded.certificate, decoded.cabundle, Number(nowMs));
     return encodeLowerHex(publicKey);
   } catch {
     throw new DecryptionServiceError("BootProofUnverified");
   }
+}
+
+export async function verifyNitroCustodyEvidence(
+  document: Uint8Array,
+  nonce: Uint8Array,
+  binding: Uint8Array,
+  expectedPcrs: NitroPcrs,
+  nowMs: bigint,
+): Promise<void> {
+  try {
+    const attestation = await verifyNativeBinding(document, nonce, binding, expectedPcrs, nowMs);
+    if (attestation.get("public_key") != null) throw new DecryptionServiceError("BootProofUnverified");
+  } catch {
+    throw new DecryptionServiceError("BootProofUnverified");
+  }
+}
+
+async function verifyNativeBinding(
+  document: Uint8Array,
+  nonce: Uint8Array,
+  binding: Uint8Array,
+  expectedPcrs: NitroPcrs,
+  nowMs: bigint,
+): Promise<AwsNitroAttestationDocument> {
+  const decoded = decodeAttestation(document);
+  const attestation = decoded.attestation;
+  validateAwsAttestationShape(attestation);
+  assertAttestationFreshness(attestation, nowMs);
+  const timestamp = BigInt(attestation.get("timestamp") as number);
+  if (!(decoded.unprotected instanceof Map) || decoded.unprotected.size !== 0 ||
+      nowMs - timestamp > MAX_CLOCK_SKEW_MS ||
+      !bytesEqual(nonce, asBytes(attestation.get("nonce"))) ||
+      !bytesEqual(binding, asBytes(attestation.get("user_data")))) {
+    throw new DecryptionServiceError("BootProofUnverified");
+  }
+  verifyIdentityPcrs(attestation, expectedPcrs);
+  await verifyAwsNitroAttestation(decoded.coseSign1, decoded.certificate, decoded.cabundle, Number(nowMs));
+  return attestation;
 }
 
 export function computeQosLiveManifestCommitmentPcr(

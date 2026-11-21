@@ -73,7 +73,7 @@ async function connectTarget(target: NitroTarget, trust: NitroTrust, signal: Abo
       info.release_id !== target.releaseId || info.security_domain_id !== trust.securityDomainId ||
       info.executable_digest !== target.executableSha256 ||
       info.manifest_digest !== encodeLowerHex(releaseIdentity) ||
-      info.quorum_key_id !== encodeLowerHex(sha256(transportKey)) || info.quorum_key_epoch !== "1" ||
+      info.quorum_key_id !== encodeLowerHex(sha256(transportKey)) || info.quorum_key_epoch !== target.custodyEpoch ||
       info.proof_type !== SERVICE_PROOF_TYPE ||
       canonicalizeJsonValue(info.supported_operations) !== '["ServicePublicKeys","ServiceDecrypt"]' ||
       info.max_encrypted_request_bytes !== "262144" || info.max_encrypted_response_bytes !== "262144") {

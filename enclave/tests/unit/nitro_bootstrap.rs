@@ -7,6 +7,8 @@ use openssl::{
     x509::{X509Name, X509},
 };
 
+use crate::custody::tests::{fixture, DOMAIN};
+
 use super::*;
 
 fn key() -> PKey<Private> {
@@ -37,66 +39,44 @@ fn envelope(key: &PKey<Private>, share: &[u8]) -> Vec<u8> {
     .unwrap()
 }
 
-fn frame(first: &[u8], second: &[u8]) -> Vec<u8> {
-    [
-        u16::try_from(first.len()).unwrap().to_be_bytes().as_slice(),
-        first,
-        second,
-    ]
-    .concat()
-}
-
-#[test]
-fn reconstructs_the_committed_seed_for_a_new_recipient() {
-    let commitments = [sha256(&[0x99; 32]), sha256(&[0x11; 32])];
-    let address = [0xa5; 32];
-    let open = || {
-        let recipient = key();
-        let first = envelope(&recipient, &[0x99; 32]);
-        let second = envelope(&recipient, &[0x11; 32]);
-        let seed = open_shares(&recipient, &frame(&first, &second), &commitments).unwrap();
-        assert_eq!(*seed.0, [0x88; 32]);
-        let keys = seed.for_address(&address);
-        (
-            *keys.viewing.pubkey().as_bytes(),
-            keys.nullifier.pubkey().unwrap(),
-        )
-    };
-    assert_eq!(open(), open());
-}
-
-#[test]
-fn requires_two_distinct_full_shares_for_this_boot_recipient_and_commitment() {
-    let recipient = key();
-    let other_recipient = key();
-    let commitments = [sha256(&[0x99; 32]), sha256(&[0x11; 32])];
-    let first = envelope(&recipient, &[0x99; 32]);
-    let second = envelope(&recipient, &[0x11; 32]);
-    let replaced = envelope(&recipient, &[0x12; 32]);
-    let wrong_recipient = envelope(&other_recipient, &[0x11; 32]);
-    let short_secret = envelope(&recipient, &[0x11; 31]);
-    let zero = envelope(&recipient, &[0; 32]);
-    let oversize = vec![0; MAX_CMS_BYTES + 1];
-    for (a, b) in [
-        (&first[..], &[][..]),
-        (&[][..], &second[..]),
-        (&first, &first),
-        (&first, &replaced),
-        (&first, &wrong_recipient),
-        (&first, &short_secret),
-        (&zero, &second),
-        (&first, &oversize),
-        (&oversize, &second),
-        (&first, &second[..second.len() - 1]),
-    ] {
-        assert!(open_shares(&recipient, &frame(a, b), &commitments).is_none());
+fn frame(envelopes: &[&[u8]]) -> Vec<u8> {
+    let mut frame = Vec::new();
+    for envelope in envelopes {
+        frame.extend(u16::try_from(envelope.len()).unwrap().to_be_bytes());
+        frame.extend_from_slice(envelope);
     }
-    assert!(open_shares(&recipient, &[0xff, 0xff], &commitments).is_none());
-    assert!(open_shares(&recipient, &[0], &commitments).is_none());
-    assert!(open_shares(
-        &recipient,
-        &frame(&first, &second),
-        &[commitments[1], commitments[0]]
-    )
-    .is_none());
+    frame
+}
+
+#[test]
+fn bootstrap_requires_three_distinct_valid_shares_for_this_boot_recipient() {
+    let seed = NoteSeed(Zeroizing::new([0x88; 32]));
+    let (custody, shares) = fixture(1, &seed);
+    let recipient = key();
+    let wrong_recipient = key();
+    let [first, second, third] = [0, 2, 5].map(|index| envelope(&recipient, &shares[index]));
+    let wrong = envelope(&wrong_recipient, &shares[5]);
+    let short = envelope(&recipient, &[0; 32]);
+    let large = vec![0; MAX_CMS_BYTES + 1];
+    for envelopes in [
+        vec![first.as_slice(), &second],
+        vec![&first, &first, &second],
+        vec![&first, &second, &wrong],
+        vec![&first, &second, &short],
+        vec![&first, &second, &large],
+        vec![&first, &second, &third[..third.len() - 1]],
+        vec![&first, &second, &third, &third, &third, &third, &third],
+    ] {
+        let bytes = frame(&envelopes);
+        assert!(open_shares(&recipient, &bytes, &DOMAIN, &custody).is_none());
+    }
+    assert!(open_shares(&recipient, &[0], &DOMAIN, &custody).is_none());
+    assert!(open_shares(&recipient, &[0xff, 0xff], &DOMAIN, &custody).is_none());
+    let bytes = frame(&[&first, &second, &wrong, &third]);
+    assert_eq!(
+        *open_shares(&recipient, &bytes, &DOMAIN, &custody)
+            .unwrap()
+            .0,
+        *seed.0
+    );
 }

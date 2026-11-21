@@ -10,7 +10,7 @@ import { encodeLowerHex } from "../../src/protocol/hex.js";
 const secrets = [1, 2].map(value => new Uint8Array(32).fill(value));
 const trust: NitroTrust = {
   network: "mainnet", securityDomainId: "55".repeat(32), noteSeedCommitment: "66".repeat(32),
-  minimumSequence: "1", threshold: 2,
+  minimumSequence: "1", minimumCustodyEpoch: "1", threshold: 2,
   keys: secrets.map(secret => encodeLowerHex(p256.getPublicKey(secret, false))),
 };
 const policyUrl = new URL("https://policy.example.com/release.json");
@@ -19,11 +19,12 @@ function signedPolicy() {
   const now = Date.now();
   const policy: NitroPolicy = {
     network: trust.network, securityDomainId: trust.securityDomainId, noteSeedCommitment: trust.noteSeedCommitment,
-    version: 1, sequence: "2", validFromMs: String(now - 1000), expiresAtMs: String(now + 100_000),
+    version: 1, sequence: "2", minimumCustodyEpoch: "1", validFromMs: String(now - 1000), expiresAtMs: String(now + 100_000),
     targets: [{
       endpoint: "https://replica.example.com/",
       releaseId: "nitro-2",
-      executableSha256: "77".repeat(32),
+      custodyEpoch: "1",
+    executableSha256: "77".repeat(32),
       pcrs: { 0: "11".repeat(48), 1: "22".repeat(48), 2: "33".repeat(48), 3: "44".repeat(48) },
     }],
   };

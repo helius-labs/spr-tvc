@@ -1,13 +1,16 @@
+import base64
 import hashlib
 import json
 import pathlib
 import sys
+import struct
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from kms_policy import context, key_policy
 from provision import provision
+from wrap_share import wrap
 
 HOST = "arn:aws:iam::111111111111:role/host"
 CUSTODIAN = "arn:aws:iam::222222222222:role/custodian"
@@ -15,12 +18,12 @@ RETIREMENT = "arn:aws:iam::222222222222:role/retirement"
 PINS = {f"PCR{index}": byte * 48 for index, byte in enumerate(("12", "23", "34"))}
 DOMAIN = "ab" * 32
 KEY_1 = "arn:aws:kms:eu-north-1:222222222222:key/12345678-1234-1234-1234-123456789abc"
-KEY_2 = KEY_1.replace("222222222222", "333333333333")
+KEYS = [(KEY_1.replace("222222222222", f"{index:012d}"), str(index)) for index in range(1, 7)]
 
 
 class KeyPolicyTests(unittest.TestCase):
     def test_only_host_role_with_recipient_pcrs_and_exact_context_can_unwrap(self):
-        ctx = context("mainnet", DOMAIN, "release-a", 1)
+        ctx = context("mainnet", DOMAIN, "release-a", "5", 1)
         statements = key_policy(HOST, CUSTODIAN, RETIREMENT, PINS, ctx)["Statement"]
         decrypt, = [rule for rule in statements if rule["Action"] == "kms:Decrypt"]
         self.assertEqual(decrypt["Principal"], {"AWS": HOST})
@@ -39,34 +42,82 @@ class KeyPolicyTests(unittest.TestCase):
         self.assertTrue({"kms:CreateGrant", "kms:PutKeyPolicy", "kms:ReEncryptFrom"} <= set(seal["Action"]))
 
     def test_rejects_debug_pins_shared_roles_and_ambiguous_contexts(self):
-        ctx = context("mainnet", DOMAIN, "release-a", 1)
+        ctx = context("mainnet", DOMAIN, "release-a", "5", 1)
         with self.assertRaises(ValueError):
             key_policy(HOST, HOST, RETIREMENT, PINS, ctx)
         with self.assertRaises(ValueError):
             key_policy(HOST, CUSTODIAN, RETIREMENT, {**PINS, "PCR0": "00" * 48}, ctx)
         for fields in [
-            ("localnet", DOMAIN, "release-a", 1), ("mainnet", "0" * 64, "release-a", 1),
-            ("mainnet", DOMAIN, "../release-a", 1), ("mainnet", DOMAIN, "release-a", 0),
+            ("localnet", DOMAIN, "release-a", "1", 1), ("mainnet", "0" * 64, "release-a", "1", 1),
+            ("mainnet", DOMAIN, "../release-a", "1", 1), ("mainnet", DOMAIN, "release-a", "1", 0),
+            ("mainnet", DOMAIN, "release-a", "0", 1), ("mainnet", DOMAIN, "release-a", "01", 1),
+            ("mainnet", DOMAIN, "release-a", "1", 7), ("mainnet", DOMAIN, "release-a", str(2**64), 1),
         ]:
             with self.assertRaises(ValueError):
                 context(*fields)
 
-    @patch("provision.decrypt_share", side_effect=[b"one", b"two"])
+    @patch("provision.decrypt_share")
     @patch("provision.request", side_effect=[(200, b"evidence"), (204, b"")])
-    def test_combines_only_wrapped_shares_from_distinct_accounts(self, request, decrypt):
-        provision(16, "mainnet", DOMAIN, "release-a", [(KEY_1, "first"), (KEY_2, "second")])
-        args = [call.args for call in decrypt.call_args_list]
-        self.assertEqual([arg[0] for arg in args], [KEY_1, KEY_2])
-        self.assertEqual([arg[3]["share"] for arg in args], ["1", "2"])
-        self.assertEqual(json.loads(args[0][2]), json.loads(args[1][2]))
-        request.assert_called_with(16, "POST", "/shares", b"\x00\x03onetwo")
+    def test_three_available_accounts_are_enough(self, request, decrypt):
+        def wrapped(_, __, ___, ctx):
+            if int(ctx["share"]) % 2 == 0:
+                return ctx["share"].encode()
+            raise ValueError("unavailable custodian")
+
+        decrypt.side_effect = wrapped
+        provision(16, "mainnet", DOMAIN, "release-a", "5", KEYS)
+        args = sorted((call.args for call in decrypt.call_args_list), key=lambda arg: arg[3]["share"])
+        self.assertEqual([arg[0] for arg in args], [key for key, _ in KEYS])
+        self.assertEqual([arg[3]["share"] for arg in args], list("123456"))
+        self.assertTrue(all(arg[3]["custody-epoch"] == "5" for arg in args))
+        self.assertEqual({arg[2] for arg in args}, {args[0][2]})
+        request.assert_called_with(16, "POST", "/shares",
+                                   b"".join(struct.pack(">H", 1) + share for share in [b"2", b"4", b"6"]))
+
+    @patch("provision.decrypt_share")
+    @patch("provision.request", return_value=(200, b"evidence"))
+    def test_does_not_forward_fewer_than_three_shares(self, request, decrypt):
+        decrypt.side_effect = [b"one", b"two", *[ValueError("unavailable")] * 4]
+        with self.assertRaisesRegex(ValueError, "fewer than three"):
+            provision(16, "mainnet", DOMAIN, "release-a", "5", KEYS)
+        request.assert_called_once_with(16, "GET", "/recipient")
 
     @patch("provision.request")
-    def test_rejects_aliases_and_two_keys_from_the_same_account_before_fetching_evidence(self, request):
-        for second in [KEY_1, KEY_1[:-1] + "d", "alias/other"]:
+    def test_rejects_aliases_and_keys_from_the_same_account_before_fetching_evidence(self, request):
+        for key in [KEYS[0][0], KEYS[0][0][:-1] + "d", "alias/other"]:
             with self.assertRaises(ValueError):
-                provision(16, "mainnet", DOMAIN, "release-a", [(KEY_1, "first"), (second, "second")])
+                provision(16, "mainnet", DOMAIN, "release-a", "5", [*KEYS[:5], (key, "old")])
         request.assert_not_called()
+
+    @patch("wrap_share.kms")
+    def test_wraps_only_the_share_committed_to_the_custodian_key_epoch_and_slot(self, kms):
+        spki = b"public"
+        plaintext = (5).to_bytes(8, "big") + b"\x01" + bytes([0x44]) * 32
+        value = hashlib.sha256(b"SPR/native-nitro/custody-share/v1" + bytes.fromhex(DOMAIN) + plaintext)
+        receipt = {
+            "network": "devnet", "securityDomainId": DOMAIN,
+            "custody": {"epoch": "5", "shareCommitments": [value.hexdigest()]},
+            "packages": [{"recipientSha256": hashlib.sha256(spki).hexdigest(), "ciphertext": "66" * 256}],
+        }
+        wrapping = KEY_1[:-1] + "a"
+        public = {"PublicKey": base64.b64encode(spki)}
+        kms.side_effect = [public, {"Plaintext": base64.b64encode(plaintext)}, {"CiphertextBlob": "d3JhcHBlZA=="}]
+        self.assertEqual(wrap(receipt, 1, KEY_1, wrapping, "release-a"), b"wrapped")
+        self.assertEqual(kms.call_args.args[-1], plaintext)
+        self.assertIn('"custody-epoch": "5"', kms.call_args.args[2][-1])
+
+        for corrupt in [bytes(41), plaintext[:-1], plaintext[:-1] + b"\x12"]:
+            kms.reset_mock()
+            kms.side_effect = [public, {"Plaintext": base64.b64encode(corrupt)}]
+            with self.assertRaises(ValueError):
+                wrap(receipt, 1, KEY_1, wrapping, "release-a")
+            self.assertEqual(kms.call_count, 2)
+
+        kms.reset_mock()
+        kms.side_effect = [{"PublicKey": base64.b64encode(b"wrong key")}]
+        with self.assertRaises(ValueError):
+            wrap(receipt, 1, KEY_1, wrapping, "release-a")
+        self.assertEqual(kms.call_count, 1)
 
 
 if __name__ == "__main__":

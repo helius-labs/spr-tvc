@@ -44,16 +44,16 @@ const { domain, seed } = JSON.parse(readFileSync(resolve(directory, "inputs.json
 const secrets = Array.from({ length: 3 }, () => p256.utils.randomPrivateKey());
 const trust: NitroTrust = {
   network: "devnet", securityDomainId: domain, noteSeedCommitment: seed,
-  minimumSequence: "1", threshold: 2,
+  minimumSequence: "1", minimumCustodyEpoch: "1", threshold: 2,
   keys: secrets.map(secret => encodeLowerHex(p256.getPublicKey(secret, false))),
 };
 const start = Date.now() - 30_000;
 let signedPolicy: string;
-function signPolicy(sequence: string, replicas: readonly NitroTarget[]): string {
+function signPolicy(sequence: string, replicas: readonly NitroTarget[], minimumCustodyEpoch = "1"): string {
   const policy: NitroPolicy = {
     version: 1, network: trust.network, securityDomainId: domain, noteSeedCommitment: seed,
     validFromMs: String(start), expiresAtMs: String(start + 15 * 60_000),
-    sequence, targets: replicas,
+    sequence, targets: replicas, minimumCustodyEpoch,
   };
   const digest = nitroPolicySigningDigest(policy);
   const signatures = secrets.slice(0, 2).map((secret, i) => ({
@@ -195,9 +195,14 @@ if (replacementUrl) {
   await waitForMarker("old-retired");
   const old = await fetch(new URL("health", originalPin.endpoint), { signal: AbortSignal.timeout(3000) }).catch(() => undefined);
   assert.ok(!old?.ok, "image A was still serving after retirement");
-  signedPolicy = signPolicy("4", [recoveredPin]);
-  assert.deepEqual(await openNote(clientFor()), [amount]);
-  console.log("The owner reopened the note after retiring the old enclave.");
+}
+signedPolicy = signPolicy("4", [recoveredPin], recoveredPin.custodyEpoch);
+assert.deepEqual(await openNote(clientFor()), [amount]);
+console.log("The owner reopened the note under the replacement custody epoch.");
+signedPolicy = signPolicy("5", [originalPin], originalPin.custodyEpoch);
+if (BigInt(recoveredPin.custodyEpoch) > BigInt(originalPin.custodyEpoch)) {
+  await assert.rejects(clientFor().address(owner.address), /policy rollback or checkpoint/);
+  console.log("A higher-sequence policy could not restore the retired custody epoch.");
 }
 signedPolicy = signPolicy("1", [originalPin]);
 await assert.rejects(clientFor().address(owner.address), /policy rollback or checkpoint/);

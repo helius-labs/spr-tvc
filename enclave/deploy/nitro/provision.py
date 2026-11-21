@@ -1,4 +1,4 @@
-"""Forward two KMS recipient ciphertexts into a measured SPR Nitro enclave."""
+"""Forward KMS recipient ciphertexts from a 3-of-6 custody set into a measured SPR Nitro enclave."""
 
 import argparse
 import base64
@@ -8,6 +8,7 @@ import re
 import socket
 import struct
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from kms_policy import context
@@ -28,12 +29,12 @@ class BootstrapConnection(http.client.HTTPConnection):
         self.sock.connect((self.cid, 44031))
 
 
-def request(cid, method, path, body=None):
+def request(cid, method, path, body=None, limit=MAX_EVIDENCE):
     conn = BootstrapConnection(cid)
     try:
         conn.request(method, path, body)
         with conn.getresponse() as response:
-            return response.status, response.read(MAX_EVIDENCE + 1)
+            return response.status, response.read(limit + 1)
     finally:
         conn.close()
 
@@ -61,10 +62,11 @@ def decrypt_share(arn, wrapped_share, recipient, ctx):
     return ciphertext
 
 
-def provision(cid, network, domain, release, keys):
+def provision(cid, network, domain, release, epoch, keys):
     matches = [KEY_ARN.fullmatch(arn) for arn, _ in keys]
-    if len(matches) != 2 or any(match is None for match in matches) or matches[0][2] == matches[1][2]:
-        raise ValueError("expected share keys in two different AWS accounts")
+    if len(matches) != 6 or any(match is None for match in matches) or len({match[2] for match in matches}) != 6:
+        raise ValueError("expected six immutable KMS key ARNs in six different AWS accounts")
+    contexts = [context(network, domain, release, epoch, index) for index in range(1, 7)]
     status, evidence = request(cid, "GET", "/recipient")
     if status != 200 or not 1 <= len(evidence) <= MAX_EVIDENCE:
         raise ValueError(f"recipient evidence failed with HTTP {status}")
@@ -72,11 +74,20 @@ def provision(cid, network, domain, release, keys):
         "KeyEncryptionAlgorithm": "RSAES_OAEP_SHA_256",
         "AttestationDocument": base64.b64encode(evidence).decode("ascii"),
     })
-    first, second = (
-        decrypt_share(arn, blob, recipient, context(network, domain, release, index))
-        for index, (arn, blob) in enumerate(keys, 1)
-    )
-    status, _ = request(cid, "POST", "/shares", struct.pack(">H", len(first)) + first + second)
+
+    def unwrap(entry):
+        (arn, blob), ctx = entry
+        try:
+            return decrypt_share(arn, blob, recipient, ctx)
+        except (OSError, ValueError, KeyError, subprocess.TimeoutExpired):
+            return None
+
+    with ThreadPoolExecutor(max_workers=6) as workers:
+        shares = tuple(share for share in workers.map(unwrap, zip(keys, contexts)) if share is not None)
+    if len(shares) < 3:
+        raise ValueError("KMS returned fewer than three share envelopes")
+    frame = b"".join(struct.pack(">H", len(share)) + share for share in shares)
+    status, _ = request(cid, "POST", "/shares", frame)
     if status != 204:
         raise ValueError(f"enclave refused the shares with HTTP {status}")
 
@@ -87,15 +98,13 @@ def main():
     parser.add_argument("network", choices=["devnet", "mainnet"])
     parser.add_argument("security_domain")
     parser.add_argument("release")
-    parser.add_argument("key_1")
-    parser.add_argument("share_1", type=Path)
-    parser.add_argument("key_2")
-    parser.add_argument("share_2", type=Path)
+    parser.add_argument("keys", type=Path)
     args = parser.parse_args()
     try:
-        provision(args.cid, args.network, args.security_domain, args.release,
-                  [(args.key_1, args.share_1), (args.key_2, args.share_2)])
-    except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
+        plan = json.loads(args.keys.read_text())
+        keys = [(entry["keyArn"], args.keys.parent / entry["ciphertext"]) for entry in plan["keys"]]
+        provision(args.cid, args.network, args.security_domain, args.release, plan["epoch"], keys)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
         raise SystemExit(str(error)) from None
 
 

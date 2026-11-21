@@ -16,7 +16,7 @@ the test. Pass a port offset to run another Solana localnet.
 
 Use two test EIFs commissioned according to the [native runbook](../enclave/deploy/nitro/README.md).
 In a scratch directory write `a-pin.json` and `b-pin.json` with each release ID,
-executable SHA-256 and independently derived PCR0–PCR3 in the policy's target
+executable SHA-256, custody epoch and independently derived PCR0–PCR3 in the policy's target
 format. Put the shared security domain and note seed commitment in
 `inputs.json` as `domain` and `seed`. Use only synthetic notes and test keys.
 
@@ -25,7 +25,9 @@ pnpm --filter spr-tvc-typescript-client-example exec tsx ../tests/nitro/rehearsa
   http://127.0.0.1:55441/ "$scratch" http://127.0.0.1:55442/
 ```
 
+Use epoch 1 for A and a distinct rotated custody epoch for B to exercise revocation.
 The script signs and serves a test policy locally. Once it writes `note-created`,
 verify that both enclaves are healthy and create `move-ready`. Once it writes
 `before-retire`, stop A and create `old-retired`. It verifies the original note
-again under B, then exercises a stale-policy replay against the same checkpoint.
+again under B, then rejects a stale policy and a higher sequence that tries to lower the
+recorded custody floor.

@@ -13,6 +13,7 @@ export type NitroTarget = {
   readonly endpoint: string;
   readonly releaseId: string;
   readonly executableSha256: string;
+  readonly custodyEpoch: string;
   readonly pcrs: NitroPcrs;
 };
 
@@ -21,6 +22,7 @@ export type NitroPolicy = {
   readonly network: Network;
   readonly securityDomainId: string;
   readonly noteSeedCommitment: string;
+  readonly minimumCustodyEpoch: string;
   readonly sequence: string;
   readonly validFromMs: string;
   readonly expiresAtMs: string;
@@ -31,18 +33,23 @@ export type NitroTrust = {
   readonly network: Network;
   readonly securityDomainId: string;
   readonly noteSeedCommitment: string;
+  readonly minimumCustodyEpoch: string;
   readonly minimumSequence: string;
   readonly threshold: number;
   /** Uncompressed SEC1 P-256 public keys pinned by the wallet integrator. */
   readonly keys: readonly string[];
 };
 
-export type NitroPolicyCheckpoint = { readonly sequence: string; readonly digest: string };
+export type NitroPolicyCheckpoint = {
+  readonly sequence: string;
+  readonly digest: string;
+  readonly minimumCustodyEpoch: string;
+};
 
 /**
  * An atomic durable compare-and-set per pinned network and security domain.
- * Accept a higher sequence or the identical checkpoint. Refuse older sequences,
- * the same sequence with a different digest, and writes which cannot persist.
+ * Accept a higher sequence or the identical checkpoint. The custody floor
+ * may only increase. Refuse writes which cannot persist.
  */
 export type NitroPolicyStore = {
   accept(checkpoint: NitroPolicyCheckpoint): Promise<boolean>;
@@ -53,9 +60,9 @@ const MAX_AUTHORITIES = 8;
 const MAX_LIFETIME_MS = 7n * 24n * 60n * 60n * 1000n;
 const POLICY_KEYS = [
   "version", "network", "securityDomainId", "noteSeedCommitment", "sequence",
-  "validFromMs", "expiresAtMs", "targets",
+  "validFromMs", "expiresAtMs", "minimumCustodyEpoch", "targets",
 ];
-const TARGET_KEYS = ["endpoint", "releaseId", "executableSha256", "pcrs"];
+const TARGET_KEYS = ["endpoint", "releaseId", "executableSha256", "custodyEpoch", "pcrs"];
 const te = new TextEncoder();
 
 function invalid(): never {
@@ -89,7 +96,7 @@ export function validateNitroTrust(trust: NitroTrust): void {
   if (trust.network !== "devnet" && trust.network !== "mainnet") invalid();
   checkDigest(trust.securityDomainId, 32);
   checkDigest(trust.noteSeedCommitment, 32);
-  if (decodeDecimalU64(trust.minimumSequence) < 1n ||
+  if (decodeDecimalU64(trust.minimumSequence) < 1n || decodeDecimalU64(trust.minimumCustodyEpoch) < 1n ||
       !Array.isArray(trust.keys) || trust.keys.length > MAX_AUTHORITIES ||
       !Number.isSafeInteger(trust.threshold) || trust.threshold < 2 ||
       trust.threshold > trust.keys.length || new Set(trust.keys).size !== trust.keys.length) invalid();
@@ -108,9 +115,10 @@ export function verifyNitroPolicy(
       policy.securityDomainId !== trust.securityDomainId ||
       policy.noteSeedCommitment !== trust.noteSeedCommitment) invalid();
   const sequence = decodeDecimalU64(policy.sequence);
+  const floor = decodeDecimalU64(policy.minimumCustodyEpoch);
   const validFrom = decodeDecimalU64(policy.validFromMs);
   const expiresAt = decodeDecimalU64(policy.expiresAtMs);
-  if (sequence < decodeDecimalU64(trust.minimumSequence) || now < validFrom ||
+  if (sequence < decodeDecimalU64(trust.minimumSequence) || floor < decodeDecimalU64(trust.minimumCustodyEpoch) || now < validFrom ||
       now >= expiresAt || expiresAt - validFrom > MAX_LIFETIME_MS) invalid();
   if (!Array.isArray(policy.targets) || policy.targets.length === 0 ||
       policy.targets.length > MAX_TARGETS) invalid();
@@ -122,6 +130,7 @@ export function verifyNitroPolicy(
         !/^[a-z0-9][a-z0-9-]{0,63}$/.test(target.releaseId)) invalid();
     endpoints.add(endpoint);
     checkDigest(target.executableSha256, 32);
+    if (decodeDecimalU64(target.custodyEpoch) < floor) invalid();
     assertExactObjectKeys(target.pcrs, ["0", "1", "2", "3"], "ReleasePolicyInvalid");
     for (const pcr of Object.values(target.pcrs)) checkDigest(pcr, 48);
   }
@@ -138,7 +147,7 @@ export function verifyNitroPolicy(
   }
   return {
     policy, validFrom, expiresAt,
-    checkpoint: { sequence: policy.sequence, digest: encodeLowerHex(digest) },
+    checkpoint: { sequence: policy.sequence, digest: encodeLowerHex(digest), minimumCustodyEpoch: policy.minimumCustodyEpoch },
   };
 }
 
@@ -147,6 +156,7 @@ export function advancesNitroPolicy(current: NitroPolicyCheckpoint | undefined, 
   if (!current) return true;
   const nextSequence = decodeDecimalU64(next.sequence);
   const currentSequence = decodeDecimalU64(current.sequence);
-  return nextSequence > currentSequence ||
-    (nextSequence === currentSequence && next.digest === current.digest);
+  return decodeDecimalU64(next.minimumCustodyEpoch) >= decodeDecimalU64(current.minimumCustodyEpoch) &&
+    (nextSequence > currentSequence || (nextSequence === currentSequence &&
+      next.digest === current.digest && next.minimumCustodyEpoch === current.minimumCustodyEpoch));
 }

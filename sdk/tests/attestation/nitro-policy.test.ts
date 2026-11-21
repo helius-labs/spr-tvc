@@ -17,6 +17,7 @@ const trust: NitroTrust = {
   threshold: 2,
   keys: keys.slice(0, 3),
   minimumSequence: "9",
+  minimumCustodyEpoch: "1",
 };
 const binding: NitroPolicy = {
   version: 1,
@@ -24,11 +25,13 @@ const binding: NitroPolicy = {
   securityDomainId: trust.securityDomainId,
   noteSeedCommitment: trust.noteSeedCommitment,
   sequence: "9",
+  minimumCustodyEpoch: "1",
   validFromMs: String(now - 1n),
   expiresAtMs: String(now + 100n),
   targets: [{
     endpoint: "https://slot-a.example.com/",
     releaseId: "generation-9",
+    custodyEpoch: "1",
     executableSha256: "33".repeat(32),
     pcrs: { 0: "11".repeat(48), 1: "22".repeat(48), 2: "33".repeat(48), 3: "44".repeat(48) },
   }],
@@ -50,7 +53,7 @@ describe("native Nitro release policy", () => {
     const verified = verifyNitroPolicy(manifest(binding, 0, 2), trust, now);
     expect(verified.policy).toEqual(binding);
     expect(verified.checkpoint).toEqual({
-      sequence: "9", digest: encodeLowerHex(nitroPolicySigningDigest(binding)),
+      sequence: "9", minimumCustodyEpoch: "1", digest: encodeLowerHex(nitroPolicySigningDigest(binding)),
     });
     expect(verifyNitroPolicy(manifest(binding, 2, 0), trust, now).checkpoint).toEqual(verified.checkpoint);
   });
@@ -118,12 +121,26 @@ describe("native Nitro release policy", () => {
     )).toThrow("DuplicateJsonField");
   });
 
+  it("requires every signed target to meet the policy custody floor", () => {
+    const oldTarget = binding.targets[0]!;
+    const next: NitroPolicy = {
+      ...binding, sequence: "10", minimumCustodyEpoch: "2",
+      targets: [{ ...oldTarget, custodyEpoch: "2" }],
+    };
+    const retired = verifyNitroPolicy(manifest(next, 0, 1), trust, now).checkpoint;
+    const old = verifyNitroPolicy(manifest({ ...binding, sequence: "11" }, 0, 1), trust, now).checkpoint;
+    expect(advancesNitroPolicy(retired, old)).toBe(false);
+    expect(() => verifyNitroPolicy(manifest({ ...next, targets: [oldTarget] }, 0, 1), trust, now)).toThrow();
+    expect(() => verifyNitroPolicy(manifest(binding, 0, 1), { ...trust, minimumCustodyEpoch: "2" }, now)).toThrow();
+    expect(() => verifyNitroPolicy(manifest({ ...next, minimumCustodyEpoch: "02" }, 0, 1), trust, now)).toThrow();
+  });
+
   it("accepts identical checkpoints and forward sequences, refusing rollback and equivocation", () => {
     const first = verifyNitroPolicy(manifest(binding, 0, 1), trust, now).checkpoint;
     expect(advancesNitroPolicy(undefined, first)).toBe(true);
     expect(advancesNitroPolicy(first, first)).toBe(true);
-    expect(advancesNitroPolicy(first, { sequence: "10", digest: "ab" })).toBe(true);
-    expect(advancesNitroPolicy(first, { sequence: "8", digest: first.digest })).toBe(false);
-    expect(advancesNitroPolicy(first, { sequence: "9", digest: "ab" })).toBe(false);
+    expect(advancesNitroPolicy(first, { ...first, sequence: "10", digest: "ab" })).toBe(true);
+    expect(advancesNitroPolicy(first, { ...first, sequence: "8", digest: first.digest })).toBe(false);
+    expect(advancesNitroPolicy(first, { ...first, sequence: "9", digest: "ab" })).toBe(false);
   });
 });

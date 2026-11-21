@@ -1,7 +1,9 @@
 //! Native Nitro startup. The parent forwards KMS ciphertext over vsock.
 
 use std::{
-    io,
+    fs::File,
+    io::{self, Read},
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -21,16 +23,26 @@ use clap::Parser;
 use openssl::{
     cms::CmsContentInfo,
     pkey::{PKey, Private},
+    rand::rand_bytes,
     rsa::Rsa,
 };
-use serde::Serialize;
-use spr_tvc_protocol::{digest::sha256, encoding::jcs_serialize, types::ServiceInfo};
+use serde::{Deserialize, Serialize};
+use spr_tvc_protocol::{
+    digest::sha256,
+    encoding::{hex, jcs_serialize, parse_strict_json},
+};
 use tokio::sync::oneshot;
 use tokio_vsock::{VsockAddr, VsockListener, VsockStream, VMADDR_CID_ANY};
 use zeroize::Zeroizing;
 
 use crate::{
-    keys::NoteSeed, native_crypto::NativePair, service::dispatch, wire::KeyPair, Release, Service,
+    custody::{CustodianPackage, Custody, Recipients, SHARE_COUNT, THRESHOLD},
+    keys::NoteSeed,
+    native_crypto::NativePair,
+    release::NETWORK,
+    service::dispatch,
+    wire::KeyPair,
+    Release, Service,
 };
 
 const MAX_CMS_BYTES: usize = 6144;
@@ -38,47 +50,116 @@ const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Parser)]
 pub struct Config {
-    #[arg(long, value_parser = crate::release::security_domain_id)]
+    #[arg(default_value = "/configuration.json")]
+    configuration: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Configuration {
+    #[serde(with = "hex")]
     security_domain_id: [u8; 32],
-    #[arg(long, value_parser = crate::release::nonempty)]
     release_id: String,
-    #[arg(long, value_parser = crate::release::security_domain_id)]
-    share_1_sha256: [u8; 32],
-    #[arg(long, value_parser = crate::release::security_domain_id)]
-    share_2_sha256: [u8; 32],
+    deployment: Deployment,
+}
+
+#[derive(Deserialize)]
+#[serde(
+    tag = "mode",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum Deployment {
+    Serve {
+        custody: Custody,
+    },
+    Initialize {
+        #[serde(with = "hex")]
+        recipient_public_keys: Vec<Vec<u8>>,
+    },
+    Rotate {
+        previous: Custody,
+        #[serde(with = "hex")]
+        recipient_public_keys: Vec<Vec<u8>>,
+    },
 }
 
 pub async fn run(config: Config) -> io::Result<()> {
-    let executable = sha256(&std::fs::read(std::env::current_exe()?)?);
-    let commitments = [config.share_1_sha256, config.share_2_sha256];
-    if commitments[0] == commitments[1] || commitments.contains(&[0; 32]) {
-        return Err(io::Error::other("invalid share commitments"));
+    const MAX_CONFIG: u64 = 24 * 1024;
+    let mut json = String::new();
+    File::open(config.configuration)?
+        .take(MAX_CONFIG + 1)
+        .read_to_string(&mut json)?;
+    if json.len() as u64 > MAX_CONFIG {
+        return Err(io::Error::other("configuration exceeds size limit"));
     }
-    let seed_commitment = sha256(
-        &[
-            b"SPR/native-nitro/note-seed/v1".as_slice(),
-            &commitments[0],
-            &commitments[1],
-        ]
-        .concat(),
-    );
+    let config: Configuration = parse_strict_json(&json).map_err(io::Error::other)?;
+    let domain = config.security_domain_id;
+    let release_id = config.release_id;
+    if domain == [0; 32]
+        || release_id.is_empty()
+        || release_id.len() > 64
+        || !release_id.as_bytes()[0].is_ascii_alphanumeric()
+        || !release_id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(io::Error::other("invalid security domain or release ID"));
+    }
+    match config.deployment {
+        Deployment::Serve { custody } => {
+            custody.validate()?;
+            let note_seed = provision(domain, custody.clone()).await?;
+            serve(domain, release_id, custody, note_seed).await
+        }
+        Deployment::Initialize {
+            recipient_public_keys,
+        } => {
+            let recipients = Recipients::parse(&recipient_public_keys)?;
+            let mut seed = Zeroizing::new([0; 32]);
+            rand_bytes(seed.as_mut()).map_err(io::Error::other)?;
+            publish_custody(domain, release_id, recipients, 1, NoteSeed(seed)).await
+        }
+        Deployment::Rotate {
+            previous,
+            recipient_public_keys,
+        } => {
+            previous.validate()?;
+            let recipients = Recipients::parse(&recipient_public_keys)?;
+            let epoch = previous
+                .epoch
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("custody epoch exhausted"))?;
+            let note_seed = provision(domain, previous).await?;
+            publish_custody(domain, release_id, recipients, epoch, note_seed).await
+        }
+    }
+}
+
+async fn serve(
+    domain: [u8; 32],
+    release_id: String,
+    custody: Custody,
+    note_seed: NoteSeed,
+) -> io::Result<()> {
+    let executable = sha256(&std::fs::read(std::env::current_exe()?)?);
     let release_identity = sha256(
         &[
             b"SPR/native-nitro/release/v1".as_slice(),
             &executable,
-            &seed_commitment,
+            &custody.note_seed_commitment,
         ]
         .concat(),
     );
-    let note_seed = provision(commitments).await?;
     let transport =
         NativePair::generate().map_err(|_| io::Error::other("generate transport key"))?;
     let ephemeral = NativePair::generate().map_err(|_| io::Error::other("generate proof key"))?;
     let info = Release {
-        security_domain_id: config.security_domain_id,
-        release_id: config.release_id,
+        security_domain_id: domain,
+        release_id,
         quorum_key_id: spr_tvc_protocol::encoding::encode_lower_hex(&sha256(&transport.public)),
-        quorum_key_epoch: 1,
+        quorum_key_epoch: custody.epoch,
     }
     .service_info(release_identity, executable, transport.public.clone());
     let service = Arc::new(Service {
@@ -104,20 +185,22 @@ struct Recipient {
 
 struct Bootstrap {
     recipient: Mutex<Option<Recipient>>,
-    commitments: [[u8; 32]; 2],
+    domain: [u8; 32],
+    custody: Custody,
 }
 
-async fn provision(commitments: [[u8; 32]; 2]) -> io::Result<NoteSeed> {
+async fn provision(domain: [u8; 32], custody: Custody) -> io::Result<NoteSeed> {
     let (sender, seed) = oneshot::channel();
     let private =
         PKey::from_rsa(Rsa::generate(2048).map_err(io::Error::other)?).map_err(io::Error::other)?;
     let app = Router::new()
         .route("/recipient", get(kms_attestation))
         .route("/shares", post(accept_shares))
-        .layer(DefaultBodyLimit::max(2 * MAX_CMS_BYTES + 2))
+        .layer(DefaultBodyLimit::max(SHARE_COUNT * (MAX_CMS_BYTES + 2)))
         .with_state(Arc::new(Bootstrap {
             recipient: Mutex::new(Some(Recipient { private, sender })),
-            commitments,
+            domain,
+            custody,
         }));
     let listener = ParentListener::bind(44031)?;
     let (shutdown, shutdown_signal) = oneshot::channel::<()>();
@@ -147,7 +230,7 @@ async fn provision(commitments: [[u8; 32]; 2]) -> io::Result<NoteSeed> {
     Ok(seed)
 }
 
-async fn kms_attestation(State(state): State<Arc<Bootstrap>>) -> Evidence {
+async fn kms_attestation(State(state): State<Arc<Bootstrap>>) -> Reply<Vec<u8>> {
     let public = state
         .recipient
         .lock()
@@ -157,7 +240,7 @@ async fn kms_attestation(State(state): State<Arc<Bootstrap>>) -> Evidence {
         .private
         .public_key_to_der()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    attest(public, None, None)
+    attest(Some(public), None, None)
 }
 
 async fn accept_shares(
@@ -169,7 +252,7 @@ async fn accept_shares(
         .lock()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let recipient = pending.as_ref().ok_or(StatusCode::GONE)?;
-    let seed = open_shares(&recipient.private, &body, &state.commitments)
+    let seed = open_shares(&recipient.private, &body, &state.domain, &state.custody)
         .ok_or(StatusCode::BAD_REQUEST)?;
     let recipient = pending.take().ok_or(StatusCode::GONE)?;
     recipient
@@ -181,75 +264,125 @@ async fn accept_shares(
 
 fn open_shares(
     private: &PKey<Private>,
-    body: &[u8],
-    commitments: &[[u8; 32]; 2],
+    mut frame: &[u8],
+    domain: &[u8; 32],
+    custody: &Custody,
 ) -> Option<NoteSeed> {
-    let (length, rest) = body.split_first_chunk::<2>()?;
-    let (first, second) = rest.split_at_checked(u16::from_be_bytes(*length).into())?;
-    let open = |envelope: &[u8]| {
-        if !(1..=MAX_CMS_BYTES).contains(&envelope.len()) {
+    let mut shares = Zeroizing::new(Vec::with_capacity(SHARE_COUNT));
+    let mut count = 0;
+    while !frame.is_empty() {
+        count += 1;
+        let (length, rest) = frame.split_first_chunk::<2>()?;
+        let length = usize::from(u16::from_be_bytes(*length));
+        if count > SHARE_COUNT || !(1..=MAX_CMS_BYTES).contains(&length) {
             return None;
         }
-        CmsContentInfo::from_der(envelope)
+        let (envelope, rest) = rest.split_at_checked(length)?;
+        if let Ok(share) = CmsContentInfo::from_der(envelope)
             .and_then(|cms| cms.decrypt_without_cert_check(private))
-            .map(Zeroizing::new)
-            .ok()
-    };
-    let first = open(first)?;
-    let second = open(second)?;
-    if first.len() != 32
-        || second.len() != 32
-        || openssl::memcmp::eq(&first, &[0u8; 32])
-        || openssl::memcmp::eq(&second, &[0u8; 32])
-        || !openssl::memcmp::eq(&sha256(&first), &commitments[0])
-        || !openssl::memcmp::eq(&sha256(&second), &commitments[1])
-    {
+        {
+            shares.push(share);
+        }
+        frame = rest;
+    }
+    if count < THRESHOLD {
         return None;
     }
-    let mut seed = Zeroizing::new([0u8; 32]);
-    for ((byte, left), right) in seed.iter_mut().zip(first.iter()).zip(second.iter()) {
-        *byte = left ^ right;
-    }
-    Some(NoteSeed(seed))
+    custody.restore(domain, &shares)
 }
-
-type Evidence = Result<([(axum::http::HeaderName, &'static str); 1], Vec<u8>), StatusCode>;
 
 #[derive(Serialize)]
-struct AttestedDiscovery<'a> {
-    info: &'a ServiceInfo,
-    evidence: String,
+#[serde(rename_all = "camelCase")]
+struct CustodyResult {
+    network: spr_tvc_protocol::types::Network,
+    #[serde(with = "hex")]
+    security_domain_id: [u8; 32],
+    release_id: String,
+    custody: Custody,
+    packages: Vec<CustodianPackage>,
 }
 
-async fn client_attestation(
-    State(service): State<Arc<Service>>,
+async fn publish_custody(
+    domain: [u8; 32],
+    release_id: String,
+    recipients: Recipients,
+    epoch: u64,
+    seed: NoteSeed,
+) -> io::Result<()> {
+    let (custody, packages) = recipients.issue(&domain, epoch, &seed)?;
+    drop(seed);
+    let result = Arc::new(
+        jcs_serialize(&CustodyResult {
+            network: NETWORK,
+            security_domain_id: domain,
+            release_id,
+            custody,
+            packages,
+        })
+        .map_err(io::Error::other)?,
+    );
+    let app = Router::new()
+        .route("/custody", post(custody_attestation))
+        .layer(DefaultBodyLimit::max(32))
+        .with_state(result);
+    match tokio::time::timeout(
+        Duration::from_secs(300),
+        axum::serve(ParentListener::bind(44031)?, app),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Ok(()),
+    }
+}
+
+async fn custody_attestation(State(result): State<Arc<String>>, nonce: Bytes) -> Reply<String> {
+    attested_json(
+        "SPR/native-nitro/custody/v1",
+        "result",
+        &result,
+        None,
+        nonce,
+    )
+}
+
+type Reply<T> = Result<([(axum::http::HeaderName, &'static str); 1], T), StatusCode>;
+
+async fn client_attestation(State(service): State<Arc<Service>>, nonce: Bytes) -> Reply<String> {
+    let discovery = jcs_serialize(&service.info).map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    attested_json(
+        "SPR/native-nitro/discovery/v1",
+        "info",
+        &discovery,
+        Some(service.ephemeral.public_bytes()),
+        nonce,
+    )
+}
+
+fn attested_json(
+    domain: &str,
+    field: &str,
+    value: &str,
+    public: Option<Vec<u8>>,
     nonce: Bytes,
-) -> Result<([(axum::http::HeaderName, &'static str); 1], String), StatusCode> {
+) -> Reply<String> {
     if nonce.len() != 32 {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let discovery = jcs_serialize(&service.info).map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    let binding = sha256(
-        &[
-            b"SPR/native-nitro/discovery/v1".as_slice(),
-            discovery.as_bytes(),
-        ]
-        .concat(),
-    );
-    let (_, evidence) = attest(
-        service.ephemeral.public_bytes(),
-        Some(binding),
-        Some(nonce.to_vec()),
-    )?;
-    let body = jcs_serialize(&AttestedDiscovery {
-        info: &service.info,
-        evidence: spr_tvc_protocol::encoding::encode_lower_hex(&evidence),
-    })
-    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    Ok(([(CONTENT_TYPE, "application/json")], body))
+    let binding = sha256(&[domain.as_bytes(), value.as_bytes()].concat());
+    let (_, evidence) = attest(public, Some(binding), Some(nonce.to_vec()))?;
+    let evidence = spr_tvc_protocol::encoding::encode_lower_hex(&evidence);
+    Ok((
+        [(CONTENT_TYPE, "application/json")],
+        format!(r#"{{"evidence":"{evidence}","{field}":{value}}}"#),
+    ))
 }
 
-fn attest(public: Vec<u8>, user_data: Option<[u8; 32]>, nonce: Option<Vec<u8>>) -> Evidence {
+fn attest(
+    public: Option<Vec<u8>>,
+    user_data: Option<[u8; 32]>,
+    nonce: Option<Vec<u8>>,
+) -> Reply<Vec<u8>> {
     let fd = nsm_init();
     if fd < 0 {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
@@ -257,7 +390,7 @@ fn attest(public: Vec<u8>, user_data: Option<[u8; 32]>, nonce: Option<Vec<u8>>) 
     let response = nsm_process_request(
         fd,
         NsmRequest::Attestation {
-            public_key: Some(public.into()),
+            public_key: public.map(Into::into),
             user_data: user_data.map(|value| value.to_vec().into()),
             nonce: nonce.map(Into::into),
         },
