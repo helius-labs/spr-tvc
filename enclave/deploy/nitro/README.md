@@ -151,13 +151,16 @@ fingerprint. Grant the corresponding cross-account IAM permissions explicitly.
    owner-authorized migration to a new seed domain.
 
 The canonical policy starts with `{"policy":...,"signatures":[]}`. Its policy
-fields are `version`, `network`, `securityDomainId`, `noteSeedCommitment`,
+fields are `version`, `action`, `network`, `securityDomainId`, `noteSeedCommitment`,
 `minimumCustodyEpoch`, `sequence`, `validFromMs`, `expiresAtMs` and `targets`.
 Each target contains `endpoint`, `releaseId`, `executableSha256`,
 `custodyEpoch` and `pcrs`. Pin network, domain, seed commitment, minimum sequence,
 minimum custody epoch, signer keys and threshold out-of-band. Times, sequence
 and epochs are canonical decimal strings. The wallet stores the sequence,
-policy digest and custody floor atomically. Publish policy changes through a
+policy digest and custody floor atomically. `activate` requires a verified
+replica before the wallet advances the checkpoint. An emergency `revoke`
+requires an empty target list and advances the checkpoint as soon as the wallet
+verifies the policy signatures. Publish policy changes through a
 single conditional writer and alert before expiration.
 
 ```sh

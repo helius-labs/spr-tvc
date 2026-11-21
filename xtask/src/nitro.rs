@@ -56,6 +56,21 @@ fn digest(policy: &serde_json::Value) -> Result<[u8; 32]> {
     ))
 }
 
+fn validate_action(policy: &serde_json::Value) -> Result<()> {
+    let targets = policy["targets"]
+        .as_array()
+        .context("expected a release target list")?;
+    ensure!(
+        match policy["action"].as_str() {
+            Some("activate") => (1..=8).contains(&targets.len()),
+            Some("revoke") => targets.is_empty(),
+            _ => false,
+        },
+        "activate with one to eight targets or revoke with an empty target list"
+    );
+    Ok(())
+}
+
 fn decode_signature(
     signed: &KmsSignature,
     arn: &str,
@@ -79,6 +94,7 @@ pub(crate) fn sign(args: Args) -> Result<()> {
         "use canonical policy JSON up to 32 KiB"
     );
     let mut manifest: SignedPolicy = serde_json::from_str(&text)?;
+    validate_action(&manifest.policy)?;
     let bytes = decode_lower_hex(&args.public_key)?;
     ensure!(
         bytes.len() == 65 && bytes[0] == 4,

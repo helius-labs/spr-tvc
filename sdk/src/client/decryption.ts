@@ -69,7 +69,7 @@ export function decryptionServiceFromSession(
       return await executeServiceCall(context, operation, signal);
     } catch (error) {
       if ((error instanceof DecryptionServiceHttpError && error.status !== 429) ||
-          (error instanceof DecryptionServiceError && error.code === "EndpointUnavailable")) {
+          (error instanceof DecryptionServiceError && ["EndpointUnavailable", "ReleasePolicySuperseded"].includes(error.code))) {
         session.forget(context);
       }
       throw error;

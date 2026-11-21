@@ -19,6 +19,7 @@ export type NitroTarget = {
 
 export type NitroPolicy = {
   readonly version: 1;
+  readonly action: "activate" | "revoke";
   readonly network: Network;
   readonly securityDomainId: string;
   readonly noteSeedCommitment: string;
@@ -52,6 +53,7 @@ export type NitroPolicyCheckpoint = {
  * may only increase. Refuse writes which cannot persist.
  */
 export type NitroPolicyStore = {
+  current(): Promise<NitroPolicyCheckpoint | undefined>;
   accept(checkpoint: NitroPolicyCheckpoint): Promise<boolean>;
 };
 
@@ -59,7 +61,7 @@ const MAX_TARGETS = 8;
 const MAX_AUTHORITIES = 8;
 const MAX_LIFETIME_MS = 7n * 24n * 60n * 60n * 1000n;
 const POLICY_KEYS = [
-  "version", "network", "securityDomainId", "noteSeedCommitment", "sequence",
+  "version", "action", "network", "securityDomainId", "noteSeedCommitment", "sequence",
   "validFromMs", "expiresAtMs", "minimumCustodyEpoch", "targets",
 ];
 const TARGET_KEYS = ["endpoint", "releaseId", "executableSha256", "custodyEpoch", "pcrs"];
@@ -120,8 +122,8 @@ export function verifyNitroPolicy(
   const expiresAt = decodeDecimalU64(policy.expiresAtMs);
   if (sequence < decodeDecimalU64(trust.minimumSequence) || floor < decodeDecimalU64(trust.minimumCustodyEpoch) || now < validFrom ||
       now >= expiresAt || expiresAt - validFrom > MAX_LIFETIME_MS) invalid();
-  if (!Array.isArray(policy.targets) || policy.targets.length === 0 ||
-      policy.targets.length > MAX_TARGETS) invalid();
+  if (!Array.isArray(policy.targets) || policy.targets.length > MAX_TARGETS) invalid();
+  if (policy.action === "activate" ? policy.targets.length === 0 : policy.action !== "revoke" || policy.targets.length !== 0) invalid();
   const endpoints = new Set<string>();
   for (const target of policy.targets) {
     assertExactObjectKeys(target, TARGET_KEYS, "ReleasePolicyInvalid");

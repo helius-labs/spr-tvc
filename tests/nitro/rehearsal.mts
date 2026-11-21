@@ -51,7 +51,7 @@ const start = Date.now() - 30_000;
 let signedPolicy: string;
 function signPolicy(sequence: string, replicas: readonly NitroTarget[], minimumCustodyEpoch = "1"): string {
   const policy: NitroPolicy = {
-    version: 1, network: trust.network, securityDomainId: domain, noteSeedCommitment: seed,
+    version: 1, action: "activate", network: trust.network, securityDomainId: domain, noteSeedCommitment: seed,
     validFromMs: String(start), expiresAtMs: String(start + 15 * 60_000),
     sequence, targets: replicas, minimumCustodyEpoch,
   };
@@ -78,7 +78,7 @@ let checkpoint: NitroPolicyCheckpoint | undefined;
 function clientFor() {
   return createNitroDecryptionService({
     trust, policyUrl,
-    policyStore: { async accept(next) {
+    policyStore: { async current() { return checkpoint; }, async accept(next) {
       if (!advancesNitroPolicy(checkpoint, next)) return false;
       checkpoint = next;
       return true;

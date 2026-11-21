@@ -37,11 +37,15 @@ and system clock, including when a caller supplies a fresh signed policy.
 Import `createNitroDecryptionService` from
 `@heliuslabs/spr-decryption-service/nitro`. Configure the policy URL, trusted
 network, security domain, note seed commitment, minimum custody epoch and
-threshold signer public keys out-of-band. Provide an atomic durable `policyStore` scoped to the network and
-domain. Its `accept` method persists the next checkpoint before succeeding and
-uses `advancesNitroPolicy` against the stored sequence, digest and custody
-floor inside the transaction.
-On a failed storage write, refuse the checkpoint.
+threshold signer public keys out-of-band. In browsers, the SDK stores the
+checkpoint in IndexedDB. Other runtimes supply an atomic durable `policyStore`
+scoped to the network and domain. Its `accept` method persists the next
+checkpoint before succeeding. Apply `advancesNitroPolicy` against the stored
+checkpoint inside the transaction. `current` reads the last committed
+checkpoint. The SDK checks it before sending an operation, including after a
+wallet approval returns.
+A signed activation advances the checkpoint after a replica attests. A signed
+revocation advances it immediately and returns `ReleasePolicyRevoked`.
 
 The same `address` and `open` APIs work with the attested client. The SDK
 conveys an unavailable session to the caller so the next action can select

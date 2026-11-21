@@ -1,11 +1,15 @@
 import { p256 } from "@noble/curves/p256";
+import { sha256 } from "@noble/hashes/sha256";
 import { address, type MessagePartialSigner } from "@solana/kit";
 import type { ProofService } from "@heliuslabs/spr";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { verifyNativeNitroEvidence } from "../../src/attestation/boot-proof.js";
 import { nitroPolicySigningDigest, type NitroPolicy, type NitroTrust } from "../../src/attestation/nitro-policy.js";
 import { createNitroDecryptionService } from "../../src/client/nitro.js";
 import { signP256Prehash } from "../../src/crypto/p256.js";
-import { encodeLowerHex } from "../../src/protocol/hex.js";
+import { encodeLowerHex, requireHex } from "../../src/protocol/hex.js";
+
+vi.mock("../../src/attestation/boot-proof.js", () => ({ verifyNativeNitroEvidence: vi.fn() }));
 
 const secrets = [1, 2].map(value => new Uint8Array(32).fill(value));
 const trust: NitroTrust = {
@@ -15,18 +19,20 @@ const trust: NitroTrust = {
 };
 const policyUrl = new URL("https://policy.example.com/release.json");
 
-function signedPolicy() {
+function signedPolicy(overrides: Partial<NitroPolicy> = {}) {
   const now = Date.now();
   const policy: NitroPolicy = {
     network: trust.network, securityDomainId: trust.securityDomainId, noteSeedCommitment: trust.noteSeedCommitment,
-    version: 1, sequence: "2", minimumCustodyEpoch: "1", validFromMs: String(now - 1000), expiresAtMs: String(now + 100_000),
+    version: 1, action: "activate", sequence: "2", minimumCustodyEpoch: "1",
+    validFromMs: String(now - 1000), expiresAtMs: String(now + 100_000),
     targets: [{
       endpoint: "https://replica.example.com/",
       releaseId: "nitro-2",
       custodyEpoch: "1",
-    executableSha256: "77".repeat(32),
+      executableSha256: "77".repeat(32),
       pcrs: { 0: "11".repeat(48), 1: "22".repeat(48), 2: "33".repeat(48), 3: "44".repeat(48) },
     }],
+    ...overrides,
   };
   return JSON.stringify({ policy, signatures: secrets.map((secret, index) => ({
     key: trust.keys[index],
@@ -34,24 +40,46 @@ function signedPolicy() {
   })) });
 }
 
+function attestedDiscovery() {
+  const pair = trust.keys.join("");
+  const executable = "77".repeat(32);
+  const identity = sha256(Uint8Array.from([
+    ...new TextEncoder().encode("SPR/native-nitro/release/v1"),
+    ...requireHex(executable, 32), ...requireHex(trust.noteSeedCommitment, 32),
+  ]));
+  vi.mocked(verifyNativeNitroEvidence).mockResolvedValue(pair);
+  return Response.json({ info: {
+    version: 1, network: trust.network, security_domain_id: trust.securityDomainId, release_id: "nitro-2",
+    manifest_digest: encodeLowerHex(identity), executable_digest: executable, quorum_public_key: pair,
+    quorum_key_id: encodeLowerHex(sha256(requireHex(pair, 130))), quorum_key_epoch: "1",
+    supported_operations: ["ServicePublicKeys", "ServiceDecrypt"], proof_type: "spr.tvc.decryption_service.v1",
+    max_encrypted_request_bytes: "262144", max_encrypted_response_bytes: "262144",
+  }, evidence: "aa" });
+}
+
 const signMessages = vi.fn<MessagePartialSigner["signMessages"]>();
 const signer = { address: address("3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"), signMessages };
 const proofs = {} as ProofService;
+const emptyStore = { async current() { return undefined; } };
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.mocked(verifyNativeNitroEvidence).mockReset();
   signMessages.mockClear();
 });
 
 describe("native client trust gate", () => {
-  it("refuses to contact replicas or request approval if the durable checkpoint fails", async () => {
-    const fetch = vi.fn(async () => new Response(signedPolicy()));
+  it("refuses to send an operation or request approval if the qualified checkpoint cannot persist", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(signedPolicy()))
+      .mockResolvedValueOnce(attestedDiscovery());
     vi.stubGlobal("fetch", fetch);
     const stored = vi.fn(async () => false);
-    const client = createNitroDecryptionService({ trust, policyUrl, policyStore: { accept: stored } });
+    const client = createNitroDecryptionService({ trust, policyUrl, policyStore: { ...emptyStore, accept: stored } });
     await expect(client.open(signer, proofs)).rejects.toThrow("policy rollback or checkpoint");
     expect(stored).toHaveBeenCalledOnce();
-    expect(fetch).toHaveBeenCalledOnce();
+    expect(verifyNativeNitroEvidence).toHaveBeenCalledBefore(stored);
+    expect(fetch).toHaveBeenCalledTimes(2);
     expect(signMessages).not.toHaveBeenCalled();
   });
 
@@ -59,7 +87,7 @@ describe("native client trust gate", () => {
     const fetch = vi.fn(async () => new Response("x".repeat(32_769)));
     vi.stubGlobal("fetch", fetch);
     const stored = vi.fn(async () => true);
-    const client = createNitroDecryptionService({ trust, policyUrl, policyStore: { accept: stored } });
+    const client = createNitroDecryptionService({ trust, policyUrl, policyStore: { ...emptyStore, accept: stored } });
     await expect(client.open(signer, proofs)).rejects.toThrow("ResponseTooLarge");
     expect(stored).not.toHaveBeenCalled();
     expect(fetch).toHaveBeenCalledOnce();
@@ -71,11 +99,56 @@ describe("native client trust gate", () => {
       .mockResolvedValueOnce(new Response(signedPolicy()))
       .mockResolvedValueOnce(new Response('{"info":{},"evidence":"00"}'));
     vi.stubGlobal("fetch", fetch);
-    const client = createNitroDecryptionService({ trust, policyUrl, policyStore: { async accept() { return true; } } });
+    const client = createNitroDecryptionService({ trust, policyUrl, policyStore: { ...emptyStore, async accept() { return true; } } });
     await expect(client.open(signer, proofs)).rejects.toThrow("no authorized Nitro replica");
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(fetch.mock.calls[1]?.[0].href).toBe("https://replica.example.com/v1/nitro/attestation");
     expect(fetch.mock.calls[1]?.[1]).toMatchObject({ redirect: "error", method: "POST" });
+    expect(signMessages).not.toHaveBeenCalled();
+  });
+
+  it("preserves the previous floor and sequence when a signed activation cannot attest", async () => {
+    const old = signedPolicy();
+    const targets = JSON.parse(old).policy.targets.map((target: NitroPolicy["targets"][number]) => ({ ...target, custodyEpoch: "2" }));
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(signedPolicy({ sequence: "3", minimumCustodyEpoch: "2", targets })))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(new Response(old))
+      .mockResolvedValueOnce(attestedDiscovery());
+    vi.stubGlobal("fetch", fetch);
+    const stored = vi.fn(async () => false);
+    const client = createNitroDecryptionService({ trust, policyUrl, policyStore: { ...emptyStore, accept: stored } });
+    await expect(client.open(signer, proofs)).rejects.toThrow("no authorized Nitro replica");
+    expect(stored).not.toHaveBeenCalled();
+    await expect(client.open(signer, proofs)).rejects.toThrow("checkpoint unavailable");
+    expect(stored).toHaveBeenCalledWith(expect.objectContaining({ sequence: "2", minimumCustodyEpoch: "1" }));
+    expect(signMessages).not.toHaveBeenCalled();
+  });
+
+  it("persists explicit revocation without replicas and rejects the previous policy", async () => {
+    const revoked = signedPolicy({ action: "revoke", sequence: "3", minimumCustodyEpoch: "2", targets: [] });
+    const fetch = vi.fn().mockResolvedValueOnce(new Response(revoked)).mockResolvedValueOnce(new Response(signedPolicy()));
+    vi.stubGlobal("fetch", fetch);
+    const stored = vi.fn(async () => true);
+    const client = createNitroDecryptionService({ trust, policyUrl, policyStore: { ...emptyStore, accept: stored } });
+    await expect(client.open(signer, proofs)).rejects.toThrow("ReleasePolicyRevoked");
+    expect(stored).toHaveBeenCalledWith(expect.objectContaining({ sequence: "3", minimumCustodyEpoch: "2" }));
+    await expect(client.open(signer, proofs)).rejects.toThrow("policy rollback");
+    expect(stored).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(signMessages).not.toHaveBeenCalled();
+  });
+
+  it("refuses to use a connection superseded in another SDK instance", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(new Response(signedPolicy())).mockResolvedValueOnce(attestedDiscovery());
+    vi.stubGlobal("fetch", fetch);
+    const store = {
+      async accept() { return true; },
+      async current() { return { sequence: "3", minimumCustodyEpoch: "2", digest: "aa".repeat(32) }; },
+    };
+    const client = createNitroDecryptionService({ trust, policyUrl, policyStore: store });
+    await expect(client.open(signer, proofs)).rejects.toThrow("ReleasePolicySuperseded");
+    expect(fetch).toHaveBeenCalledTimes(2);
     expect(signMessages).not.toHaveBeenCalled();
   });
 });

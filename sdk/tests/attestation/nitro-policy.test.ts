@@ -21,6 +21,7 @@ const trust: NitroTrust = {
 };
 const binding: NitroPolicy = {
   version: 1,
+  action: "activate",
   network: trust.network,
   securityDomainId: trust.securityDomainId,
   noteSeedCommitment: trust.noteSeedCommitment,
@@ -91,6 +92,13 @@ describe("native Nitro release policy", () => {
     expect(() => verifyNitroPolicy(manifest({
       ...binding, expiresAtMs: String(now + 7n * 86_400_000n),
     }, 0, 1), trust, now)).toThrow();
+  });
+
+  it("requires an explicit signed revocation with no targets", () => {
+    const revoke = { ...binding, action: "revoke", targets: [] } as const;
+    expect(verifyNitroPolicy(manifest(revoke, 0, 1), trust, now).policy).toEqual(revoke);
+    expect(() => verifyNitroPolicy(manifest({ ...binding, action: "revoke" }, 0, 1), trust, now)).toThrow();
+    expect(() => verifyNitroPolicy(JSON.stringify({ policy: revoke, signatures: signatures(binding, 0, 1) }), trust, now)).toThrow();
   });
 
   it("rejects unmeasured, ambiguous or insecure routes", () => {

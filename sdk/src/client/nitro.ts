@@ -1,5 +1,6 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { verifyNativeNitroEvidence } from "../attestation/boot-proof.js";
+import { indexedDbNitroPolicyStore } from "../attestation/nitro-checkpoint.js";
 import {
   advancesNitroPolicy, nitroEndpoint, validateNitroTrust, verifyNitroPolicy,
   type NitroPolicyCheckpoint, type NitroPolicyStore, type NitroTarget, type NitroTrust,
@@ -24,7 +25,8 @@ export type { NitroPolicy, NitroPolicyCheckpoint, NitroPolicyStore, NitroTarget,
 export type NitroDecryptionServiceConfig = {
   readonly policyUrl: URL;
   readonly trust: NitroTrust;
-  readonly policyStore: NitroPolicyStore;
+  /** Defaults to IndexedDB when available. Other runtimes supply a durable store. */
+  readonly policyStore?: NitroPolicyStore;
   readonly requestTimeoutMs?: number;
 };
 
@@ -92,21 +94,30 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
   const trust = structuredClone(config.trust);
   validateNitroTrust(trust);
   const policyUrl = nitroEndpoint(config.policyUrl.href, trust.network);
-  const store = config.policyStore;
+  const store = config.policyStore ?? indexedDbNitroPolicyStore(trust);
   let latest: NitroPolicyCheckpoint | undefined;
   let next = 0;
 
-  const session = sessionFromConnector(async (signal): Promise<ConnectedTvcRuntime> => {
-    const response = await fetchWithSignal(transport, policyUrl, undefined, signal);
-    if (!response.ok) throw httpError(response, "ReleasePolicyInvalid");
-    const text = await readBoundedText(response, MAX_POLICY_BYTES, signal);
-    const { policy, checkpoint, validFrom, expiresAt } = verifyNitroPolicy(text, trust, clock());
+  async function accept(checkpoint: NitroPolicyCheckpoint, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
     if (!advancesNitroPolicy(latest, checkpoint) ||
         !await awaitWithSignal(store.accept(checkpoint), signal) ||
         !advancesNitroPolicy(latest, checkpoint)) {
       throw new DecryptionServiceError("ReleasePolicyInvalid", "policy rollback or checkpoint unavailable");
     }
     latest = checkpoint;
+  }
+
+  const session = sessionFromConnector(async (signal): Promise<ConnectedTvcRuntime> => {
+    const response = await fetchWithSignal(transport, policyUrl, undefined, signal);
+    if (!response.ok) throw httpError(response, "ReleasePolicyInvalid");
+    const text = await readBoundedText(response, MAX_POLICY_BYTES, signal);
+    const { policy, checkpoint, validFrom, expiresAt } = verifyNitroPolicy(text, trust, clock());
+    if (!advancesNitroPolicy(latest, checkpoint)) throw new DecryptionServiceError("ReleasePolicyInvalid", "policy rollback");
+    if (policy.action === "revoke") {
+      await accept(checkpoint, signal);
+      throw new DecryptionServiceError("ReleasePolicyRevoked");
+    }
     const count = policy.targets.length;
     const start = next % count;
     for (let offset = 0; offset < count; offset++) {
@@ -120,8 +131,13 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
         continue;
       }
       const { endpoint, info, proofKey } = connected;
+      const qualifiedAt = clock();
+      if (qualifiedAt < validFrom || qualifiedAt >= expiresAt) {
+        throw new DecryptionServiceError("ReleasePolicyInvalid");
+      }
+      await accept(checkpoint, signal);
       const now = clock();
-      if (now < validFrom || now >= expiresAt || !advancesNitroPolicy(latest, checkpoint)) {
+      if (now < validFrom || now >= expiresAt) {
         throw new DecryptionServiceError("ReleasePolicyInvalid");
       }
       next = index + 1;
@@ -133,6 +149,13 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
         nowMs: clock,
         releasePolicyValidFromMs: validFrom,
         releasePolicyExpiresAtMs: sessionExpiry < expiresAt ? sessionExpiry : expiresAt - 1n,
+        async requireCurrentCheckpoint(signal) {
+          const current = await awaitWithSignal(store.current(), signal);
+          if (current?.digest !== checkpoint.digest || current.sequence !== checkpoint.sequence ||
+              current.minimumCustodyEpoch !== checkpoint.minimumCustodyEpoch) {
+            throw new DecryptionServiceError("ReleasePolicySuperseded");
+          }
+        },
         trustVerifier: {
           async verifyOperationAppProof(proof) {
             if (proof.publicKey !== proofKey) throw new DecryptionServiceError("BootProofUnverified");

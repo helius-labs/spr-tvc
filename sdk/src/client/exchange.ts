@@ -48,6 +48,7 @@ export async function executeServiceCall<T extends ServiceCall>(
 ): Promise<ServiceCallResult<T>> {
   const { info } = context;
   signal.throwIfAborted();
+  if (context.requireCurrentCheckpoint) await context.requireCurrentCheckpoint(signal);
   requireCurrentReleasePolicy(context, context.nowMs());
   const responseSecret = p256.utils.randomPrivateKey();
   try {
@@ -92,6 +93,7 @@ export async function executeServiceCall<T extends ServiceCall>(
         throw new DecryptionServiceError("InvalidSignature");
       }
       request = { ...request, operation: { ...operation, signature: encodeLowerHex(signature) } };
+      if (context.requireCurrentCheckpoint) await context.requireCurrentCheckpoint(signal);
     }
 
     requireCurrentReleasePolicy(context, context.nowMs());
