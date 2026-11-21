@@ -5,6 +5,7 @@ import base64
 import json
 import subprocess
 from pathlib import Path
+from time import time
 
 from approval import check_approvals, key_result, kms, parse_json, read_json
 from custody_ledger import load_epoch, open_share
@@ -36,6 +37,8 @@ def wrap(trust, approval, build, index):
     domain = receipt["securityDomainId"]
     epoch = custody["epoch"]
     ctx = context(receipt["network"], domain, manifest["releaseId"], epoch, index)
+    if time() >= manifest["expiresAt"]:
+        raise ValueError("target approval expired before share release")
     plaintext = open_share(custodians[index - 1], receipt, index)
     return base64.b64decode(key_result(wrapping_key, "encrypt", [
         "--plaintext", "fileb:///dev/stdin", "--encryption-context", json.dumps(ctx),

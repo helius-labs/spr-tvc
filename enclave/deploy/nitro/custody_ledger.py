@@ -12,7 +12,7 @@ from approval import (
     KEY_ARN, ROLE_ARN, MAX_DOCUMENT_BYTES, add_approval, approval_keys, arn, aws, canonical, check_approvals,
     fields, file_digest, hex_digest, key_result, kms, parse_json, read_json, sha256,
 )
-from kms_policy import acknowledgement_policy, context, recovery_policy
+from kms_policy import acknowledgement_policy, context, recovery_policy, validate_custodian_roles
 from provenance import verify as verify_build
 
 LABEL = "custody-epoch"
@@ -61,7 +61,7 @@ def validate_roster(custodians, host):
         if (account in accounts or recovery == acknowledgement or arn(KEY_ARN, acknowledgement)[2] != account or
                 arn(ROLE_ARN, custodian["custodianRole"])[1] != account):
             raise ValueError("custody requires distinct accounts and a separate acknowledgment key per custodian")
-        recovery_policy(custodian["custodianRole"], custodian["retirementRole"])
+        validate_custodian_roles(custodian["custodianRole"], custodian["retirementRole"])
         accounts.add(account)
 
 
@@ -164,7 +164,8 @@ def check_recovery_key(key, expected_fingerprint):
 def open_share(custodian, receipt, index):
     key = custodian["recoveryKeyArn"]
     package = receipt["packages"][index - 1]
-    expected = recovery_policy(custodian["custodianRole"], custodian["retirementRole"])
+    custody = receipt["custody"]
+    expected = recovery_policy(custodian["custodianRole"], custodian["retirementRole"], custody["epoch"])
     installed = parse_json(kms(key, "get-key-policy", ["--policy-name", "default"])["Policy"])
     if installed != expected:
         raise ValueError("installed recovery key policy does not match the custodian role")
@@ -173,7 +174,6 @@ def open_share(custodian, receipt, index):
     share = base64.b64decode(key_result(key, "decrypt", [
         "--encryption-algorithm", "RSAES_OAEP_SHA_256", "--ciphertext-blob", capsule,
     ])["Plaintext"], validate=True)
-    custody = receipt["custody"]
     if len(share) != 41 or int.from_bytes(share[:8], "big") != int(custody["epoch"]) or share[8] != index:
         raise ValueError("share identity does not match the custody epoch and slot")
     commitment = hashlib.sha256(
@@ -270,19 +270,24 @@ def main():
     policy = commands.add_parser("policy")
     policy.add_argument("publisher")
     policy.add_argument("readers", nargs="+")
-    for name in ("recovery-policy", "acknowledgement-policy"):
-        key_policy = commands.add_parser(name)
-        key_policy.add_argument("custodian_role")
-        key_policy.add_argument("retirement_role")
+    recovery = commands.add_parser("recovery-policy")
+    recovery.add_argument("custodian_role")
+    recovery.add_argument("retirement_role")
+    recovery.add_argument("epoch")
+    acknowledgement = commands.add_parser("acknowledgement-policy")
+    acknowledgement.add_argument("custodian_role")
+    acknowledgement.add_argument("retirement_role")
     args = parser.parse_args()
     try:
         trust = read_json(args.trust)
         if args.command == "policy":
             print(canonical(ledger_policy(trust, args.publisher, args.readers)).decode())
             return
-        if args.command in {"recovery-policy", "acknowledgement-policy"}:
-            render = recovery_policy if args.command == "recovery-policy" else acknowledgement_policy
-            print(canonical(render(args.custodian_role, args.retirement_role)).decode())
+        if args.command == "recovery-policy":
+            print(canonical(recovery_policy(args.custodian_role, args.retirement_role, args.epoch)).decode())
+            return
+        if args.command == "acknowledgement-policy":
+            print(canonical(acknowledgement_policy(args.custodian_role, args.retirement_role)).decode())
             return
         if args.command == "draft":
             document = draft(trust, read_json(args.capture), args.build, args.host_role, read_json(args.roster))

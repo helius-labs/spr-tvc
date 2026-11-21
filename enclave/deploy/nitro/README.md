@@ -26,7 +26,7 @@ contains six entries with `recoveryKeyArn`, `acknowledgementKeyArn`,
 ```sh
 nitro=enclave/deploy/nitro
 python3 "$nitro/custody_ledger.py" trust.json policy "$publisher_role" "$reader_role" > ledger-policy.json
-python3 "$nitro/custody_ledger.py" trust.json recovery-policy "$custodian_role" "$retirement_role" > recovery-policy.json
+python3 "$nitro/custody_ledger.py" trust.json recovery-policy "$custodian_role" "$retirement_role" 1 > recovery-policy.json
 python3 "$nitro/custody_ledger.py" trust.json acknowledgement-policy "$custodian_role" "$retirement_role" > ack-policy.json
 ```
 
@@ -38,8 +38,11 @@ can make progress unavailable, for example by failing to publish. Readers
 verify two pinned approvals and six custodian acknowledgements even when
 reading directly from S3. Install each custodian's two policies at key creation
 with `--bypass-policy-lockout-safety-check`. Only the custodian role can decrypt
-with the recovery key or sign with the acknowledgement key. Governance reviewers can retrieve the recovery public key to verify its
-fingerprint. Grant the corresponding cross-account IAM permissions explicitly.
+with the recovery key or sign with the acknowledgement key. The recovery
+policy is sealed under its assigned epoch. Operators use six fresh recovery
+keys for the next epoch and keep acknowledgement keys available for verifying
+ledger history. Governance reviewers can retrieve the recovery public key to
+verify its fingerprint. Grant the corresponding cross-account IAM permissions.
 
 ## Commit a custody epoch
 

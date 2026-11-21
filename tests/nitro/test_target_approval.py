@@ -59,7 +59,7 @@ class TargetApprovalTests(unittest.TestCase):
         ]}
         _, policies, _ = target(self.trust, self.approval, self.receipt, self.custodians, self.build)
         self.policy = policies[0]
-        self.recovery_policy = recovery_policy(self.custodians[0]["custodianRole"], self.custodians[0]["retirementRole"])
+        self.recovery_policy = recovery_policy(self.custodians[0]["custodianRole"], self.custodians[0]["retirementRole"], "5")
         self.signed = signature_args(LABEL, self.manifest)
         self.calls = []
         self.policy_key = key(1, 2)
@@ -140,6 +140,19 @@ class TargetApprovalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "installed recovery key policy"):
             self.wrap()
         self.assertEqual(self.calls, ["verify", "verify", "describe-key", "get-key-policy", "get-key-policy"])
+
+    def test_rejects_a_recovery_key_sealed_for_another_epoch(self):
+        self.recovery_policy = recovery_policy(self.custodians[0]["custodianRole"], self.custodians[0]["retirementRole"], "4")
+        with self.assertRaisesRegex(ValueError, "installed recovery key policy"):
+            self.wrap()
+        self.assertNotIn("decrypt", self.calls)
+
+    def test_rechecks_expiration_after_the_destination_policy_is_verified(self):
+        with patch("wrap_share.time", return_value=self.manifest["expiresAt"]):
+            with self.assertRaisesRegex(ValueError, "expired before share release"):
+                self.wrap()
+        self.assertEqual(self.calls[-1], "get-key-policy")
+        self.assertNotIn("decrypt", self.calls)
 
     def test_rejects_corrupt_share_before_wrapping(self):
         original = self.share

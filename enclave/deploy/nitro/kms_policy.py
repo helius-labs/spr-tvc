@@ -8,6 +8,11 @@ import re
 from approval import ROLE_ARN, arn
 
 
+def validate_epoch(epoch):
+    if not isinstance(epoch, str) or not re.fullmatch(r"[1-9][0-9]{0,19}", epoch) or int(epoch) > 2**64-1:
+        raise ValueError("invalid custody epoch")
+
+
 def context(network, domain, release, epoch, share):
     if network not in {"devnet", "mainnet"}:
         raise ValueError("invalid network")
@@ -15,8 +20,7 @@ def context(network, domain, release, epoch, share):
         raise ValueError("invalid security domain")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", release) or share not in range(1, 7):
         raise ValueError("invalid release or share")
-    if not isinstance(epoch, str) or not re.fullmatch(r"[1-9][0-9]{0,19}", epoch) or int(epoch) > 2**64-1:
-        raise ValueError("invalid custody epoch")
+    validate_epoch(epoch)
     return {
         "purpose": "spr-note-share",
         "network": network,
@@ -49,21 +53,25 @@ def retirement(role):
                                         "kms:ScheduleKeyDeletion", "kms:CancelKeyDeletion"])
 
 
-def recovery_policy(custodian, key_admin):
+def validate_custodian_roles(custodian, key_admin):
     if custodian == key_admin or arn(ROLE_ARN, custodian)[1] != arn(ROLE_ARN, key_admin)[1]:
         raise ValueError("expected separate recovery and retirement roles in the custodian account")
+
+
+def recovery_policy(custodian, key_admin, epoch):
+    validate_custodian_roles(custodian, key_admin)
+    validate_epoch(epoch)
     return {"Version": "2012-10-17", "Statement": [
         seal(),
         deny("DenyOtherCustodian", "kms:Decrypt", Condition={"StringNotEquals": {"aws:PrincipalArn": custodian}}),
         retirement(key_admin),
         statement("ReadRecoveryPublicKey", "Allow", "*", "kms:GetPublicKey"),
-        allow("OpenRecoveryShare", custodian, ["kms:DescribeKey", "kms:GetKeyPolicy", "kms:Decrypt"]),
+        allow(f"OpenRecoveryShareEpoch{epoch}", custodian, ["kms:DescribeKey", "kms:GetKeyPolicy", "kms:Decrypt"]),
     ]}
 
 
 def acknowledgement_policy(custodian, key_admin):
-    if custodian == key_admin or arn(ROLE_ARN, custodian)[1] != arn(ROLE_ARN, key_admin)[1]:
-        raise ValueError("expected separate signing and retirement roles in the custodian account")
+    validate_custodian_roles(custodian, key_admin)
     return {"Version": "2012-10-17", "Statement": [
         seal(),
         deny("DenyOtherCustodian", "kms:Sign", Condition={"StringNotEquals": {"aws:PrincipalArn": custodian}}),
