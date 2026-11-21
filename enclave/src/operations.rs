@@ -3,7 +3,6 @@
 use axum::body::Body;
 use axum::http::Response;
 use axum::response::IntoResponse;
-use qos_p256::encrypt::P256EncryptPublic;
 use spr_tvc_protocol::constants::API_VERSION;
 use spr_tvc_protocol::decryption_service::{
     parse_service_request, service_request_digest, DecryptedOutputs, ServiceOperation,
@@ -13,7 +12,7 @@ use spr_tvc_protocol::types::ServiceInfo;
 
 use crate::cipher::open_ciphertexts;
 use crate::request::{open_envelope, respond, Failure};
-use crate::{http, keys, owner, Service};
+use crate::{http, owner, Service};
 
 pub(crate) fn handle(service: &Service, body: &[u8]) -> Response<Body> {
     match execute(service, body) {
@@ -28,14 +27,15 @@ fn execute(service: &Service, body: &[u8]) -> Result<String, Failure> {
     if !targets_release(&request, &service.info) {
         return Err(Failure::Invalid);
     }
-    let response_key = P256EncryptPublic::from_bytes(&request.client_response_public_key)
-        .map_err(|_| Failure::Invalid)?;
+    let response_key = service
+        .quorum
+        .response_key(&request.client_response_public_key)?;
 
     let request_digest = service_request_digest(&request).map_err(|_| Failure::Invalid)?;
     let result = match &request.operation {
         ServiceOperation::PublicKeys { address } => {
             let address = owner::address_key(address)?.to_bytes();
-            let keys = keys::for_address(&service.quorum, &address);
+            let keys = service.note_seed.for_address(&address);
             ServiceResult::PublicKeys {
                 viewing_public_key: *keys.viewing.pubkey().as_bytes(),
                 nullifier_public_key: keys.nullifier.pubkey().map_err(|_| Failure::Unavailable)?,
@@ -48,7 +48,7 @@ fn execute(service: &Service, body: &[u8]) -> Result<String, Failure> {
         } => {
             let address =
                 owner::verify_decrypt(signer, signature, service.info.network, &request_digest)?;
-            let keys = keys::for_address(&service.quorum, &address);
+            let keys = service.note_seed.for_address(&address);
             let plaintexts = open_ciphertexts(&keys.viewing, items)?;
             ServiceResult::Decrypt(DecryptedOutputs {
                 nullifier_secret: *keys.nullifier.secret(),

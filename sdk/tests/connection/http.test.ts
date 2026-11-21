@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { fetchWithSignal, readBoundedText } from "./http.js";
+import { fetchWithSignal, readBoundedText } from "../../src/connection/http.js";
 
 it("stops a stalled response body even if stream cancellation never resolves", async () => {
   const controller = new AbortController();

@@ -1,15 +1,15 @@
 import { p256 } from "@noble/curves/p256";
 import { describe, expect, it, vi } from "vitest";
 
-import { signP256Message } from "../crypto/p256.js";
-import { qosEncrypt } from "../crypto/qos.js";
-import { API_VERSION, TVC_APP_PROOF_SCHEME } from "../protocol/constants.js";
-import { SERVICE_PROOF_TYPE } from "../protocol/decryption.js";
-import { resultDigest } from "../protocol/digest.js";
-import { encodeLowerHex } from "../protocol/hex.js";
-import { canonicalizeJsonValue } from "../protocol/jcs.js";
-import type { ConnectedTvcRuntime } from "./connect.js";
-import { sealedExchange, type Exchange } from "./operations.js";
+import { signP256Message } from "../../src/crypto/p256.js";
+import { qosEncrypt } from "../../src/crypto/qos.js";
+import { API_VERSION, TVC_APP_PROOF_SCHEME } from "../../src/protocol/constants.js";
+import { SERVICE_PROOF_TYPE } from "../../src/protocol/decryption.js";
+import { resultDigest } from "../../src/protocol/digest.js";
+import { encodeLowerHex } from "../../src/protocol/hex.js";
+import { canonicalizeJsonValue } from "../../src/protocol/jcs.js";
+import type { ConnectedTvcRuntime } from "../../src/connection/connect.js";
+import { sealedExchange, type Exchange } from "../../src/connection/operations.js";
 
 const bytes = (value: number) => new Uint8Array(32).fill(value);
 const signing = bytes(1);

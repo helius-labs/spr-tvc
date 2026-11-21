@@ -42,7 +42,7 @@ pub fn service() -> Service {
     let info = release.service_info(
         sha256(testkit.manifest_label.as_bytes()),
         sha256(testkit.executable_label.as_bytes()),
-        &quorum,
+        quorum.public_key().to_bytes(),
     );
     Service::new(info, ephemeral, quorum)
 }

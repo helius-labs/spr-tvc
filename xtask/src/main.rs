@@ -1,3 +1,4 @@
+mod nitro;
 mod policy;
 mod stage;
 mod tools;
@@ -227,6 +228,11 @@ fn run(args: &Args) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    let mut command = std::env::args_os();
+    if command.nth(1).is_some_and(|phase| phase == "nitro-sign") {
+        let args = nitro::Args::parse_from(std::iter::once("nitro-sign".into()).chain(command));
+        return nitro::sign(args);
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .context("missing workspace root")?;

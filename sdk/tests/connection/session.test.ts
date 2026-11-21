@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
-import type { ConnectedTvcRuntime } from "./connect.js";
-import { sessionFromConnector } from "./session.js";
+import type { ConnectedTvcRuntime } from "../../src/connection/connect.js";
+import { sessionFromConnector } from "../../src/connection/session.js";
 function runtime(label: string, nowMs: () => bigint = () => 1n): ConnectedTvcRuntime {
   return {
     backend: { endpoint: new URL("https://tvc.example") },

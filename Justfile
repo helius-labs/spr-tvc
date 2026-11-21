@@ -30,6 +30,9 @@ setup:
 build-ts:
     {{pnpm}} build:ts
 
+build-local-binary:
+    cargo build --locked --release -p spr-tvc-decryption-service --features local-dev --bin spr-tvc-decryption-service-local
+
 # Send, claim and sweep on a fresh localnet. See tests/README.md.
 headless-e2e port_offset="200": setup build-ts
     bash tests/localnet.sh "$1" bash tests/with-local-decryption.sh {{pnpm}} --filter spr-tvc-typescript-client-example example

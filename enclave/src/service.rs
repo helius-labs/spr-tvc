@@ -1,9 +1,9 @@
 //! QOS startup, discovery, and HTTP routing.
 
-use std::fs;
 use std::io;
-use std::path::Path;
 use std::sync::Arc;
+#[cfg(feature = "qos-runtime")]
+use std::{fs, path::Path};
 
 use axum::body::{to_bytes, Body};
 use axum::extract::State;
@@ -11,8 +11,12 @@ use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, Response};
 use axum::response::IntoResponse;
 use axum::Router;
-use qos_core::protocol::services::boot::manifest::{canonical_json_hash, ManifestEnvelopeV2};
-use qos_core::{EPHEMERAL_KEY_FILE, MANIFEST_FILE, QUORUM_FILE};
+#[cfg(feature = "qos-runtime")]
+use qos_core::{
+    protocol::services::boot::manifest::{canonical_json_hash, ManifestEnvelopeV2},
+    EPHEMERAL_KEY_FILE, MANIFEST_FILE, QUORUM_FILE,
+};
+#[cfg(any(feature = "qos-runtime", feature = "local-dev", test))]
 use qos_p256::P256Pair;
 use spr_tvc_protocol::constants::{
     API_VERSION, MAX_ENCRYPTED_REQUEST_BYTES, TVC_APP_PROOF_SCHEME, TVC_QOS_PING_PROOF_TYPE,
@@ -24,26 +28,35 @@ use spr_tvc_protocol::types::{
 };
 
 use crate::http::{self, PublicError};
+use crate::keys::NoteSeed;
+use crate::operations;
 use crate::request::sign_ephemeral_low_s;
-use crate::{operations, Release};
+use crate::wire::KeyPair;
+#[cfg(feature = "qos-runtime")]
+use crate::Release;
 
 /// A running release: what it advertises and the QOS keys it answers with.
 pub struct Service {
     pub(crate) info: ServiceInfo,
-    pub(crate) ephemeral: P256Pair,
-    pub(crate) quorum: P256Pair,
+    pub(crate) ephemeral: KeyPair,
+    pub(crate) quorum: KeyPair,
+    pub(crate) note_seed: NoteSeed,
 }
 
 impl Service {
+    #[cfg(any(feature = "local-dev", feature = "qos-runtime", test))]
     pub(crate) fn new(info: ServiceInfo, ephemeral: P256Pair, quorum: P256Pair) -> Self {
+        let note_seed = NoteSeed::from_quorum(&quorum);
         Self {
             info,
-            ephemeral,
-            quorum,
+            ephemeral: KeyPair::Qos(ephemeral),
+            quorum: KeyPair::Qos(quorum),
+            note_seed,
         }
     }
 
     /// Loads the QOS keys from the canonical paths and binds discovery to the approved manifest.
+    #[cfg(feature = "qos-runtime")]
     pub fn load(release: Release) -> io::Result<Self> {
         Self::load_from(
             release,
@@ -53,6 +66,7 @@ impl Service {
         )
     }
 
+    #[cfg(feature = "qos-runtime")]
     fn load_from(
         release: Release,
         ephemeral_path: &Path,
@@ -71,8 +85,11 @@ impl Service {
                 "QOS quorum key does not match the approved manifest",
             ));
         }
-        let info =
-            release.service_info(canonical_json_hash(&manifest), manifest.pivot.hash, &quorum);
+        let info = release.service_info(
+            canonical_json_hash(&manifest),
+            manifest.pivot.hash,
+            quorum.public_key().to_bytes(),
+        );
         Ok(Self::new(info, ephemeral, quorum))
     }
 }
@@ -81,7 +98,10 @@ pub(crate) fn router(service: Arc<Service>) -> Router {
     Router::new().fallback(dispatch).with_state(service)
 }
 
-async fn dispatch(State(service): State<Arc<Service>>, request: Request<Body>) -> Response<Body> {
+pub(crate) async fn dispatch(
+    State(service): State<Arc<Service>>,
+    request: Request<Body>,
+) -> Response<Body> {
     let (parts, body) = request.into_parts();
     let body_limit = usize::try_from(
         service
@@ -159,7 +179,7 @@ fn handle_ping(service: &Service, body: &[u8]) -> Response<Body> {
         version: API_VERSION,
         tvc_app_proof: AppProof {
             scheme: TVC_APP_PROOF_SCHEME.to_owned(),
-            public_key: service.ephemeral.public_key().to_bytes(),
+            public_key: service.ephemeral.public_bytes(),
             proof_payload: proof_payload.to_owned(),
             signature,
         },
@@ -189,6 +209,6 @@ pub async fn serve(listener: tokio::net::TcpListener, service: Service) -> io::R
 #[path = "../tests/unit/http_and_ping.rs"]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "qos-runtime"))]
 #[path = "../tests/unit/qos_startup.rs"]
 mod startup_tests;

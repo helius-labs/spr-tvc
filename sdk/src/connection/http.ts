@@ -33,7 +33,7 @@ export async function readBoundedText(response: Response, maxBytes: bigint, sign
 }
 
 /** Reads an untrusted response body as bytes, refusing more than `maxBytes`. */
-async function readBoundedBytes(
+export async function readBoundedBytes(
   response: Response,
   maxBytes: bigint,
   signal?: AbortSignal,

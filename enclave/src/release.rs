@@ -1,6 +1,5 @@
 //! What a release is, and what it advertises at `/v1/info`.
 
-use qos_p256::P256Pair;
 use spr_tvc_protocol::constants::{
     API_VERSION, MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES,
 };
@@ -61,7 +60,7 @@ impl Release {
         self,
         manifest_digest: [u8; 32],
         executable_digest: [u8; 32],
-        quorum: &P256Pair,
+        quorum_public_key: Vec<u8>,
     ) -> ServiceInfo {
         ServiceInfo {
             version: API_VERSION,
@@ -70,7 +69,7 @@ impl Release {
             release_id: self.release_id,
             manifest_digest,
             executable_digest,
-            quorum_public_key: quorum.public_key().to_bytes(),
+            quorum_public_key,
             quorum_key_id: self.quorum_key_id,
             quorum_key_epoch: self.quorum_key_epoch,
             supported_operations: vec![
@@ -84,12 +83,12 @@ impl Release {
     }
 }
 
-fn security_domain_id(value: &str) -> Result<[u8; 32], String> {
+pub(crate) fn security_domain_id(value: &str) -> Result<[u8; 32], String> {
     decode_lower_hex_array(value)
         .map_err(|_| "must be exactly 32 bytes of lowercase unprefixed hex".to_owned())
 }
 
-fn nonempty(value: &str) -> Result<String, String> {
+pub(crate) fn nonempty(value: &str) -> Result<String, String> {
     if value.is_empty() {
         Err("must not be empty".to_owned())
     } else {

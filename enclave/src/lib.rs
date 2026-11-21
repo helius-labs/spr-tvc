@@ -2,11 +2,23 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(not(any(
+    feature = "qos-runtime",
+    feature = "local-dev",
+    all(feature = "native-nitro", target_os = "linux"),
+    test
+)))]
+compile_error!("select a supported enclave runtime");
+
 mod cipher;
 mod http;
 mod keys;
 #[cfg(feature = "local-dev")]
 mod local;
+#[cfg(all(feature = "native-nitro", target_os = "linux"))]
+mod native_crypto;
+#[cfg(all(feature = "native-nitro", target_os = "linux"))]
+pub mod nitro;
 mod operations;
 mod owner;
 mod release;
@@ -21,3 +33,5 @@ pub use service::{serve, Service};
 #[cfg(test)]
 #[path = "../tests/support/mod.rs"]
 mod testing;
+
+mod wire;

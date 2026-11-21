@@ -44,11 +44,11 @@ fn loads_hosted_qos_manifest_and_reports_its_digests() {
     assert_eq!(service.info.executable_digest, [0x55; 32]);
     assert_eq!(
         service.info.quorum_public_key,
-        service.quorum.public_key().to_bytes()
+        service.quorum.public_bytes()
     );
     let expected = P256Pair::from_master_seed(&[EPHEMERAL_SEED; 32].into()).unwrap();
     assert_eq!(
-        service.ephemeral.public_key().to_bytes(),
+        service.ephemeral.public_bytes(),
         expected.public_key().to_bytes()
     );
 }

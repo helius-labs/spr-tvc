@@ -2,9 +2,9 @@ import { NullifierKey, ShieldedAddress, ShieldedPublicKey, initializePoseidon, t
 import { X25519Keypair, type Bytes31 } from "@heliuslabs/spr/keypair";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
-import { encodeLowerHex } from "../protocol/hex.js";
-import type { DecryptItem } from "../protocol/types.js";
-import { ServiceKeys } from "./keys.js";
+import { encodeLowerHex } from "../../src/protocol/hex.js";
+import type { DecryptItem } from "../../src/protocol/types.js";
+import { ServiceKeys } from "../../src/client/keys.js";
 
 const proofs = { prove: vi.fn(), proveMerge: vi.fn() };
 const bytes = (fill: number, length = 32) => new Uint8Array(length).fill(fill);

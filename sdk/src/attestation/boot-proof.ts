@@ -12,10 +12,13 @@ import {
   decodeCbor,
 } from "./cbor.js";
 import {
-  type CoseSign1,
   type TurnkeyBootProofWire,
   verifyTurnkeyAwsAttestation,
 } from "./turnkey.js";
+
+import { verifyAwsNitroAttestation, type CoseSign1 } from "./aws-nitro.js";
+import { parseQosP256Public } from "../crypto/qos.js";
+import type { NitroPcrs } from "./nitro-policy.js";
 
 const QOS_LIVE_MANIFEST_PCR_COMMITMENT_DOMAIN = "qos-live-manifest-pcr-commitment-v1";
 const QOS_LIVE_MANIFEST_COMMITMENT_PCR_INDEX = 17;
@@ -44,6 +47,7 @@ type AwsNitroAttestationDocument = Map<string | number, CborValue>;
 
 type DecodedBootProof = {
   coseSign1: CoseSign1;
+  unprotected: CborValue | undefined;
   attestation: AwsNitroAttestationDocument;
   certificate: Uint8Array;
   cabundle: Uint8Array[];
@@ -81,6 +85,39 @@ export async function verifyBootProof(input: VerifyBootProofInput): Promise<void
   }
 }
 
+/** Verifies fresh native Nitro evidence with PCRs pinned independently of the endpoint. */
+export async function verifyNativeNitroEvidence(
+  document: Uint8Array,
+  nonce: Uint8Array,
+  discoveryBinding: Uint8Array,
+  expectedPcrs: NitroPcrs,
+  nowMs: bigint,
+): Promise<string> {
+  try {
+    const decoded = decodeAttestation(document);
+    const attestation = decoded.attestation;
+    validateAwsAttestationShape(attestation);
+    assertAttestationFreshness(attestation, nowMs);
+    const timestamp = BigInt(attestation.get("timestamp") as number);
+    if (!(decoded.unprotected instanceof Map) || decoded.unprotected.size !== 0 ||
+      nowMs - timestamp > MAX_CLOCK_SKEW_MS ||
+      !bytesEqual(nonce, asBytes(attestation.get("nonce"))) ||
+      !bytesEqual(discoveryBinding, asBytes(attestation.get("user_data")))) {
+      throw new DecryptionServiceError("BootProofUnverified");
+    }
+    verifyIdentityPcrs(attestation, expectedPcrs);
+    const publicKey = asBytes(attestation.get("public_key"));
+    if (publicKey.length !== QOS_EPHEMERAL_PUBLIC_KEY_LENGTH) {
+      throw new DecryptionServiceError("BootProofUnverified");
+    }
+    parseQosP256Public(publicKey);
+    await verifyAwsNitroAttestation(decoded.coseSign1, decoded.certificate, decoded.cabundle, Number(nowMs));
+    return encodeLowerHex(publicKey);
+  } catch {
+    throw new DecryptionServiceError("BootProofUnverified");
+  }
+}
+
 export function computeQosLiveManifestCommitmentPcr(
   manifestDigest: Uint8Array,
   ephemeralPublicKey: Uint8Array,
@@ -103,11 +140,15 @@ export function computeQosLiveManifestCommitmentPcr(
 }
 
 function decodeBootProof(bootProof: TurnkeyBootProofWire): DecodedBootProof {
-  const decodedCose = decodeCbor(decodeBase64(bootProof.awsAttestationDocB64));
+  return decodeAttestation(decodeBase64(bootProof.awsAttestationDocB64));
+}
+
+function decodeAttestation(document: Uint8Array): DecodedBootProof {
+  const decodedCose = decodeCbor(document);
   if (!Array.isArray(decodedCose) || decodedCose.length !== 4) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
-  const [protectedHeaders, , payload, signature] = decodedCose;
+  const [protectedHeaders, unprotected, payload, signature] = decodedCose;
   const coseSign1: CoseSign1 = {
     protectedHeaders: asBytes(protectedHeaders),
     payload: asBytes(payload),
@@ -122,10 +163,10 @@ function decodeBootProof(bootProof: TurnkeyBootProofWire): DecodedBootProof {
   if (!Array.isArray(cabundle) || cabundle.length === 0) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
-  return { coseSign1, attestation: decoded, certificate, cabundle: cabundle.map(asBytes) };
+  return { coseSign1, unprotected, attestation: decoded, certificate, cabundle: cabundle.map(asBytes) };
 }
 
-function validateAttestationShape(attestation: AwsNitroAttestationDocument): void {
+function validateAwsAttestationShape(attestation: AwsNitroAttestationDocument): void {
   const moduleId = attestation.get("module_id");
   if (typeof moduleId !== "string" || moduleId.length === 0) {
     throw new DecryptionServiceError("BootProofUnverified");
@@ -137,6 +178,10 @@ function validateAttestationShape(attestation: AwsNitroAttestationDocument): voi
   if (typeof timestamp !== "number" || !Number.isSafeInteger(timestamp) || timestamp <= 0) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
+}
+
+function validateAttestationShape(attestation: AwsNitroAttestationDocument): void {
+  validateAwsAttestationShape(attestation);
   const nonce = attestation.get("nonce");
   if (nonce !== null && nonce !== undefined) {
     throw new DecryptionServiceError("BootProofUnverified");
@@ -201,16 +246,20 @@ function verifyProofBindings(
     throw new DecryptionServiceError("BootProofUnverified");
   }
 
-  for (const index of [0, 1, 2, 3] as const) {
-    const expected = decodeFixedLowerHex(input.expectedPcrs[index], SHA384_LEN);
-    if (!bytesEqual(expected, getPcr(attestation, index))) {
-      throw new DecryptionServiceError("BootProofUnverified");
-    }
-  }
+  verifyIdentityPcrs(attestation, input.expectedPcrs);
 
   const expectedLivePcr = computeQosLiveManifestCommitmentPcr(manifestDigest, attestedPublicKey);
   if (!bytesEqual(expectedLivePcr, getPcr(attestation, QOS_LIVE_MANIFEST_COMMITMENT_PCR_INDEX))) {
     throw new DecryptionServiceError("BootProofUnverified");
+  }
+}
+
+function verifyIdentityPcrs(attestation: AwsNitroAttestationDocument, expectedPcrs: QosIdentityPcrs): void {
+  for (const index of [0, 1, 2, 3] as const) {
+    const expected = decodeFixedLowerHex(expectedPcrs[index], SHA384_LEN);
+    if (!bytesEqual(expected, getPcr(attestation, index))) {
+      throw new DecryptionServiceError("BootProofUnverified");
+    }
   }
 }
 

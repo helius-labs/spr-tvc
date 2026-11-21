@@ -22,6 +22,33 @@ jobs:
           node-version: "24"
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
       - run: just ci
+      - name: Check native KMS policy and provisioning
+        run: python3 -B -m unittest discover -s tests/nitro
+      - name: Build native Nitro service
+        env:
+          SPR_NETWORK: devnet
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends musl-tools
+          cargo build --locked --release --manifest-path enclave/native/Cargo.toml --target x86_64-unknown-linux-musl
+          cargo tree --locked --manifest-path enclave/native/Cargo.toml --target x86_64-unknown-linux-musl -e normal > "$RUNNER_TEMP/native-graph"
+          if grep -Eq 'qos_(core|p256)|tokio v1\.48|crypto-bigint v0\.[56]\.' "$RUNNER_TEMP/native-graph"; then
+            exit 1
+          fi
+      - run: just build-local-binary
+      - name: Package Linux loopback binary
+        run: |
+          mkdir -p dist
+          tar -C target/release -czf dist/spr-tvc-local-linux-x86_64.tar.gz spr-tvc-decryption-service-local
+          cd dist
+          sha256sum spr-tvc-local-linux-x86_64.tar.gz > spr-tvc-local-linux-x86_64.tar.gz.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: spr-tvc-local-linux-x86_64
+          path: dist/spr-tvc-local-linux-x86_64.tar.gz*
+          if-no-files-found: error
 
   enclave-image:
     name: ${{ matrix.check }}

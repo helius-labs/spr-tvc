@@ -1,11 +1,11 @@
 import { p256 } from "@noble/curves/p256";
 import { describe, expect, it } from "vitest";
 
-import { policySigningDigest, verifySignedReleasePolicy } from "../attestation/release-policy.js";
-import { signP256Prehash } from "../crypto/p256.js";
-import { encodeLowerHex } from "./hex.js";
-import { bindMainnetRelease, releaseForConnection, type MainnetTrust } from "./releases.js";
-import type { ReleasePolicy, SignedReleasePolicy } from "./types.js";
+import { policySigningDigest, verifySignedReleasePolicy } from "../../src/attestation/release-policy.js";
+import { signP256Prehash } from "../../src/crypto/p256.js";
+import { encodeLowerHex } from "../../src/protocol/hex.js";
+import { bindMainnetRelease, releaseForConnection, type MainnetTrust } from "../../src/protocol/releases.js";
+import type { ReleasePolicy, SignedReleasePolicy } from "../../src/protocol/types.js";
 
 const now = 1_800_000_000_000n;
 const secrets = [new Uint8Array(32).fill(1), new Uint8Array(32).fill(2)];

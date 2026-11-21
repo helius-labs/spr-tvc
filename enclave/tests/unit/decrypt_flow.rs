@@ -37,7 +37,8 @@ fn other(network: Network) -> Network {
 fn service_with_quorum_seed(quorum_seed: u8) -> Service {
     let quorum = P256Pair::from_master_seed(&Zeroizing::new([quorum_seed; 32])).unwrap();
     let ephemeral = P256Pair::generate().unwrap();
-    let info = testing::release().service_info([0x22; 32], [0x33; 32], &quorum);
+    let info =
+        testing::release().service_info([0x22; 32], [0x33; 32], quorum.public_key().to_bytes());
     Service::new(info, ephemeral, quorum)
 }
 
@@ -68,7 +69,7 @@ fn envelope(service: &Service, request: &ServiceRequest) -> EncryptedRequest {
 /// Opens an answer as a client does.
 fn open(service: &Service, request: &ServiceRequest, response: &str) -> ServiceResult {
     let (payload, plaintext) = testing::open_response(
-        &service.ephemeral.public_key().to_bytes(),
+        &service.ephemeral.public_bytes(),
         response,
         &RESPONSE_SECRET,
     );

@@ -6,7 +6,7 @@ import type { BootProofResolver } from "../connection/backend.js";
 import { requestScope, type DecryptionServiceRequestOptions } from "../connection/request.js";
 import { createDecryptionServiceSession, type DecryptionServiceSession } from "../connection/session.js";
 import type { DecryptionServiceTransport } from "../connection/http.js";
-import { DecryptionServiceHttpError } from "../protocol/error.js";
+import { DecryptionServiceError, DecryptionServiceHttpError } from "../protocol/error.js";
 import { requireHex } from "../protocol/hex.js";
 import { requireNetwork } from "../protocol/network.js";
 import { releaseForConnection, type ReleaseTrust } from "../protocol/releases.js";
@@ -68,7 +68,10 @@ export function decryptionServiceFromSession(
     try {
       return await executeServiceCall(context, operation, signal);
     } catch (error) {
-      if (error instanceof DecryptionServiceHttpError && error.status !== 429) session.forget(context);
+      if ((error instanceof DecryptionServiceHttpError && error.status !== 429) ||
+          (error instanceof DecryptionServiceError && error.code === "EndpointUnavailable")) {
+        session.forget(context);
+      }
       throw error;
     }
   }

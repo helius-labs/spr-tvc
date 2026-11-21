@@ -1,3 +1,4 @@
+use qos_p256::P256Pair;
 use zeroize::Zeroizing;
 
 use super::*;
@@ -10,7 +11,13 @@ fn qos_signatures_are_normalized_to_low_s_for_the_wire() {
         let raw = pair.sign(message).unwrap();
         let raw = Signature::from_slice(&raw).unwrap();
         if raw.normalize_s() != raw {
-            let normalized = sign_ephemeral_low_s(&pair, message).unwrap();
+            let normalized = sign_ephemeral_low_s(
+                &KeyPair::Qos(
+                    P256Pair::from_master_seed(&Zeroizing::new([seed_byte; 32])).unwrap(),
+                ),
+                message,
+            )
+            .unwrap();
             let normalized = Signature::from_slice(&normalized).unwrap();
             assert_eq!(normalized.normalize_s(), normalized);
             pair.public_key()
@@ -26,7 +33,7 @@ fn qos_signatures_are_normalized_to_low_s_for_the_wire() {
 fn an_encrypted_result_must_fit_the_response_ceiling() {
     use spr_tvc_protocol::decryption_service::{DecryptedOutputs, ServiceOperation};
 
-    let pair = P256Pair::generate().unwrap();
+    let pair = KeyPair::Qos(P256Pair::generate().unwrap());
     let request = ServiceRequest {
         version: API_VERSION,
         request_id: [1; 32],
@@ -42,7 +49,7 @@ fn an_encrypted_result_must_fit_the_response_ceiling() {
             items: Vec::new(),
         },
     };
-    let response_key = P256EncryptPublic::from_bytes(&pair.public_key().to_bytes()[..65]).unwrap();
+    let response_key = pair.response_key(&pair.public_bytes()[..65]).unwrap();
     let oversized = ServiceResult::Decrypt(DecryptedOutputs {
         nullifier_secret: [0; 31],
         plaintexts: vec![vec![0; MAX_ENCRYPTED_RESPONSE_BYTES as usize / 2]],

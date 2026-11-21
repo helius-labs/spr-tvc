@@ -9,7 +9,7 @@ use super::*;
 use crate::release::NETWORK;
 
 fn info(quorum: &P256Pair) -> ServiceInfo {
-    crate::testing::release().service_info([0x22; 32], [0x33; 32], quorum)
+    crate::testing::release().service_info([0x22; 32], [0x33; 32], quorum.public_key().to_bytes())
 }
 
 fn app(quorum: P256Pair, ephemeral: P256Pair) -> Router {

@@ -4,15 +4,16 @@ import { NullifierKey, ViewingKey, initializePoseidon } from "@heliuslabs/spr";
 import type { Bytes16, Bytes31 } from "@heliuslabs/spr/keypair";
 import { expect, it, vi } from "vitest";
 
-import type { ConnectedTvcRuntime } from "../connection/connect.js";
-import { awaitWithSignal } from "../connection/request.js";
-import { sessionFromConnector } from "../connection/session.js";
-import { qosDecrypt } from "../crypto/qos.js";
-import { decodeLowerHex, encodeLowerHex } from "../protocol/hex.js";
-import type { ServiceInfo } from "../protocol/types.js";
-import * as exchange from "./exchange.js";
-import { decryptionServiceFromSession } from "./decryption.js";
-import type { ServiceRequest } from "../protocol/decryption.js";
+import type { ConnectedTvcRuntime } from "../../src/connection/connect.js";
+import { awaitWithSignal } from "../../src/connection/request.js";
+import { sessionFromConnector } from "../../src/connection/session.js";
+import { qosDecrypt } from "../../src/crypto/qos.js";
+import { decodeLowerHex, encodeLowerHex } from "../../src/protocol/hex.js";
+import { DecryptionServiceError } from "../../src/protocol/error.js";
+import type { ServiceInfo } from "../../src/protocol/types.js";
+import * as exchange from "../../src/client/exchange.js";
+import { decryptionServiceFromSession } from "../../src/client/decryption.js";
+import type { ServiceRequest } from "../../src/protocol/decryption.js";
 
 const ownerAddress = address("11111111111111111111111111111111");
 
@@ -58,6 +59,19 @@ it("asks for an address's keys from the release it verified", async () => {
   expect(forget).toHaveBeenCalledWith(context);
 });
 
+
+it("discards a disconnected native endpoint and reconnects on the next call", async () => {
+  const { context, fetch } = fixture();
+  fetch.mockRejectedValueOnce(new DecryptionServiceError("EndpointUnavailable"));
+  const connect = vi.fn(async () => context);
+  const service = decryptionServiceFromSession(sessionFromConnector(connect));
+
+  await expect(service.address(ownerAddress)).rejects.toMatchObject({ code: "EndpointUnavailable" });
+  expect(fetch).toHaveBeenCalledOnce();
+  await expect(service.address(ownerAddress)).rejects.toMatchObject({ code: "OperationUnavailable" });
+  expect(connect).toHaveBeenCalledTimes(2);
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
 
 it("checks the serialized request ceiling before asking for a signature or sending bytes", async () => {
   const { context, fetch } = fixture();

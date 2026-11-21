@@ -4,8 +4,6 @@ use axum::body::Body;
 use axum::http::Response;
 use axum::response::IntoResponse;
 use p256::ecdsa::Signature;
-use qos_p256::encrypt::P256EncryptPublic;
-use qos_p256::P256Pair;
 use spr_tvc_protocol::constants::{
     API_VERSION, MAX_ENCRYPTED_RESPONSE_BYTES, TVC_APP_PROOF_SCHEME,
 };
@@ -18,6 +16,7 @@ use spr_tvc_protocol::types::{
 use zeroize::Zeroizing;
 
 use crate::http::PublicError;
+use crate::wire::{KeyPair, ResponseKey};
 
 /// Why a request got no result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +40,7 @@ impl IntoResponse for Failure {
 /// Opens a request's envelope and returns its canonical JSON plaintext.
 pub(crate) fn open_envelope(
     info: &ServiceInfo,
-    quorum: &P256Pair,
+    quorum: &KeyPair,
     body: &[u8],
 ) -> Result<Zeroizing<String>, Failure> {
     let body = std::str::from_utf8(body).map_err(|_| Failure::Invalid)?;
@@ -52,11 +51,7 @@ pub(crate) fn open_envelope(
     {
         return Err(Failure::Invalid);
     }
-    let plaintext = Zeroizing::new(
-        quorum
-            .decrypt(&encrypted.ciphertext)
-            .map_err(|_| Failure::Invalid)?,
-    );
+    let plaintext = quorum.decrypt(&encrypted.ciphertext)?;
     let plaintext = std::str::from_utf8(&plaintext).map_err(|_| Failure::Invalid)?;
     if !is_rfc8785(plaintext) {
         return Err(Failure::Invalid);
@@ -66,10 +61,10 @@ pub(crate) fn open_envelope(
 
 /// Encrypts `result` to the response key under an App Proof the Ephemeral key signs.
 pub(crate) fn respond(
-    ephemeral: &P256Pair,
+    ephemeral: &KeyPair,
     request: &ServiceRequest,
     request_digest: [u8; 32],
-    response_key: &P256EncryptPublic,
+    response_key: &ResponseKey,
     result: &ServiceResult,
 ) -> Result<String, Failure> {
     let plaintext = Zeroizing::new(jcs_serialize(result).map_err(|_| Failure::Unavailable)?);
@@ -96,7 +91,7 @@ pub(crate) fn respond(
         encrypted_result,
         tvc_app_proof: AppProof {
             scheme: TVC_APP_PROOF_SCHEME.to_owned(),
-            public_key: ephemeral.public_key().to_bytes(),
+            public_key: ephemeral.public_bytes(),
             proof_payload,
             signature,
         },
@@ -105,10 +100,10 @@ pub(crate) fn respond(
 }
 
 pub(crate) fn sign_ephemeral_low_s(
-    ephemeral: &P256Pair,
+    ephemeral: &KeyPair,
     message: &[u8],
 ) -> Result<Vec<u8>, Failure> {
-    let raw = ephemeral.sign(message).map_err(|_| Failure::Unavailable)?;
+    let raw = ephemeral.sign(message)?;
     let signature = Signature::from_slice(&raw).map_err(|_| Failure::Unavailable)?;
     Ok(signature.normalize_s().to_bytes().to_vec())
 }

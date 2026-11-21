@@ -1,6 +1,7 @@
 //! The service keys of an address.
 
 use hkdf::Hkdf;
+#[cfg(any(feature = "local-dev", feature = "qos-runtime", test))]
 use qos_p256::P256Pair;
 use sha2::Sha256;
 use spr_keypair::{NullifierKey, ViewingKey};
@@ -9,14 +10,25 @@ use zeroize::Zeroizing;
 
 const VIEWING_KEY_LABEL: &[u8] = b"TSPP/decryption-service/view_key/x25519/v1";
 const NULLIFIER_KEY_LABEL: &[u8] = b"TSPP/decryption-service/nf_key/v1";
+#[cfg(any(feature = "local-dev", feature = "qos-runtime", test))]
 const MASTER_SEED_LABEL: &[u8] = b"TSPP/decryption-service/seed/v1";
 
 const MASTER_SEED_LEN: usize = 32;
 
-pub(crate) fn for_address(quorum: &P256Pair, address: &[u8; ADDRESS_LEN]) -> ServiceKeys {
-    derive(&master_seed(quorum), address)
+pub(crate) struct NoteSeed(pub(crate) Zeroizing<[u8; MASTER_SEED_LEN]>);
+
+impl NoteSeed {
+    #[cfg(any(feature = "local-dev", feature = "qos-runtime", test))]
+    pub(crate) fn from_quorum(quorum: &P256Pair) -> Self {
+        Self(master_seed(quorum))
+    }
+
+    pub(crate) fn for_address(&self, address: &[u8; ADDRESS_LEN]) -> ServiceKeys {
+        derive(&self.0, address)
+    }
 }
 
+#[cfg(any(feature = "local-dev", feature = "qos-runtime", test))]
 fn master_seed(quorum: &P256Pair) -> Zeroizing<[u8; MASTER_SEED_LEN]> {
     let mut seed = Zeroizing::new([0u8; MASTER_SEED_LEN]);
     Hkdf::<Sha256>::new(None, quorum.to_master_seed().as_slice())

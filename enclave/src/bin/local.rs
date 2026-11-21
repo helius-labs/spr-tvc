@@ -19,6 +19,12 @@ struct Cli {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let cli = Cli::parse();
+    if !cli.host.is_loopback() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the local decryption service requires a loopback address",
+        ));
+    }
     let listener = tokio::net::TcpListener::bind(SocketAddr::new(cli.host, cli.port)).await?;
     let address = listener.local_addr()?;
     eprintln!(
