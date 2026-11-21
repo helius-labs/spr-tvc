@@ -29,7 +29,7 @@ function signedPolicy(overrides: Partial<NitroPolicy> = {}) {
     targets: [{
       endpoint: "https://replica.example.com/",
       releaseId: "nitro-2",
-      custodyEpoch: "1",
+      custodyEpoch: "1", custodyDigest: "99".repeat(32),
       executableSha256: "77".repeat(32),
       pcrs: { 0: "11".repeat(48), 1: "22".repeat(48), 2: "33".repeat(48), 3: "44".repeat(48) },
     }],
@@ -41,12 +41,12 @@ function signedPolicy(overrides: Partial<NitroPolicy> = {}) {
   })) });
 }
 
-function attestedDiscovery() {
+function attestedDiscovery(custodyDigest = "99".repeat(32)) {
   const pair = trust.keys.join("");
   const executable = "77".repeat(32);
   const identity = sha256(Uint8Array.from([
     ...new TextEncoder().encode("SPR/native-nitro/release/v1"),
-    ...requireHex(executable, 32), ...requireHex(trust.noteSeedCommitment, 32),
+    ...requireHex(executable, 32), ...requireHex(trust.noteSeedCommitment, 32), ...requireHex(custodyDigest, 32),
   ]));
   vi.mocked(verifyNativeNitroEvidence).mockResolvedValue(pair);
   return Response.json({ info: {
@@ -107,6 +107,16 @@ describe("native client trust gate", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(fetch.mock.calls[1]?.[0].href).toBe("https://replica.example.com/v1/nitro/attestation");
     expect(fetch.mock.calls[1]?.[1]).toMatchObject({ redirect: "error", method: "POST" });
+    expect(signMessages).not.toHaveBeenCalled();
+  });
+
+  it("rejects discovery for a different custody record at the expected epoch", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(new Response(signedPolicy())).mockResolvedValueOnce(attestedDiscovery("ab".repeat(32)));
+    vi.stubGlobal("fetch", fetch);
+    const accept = vi.fn(async () => true);
+    const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept } });
+    await expect(client.open(signer, proofs)).rejects.toThrow("no authorized Nitro replica");
+    expect(accept).not.toHaveBeenCalled();
     expect(signMessages).not.toHaveBeenCalled();
   });
 

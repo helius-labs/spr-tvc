@@ -7,8 +7,10 @@ import { fetchWithSignal, readBoundedText } from "../sdk/src/connection/http.js"
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
 
 async function main() {
-  const [path, network, domain, seed, epoch] = process.argv.slice(2);
-  if (!path || !epoch) throw new Error("usage: nitro-retirement.ts <wallet-trust> <network> <domain> <seed> <replacement-epoch>");
+  const [path, network, domain, seed, epoch, custodyDigest] = process.argv.slice(2);
+  if (!path || !epoch || !custodyDigest) {
+    throw new Error("usage: nitro-retirement.ts <wallet-trust> <network> <domain> <seed> <replacement-epoch> <custody-digest>");
+  }
   const trust = parseStrictJson<NitroTrust>(await readFile(path, "utf8"));
   validateNitroTrust(trust);
   if (trust.network !== network || trust.securityDomainId !== domain || trust.noteSeedCommitment !== seed) {
@@ -21,9 +23,9 @@ async function main() {
   }, signal);
   if (!response.ok) throw new Error(`canonical wallet policy returned HTTP ${response.status}`);
   const text = await readBoundedText(response, 32_768n, signal);
-  const { policy, checkpoint } = verifyRetirementPolicy(text, trust, epoch, BigInt(Date.now()));
+  const { policy, checkpoint } = verifyRetirementPolicy(text, trust, epoch, custodyDigest, BigInt(Date.now()));
   await Promise.all(policy.targets.map(target => connectNitroTarget(target, trust, signal)));
-  verifyRetirementPolicy(text, trust, epoch, BigInt(Date.now()));
+  verifyRetirementPolicy(text, trust, epoch, custodyDigest, BigInt(Date.now()));
   process.stdout.write(checkpoint.digest);
 }
 

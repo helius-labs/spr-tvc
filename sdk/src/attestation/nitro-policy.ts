@@ -14,6 +14,7 @@ export type NitroTarget = {
   readonly releaseId: string;
   readonly executableSha256: string;
   readonly custodyEpoch: string;
+  readonly custodyDigest: string;
   readonly pcrs: NitroPcrs;
 };
 
@@ -66,7 +67,7 @@ const POLICY_KEYS = [
   "version", "action", "network", "securityDomainId", "noteSeedCommitment", "sequence",
   "validFromMs", "expiresAtMs", "minimumCustodyEpoch", "previousPolicyDigest", "targets",
 ];
-const TARGET_KEYS = ["endpoint", "releaseId", "executableSha256", "custodyEpoch", "pcrs"];
+const TARGET_KEYS = ["endpoint", "releaseId", "executableSha256", "custodyEpoch", "custodyDigest", "pcrs"];
 const te = new TextEncoder();
 
 function invalid(): never {
@@ -143,6 +144,7 @@ export function verifyNitroPolicy(
   if (!Array.isArray(policy.targets) || policy.targets.length > MAX_TARGETS) invalid();
   if (policy.action === "activate" ? policy.targets.length === 0 : policy.action !== "revoke" || policy.targets.length !== 0) invalid();
   const endpoints = new Set<string>();
+  const records = new Map<string, string>();
   for (const target of policy.targets) {
     assertExactObjectKeys(target, TARGET_KEYS, "ReleasePolicyInvalid");
     const endpoint = nitroEndpoint(target.endpoint, policy.network).href;
@@ -150,7 +152,11 @@ export function verifyNitroPolicy(
         !/^[a-z0-9][a-z0-9-]{0,63}$/.test(target.releaseId)) invalid();
     endpoints.add(endpoint);
     checkDigest(target.executableSha256, 32);
+    checkDigest(target.custodyDigest, 32);
     if (decodeDecimalU64(target.custodyEpoch) < floor) invalid();
+    const known = records.get(target.custodyEpoch);
+    if (known !== undefined && known !== target.custodyDigest) invalid();
+    records.set(target.custodyEpoch, target.custodyDigest);
     assertExactObjectKeys(target.pcrs, ["0", "1", "2", "3"], "ReleasePolicyInvalid");
     for (const pcr of Object.values(target.pcrs)) checkDigest(pcr, 48);
   }
@@ -192,13 +198,18 @@ export function nextNitroPublication(
   if (decodeDecimalU64(next.policy.sequence) !== decodeDecimalU64(prior.policy.sequence) + 1n ||
       next.policy.previousPolicyDigest !== prior.checkpoint.digest ||
       !advancesNitroPolicy(prior.checkpoint, next.checkpoint)) invalid();
+  const priorRecords = new Map(prior.policy.targets.map(target => [target.custodyEpoch, target.custodyDigest]));
+  if (next.policy.targets.some(target => priorRecords.has(target.custodyEpoch) &&
+      priorRecords.get(target.custodyEpoch) !== target.custodyDigest)) invalid();
   return true;
 }
 
-export function verifyRetirementPolicy(text: string, trust: NitroTrust, replacementEpoch: string, now: bigint) {
+export function verifyRetirementPolicy(
+  text: string, trust: NitroTrust, replacementEpoch: string, custodyDigest: string, now: bigint,
+) {
   const { policy, checkpoint } = verifyNitroPolicy(text, trust, now);
   if (policy.action !== "activate" || decodeDecimalU64(policy.minimumCustodyEpoch) < decodeDecimalU64(replacementEpoch) ||
-      !policy.targets.some(target => target.custodyEpoch === replacementEpoch)) invalid();
+      !policy.targets.some(target => target.custodyEpoch === replacementEpoch && target.custodyDigest === custodyDigest)) invalid();
   return { policy, checkpoint };
 }
 

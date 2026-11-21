@@ -36,6 +36,7 @@ const binding: NitroPolicy = {
     endpoint: "https://slot-a.example.com/",
     releaseId: "generation-9",
     custodyEpoch: "1",
+    custodyDigest: "11".repeat(32),
     executableSha256: "33".repeat(32),
     pcrs: { 0: "11".repeat(48), 1: "22".repeat(48), 2: "33".repeat(48), 3: "44".repeat(48) },
   }],
@@ -192,14 +193,23 @@ describe("native Nitro release policy", () => {
   });
 
   it("requires a current activation that has already raised the floor to the retiring epoch's replacement", () => {
-    const replacement = { ...binding.targets[0]!, custodyEpoch: "2" };
+    const replacement = { ...binding.targets[0]!, custodyEpoch: "2", custodyDigest: "77".repeat(32) };
     const policy = { ...binding, minimumCustodyEpoch: "2", targets: [replacement] };
-    expect(verifyRetirementPolicy(manifest(policy, 0, 1), trust, "2", now).policy).toEqual(policy);
+    expect(verifyRetirementPolicy(manifest(policy, 0, 1), trust, "2", replacement.custodyDigest, now).policy).toEqual(policy);
     for (const unsafe of [
       { ...policy, minimumCustodyEpoch: "1" },
       { ...policy, action: "revoke", targets: [] } as const,
       { ...policy, targets: [{ ...replacement, custodyEpoch: "3" }] },
-    ]) expect(() => verifyRetirementPolicy(manifest(unsafe, 0, 1), trust, "2", now)).toThrow();
-    expect(() => verifyRetirementPolicy(manifest(policy, 0, 1), trust, "2", now + 100n)).toThrow();
+      { ...policy, targets: [{ ...replacement, custodyDigest: "88".repeat(32) }] },
+    ]) expect(() => verifyRetirementPolicy(manifest(unsafe, 0, 1), trust, "2", replacement.custodyDigest, now)).toThrow();
+    expect(() => verifyRetirementPolicy(manifest(policy, 0, 1), trust, "2", replacement.custodyDigest, now + 100n)).toThrow();
+  });
+
+  it("rejects competing custody records for the same epoch within and across policy revisions", () => {
+    const target = binding.targets[0]!;
+    const competing = { ...target, endpoint: "https://slot-b.example.com/", custodyDigest: "bb".repeat(32) };
+    expect(() => verifyNitroPolicy(manifest({ ...binding, targets: [target, competing] }, 0, 1), trust, now)).toThrow();
+    const next = { ...binding, sequence: "10", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(binding)) };
+    expect(() => nextNitroPublication(manifest({ ...next, targets: [competing] }, 0, 1), manifest(binding, 0, 1), trust, now)).toThrow();
   });
 });

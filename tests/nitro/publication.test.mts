@@ -72,6 +72,7 @@ test("does not publish an activation with an unavailable replica", async context
   context.mock.method(globalThis, "fetch", async () => new Response(null, { status: 503 }));
   const activate: NitroPolicy = { ...first, action: "activate", targets: [{
     endpoint: "https://replica.example.com/", releaseId: "candidate", custodyEpoch: "1", executableSha256: "11".repeat(32),
+    custodyDigest: "22".repeat(32),
     pcrs: { 0: "12".repeat(48), 1: "23".repeat(48), 2: "34".repeat(48), 3: "45".repeat(48) },
   }] };
   let awsCalls = 0;

@@ -11,7 +11,7 @@ use openssl::{
 use serde::{Deserialize, Serialize};
 use spr_tvc_protocol::{
     digest::sha256,
-    encoding::{decimal_u64, hex},
+    encoding::{decimal_u64, hex, jcs_serialize},
 };
 use vsss_rs::Gf256;
 use zeroize::Zeroizing;
@@ -35,6 +35,11 @@ pub(crate) struct Custody {
 }
 
 impl Custody {
+    pub(crate) fn digest(&self) -> io::Result<[u8; 32]> {
+        let canonical = jcs_serialize(self).map_err(io::Error::other)?;
+        Ok(sha256(canonical.as_bytes()))
+    }
+
     pub(crate) fn validate(&self) -> io::Result<()> {
         if self.epoch == 0
             || self.note_seed_commitment == [0; 32]

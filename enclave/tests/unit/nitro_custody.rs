@@ -2,6 +2,19 @@ use openssl::{encrypt::Decrypter, pkey::Private, rsa::Rsa};
 
 use super::*;
 
+#[test]
+fn hashes_the_canonical_custody_record_for_release_attestation() {
+    let custody = Custody {
+        epoch: 7,
+        note_seed_commitment: [0x11; 32],
+        share_commitments: (1..=6).map(|byte| [byte; 32]).collect(),
+    };
+    assert_eq!(
+        spr_tvc_protocol::encoding::encode_lower_hex(&custody.digest().unwrap()),
+        "e4e5edfe00b00ffb74d4acd601ffebb90df7f6d94f23e0ee659eaf78cac5ee3e"
+    );
+}
+
 pub(crate) const DOMAIN: [u8; 32] = [0xab; 32];
 
 pub(crate) fn fixture(epoch: u64, seed: &NoteSeed) -> (Custody, Zeroizing<Vec<Vec<u8>>>) {

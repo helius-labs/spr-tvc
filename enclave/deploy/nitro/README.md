@@ -166,7 +166,8 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
 4. Pin the file SHA-256 of the independently distributed wallet trust bundle
    as `walletTrustSha256` in the custody trust file. Draft, sign twice and
    publish a retirement record. Each step verifies the canonical wallet policy
-   and attests its replacement replicas. Publication closes the old epoch to
+   and attests its replacement replicas against the exact committed custody
+   record. Publication closes the old epoch to
    new wraps. Each slot's inventory includes its recovery key and all wrapping
    keys registered before retirement, including those from in-flight requests.
 
@@ -204,7 +205,9 @@ Sequence 1 has `previousPolicyDigest: null`. Each later sequence signs the
 digest of the current published policy. Use the domain-separated policy
 digest specified in [the Nitro security spec](../../NITRO.md#proposal-and-publication).
 Each target contains `endpoint`, `releaseId`, `executableSha256`,
-`custodyEpoch` and `pcrs`. Pin network, domain, seed commitment, minimum sequence,
+`custodyEpoch`, `custodyDigest` and `pcrs`. Obtain `custodyDigest` with
+`python3 "$nitro/custody_ledger.py" trust.json read "$epoch" --custody-digest`.
+All targets for that epoch must use the same digest. Pin network, domain, seed commitment, minimum sequence,
 minimum custody epoch, signer keys, threshold and `publication` with `bucket`,
 `region` and `account` in `wallet-trust.json`. Times, sequence
 and epochs are canonical decimal strings. The wallet stores the sequence,

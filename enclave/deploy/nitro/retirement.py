@@ -25,7 +25,8 @@ def retirement_scope(trust, epoch, replacement):
     return {
         "network": trust["network"], "securityDomainId": trust["securityDomainId"],
         "epoch": epoch, "receiptSha256": sha256(old), "replacementEpoch": replacement,
-        "replacementReceiptSha256": sha256(new), "approvalFromEpoch": trust["approvalKeys"][-1]["fromEpoch"],
+        "replacementReceiptSha256": sha256(new), "replacementCustodyDigest": sha256(new["custody"]),
+        "approvalFromEpoch": trust["approvalKeys"][-1]["fromEpoch"],
     }, new["custody"]["noteSeedCommitment"]
 
 
@@ -36,7 +37,8 @@ def qualified_policy(trust, wallet_trust, scope, seed):
     root = Path(__file__).resolve().parents[3]
     reply = subprocess.run([
         "pnpm", "--dir", str(root / "example"), "exec", "tsx", str(root / "xtask/nitro-retirement.ts"),
-        str(wallet_trust.resolve()), scope["network"], scope["securityDomainId"], seed, scope["replacementEpoch"],
+        str(wallet_trust.resolve()), scope["network"], scope["securityDomainId"], seed,
+        scope["replacementEpoch"], scope["replacementCustodyDigest"],
     ], stdout=subprocess.PIPE, check=True, timeout=25)
     return hex_digest(reply.stdout.decode())
 
@@ -60,7 +62,7 @@ def commit_retirement(trust, wallet_trust, document):
 def verified_retirement(trust, document, epoch):
     manifest = document["manifest"]
     fields(manifest, "network", "securityDomainId", "epoch", "receiptSha256", "replacementEpoch",
-           "replacementReceiptSha256", "approvalFromEpoch", "walletPolicyDigest")
+           "replacementReceiptSha256", "replacementCustodyDigest", "approvalFromEpoch", "walletPolicyDigest")
     if ((manifest["network"], manifest["securityDomainId"], manifest["epoch"]) !=
             (trust["network"], trust["securityDomainId"], epoch) or
             epoch_number(manifest["replacementEpoch"]) <= epoch_number(epoch)):

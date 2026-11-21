@@ -51,6 +51,7 @@ export async function connectNitroTarget(target: NitroTarget, trust: NitroTrust,
     ...te.encode("SPR/native-nitro/release/v1"),
     ...requireHex(target.executableSha256, 32),
     ...requireHex(trust.noteSeedCommitment, 32),
+    ...requireHex(target.custodyDigest, 32),
   ]));
   if (info.version !== API_VERSION || info.network !== trust.network ||
       info.release_id !== target.releaseId || info.security_domain_id !== trust.securityDomainId ||

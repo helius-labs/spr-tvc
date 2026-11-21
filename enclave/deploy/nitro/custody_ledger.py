@@ -327,6 +327,7 @@ def main():
     post.add_argument("candidate", type=Path)
     get = commands.add_parser("read")
     get.add_argument("epoch")
+    get.add_argument("--custody-digest", action="store_true")
     archive = commands.add_parser("archive")
     archive.add_argument("epoch")
     verify = commands.add_parser("verify-archive")
@@ -360,7 +361,10 @@ def main():
             return
         if args.command in {"read", "archive"}:
             document, receipt, _ = load_epoch(trust, args.epoch)
-            print(canonical(receipt if args.command == "read" else document).decode())
+            if args.command == "read" and args.custody_digest:
+                print(sha256(receipt["custody"]))
+            else:
+                print(canonical(receipt if args.command == "read" else document).decode())
             return
         if args.command == "verify-archive":
             print(canonical(verify_archive(trust, read_json(args.archive), args.sha256)).decode())

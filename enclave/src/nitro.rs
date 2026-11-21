@@ -154,6 +154,7 @@ async fn serve(
             b"SPR/native-nitro/release/v1".as_slice(),
             &executable,
             &custody.note_seed_commitment,
+            &custody.digest()?,
         ]
         .concat(),
     );
