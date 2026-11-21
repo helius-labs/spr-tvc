@@ -25,13 +25,20 @@ import {
 import { SignedTeePolicy } from "@heliuslabs/spr/client";
 import { ed25519DerivationMessage } from "@heliuslabs/spr/keypair";
 import type { AssetBalance } from "@heliuslabs/spr/transaction";
-import { createDecryptionService, type Network } from "@heliuslabs/spr-decryption-service";
+import { createDecryptionService, type DecryptionService, type Network } from "@heliuslabs/spr-decryption-service";
 import { createLocalDecryptionService } from "@heliuslabs/spr-decryption-service/testing";
 
 import { turnkeyClient, turnkeySigner, type OwnerSigner } from "./turnkey.js";
 
 type Client = Awaited<ReturnType<typeof createSprClient>>;
 type ConfirmedTransaction = { readonly signature: Signature; readonly slot: bigint };
+type ExampleSetup = {
+  readonly zolana: Client;
+  readonly sender: OwnerSigner;
+  readonly recipient: OwnerSigner;
+  readonly service: DecryptionService;
+  readonly nitro?: Awaited<ReturnType<typeof import("./nitro.js")["nativeDevnet"]>>;
+};
 
 function env(name: string): string {
   const value = process.env[name]?.trim();
@@ -63,10 +70,23 @@ function clientConfig(network: Network): SprClientConfig {
   };
 }
 
-export async function setup() {
+async function filePayer() {
+  const secret = JSON.parse(await readFile(env("TVC_SOLANA_KEYPAIR_PATH"), "utf8")) as number[];
+  const bytes = Uint8Array.from(secret);
+  try {
+    return await createKeyPairSignerFromBytes(bytes);
+  } finally {
+    bytes.fill(0);
+    secret.fill(0);
+  }
+}
+
+export async function setup(): Promise<ExampleSetup> {
   const network = process.env["SPR_NETWORK"]?.trim() || "devnet";
   if (network !== "devnet") throw new Error("the example is limited to devnet and localnet");
   const localEndpoint = process.env["DECRYPTION_SERVICE_LOCAL_ENDPOINT"]?.trim();
+  const nitroTrust = process.env["NITRO_WALLET_TRUST"]?.trim();
+  if (localEndpoint && nitroTrust) throw new Error("choose one decryption service for the example");
   if (!localEndpoint && process.env["EXAMPLE_ACCEPT_PUBLIC_RECIPIENT"] !== "1") {
     throw new Error("this flow publishes the recipient's Solana owner tag. Set EXAMPLE_ACCEPT_PUBLIC_RECIPIENT=1 to proceed");
   }
@@ -81,14 +101,19 @@ export async function setup() {
     throw new Error("the example requires a Solana devnet or localnet RPC");
   }
   if (localEndpoint) {
-    const secret = JSON.parse(await readFile(env("TVC_SOLANA_KEYPAIR_PATH"), "utf8")) as number[];
-    const sender = await createKeyPairSignerFromBytes(new Uint8Array(secret));
     return {
       zolana,
-      sender,
+      sender: await filePayer(),
       recipient: await generateKeyPairSigner(),
       service: createLocalDecryptionService({ network, endpoint: new URL(localEndpoint) }),
     };
+  }
+  if (nitroTrust) {
+    const sender = await filePayer();
+    const recipient = await generateKeyPairSigner();
+    const { nativeDevnet } = await import("./nitro.js");
+    const nitro = await nativeDevnet(nitroTrust, env("NITRO_CHECKPOINT_PATH"), env("NITRO_REPLACEMENT_EPOCH"));
+    return { zolana, sender, recipient, service: nitro.service, nitro };
   }
 
   const signer = turnkeySigner(

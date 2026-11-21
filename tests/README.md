@@ -14,6 +14,29 @@ the test. Pass a port offset to run another Solana localnet.
 
 ## Live Nitro upgrade
 
+For an on-chain rehearsal, start with a canonical devnet policy containing
+only the old epoch. Use a funded devnet fee payer and the approved native
+wallet trust bundle. The example creates a fresh recipient and looks up its
+public keys before the recipient authorizes anything.
+
+```sh
+pnpm build:ts
+API_KEY="$devnet_api_key" EXAMPLE_ACCEPT_PUBLIC_RECIPIENT=1 \
+TVC_SOLANA_KEYPAIR_PATH="$payer" NITRO_WALLET_TRUST="$wallet_trust" \
+NITRO_CHECKPOINT_PATH="$checkpoint" NITRO_REPLACEMENT_EPOCH=2 \
+pnpm --filter spr-tvc-typescript-client-example example
+```
+
+Use absolute file paths and a new checkpoint file for each rehearsal. Wait
+for the confirmed transfer printed by the example before promoting the new
+epoch. Raise the live wallet policy floor to the replacement epoch and stop
+the old replica. The example waits up to five minutes, opens the recipient
+through the new epoch, verifies the transfer amount, and sweeps the note to
+the recipient's own privacy keys. It checks that the recipient remains
+unregistered and holds no public SOL throughout the run.
+
+### Synthetic recovery drill
+
 Use two test EIFs commissioned according to the [native runbook](../enclave/deploy/nitro/README.md).
 In a scratch directory write `a-pin.json` and `b-pin.json` with each release ID,
 executable SHA-256, custody epoch and independently derived PCR0–PCR3 in the policy's target

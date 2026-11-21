@@ -6,20 +6,29 @@ import {
   syncWallet,
 } from "@heliuslabs/spr";
 import { isWalletRegistered } from "@heliuslabs/spr/wallet";
+import type { DecryptionServiceKeys } from "@heliuslabs/spr-decryption-service";
 
 import { expectBalance, localWalletKeys, sendAndConfirmFactory, setup } from "./setup.js";
 
 const AMOUNT = 3_000_000n;
 
 async function main(): Promise<void> {
-  const { zolana, service, sender, recipient } = await setup();
-  if (await isWalletRegistered({ rpc: zolana, owner: recipient.address })) {
-    throw new Error("the example requires a recipient without a registry record");
-  }
-  const serviceKeys = await service.open(recipient, zolana.proofService);
+  const { zolana, service, sender, recipient, nitro } = await setup();
+  let serviceKeys: DecryptionServiceKeys | undefined;
   let keys: Awaited<ReturnType<typeof localWalletKeys>> | undefined;
   let ownKeys: typeof keys;
   try {
+    async function checkRecipient() {
+      if (await isWalletRegistered({ rpc: zolana, owner: recipient.address })) {
+        throw new Error("the example requires a recipient without a registry record");
+      }
+      if (sender.address !== recipient.address && (await zolana.solanaRpc.getBalance(recipient.address).send()).value !== 0n) {
+        throw new Error("the fresh recipient must remain unfunded");
+      }
+    }
+    await checkRecipient();
+    const recipientAddress = await service.address(recipient.address);
+    await nitro?.beforeSend();
     keys = await localWalletKeys(sender, zolana.proofService);
     const send = sendAndConfirmFactory(zolana, sender);
 
@@ -38,10 +47,13 @@ async function main(): Promise<void> {
       wallet,
       keys,
       feePayer: sender.address,
-      recipient: serviceKeys.address(),
+      recipient: recipientAddress,
       amount: AMOUNT,
     });
     const transferTx = await send(transfer);
+    if (nitro) console.log(`transfer recipient=${recipient.address} tx=${transferTx.signature} awaiting the replacement custody epoch`);
+    const reader = nitro ? await nitro.afterTransfer(recipient.address) : service;
+    serviceKeys = await reader.open(recipient, zolana.proofService);
 
     // The recipient signs, the service decrypts, the SDK keeps what matches its commitment.
     const received = new Wallet({ identity: serviceKeys.address() });
@@ -74,11 +86,13 @@ async function main(): Promise<void> {
       config: { requireSlot: sweepTx.slot },
     });
     expectBalance("sweep", own.balance(SOL_MINT), AMOUNT, 1);
+    await checkRecipient();
     console.log(`sweep recipient=${recipient.address} private_balance=${AMOUNT} tx=${sweepTx.signature}`);
   } finally {
-    serviceKeys.destroy();
+    serviceKeys?.destroy();
     if (ownKeys !== keys) ownKeys?.destroy();
     keys?.destroy();
+    nitro?.close();
   }
 }
 

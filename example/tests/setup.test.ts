@@ -31,10 +31,12 @@ const cases = [
   { name: "rejects unexpected genesis on hosted devnet", genesis: LOCALNET, local: false, error: /requires a Solana devnet or localnet RPC/ },
   { name: "rejects mainnet genesis on loopback", genesis: MAINNET, local: true, error: /requires a Solana devnet or localnet RPC/ },
   { name: "accepts hosted devnet genesis before loading Turnkey credentials", genesis: DEVNET, local: false, error: /set TURNKEY_ORGANIZATION_ID/ },
+  { name: "refuses mainnet genesis in the native rehearsal", genesis: MAINNET, local: false, nitro: true, error: /requires a Solana devnet or localnet RPC/ },
+  { name: "accepts devnet genesis before loading a native rehearsal payer", genesis: DEVNET, local: false, nitro: true, error: /set TVC_SOLANA_KEYPAIR_PATH/ },
   { name: "accepts localnet genesis before loading the local keypair", genesis: LOCALNET, local: true, error: /set TVC_SOLANA_KEYPAIR_PATH/ },
 ];
 
-for (const { name, genesis, local, error } of cases) {
+for (const { name, genesis, local, nitro, error } of cases) {
   test(name, async (t) => {
     const rpc = local ? "http://127.0.0.1:8899/" : "https://rpc.example/";
     setEnv(t, {
@@ -44,6 +46,7 @@ for (const { name, genesis, local, error } of cases) {
       ZOLANA_INDEXER_URL: "http://127.0.0.1:8080/",
       ZOLANA_PROVER_URL: "http://127.0.0.1:8081/",
       DECRYPTION_SERVICE_LOCAL_ENDPOINT: local ? "http://127.0.0.1:8082/" : undefined,
+      NITRO_WALLET_TRUST: nitro ? "/etc/test-wallet-trust.json" : undefined,
       TURNKEY_ORGANIZATION_ID: undefined,
       TVC_SOLANA_KEYPAIR_PATH: undefined,
     });
