@@ -94,6 +94,13 @@ Nitro evidence separately authorize each replica.
 
 The parent may replay a previously encrypted request to the same boot. Any result is still encrypted to the original signed response key. The service performs no chain writes and needs no replay database. The viewing and nullifier public keys are public lookup results. TLS protects ingress traffic in transit, while enclave-level encryption protects plaintext from ingress and the parent. See [AWS's attestation format and chain validation](https://docs.aws.amazon.com/enclaves/latest/user/verify-root.html).
 
+Each serving replica admits two HTTP attestation requests and 32 requests to
+other routes. Request middleware sets a five-second deadline before reading
+the body. The Nitro Security Module call runs on a separate blocking worker
+with one call in flight. The worker retains its permit until the kernel call
+returns, including after the client disconnects. Ingress also limits open
+connections and applies admission control before forwarding to vsock.
+
 ## QuorumOS decision
 
 Native Nitro uses AWS KMS for measured secret release, six recovery keys for threshold custody, and wallet release signers for promotion and rollback. Self-hosted QuorumOS provides a threshold boot ceremony and authenticated key forwarding across compatible environments. It adds a boot manifest, key forwarding and a common Quorum Key to the audit surface. Revisit it for custody across clouds. [QuorumOS key forwarding](https://github.com/tkhq/qos/blob/main/docs/key_forward.md)

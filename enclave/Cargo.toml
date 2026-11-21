@@ -28,7 +28,7 @@ serde_json = "=1.0.150"
 sha2 = "=0.10.9"
 solana-pubkey = "=4.2.0"
 strum = { version = "=0.28.0", features = ["derive"] }
-tokio = { version = "1.48.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 zeroize = "=1.9.0"
 spr-keypair = "=0.10.0"
 spr-tvc-protocol = { path = "../protocol" }

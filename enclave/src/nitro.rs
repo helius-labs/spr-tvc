@@ -14,10 +14,12 @@ use aws_nitro_enclaves_nsm_api::{
 };
 use axum::{
     body::Bytes,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Request, State},
     http::{header::CONTENT_TYPE, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
-    Router,
+    Extension, Router,
 };
 use clap::Parser;
 use openssl::{
@@ -31,7 +33,7 @@ use spr_tvc_protocol::{
     digest::sha256,
     encoding::{hex, jcs_serialize, parse_strict_json},
 };
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Semaphore};
 use tokio_vsock::{VsockAddr, VsockListener, VsockStream, VMADDR_CID_ANY};
 use zeroize::Zeroizing;
 
@@ -47,6 +49,9 @@ use crate::{
 
 const MAX_CMS_BYTES: usize = 6144;
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_SERVING_REQUESTS: usize = 32;
+const MAX_ATTESTATION_REQUESTS: usize = 2;
+const SERVING_DEADLINE: Duration = Duration::from_secs(5);
 
 #[derive(Parser)]
 pub struct Config {
@@ -169,13 +174,37 @@ async fn serve(
         note_seed,
     });
     let app = Router::new()
+        .fallback(dispatch)
+        .layer(middleware::from_fn_with_state(
+            Arc::new(Semaphore::new(MAX_SERVING_REQUESTS)),
+            limit_serving_request,
+        ))
         .route(
             "/v1/nitro/attestation",
-            post(client_attestation).layer(DefaultBodyLimit::max(32)),
+            post(client_attestation)
+                .layer(DefaultBodyLimit::max(32))
+                .layer(Extension(Arc::new(Semaphore::new(1))))
+                .layer(middleware::from_fn_with_state(
+                    Arc::new(Semaphore::new(MAX_ATTESTATION_REQUESTS)),
+                    limit_serving_request,
+                )),
         )
-        .fallback(dispatch)
         .with_state(service);
     axum::serve(ParentListener::bind(44030)?, app).await
+}
+
+async fn limit_serving_request(
+    State(capacity): State<Arc<Semaphore>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Ok(_permit) = capacity.try_acquire() else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
+    match tokio::time::timeout(SERVING_DEADLINE, next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => StatusCode::REQUEST_TIMEOUT.into_response(),
+    }
 }
 
 struct Recipient {
@@ -348,15 +377,42 @@ async fn custody_attestation(State(result): State<Arc<String>>, nonce: Bytes) ->
 
 type Reply<T> = Result<([(axum::http::HeaderName, &'static str); 1], T), StatusCode>;
 
-async fn client_attestation(State(service): State<Arc<Service>>, nonce: Bytes) -> Reply<String> {
+async fn client_attestation(
+    State(service): State<Arc<Service>>,
+    Extension(worker): Extension<Arc<Semaphore>>,
+    nonce: Bytes,
+) -> Reply<String> {
+    if nonce.len() != 32 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let discovery = jcs_serialize(&service.info).map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    attested_json(
-        "SPR/native-nitro/discovery/v1",
-        "info",
-        &discovery,
-        Some(service.ephemeral.public_bytes()),
-        nonce,
-    )
+    let public = service.ephemeral.public_bytes();
+    issue_serving_attestation(worker, move || {
+        attested_json(
+            "SPR/native-nitro/discovery/v1",
+            "info",
+            &discovery,
+            Some(public),
+            nonce,
+        )
+    })
+    .await
+}
+
+async fn issue_serving_attestation(
+    worker: Arc<Semaphore>,
+    generate: impl FnOnce() -> Reply<String> + Send + 'static,
+) -> Reply<String> {
+    let permit = worker
+        .try_acquire_owned()
+        .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
+    tokio::task::spawn_blocking(move || {
+        // Cancellation of the HTTP request must not admit another NSM call.
+        let _permit = permit;
+        generate()
+    })
+    .await
+    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
 }
 
 fn attested_json(
@@ -439,3 +495,7 @@ impl axum::serve::Listener for ParentListener {
 #[cfg(test)]
 #[path = "../tests/unit/nitro_bootstrap.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/nitro_traffic.rs"]
+mod traffic_tests;
