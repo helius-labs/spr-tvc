@@ -173,22 +173,21 @@ async fn serve(
         quorum: KeyPair::Native(transport),
         note_seed,
     });
+    let attestation = Router::new()
+        .route("/v1/nitro/attestation", post(client_attestation))
+        .layer(DefaultBodyLimit::max(32))
+        .layer(Extension(Arc::new(Semaphore::new(1))))
+        .layer(middleware::from_fn_with_state(
+            Arc::new(Semaphore::new(MAX_ATTESTATION_REQUESTS)),
+            limit_serving_request,
+        ));
     let app = Router::new()
         .fallback(dispatch)
         .layer(middleware::from_fn_with_state(
             Arc::new(Semaphore::new(MAX_SERVING_REQUESTS)),
             limit_serving_request,
         ))
-        .route(
-            "/v1/nitro/attestation",
-            post(client_attestation)
-                .layer(DefaultBodyLimit::max(32))
-                .layer(Extension(Arc::new(Semaphore::new(1))))
-                .layer(middleware::from_fn_with_state(
-                    Arc::new(Semaphore::new(MAX_ATTESTATION_REQUESTS)),
-                    limit_serving_request,
-                )),
-        )
+        .merge(attestation)
         .with_state(service);
     axum::serve(ParentListener::bind(44030)?, app).await
 }
