@@ -6,6 +6,7 @@ import { qosEncrypt } from "../../src/crypto/qos.js";
 import { API_VERSION, TVC_APP_PROOF_SCHEME } from "../../src/protocol/constants.js";
 import { SERVICE_PROOF_TYPE } from "../../src/protocol/decryption.js";
 import { resultDigest } from "../../src/protocol/digest.js";
+import { DecryptionServiceError } from "../../src/protocol/error.js";
 import { encodeLowerHex } from "../../src/protocol/hex.js";
 import { canonicalizeJsonValue } from "../../src/protocol/jcs.js";
 import type { ConnectedTvcRuntime } from "../../src/connection/connect.js";
@@ -82,6 +83,22 @@ describe("operation replies", () => {
     const f = fixture();
     await expect(sealedExchange(f.context, f.exchange)).resolves.toBe(f.result);
     expect(f.verifyOperationAppProof).toHaveBeenCalledWith(expect.objectContaining({ publicKey: ephemeral }), undefined);
+  });
+
+  it("refuses an authenticated reply if a newer checkpoint supersedes its session", async () => {
+    const f = fixture();
+    const requireCurrentCheckpoint = vi.fn(async () => {
+      throw new DecryptionServiceError("ReleasePolicySuperseded");
+    });
+    await expect(sealedExchange({ ...f.context, requireCurrentCheckpoint }, f.exchange))
+      .rejects.toMatchObject({ code: "ReleasePolicySuperseded" });
+    expect(f.verifyOperationAppProof).toHaveBeenCalledBefore(requireCurrentCheckpoint);
+  });
+
+  it("checks whether the native session expired while the reply was in flight", async () => {
+    const f = fixture();
+    const context = { ...f.context, requireCurrentCheckpoint: async () => {}, nowMs: () => 3n };
+    await expect(sealedExchange(context, f.exchange)).rejects.toMatchObject({ code: "ExpiredRequest" });
   });
 
   it.each([

@@ -205,6 +205,10 @@ export async function sealedExchange(
     throw new DecryptionServiceError("ResponseTooLarge");
   }
   await verifyOperationProof(context, exchange, response, encryptedResult, signal);
+  if (context.requireCurrentCheckpoint) {
+    await context.requireCurrentCheckpoint(signal);
+    requireCurrentReleasePolicy(context, context.nowMs());
+  }
   let plaintext: string;
   try {
     plaintext = td.decode(qosDecrypt(exchange.responseSecret, encryptedResult));

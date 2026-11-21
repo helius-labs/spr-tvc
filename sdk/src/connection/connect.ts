@@ -60,7 +60,7 @@ export type ConnectedTvcRuntime = {
   readonly transport: DecryptionServiceTransport;
   readonly releasePolicyValidFromMs: bigint;
   readonly releasePolicyExpiresAtMs: bigint;
-  readonly requireCurrentCheckpoint?: (signal: AbortSignal) => Promise<void>;
+  readonly requireCurrentCheckpoint?: (signal?: AbortSignal) => Promise<void>;
   readonly nowMs: () => bigint;
   readonly trustVerifier: { verifyOperationAppProof(proof: TurnkeyAppProofWire, signal?: AbortSignal): Promise<void> };
 };
