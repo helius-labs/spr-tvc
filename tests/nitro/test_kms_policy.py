@@ -1,6 +1,4 @@
-import base64
 import hashlib
-import json
 import pathlib
 import sys
 import struct
@@ -10,7 +8,6 @@ from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from kms_policy import context, key_policy
 from provision import provision
-from wrap_share import wrap
 
 HOST = "arn:aws:iam::111111111111:role/host"
 CUSTODIAN = "arn:aws:iam::222222222222:role/custodian"
@@ -25,7 +22,7 @@ class KeyPolicyTests(unittest.TestCase):
     def test_only_host_role_with_recipient_pcrs_and_exact_context_can_unwrap(self):
         ctx = context("mainnet", DOMAIN, "release-a", "5", 1)
         statements = key_policy(HOST, CUSTODIAN, RETIREMENT, PINS, ctx)["Statement"]
-        decrypt, = [rule for rule in statements if rule["Action"] == "kms:Decrypt"]
+        decrypt, = [rule for rule in statements if rule["Sid"] == "ProvisionAttestedEnclave"]
         self.assertEqual(decrypt["Principal"], {"AWS": HOST})
         expected = {**PINS, "PCR3": hashlib.sha384(bytes(48) + HOST.encode()).hexdigest()}
         conditions = decrypt["Condition"]
@@ -37,9 +34,21 @@ class KeyPolicyTests(unittest.TestCase):
         wrapper, = [rule for rule in statements if rule["Action"] == "kms:Encrypt"]
         self.assertEqual(wrapper["Principal"], {"AWS": CUSTODIAN})
         self.assertNotIn("StringEqualsIgnoreCase", wrapper["Condition"])
-        seal, = [rule for rule in statements if rule["Effect"] == "Deny"]
+        seal, = [rule for rule in statements if rule["Sid"] == "SealKey"]
         self.assertEqual(seal["Principal"], "*")
         self.assertTrue({"kms:CreateGrant", "kms:PutKeyPolicy", "kms:ReEncryptFrom"} <= set(seal["Action"]))
+        denials = {rule["Sid"]: rule["Condition"] for rule in statements if rule["Action"] == "kms:Decrypt"
+                   and rule["Effect"] == "Deny" and rule["Principal"] == "*"}
+        self.assertEqual(denials["DenyOtherHost"], {"StringNotEquals": {"aws:PrincipalArn": HOST}})
+        for pcr, pin in expected.items():
+            self.assertEqual(denials[f"DenyWrong{pcr}"], {
+                "StringNotEqualsIgnoreCase": {f"kms:RecipientAttestation:{pcr}": pin},
+            })
+        for index, (field, value) in enumerate(ctx.items()):
+            self.assertEqual(denials[f"DenyWrongContext{index}"], {
+                "StringNotEquals": {f"kms:EncryptionContext:{field}": value},
+            })
+        self.assertEqual(denials["DenyExtraContext"], {"ForAnyValue:StringNotEquals": {"kms:EncryptionContextKeys": list(ctx)}})
 
     def test_rejects_debug_pins_shared_roles_and_ambiguous_contexts(self):
         ctx = context("mainnet", DOMAIN, "release-a", "5", 1)
@@ -88,37 +97,6 @@ class KeyPolicyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 provision(16, "mainnet", DOMAIN, "release-a", "5", [*KEYS[:5], (key, "old")])
         request.assert_not_called()
-
-    @patch("wrap_share.kms")
-    def test_wraps_only_the_share_committed_to_the_custodian_key_epoch_and_slot(self, kms):
-        spki = b"public"
-        plaintext = (5).to_bytes(8, "big") + b"\x01" + bytes([0x44]) * 32
-        value = hashlib.sha256(b"SPR/native-nitro/custody-share/v1" + bytes.fromhex(DOMAIN) + plaintext)
-        receipt = {
-            "network": "devnet", "securityDomainId": DOMAIN,
-            "custody": {"epoch": "5", "shareCommitments": [value.hexdigest()]},
-            "packages": [{"recipientSha256": hashlib.sha256(spki).hexdigest(), "ciphertext": "66" * 256}],
-        }
-        wrapping = KEY_1[:-1] + "a"
-        public = {"PublicKey": base64.b64encode(spki)}
-        kms.side_effect = [public, {"Plaintext": base64.b64encode(plaintext)}, {"CiphertextBlob": "d3JhcHBlZA=="}]
-        self.assertEqual(wrap(receipt, 1, KEY_1, wrapping, "release-a"), b"wrapped")
-        self.assertEqual(kms.call_args.args[-1], plaintext)
-        self.assertIn('"custody-epoch": "5"', kms.call_args.args[2][-1])
-
-        for corrupt in [bytes(41), plaintext[:-1], plaintext[:-1] + b"\x12"]:
-            kms.reset_mock()
-            kms.side_effect = [public, {"Plaintext": base64.b64encode(corrupt)}]
-            with self.assertRaises(ValueError):
-                wrap(receipt, 1, KEY_1, wrapping, "release-a")
-            self.assertEqual(kms.call_count, 2)
-
-        kms.reset_mock()
-        kms.side_effect = [{"PublicKey": base64.b64encode(b"wrong key")}]
-        with self.assertRaises(ValueError):
-            wrap(receipt, 1, KEY_1, wrapping, "release-a")
-        self.assertEqual(kms.call_count, 1)
-
 
 if __name__ == "__main__":
     unittest.main()

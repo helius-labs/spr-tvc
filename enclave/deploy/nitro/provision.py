@@ -4,18 +4,17 @@ import argparse
 import base64
 import http.client
 import json
-import re
 import socket
 import struct
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from approval import KEY_ARN
 from kms_policy import context
 
 MAX_ENVELOPE = 6144
 MAX_EVIDENCE = 16384
-KEY_ARN = re.compile(r"arn:aws:kms:([a-z0-9-]+):([0-9]{12}):key/[0-9a-f-]{36}")
 
 
 class BootstrapConnection(http.client.HTTPConnection):

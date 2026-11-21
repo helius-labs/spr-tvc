@@ -1,70 +1,58 @@
-"""Rewrap one share from an independently verified custody receipt."""
+"""Release one custody share to a quorum-approved, sealed Nitro target."""
 
 import argparse
 import base64
-import hashlib
 import json
 import subprocess
 from pathlib import Path
 
+from approval import check_approvals, key_result, kms, parse_json, read_json
+from custody_ledger import load_epoch, open_share
+from deployment import LABEL, target
 from kms_policy import context
-from provision import KEY_ARN
 
 
-def kms(key, operation, arguments=(), plaintext=None):
-    region = KEY_ARN.fullmatch(key)[1]
-    reply = subprocess.run([
-        "aws", "--region", region, "--no-cli-pager", "--output", "json", "kms", operation,
-        "--key-id", key, "--cli-binary-format", "base64", *arguments,
-    ], input=plaintext, capture_output=True, timeout=25, check=False)
-    if reply.returncode:
-        raise ValueError(f"KMS {operation} failed")
-    result = json.loads(reply.stdout)
-    if result.get("KeyId") != key:
-        raise ValueError(f"unexpected KMS key for {operation}")
-    return result
+def sealed_policy(key, expected):
+    metadata = kms(key, "describe-key")["KeyMetadata"]
+    if (metadata.get("Arn") != key or metadata.get("KeySpec") != "SYMMETRIC_DEFAULT" or
+            metadata.get("KeyUsage") != "ENCRYPT_DECRYPT" or metadata.get("Origin") != "AWS_KMS" or
+            metadata.get("MultiRegion") is not False or metadata.get("KeyState") != "Enabled"):
+        raise ValueError("destination requires an enabled, single-region symmetric KMS key")
+    policy = parse_json(kms(key, "get-key-policy", ["--policy-name", "default"])["Policy"])
+    if policy != expected:
+        raise ValueError("installed wrapping key policy does not match the approved target")
 
 
-def wrap(receipt, index, recovery_key, wrapping_key, release):
-    recovery = KEY_ARN.fullmatch(recovery_key)
-    wrapper = KEY_ARN.fullmatch(wrapping_key)
-    if not recovery or not wrapper or recovery[2] != wrapper[2] or recovery_key == wrapping_key:
-        raise ValueError("use two immutable KMS keys in the same custodian account")
+def wrap(trust, approval, build, index):
+    if index not in range(1, 7):
+        raise ValueError("invalid custody slot")
+    manifest = approval["manifest"]
+    _, receipt, custodians = load_epoch(trust, manifest["custodyEpoch"])
+    keys, policies, _ = target(trust, approval, receipt, custodians, build)
+    check_approvals(keys, LABEL, approval)
+    wrapping_key = manifest["wrappingKeys"][index - 1]
+    sealed_policy(wrapping_key, policies[index - 1])
     custody = receipt["custody"]
     domain = receipt["securityDomainId"]
     epoch = custody["epoch"]
-    ctx = context(receipt["network"], domain, release, epoch, index)
-    package = receipt["packages"][index - 1]
-    public = base64.b64decode(kms(recovery_key, "get-public-key")["PublicKey"], validate=True)
-    if hashlib.sha256(public).hexdigest() != package["recipientSha256"]:
-        raise ValueError("custodian key does not match the verified receipt")
-
-    capsule = base64.b64encode(bytes.fromhex(package["ciphertext"])).decode()
-    plaintext = base64.b64decode(kms(recovery_key, "decrypt", [
-        "--encryption-algorithm", "RSAES_OAEP_SHA_256", "--ciphertext-blob", capsule,
-    ])["Plaintext"], validate=True)
-    if len(plaintext) != 41 or int.from_bytes(plaintext[:8], "big") != int(epoch) or plaintext[8] != index:
-        raise ValueError("share identity does not match the custody epoch and slot")
-    committed = hashlib.sha256(b"SPR/native-nitro/custody-share/v1" + bytes.fromhex(domain) + plaintext)
-    if committed.hexdigest() != custody["shareCommitments"][index - 1]:
-        raise ValueError("decrypted share does not match the verified receipt")
-    return base64.b64decode(kms(wrapping_key, "encrypt", [
+    ctx = context(receipt["network"], domain, manifest["releaseId"], epoch, index)
+    plaintext = open_share(custodians[index - 1], receipt, index)
+    return base64.b64decode(key_result(wrapping_key, "encrypt", [
         "--plaintext", "fileb:///dev/stdin", "--encryption-context", json.dumps(ctx),
     ], plaintext)["CiphertextBlob"], validate=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("verified_receipt", type=Path)
+    parser.add_argument("trust", type=Path)
+    parser.add_argument("target", type=Path)
+    parser.add_argument("build", type=Path)
     parser.add_argument("share", type=int, choices=range(1, 7))
-    parser.add_argument("recovery_key")
-    parser.add_argument("wrapping_key")
-    parser.add_argument("release")
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
     try:
-        receipt = json.loads(args.verified_receipt.read_text())
-        ciphertext = wrap(receipt, args.share, args.recovery_key, args.wrapping_key, args.release)
+        trust, approval = map(read_json, (args.trust, args.target))
+        ciphertext = wrap(trust, approval, args.build, args.share)
         with args.output.open("xb") as output:
             output.write(ciphertext)
     except (OSError, ValueError, KeyError, TypeError, IndexError, subprocess.TimeoutExpired) as error:

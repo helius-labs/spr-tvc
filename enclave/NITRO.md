@@ -7,13 +7,14 @@ SPR senders can encrypt an output for a wallet that has no registry entry. The s
 | Actor | Authority |
 | --- | --- |
 | Wallet owner | Signs a decrypt batch and the response public key. The matching response private key opens its reply. |
-| Six note-share custodians | Each holds the recovery key for one Shamir share. Any three can commission a measured target or rotate custody. Recovering the seed with fewer than three shares would require breaking the public commitments. |
+| Six note-share custodians | Each controls one sealed RSA recovery key in its own AWS account. All six prove recovery before a custody epoch is committed. Three shares can then commission an approved target or rotate custody. |
+| Custody approval signers | Two of three pinned KMS keys approve the custody record or authorize release of shares to one measured target. The custody ledger admits one record per epoch. |
 | Release signers | At least two distinct pinned P-256 keys authorize a policy. Use two of three separately controlled KMS signing keys. Each signed target names an HTTPS route, release ID, executable SHA-256 and PCR0–PCR3. |
 | EC2 parent and ingress | Can choose when and where to forward requests, and can deny service. See note ciphertexts, wrapped shares, TLS metadata, timings and sizes. Never receive note plaintext or a private key via the protocol. |
-| AWS Nitro and KMS | Nitro isolates enclave memory and signs evidence. Each KMS key enforces its own measured-target and context restrictions. The two share accounts must have separate administrators and recovery access. |
+| AWS Nitro, KMS and S3 | Nitro isolates enclave memory and signs evidence. KMS enforces key policies. S3 serializes conditional creation of custody records in a separately administered bucket. |
 | Wallet integration | Distributes pinned policy URL, network, security domain, note seed commitment, authority public keys, threshold, minimum release sequence and minimum custody epoch. Stores the highest accepted sequence, policy digest and custody floor in durable atomic state. |
 
-A release must pass **both** controls. The custodians can provision a measured target that wallets will refuse until the release signers authorize it. The release signers can authorize a target that remains unready until three valid shares are provisioned. Review the source, EIF and key policies before either approval. A malicious image approved by both controls can disclose the seed. Each custody account has independent administration and recovery access. No principal should reach the custody or release-signing threshold.
+Commissioning requires two approvals of the exact target and three custodian shares. Wallets separately require a signed release policy and fresh attestation. A malicious enclave with three shares can disclose the seed even if wallets refuse to connect. Review the source and the measured artifact before approving share release. Account administration and role assumption must preserve the independence of custodians and approval signers.
 
 ## Custody and startup
 
@@ -34,7 +35,17 @@ for up to five minutes. Each receipt binds a verifier nonce and
 `SHA256("SPR/native-nitro/custody/v1" || canonical result)` in Nitro evidence.
 The ceremony serves only the custody port. Its measured recipient list controls
 where shares can be sent. A reboot can issue a different record for the same
-epoch. Qualify one exact record and use it consistently.
+epoch. The capture retains the original evidence, challenge and verification
+time. Two approval signers reverify the proof and bind the record to the six
+recovery keys and its exact predecessor. All six custodians attest that their
+sealed key can open its share. A conditional S3 write commits one record for
+the epoch. Signers and custodians fetch that canonical record when authorizing
+and wrapping for a target.
+
+Custodians verify the quorum-approved build and destination and compare the
+installed KMS policies to the approved role, context and measurements before
+opening a share. A custodian workstation temporarily sees its one share.
+KMS rewraps it for the target. The host sees ciphertext during this flow.
 
 A serving EIF measures its network, release, security domain and current
 custody record. Both serving and rotation use the same bootstrap:
@@ -69,6 +80,6 @@ The parent may replay a previously encrypted request to the same boot. Any resul
 
 ## QuorumOS decision
 
-Native Nitro uses a smaller runtime for this service. AWS/KMS provides measured secret release, two independently administered share keys provide custody, and wallet release signers provide promotion and rollback authorization. Self-hosted QuorumOS can provide a threshold boot ceremony and authenticated key forwarding. It adds a boot manifest, key forwarding and a common Quorum Key to the audit surface. Revisit it if the custodian model requires a native hardware-share ceremony or quorum-governed forwarding across clouds. Preserve the independent note seed and distinct client release authority in either design. The hosted QOS build remains a separate deployment path. [QuorumOS key forwarding](https://github.com/tkhq/qos/blob/main/docs/key_forward.md)
+Native Nitro uses AWS KMS for measured secret release, six recovery keys for threshold custody, and wallet release signers for promotion and rollback. Self-hosted QuorumOS provides a threshold boot ceremony and authenticated key forwarding across compatible environments. It adds a boot manifest, key forwarding and a common Quorum Key to the audit surface. Revisit it for custody across clouds. [QuorumOS key forwarding](https://github.com/tkhq/qos/blob/main/docs/key_forward.md)
 
 See [operator runbook](deploy/nitro/README.md), [invariants](../tests/INVARIANTS.md) and [internal audit](../tests/AUDIT.md).

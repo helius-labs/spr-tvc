@@ -75,6 +75,24 @@ fn rejects_insufficient_duplicate_foreign_and_wrong_seed_shares() {
     assert_eq!(*custody.restore(&DOMAIN, &available).unwrap().0, *seed.0);
 }
 
+#[test]
+fn rejects_mixing_shares_from_two_ceremonies_for_the_same_epoch() {
+    let seed = NoteSeed(Zeroizing::new([0x88; 32]));
+    let (canonical, shares) = fixture(2, &seed);
+    let (competing, other_shares) = fixture(2, &seed);
+    assert_eq!(
+        canonical.note_seed_commitment,
+        competing.note_seed_commitment
+    );
+    let mixed = Zeroizing::new(vec![
+        shares[0].clone(),
+        shares[1].clone(),
+        other_shares[2].clone(),
+    ]);
+    assert!(canonical.restore(&DOMAIN, &mixed).is_none());
+    assert!(competing.restore(&DOMAIN, &mixed).is_none());
+}
+
 fn keys() -> Vec<PKey<Private>> {
     (0..SHARE_COUNT)
         .map(|_| PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap())

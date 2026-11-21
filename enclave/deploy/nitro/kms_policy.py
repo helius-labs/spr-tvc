@@ -5,6 +5,8 @@ import hashlib
 import json
 import re
 
+from approval import ROLE_ARN, arn
+
 
 def context(network, domain, release, epoch, share):
     if network not in {"devnet", "mainnet"}:
@@ -25,11 +27,55 @@ def context(network, domain, release, epoch, share):
     }
 
 
+def statement(sid, effect, principal, action, **conditions):
+    return {"Sid": sid, "Effect": effect, "Principal": principal, "Action": action, "Resource": "*", **conditions}
+
+
+def allow(sid, role, action, **conditions):
+    return statement(sid, "Allow", {"AWS": role}, action, **conditions)
+
+
+def deny(sid, action, **conditions):
+    return statement(sid, "Deny", "*", action, **conditions)
+
+
+def seal():
+    return deny("SealKey", ["kms:PutKeyPolicy", "kms:CreateGrant", "kms:ReEncryptFrom",
+                            "kms:ReplicateKey", "kms:UpdatePrimaryRegion"])
+
+
+def retirement(role):
+    return allow("KeyRetirement", role, ["kms:DescribeKey", "kms:GetKeyPolicy",
+                                        "kms:ScheduleKeyDeletion", "kms:CancelKeyDeletion"])
+
+
+def recovery_policy(custodian, key_admin):
+    if custodian == key_admin or arn(ROLE_ARN, custodian)[1] != arn(ROLE_ARN, key_admin)[1]:
+        raise ValueError("expected separate recovery and retirement roles in the custodian account")
+    return {"Version": "2012-10-17", "Statement": [
+        seal(),
+        deny("DenyOtherCustodian", "kms:Decrypt", Condition={"StringNotEquals": {"aws:PrincipalArn": custodian}}),
+        retirement(key_admin),
+        statement("ReadRecoveryPublicKey", "Allow", "*", "kms:GetPublicKey"),
+        allow("OpenRecoveryShare", custodian, ["kms:DescribeKey", "kms:GetKeyPolicy", "kms:Decrypt"]),
+    ]}
+
+
+def acknowledgement_policy(custodian, key_admin):
+    if custodian == key_admin or arn(ROLE_ARN, custodian)[1] != arn(ROLE_ARN, key_admin)[1]:
+        raise ValueError("expected separate signing and retirement roles in the custodian account")
+    return {"Version": "2012-10-17", "Statement": [
+        seal(),
+        deny("DenyOtherCustodian", "kms:Sign", Condition={"StringNotEquals": {"aws:PrincipalArn": custodian}}),
+        retirement(key_admin),
+        statement("VerifyAcknowledgement", "Allow", "*", "kms:Verify"),
+        allow("AcknowledgeShare", custodian, ["kms:GetKeyPolicy", "kms:Sign"]),
+    ]}
+
+
 def key_policy(host, custodian, key_admin, measurements, ctx):
     roles = [host, custodian, key_admin]
-    if len(set(roles)) != len(roles) or any(
-        not re.fullmatch(r"arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+", arn) for arn in roles
-    ):
+    if len({arn(ROLE_ARN, role)[0] for role in roles}) != len(roles):
         raise ValueError("expected distinct IAM roles for boot, encryption and key retirement")
     pins = {key: measurements[key] for key in ("PCR0", "PCR1", "PCR2")}
     pins["PCR3"] = hashlib.sha384(bytes(48) + host.encode()).hexdigest()
@@ -41,18 +87,22 @@ def key_policy(host, custodian, key_admin, measurements, ctx):
         "ForAllValues:StringEquals": {"kms:EncryptionContextKeys": list(ctx)},
     }
 
-    def allow(sid, role, action, **args):
-        return {"Sid": sid, "Effect": "Allow", "Principal": {"AWS": role},
-                "Action": action, "Resource": "*", **args}
-
     return {
         "Version": "2012-10-17",
         "Statement": [
-            {"Sid": "SealKey", "Effect": "Deny", "Principal": "*", "Resource": "*",
-             "Action": ["kms:PutKeyPolicy", "kms:CreateGrant", "kms:ReEncryptFrom",
-                        "kms:ReplicateKey", "kms:UpdatePrimaryRegion"]},
-            allow("KeyRetirement", key_admin, ["kms:DescribeKey", "kms:GetKeyPolicy",
-                                             "kms:ScheduleKeyDeletion", "kms:CancelKeyDeletion"]),
+            seal(),
+            # Explicit denials also apply if a key had a grant before its policy was sealed.
+            deny("DenyOtherHost", "kms:Decrypt", Condition={"StringNotEquals": {"aws:PrincipalArn": host}}),
+            *[deny(f"DenyWrong{pcr}", "kms:Decrypt", Condition={
+                "StringNotEqualsIgnoreCase": {"kms:RecipientAttestation:" + pcr: pin},
+            }) for pcr, pin in pins.items()],
+            *[deny(f"DenyWrongContext{index}", "kms:Decrypt", Condition={"StringNotEquals": {field: value}})
+              for index, (field, value) in enumerate(context_equals.items())],
+            deny("DenyExtraContext", "kms:Decrypt", Condition={
+                "ForAnyValue:StringNotEquals": {"kms:EncryptionContextKeys": list(ctx)},
+            }),
+            retirement(key_admin),
+            allow("InspectBeforeWrap", custodian, ["kms:DescribeKey", "kms:GetKeyPolicy"]),
             allow("WrapShare", custodian, "kms:Encrypt", Condition=conditions),
             allow("ProvisionAttestedEnclave", host, "kms:Decrypt", Condition={
                 **conditions,
