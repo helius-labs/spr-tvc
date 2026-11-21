@@ -83,10 +83,54 @@ def ledger_prefix(trust):
 
 
 def ledger_object(trust, epoch):
-    ledger, prefix = ledger_prefix(trust)
     context(trust["network"], trust["securityDomainId"], "custody", epoch, 1)
-    return ledger["region"], ["--bucket", ledger["bucket"], "--expected-bucket-owner", ledger["account"],
-                               "--key", f"{prefix}{epoch}.json"]
+    return f"{epoch}.json"
+
+
+def storage(trust, operation, args):
+    ledger, _ = ledger_prefix(trust)
+    return aws(ledger["region"], "s3api", operation, [
+        "--bucket", ledger["bucket"], "--expected-bucket-owner", ledger["account"], *args,
+    ])
+
+
+def read_object(trust, name):
+    _, prefix = ledger_prefix(trust)
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "record.json"
+        storage(trust, "get-object", ["--key", prefix + name, "--range", f"bytes=0-{MAX_DOCUMENT_BYTES}", str(path)])
+        return read_json(path)
+
+
+def write_once(trust, name, document, subject):
+    _, prefix = ledger_prefix(trust)
+    payload = canonical(document) + b"\n"
+    if len(payload) > MAX_DOCUMENT_BYTES:
+        raise ValueError("record exceeds the ledger size limit")
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "record.json"
+            path.write_bytes(payload)
+            storage(trust, "put-object", ["--key", prefix + name, "--if-none-match", "*", "--body", str(path)])
+    except (ValueError, subprocess.TimeoutExpired):
+        # Resolve ambiguous writes by reading the authenticated immutable subject.
+        if subject(read_object(trust, name)) != subject(document):
+            raise ValueError("a different record is already committed") from None
+
+
+def list_objects(trust, name):
+    _, prefix = ledger_prefix(trust)
+    args = ["--prefix", prefix + name, "--max-keys", "100", "--no-paginate"]
+    while True:
+        page = storage(trust, "list-objects-v2", args)
+        for entry in page.get("Contents", []):
+            object_key = entry["Key"]
+            if not object_key.startswith(prefix + name):
+                raise ValueError("ledger listed an object outside its prefix")
+            yield object_key[len(prefix):]
+        if not page.get("IsTruncated"):
+            return
+        args = [*args[:5], "--continuation-token", page["NextContinuationToken"]]
 
 
 def ledger_policy(trust, publisher, readers):
@@ -107,15 +151,15 @@ def ledger_policy(trust, publisher, readers):
          "Action": "s3:PutObject", "Resource": resource},
         {"Sid": "AllowReaders", "Effect": "Allow", "Principal": {"AWS": sorted(set([publisher, *readers]))},
          "Action": "s3:GetObject", "Resource": resource},
+        {"Sid": "ListCustodyTargetsAndRetirement", "Effect": "Allow",
+         "Principal": {"AWS": sorted(set([publisher, *readers]))}, "Action": "s3:ListBucket",
+         "Resource": f"arn:aws:s3:::{ledger['bucket']}",
+         "Condition": {"StringLike": {"s3:prefix": [f"{prefix}targets/*", f"{prefix}retired/*"]}}},
     ]}
 
 
 def load_epoch(trust, epoch):
-    region, args = ledger_object(trust, epoch)
-    with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "custody.json"
-        aws(region, "s3api", "get-object", [*args, "--range", f"bytes=0-{MAX_DOCUMENT_BYTES}", str(path)])
-        document = read_json(path)
+    document = read_object(trust, ledger_object(trust, epoch))
     receipt, custodians = record(trust, document)
     if receipt["custody"]["epoch"] != epoch:
         raise ValueError("canonical custody receipt belongs to another epoch")
@@ -251,20 +295,13 @@ def publish(trust, document):
     check_commit(trust, document, receipt, custodians)
     check_previous(trust, document, receipt)
     epoch = receipt["custody"]["epoch"]
-    region, args = ledger_object(trust, epoch)
-    payload = canonical(document) + b"\n"
-    if len(payload) > MAX_DOCUMENT_BYTES:
-        raise ValueError("custody receipt exceeds the ledger size limit")
-    try:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "custody.json"
-            path.write_bytes(payload)
-            aws(region, "s3api", "put-object", [*args, "--if-none-match", "*", "--body", str(path)])
-    except (ValueError, subprocess.TimeoutExpired):
-        # Resolve concurrent publication and ambiguous network failures by reading the winner.
-        committed, _, _ = load_epoch(trust, epoch)
-        if committed["authorization"]["manifest"] != document["authorization"]["manifest"]:
-            raise ValueError("a different custody receipt is already committed for this epoch") from None
+    def subject(committed):
+        stored_receipt, roster = record(trust, committed)
+        if stored_receipt["custody"]["epoch"] != epoch:
+            raise ValueError("canonical custody receipt belongs to another epoch")
+        check_commit(trust, committed, stored_receipt, roster)
+        return committed["authorization"]["manifest"]
+    write_once(trust, ledger_object(trust, epoch), document, subject)
 
 
 def main():

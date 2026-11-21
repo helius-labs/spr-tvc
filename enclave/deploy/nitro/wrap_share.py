@@ -9,7 +9,7 @@ from time import time
 
 from approval import check_approvals, key_result, kms, parse_json, read_json, require_kms_key
 from custody_ledger import load_epoch, open_share
-from deployment import LABEL, target
+from deployment import LABEL, require_registered_target, target
 from kms_policy import context
 
 
@@ -34,6 +34,7 @@ def wrap(trust, approval, build, index):
     domain = receipt["securityDomainId"]
     epoch = custody["epoch"]
     ctx = context(receipt["network"], domain, manifest["releaseId"], epoch, index)
+    require_registered_target(trust, manifest)
     if time() >= manifest["expiresAt"]:
         raise ValueError("target approval expired before share release")
     plaintext = open_share(custodians[index - 1], receipt, index)

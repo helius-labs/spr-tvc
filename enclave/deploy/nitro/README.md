@@ -123,12 +123,14 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
      "$approval_deadline" > target-draft.json
    python3 "$nitro/deployment.py" trust.json "$build_dir" sign target-draft.json "$approval_key" \
      target-signed.json --source-commit "$reviewed_commit"
+   python3 "$nitro/deployment.py" trust.json "$build_dir" register target-signed.json
    python3 "$nitro/wrap_share.py" trust.json target-signed.json "$build_dir" "$share_index" share.kms
    ```
 
-   `wrap_share.py` reads the authenticated receipt from the ledger and checks
-   the actual installed wrapping and recovery key policies before decrypting
-   the share. A trusted custodian workstation sees one plaintext share during
+   Register with the dedicated ledger publisher. The ledger keeps the exact
+   signed target and all six wrapping-key ARNs. Before decrypting a share,
+   `wrap_share.py` checks registration, the open epoch, and both installed key
+   policies. A trusted custodian workstation sees one plaintext share during
    acknowledgement and wrapping. The tool writes only the wrapped ciphertext.
    Obtain more than three ciphertexts so a boot can tolerate unavailable keys.
 3. Give the parent `kms:Decrypt` only on the exact slot's wrapping key ARNs,
@@ -157,14 +159,30 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
 2. Commission new serving slots from the new receipt and cold-boot from three
    new shares. Through the real ingress, use the wallet to open a note
    addressed before rotation. Keep healthy old slots during qualification.
-3. Sign and publish a higher-sequence policy covering the qualified slots.
-   Allow overlap while the floor covers both epochs. To retire an epoch,
-   publish another higher sequence, set `minimumCustodyEpoch` to the new epoch
-   and remove all old targets. Drain the older sessions, stop the old enclaves
-   and retire their wrapping and recovery keys after qualification.
-   A higher policy sequence cannot lower the recorded floor. Rebuilding an
-   older serving version for the current epoch can qualify it again.
-4. A leaked threshold of old shares still exposes the underlying seed.
+3. Allow overlap while the wallet policy floor covers both epochs. After a
+   cold boot and wallet canary on the new epoch, publish a policy with
+   `minimumCustodyEpoch` at the new epoch. Drain old sessions and stop the old
+   enclaves. An older executable can be built for the current epoch if needed.
+4. Pin the file SHA-256 of the independently distributed wallet trust bundle
+   as `walletTrustSha256` in the custody trust file. Draft, sign twice and
+   publish a retirement record. Each step verifies the canonical wallet policy
+   and attests its replacement replicas. Publication closes the old epoch to
+   new wraps. Each slot's inventory includes its recovery key and all wrapping
+   keys registered before retirement, including those from in-flight requests.
+
+   ```sh
+   python3 "$nitro/retirement.py" trust.json draft wallet-trust.json 1 2 > retire-draft.json
+   python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-draft.json "$approval_key" > retire-signed.json
+   python3 "$nitro/retirement.py" trust.json publish wallet-trust.json retire-signed.json
+   python3 "$nitro/retirement.py" trust.json inspect 1 "$share_index"
+   ```
+
+   Each retirement role checks its inventory against the installed KMS policies,
+   schedules approved keys for deletion, and repeats `inspect` with
+   `--check-inactive`. Capture the results before AWS deletes the key metadata.
+   Cold-boot again from three current custodians and open a note from before
+   rotation. Retain the old signed receipt and its public trust pins.
+5. A leaked threshold of old shares still exposes the underlying seed.
    Refreshing shares controls future access. A seed compromise requires
    owner-authorized migration to a new seed domain.
 

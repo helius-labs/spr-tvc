@@ -9,9 +9,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import approval_keys, sha256
-from custody_ledger import ACKNOWLEDGEMENT, LABEL, acknowledge, ledger_policy, load_epoch, publish, record, verify_archive
+from custody_ledger import ACKNOWLEDGEMENT, LABEL, acknowledge, ledger_policy, load_epoch, publish, record, verify_archive, write_once
+from deployment import LABEL as TARGET, register_target, require_registered_target
 from kms_policy import acknowledgement_policy
 from nitro_fixtures import DOMAIN, HOST, key, pin, schedule, sign
+from retirement import LABEL as RETIRE, commit_retirement, inspect_keys, key_inventory, qualified_manifest
 
 READ_ROLE = "arn:aws:iam::000000000001:role/custodian"
 PUBLISHER = "arn:aws:iam::000000000008:role/publisher"
@@ -60,6 +62,11 @@ class CustodyLedgerTests(unittest.TestCase):
     def aws(self, region, service, operation, args):
         self.assertEqual((region, service), ("eu-north-1", "s3api"))
         self.assertEqual(args[args.index("--expected-bucket-owner") + 1], "000000000008")
+        if operation == "list-objects-v2":
+            prefix = args[args.index("--prefix") + 1]
+            self.assertTrue(prefix.startswith(f"spr-custody/devnet/{DOMAIN}/"))
+            with self.lock:
+                return {"Contents": [{"Key": name} for name in sorted(self.objects) if name.startswith(prefix)]}
         name = args[args.index("--key") + 1]
         self.assertTrue(name.startswith(f"spr-custody/devnet/{DOMAIN}/"))
         with self.lock:
@@ -168,3 +175,67 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertEqual(statements["RestrictPublisher"]["Condition"], {"StringNotEquals": {"aws:PrincipalArn": PUBLISHER}})
         self.assertIn("s3:DeleteObject", statements["PreserveCustodyHistory"]["Action"])
         self.assertEqual(statements["AllowReaders"]["Principal"], {"AWS": [READ_ROLE, PUBLISHER]})
+        self.assertEqual(statements["ListCustodyTargetsAndRetirement"]["Condition"], {
+            "StringLike": {"s3:prefix": [f"spr-custody/devnet/{DOMAIN}/{part}/*" for part in ("targets", "retired")]},
+        })
+
+    def signed_subject(self, label, manifest):
+        return {"manifest": manifest, "signatures": [sign(label, manifest, member["keyArn"])
+                                                    for member in approval_keys(self.trust)[:2]]}
+
+    @patch("retirement.qualified_policy", return_value="fe" * 32)
+    def test_closing_an_epoch_freezes_share_release_and_preserves_the_full_key_inventory(self, qualification):
+        first = self.sign(self.document(1))
+        publish(self.trust, first)
+        _, old, _ = load_epoch(self.trust, "1")
+        publish(self.trust, self.sign(self.document(2, old, variant="fe")))
+        target = {
+            "network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "1", "receiptSha256": sha256(old),
+            "approvalFromEpoch": "1", "releaseId": "old-slot", "hostRole": HOST,
+            "wrappingKeys": [key(account, 11) for account in range(1, 7)],
+            "pcrs": {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)},
+        }
+        target_doc = self.signed_subject(TARGET, target)
+        with self.assertRaisesRegex(ValueError, "object missing"):
+            require_registered_target(self.trust, target)
+        register_target(self.trust, target_doc)
+        require_registered_target(self.trust, target)
+
+        marker = qualified_manifest(self.trust, None, "1", "2")
+        retired = self.signed_subject(RETIRE, marker)
+        qualification.return_value = "cd" * 32
+        with self.assertRaisesRegex(ValueError, "no longer matches"):
+            commit_retirement(self.trust, None, retired)
+        require_registered_target(self.trust, target)
+        qualification.return_value = marker["walletPolicyDigest"]
+        concurrent = {**target, "releaseId": "other-slot", "wrappingKeys": [key(account, 12) for account in range(1, 7)]}
+
+        def register_during_retirement(*args):
+            write_once(*args)
+            commit_retirement(self.trust, None, retired)
+
+        with patch("deployment.write_once", side_effect=register_during_retirement):
+            with self.assertRaisesRegex(ValueError, "retired"):
+                register_target(self.trust, self.signed_subject(TARGET, concurrent))
+        with self.assertRaisesRegex(ValueError, "retired"):
+            require_registered_target(self.trust, target)
+        with self.assertRaisesRegex(ValueError, "retired"):
+            register_target(self.trust, target_doc)
+
+        self.trust["approvalKeys"].append(schedule("3", 9))
+        role, inventory = key_inventory(self.trust, "1", 1)
+        self.assertTrue(role.endswith(":role/retirement"))
+        self.assertEqual(set(inventory), {key(1), key(1, 11), key(1, 12)})
+
+        states = {key(1): "PendingDeletion", key(1, 11): "Enabled", key(1, 12): "PendingDeletion"}
+
+        def describe(arn, operation, args=()):
+            if operation == "get-key-policy":
+                return {"Policy": json.dumps(inventory[arn])}
+            return {"KeyMetadata": {"Arn": arn, "KeyState": states[arn]}}
+
+        with patch("retirement.kms", side_effect=describe):
+            with self.assertRaisesRegex(ValueError, "remains usable"):
+                inspect_keys(self.trust, "1", 1, True)
+            states[key(1, 11)] = "Disabled"
+            self.assertEqual({row["state"] for row in inspect_keys(self.trust, "1", 1, True)["keys"]}, set(states.values()))

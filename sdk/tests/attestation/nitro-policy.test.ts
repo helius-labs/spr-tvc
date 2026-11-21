@@ -2,6 +2,7 @@ import { p256 } from "@noble/curves/p256";
 import { describe, expect, it } from "vitest";
 import {
   advancesNitroPolicy, nextNitroPublication, nitroPolicySigningDigest, nitroPublication, validateNitroTrust, verifyNitroPolicy,
+  verifyRetirementPolicy,
   type NitroPolicy, type NitroTrust,
 } from "../../src/attestation/nitro-policy.js";
 import { signP256Prehash } from "../../src/crypto/p256.js";
@@ -188,5 +189,17 @@ describe("native Nitro release policy", () => {
     expect(() => nextNitroPublication(next, previous, rotated, now, {
       ...trust, publication: { ...trust.publication, account: "000000000002" },
     })).toThrow();
+  });
+
+  it("requires a current activation that has already raised the floor to the retiring epoch's replacement", () => {
+    const replacement = { ...binding.targets[0]!, custodyEpoch: "2" };
+    const policy = { ...binding, minimumCustodyEpoch: "2", targets: [replacement] };
+    expect(verifyRetirementPolicy(manifest(policy, 0, 1), trust, "2", now).policy).toEqual(policy);
+    for (const unsafe of [
+      { ...policy, minimumCustodyEpoch: "1" },
+      { ...policy, action: "revoke", targets: [] } as const,
+      { ...policy, targets: [{ ...replacement, custodyEpoch: "3" }] },
+    ]) expect(() => verifyRetirementPolicy(manifest(unsafe, 0, 1), trust, "2", now)).toThrow();
+    expect(() => verifyRetirementPolicy(manifest(policy, 0, 1), trust, "2", now + 100n)).toThrow();
   });
 });

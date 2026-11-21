@@ -8,13 +8,65 @@ import time
 from pathlib import Path
 
 from approval import (
-    KEY_ARN, ROLE_ARN, add_approval, approval_keys, arn, canonical, fields, file_digest, hex_digest, read_json, sha256,
+    KEY_ARN, ROLE_ARN, add_approval, approval_keys, arn, canonical, check_approvals, epoch_number,
+    fields, file_digest, hex_digest, read_json, sha256,
 )
-from custody_ledger import check_acknowledgement_key, check_recovery_key, load_epoch, validate_roster
+from custody_ledger import (
+    check_acknowledgement_key, check_recovery_key, list_objects, load_epoch, read_object, validate_roster, write_once,
+)
 from kms_policy import context, key_policy
 from provenance import verify as verify_build
 
 LABEL = "target-approval"
+
+
+def verify_target_approval(trust, document, historical=False):
+    manifest = document["manifest"]
+    epoch = manifest["approvalFromEpoch"]
+    schedule = trust["approvalKeys"]
+    if historical:
+        if not any(entry["fromEpoch"] == epoch for entry in schedule):
+            raise ValueError("unknown target approval roster")
+        keys = approval_keys(trust, epoch)
+    else:
+        keys = approval_keys(trust)
+        if schedule[-1]["fromEpoch"] != epoch:
+            raise ValueError("target requires the current approval roster")
+    check_approvals(keys, LABEL, document)
+    return manifest
+
+
+def target_object_name(manifest):
+    epoch_number(manifest["custodyEpoch"])
+    return f"targets/{manifest['custodyEpoch']}/{sha256(manifest)}.json"
+
+
+def retirement_object_name(epoch):
+    epoch_number(epoch)
+    return f"retired/{epoch}.json"
+
+
+def require_active_epoch(trust, epoch):
+    name = retirement_object_name(epoch)
+    if name in list_objects(trust, name):
+        raise ValueError("custody epoch is retired")
+
+
+def register_target(trust, document):
+    manifest = verify_target_approval(trust, document)
+    epoch = manifest["custodyEpoch"]
+    require_active_epoch(trust, epoch)
+    write_once(trust, target_object_name(manifest), document, lambda stored: verify_target_approval(trust, stored))
+    require_active_epoch(trust, epoch)
+
+
+def require_registered_target(trust, manifest):
+    # Registration precedes the retirement check. Every wrap admitted before
+    # the marker will appear in the subsequent inventory, even if it ends later.
+    recorded = read_object(trust, target_object_name(manifest))
+    if verify_target_approval(trust, recorded) != manifest:
+        raise ValueError("target does not match the immutable deployment register")
+    require_active_epoch(trust, manifest["custodyEpoch"])
 
 
 def target(trust, document, receipt, custodians, build):
@@ -22,7 +74,9 @@ def target(trust, document, receipt, custodians, build):
     fields(document, "manifest", "signatures")
     manifest = document["manifest"]
     fields(manifest, "network", "securityDomainId", "custodyEpoch", "receiptSha256", "releaseId", "mode", "expiresAt",
-           "eifSha256", "configurationSha256", "pcrs", "hostRole", "wrappingKeys", "nextCustodians")
+           "eifSha256", "configurationSha256", "pcrs", "hostRole", "wrappingKeys", "nextCustodians", "approvalFromEpoch")
+    if manifest["approvalFromEpoch"] != trust["approvalKeys"][-1]["fromEpoch"]:
+        raise ValueError("target requires the current approval roster")
     network, domain, release = manifest["network"], manifest["securityDomainId"], manifest["releaseId"]
     if (network, domain) != (trust["network"], trust["securityDomainId"]) or (
         network, domain
@@ -109,6 +163,8 @@ def main():
     sign.add_argument("key")
     sign.add_argument("output", type=Path)
     sign.add_argument("--source-commit", required=True)
+    register = commands.add_parser("register")
+    register.add_argument("target", type=Path)
     args = parser.parse_args()
     try:
         trust = read_json(args.trust)
@@ -127,6 +183,7 @@ def main():
                 "configurationSha256": file_digest(config_path), "pcrs": {pcr: measured[pcr] for pcr in ("PCR0", "PCR1", "PCR2")},
                 "hostRole": args.host_role, "wrappingKeys": read_json(args.wrapping_keys),
                 "nextCustodians": read_json(args.next_roster) if args.next_roster else None,
+                "approvalFromEpoch": trust["approvalKeys"][-1]["fromEpoch"],
             }, "signatures": []}
             target(trust, document, receipt, custodians, args.build)
             print(canonical(document).decode())
@@ -134,6 +191,10 @@ def main():
         document = read_json(args.target)
         _, receipt, custodians = load_epoch(trust, document["manifest"]["custodyEpoch"])
         keys, _, next_keys = target(trust, document, receipt, custodians, args.build)
+        if args.command == "register":
+            register_target(trust, document)
+            return
+        require_active_epoch(trust, receipt["custody"]["epoch"])
         verify_build(args.build, receipt["network"], args.source_commit)
         for key, fingerprint in next_keys:
             check_recovery_key(key, fingerprint)

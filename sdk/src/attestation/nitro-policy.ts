@@ -195,6 +195,13 @@ export function nextNitroPublication(
   return true;
 }
 
+export function verifyRetirementPolicy(text: string, trust: NitroTrust, replacementEpoch: string, now: bigint) {
+  const { policy, checkpoint } = verifyNitroPolicy(text, trust, now);
+  if (policy.action !== "activate" || decodeDecimalU64(policy.minimumCustodyEpoch) < decodeDecimalU64(replacementEpoch) ||
+      !policy.targets.some(target => target.custodyEpoch === replacementEpoch)) invalid();
+  return { policy, checkpoint };
+}
+
 /** Returns true for a new policy or a repeat of the exact same policy. */
 export function advancesNitroPolicy(current: NitroPolicyCheckpoint | undefined, next: NitroPolicyCheckpoint): boolean {
   if (!current) return true;

@@ -42,7 +42,7 @@ class TargetApprovalTests(unittest.TestCase):
         } for i in range(1, 7)]
         self.manifest = {
             "network": "devnet", "securityDomainId": DOMAIN, "receiptSha256": sha256(self.receipt),
-            "custodyEpoch": "5",
+            "custodyEpoch": "5", "approvalFromEpoch": "1",
             "releaseId": "release-a", "mode": "serve", "expiresAt": int(time.time()) + 3600,
             "eifSha256": file_digest(self.build / "enclave.eif"),
             "configurationSha256": file_digest(self.build / "configuration.json"),
@@ -63,6 +63,7 @@ class TargetApprovalTests(unittest.TestCase):
         self.enterContext(patch("custody_ledger.kms", side_effect=self.kms))
         self.enterContext(patch("wrap_share.kms", side_effect=self.kms))
         self.ledger = self.enterContext(patch("wrap_share.load_epoch", side_effect=self.load_epoch))
+        self.registry = self.enterContext(patch("wrap_share.require_registered_target"))
 
     def load_epoch(self, trust, epoch):
         self.assertEqual(trust, self.trust)
@@ -92,6 +93,7 @@ class TargetApprovalTests(unittest.TestCase):
 
     def test_quorum_and_installed_policy_checked_before_opening_one_share(self):
         self.assertEqual(self.wrap(), b"wrapped")
+        self.registry.assert_called_once_with(self.trust, self.manifest)
         self.assertEqual(self.calls, ["describe-key", "get-key-policy", "get-key-policy", "describe-key",
                                       "get-public-key", "decrypt", "encrypt"])
 
@@ -168,6 +170,14 @@ class TargetApprovalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "uncommitted"):
             self.wrap()
         self.assertEqual(self.calls, [])
+
+    def test_unregistered_or_retired_target_cannot_decrypt(self):
+        for detail in ("target not registered", "custody epoch is retired"):
+            self.calls.clear()
+            self.registry.side_effect = ValueError(detail)
+            with self.assertRaisesRegex(ValueError, detail):
+                self.wrap()
+            self.assertNotIn("decrypt", self.calls)
 
     def test_rotation_binds_new_recovery_keys_and_rejects_reuse(self):
         self.manifest["mode"] = "rotate"
