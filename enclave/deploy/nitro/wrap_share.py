@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from time import time
 
-from approval import check_approvals, key_result, kms, parse_json, read_json
+from approval import check_approvals, key_result, kms, parse_json, read_json, require_kms_key
 from custody_ledger import load_epoch, open_share
 from deployment import LABEL, target
 from kms_policy import context
@@ -15,10 +15,7 @@ from kms_policy import context
 
 def sealed_policy(key, expected):
     metadata = kms(key, "describe-key")["KeyMetadata"]
-    if (metadata.get("Arn") != key or metadata.get("KeySpec") != "SYMMETRIC_DEFAULT" or
-            metadata.get("KeyUsage") != "ENCRYPT_DECRYPT" or metadata.get("Origin") != "AWS_KMS" or
-            metadata.get("MultiRegion") is not False or metadata.get("KeyState") != "Enabled"):
-        raise ValueError("destination requires an enabled, single-region symmetric KMS key")
+    require_kms_key(metadata, key, {"SYMMETRIC_DEFAULT"}, "ENCRYPT_DECRYPT")
     policy = parse_json(kms(key, "get-key-policy", ["--policy-name", "default"])["Policy"])
     if policy != expected:
         raise ValueError("installed wrapping key policy does not match the approved target")

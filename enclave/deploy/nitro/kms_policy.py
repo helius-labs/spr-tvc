@@ -5,12 +5,7 @@ import hashlib
 import json
 import re
 
-from approval import ROLE_ARN, arn
-
-
-def validate_epoch(epoch):
-    if not isinstance(epoch, str) or not re.fullmatch(r"[1-9][0-9]{0,19}", epoch) or int(epoch) > 2**64-1:
-        raise ValueError("invalid custody epoch")
+from approval import ROLE_ARN, arn, epoch_number
 
 
 def context(network, domain, release, epoch, share):
@@ -20,7 +15,7 @@ def context(network, domain, release, epoch, share):
         raise ValueError("invalid security domain")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", release) or share not in range(1, 7):
         raise ValueError("invalid release or share")
-    validate_epoch(epoch)
+    epoch_number(epoch)
     return {
         "purpose": "spr-note-share",
         "network": network,
@@ -60,13 +55,13 @@ def validate_custodian_roles(custodian, key_admin):
 
 def recovery_policy(custodian, key_admin, epoch):
     validate_custodian_roles(custodian, key_admin)
-    validate_epoch(epoch)
+    epoch_number(epoch)
     return {"Version": "2012-10-17", "Statement": [
         seal(),
         deny("DenyOtherCustodian", "kms:Decrypt", Condition={"StringNotEquals": {"aws:PrincipalArn": custodian}}),
         retirement(key_admin),
-        statement("ReadRecoveryPublicKey", "Allow", "*", "kms:GetPublicKey"),
-        allow(f"OpenRecoveryShareEpoch{epoch}", custodian, ["kms:DescribeKey", "kms:GetKeyPolicy", "kms:Decrypt"]),
+        statement("ReadRecoveryPublicKey", "Allow", "*", ["kms:DescribeKey", "kms:GetPublicKey"]),
+        allow(f"OpenRecoveryShareEpoch{epoch}", custodian, ["kms:GetKeyPolicy", "kms:Decrypt"]),
     ]}
 
 
@@ -76,7 +71,7 @@ def acknowledgement_policy(custodian, key_admin):
         seal(),
         deny("DenyOtherCustodian", "kms:Sign", Condition={"StringNotEquals": {"aws:PrincipalArn": custodian}}),
         retirement(key_admin),
-        statement("VerifyAcknowledgement", "Allow", "*", "kms:Verify"),
+        statement("ReadAcknowledgementPublicKey", "Allow", "*", ["kms:DescribeKey", "kms:GetPublicKey"]),
         allow("AcknowledgeShare", custodian, ["kms:GetKeyPolicy", "kms:Sign"]),
     ]}
 

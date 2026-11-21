@@ -9,25 +9,19 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
-from approval import sha256, signature_args
+from approval import sha256
 from deployment import LABEL, file_digest, target
 from kms_policy import recovery_policy
+from nitro_fixtures import DOMAIN, HOST, key, pin, schedule, sign
 from wrap_share import wrap
 
-DOMAIN = "ab" * 32
-HOST = "arn:aws:iam::000000000007:role/host"
 PINS = {f"PCR{index}": byte * 48 for index, byte in enumerate(("12", "23", "34"))}
-DER_SIGNATURE = base64.b64encode(bytes.fromhex("3006020101020101")).decode()
-
-
-def key(account, slot=1):
-    return f"arn:aws:kms:eu-north-1:{account:012}:key/12345678-1234-1234-1234-{slot:012}"
 
 
 class TargetApprovalTests(unittest.TestCase):
     def setUp(self):
         self.build = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
-        self.trust = {"network": "devnet", "securityDomainId": DOMAIN, "approvalKeys": [key(i) for i in (8, 9, 10)]}
+        self.trust = {"network": "devnet", "securityDomainId": DOMAIN, "approvalKeys": [schedule()]}
         self.share = (5).to_bytes(8, "big") + b"\x01" + bytes([0x44]) * 32
         commitment = hashlib.sha256(b"SPR/native-nitro/custody-share/v1" + bytes.fromhex(DOMAIN) + self.share).hexdigest()
         spki = hashlib.sha256(b"public").hexdigest()
@@ -42,7 +36,7 @@ class TargetApprovalTests(unittest.TestCase):
         (self.build / "measurements.json").write_text(json.dumps({"Measurements": PINS}))
         (self.build / "enclave.eif").write_bytes(b"EIF fixture")
         self.custodians = [{
-            "recoveryKeyArn": key(i), "acknowledgementKeyArn": key(i, 3),
+            "recoveryKeyArn": key(i), "acknowledgementKey": pin(key(i, 3)),
             "custodianRole": f"arn:aws:iam::{i:012}:role/custodian",
             "retirementRole": f"arn:aws:iam::{i:012}:role/retirement",
         } for i in range(1, 7)]
@@ -55,16 +49,16 @@ class TargetApprovalTests(unittest.TestCase):
             "pcrs": PINS, "hostRole": HOST, "wrappingKeys": [key(i, 2) for i in range(1, 7)], "nextCustodians": None,
         }
         self.approval = {"manifest": self.manifest, "signatures": [
-            {"keyArn": signer, "signature": DER_SIGNATURE} for signer in self.trust["approvalKeys"][:2]
+            sign(LABEL, self.manifest, signer["keyArn"]) for signer in self.trust["approvalKeys"][0]["keys"][:2]
         ]}
         _, policies, _ = target(self.trust, self.approval, self.receipt, self.custodians, self.build)
         self.policy = policies[0]
         self.recovery_policy = recovery_policy(self.custodians[0]["custodianRole"], self.custodians[0]["retirementRole"], "5")
-        self.signed = signature_args(LABEL, self.manifest)
         self.calls = []
         self.policy_key = key(1, 2)
         self.key_metadata = {"Arn": self.policy_key, "KeySpec": "SYMMETRIC_DEFAULT", "KeyUsage": "ENCRYPT_DECRYPT",
                              "Origin": "AWS_KMS", "MultiRegion": False, "KeyState": "Enabled"}
+        self.recovery_metadata = {**self.key_metadata, "Arn": key(1), "KeySpec": "RSA_2048"}
         self.enterContext(patch("approval.kms", side_effect=self.kms))
         self.enterContext(patch("custody_ledger.kms", side_effect=self.kms))
         self.enterContext(patch("wrap_share.kms", side_effect=self.kms))
@@ -77,11 +71,8 @@ class TargetApprovalTests(unittest.TestCase):
 
     def kms(self, arn, operation, args=(), body=None):
         self.calls.append(operation)
-        if operation == "verify":
-            return {"KeyId": arn, "SignatureValid": args == [*self.signed, "--signature", DER_SIGNATURE],
-                    "SigningAlgorithm": "ECDSA_SHA_256"}
         if operation == "describe-key":
-            return {"KeyMetadata": self.key_metadata}
+            return {"KeyMetadata": self.key_metadata if arn == self.policy_key else self.recovery_metadata}
         if operation == "get-key-policy":
             return {"Policy": json.dumps(self.policy if arn == self.policy_key else self.recovery_policy)}
         if operation == "get-public-key":
@@ -101,7 +92,7 @@ class TargetApprovalTests(unittest.TestCase):
 
     def test_quorum_and_installed_policy_checked_before_opening_one_share(self):
         self.assertEqual(self.wrap(), b"wrapped")
-        self.assertEqual(self.calls, ["verify", "verify", "describe-key", "get-key-policy", "get-key-policy",
+        self.assertEqual(self.calls, ["describe-key", "get-key-policy", "get-key-policy", "describe-key",
                                       "get-public-key", "decrypt", "encrypt"])
 
     def test_no_decrypt_without_quorum_or_with_duplicate_signer(self):
@@ -111,13 +102,13 @@ class TargetApprovalTests(unittest.TestCase):
                 self.approval["signatures"] = signatures
                 with self.assertRaises(ValueError):
                     self.wrap()
-        self.assertTrue(all(call == "verify" for call in self.calls))
+        self.assertEqual(self.calls, [])
 
     def test_replacement_wrapping_key_invalidates_approvals(self):
         self.manifest["wrappingKeys"][0] = key(1, 4)
         with self.assertRaisesRegex(ValueError, "signature"):
             self.wrap()
-        self.assertEqual(self.calls, ["verify"])
+        self.assertEqual(self.calls, [])
 
     def test_rejects_receipt_and_eif_substitution(self):
         self.receipt["packages"][0]["ciphertext"] = "00" * 256
@@ -133,19 +124,28 @@ class TargetApprovalTests(unittest.TestCase):
         self.policy["Statement"].pop(0)
         with self.assertRaisesRegex(ValueError, "installed wrapping key policy"):
             self.wrap()
-        self.assertEqual(self.calls, ["verify", "verify", "describe-key", "get-key-policy"])
+        self.assertEqual(self.calls, ["describe-key", "get-key-policy"])
 
     def test_rejects_permissive_recovery_key_policy_before_decrypting(self):
         self.recovery_policy["Statement"].pop(1)
         with self.assertRaisesRegex(ValueError, "installed recovery key policy"):
             self.wrap()
-        self.assertEqual(self.calls, ["verify", "verify", "describe-key", "get-key-policy", "get-key-policy"])
+        self.assertEqual(self.calls, ["describe-key", "get-key-policy", "get-key-policy"])
 
     def test_rejects_a_recovery_key_sealed_for_another_epoch(self):
         self.recovery_policy = recovery_policy(self.custodians[0]["custodianRole"], self.custodians[0]["retirementRole"], "4")
         with self.assertRaisesRegex(ValueError, "installed recovery key policy"):
             self.wrap()
         self.assertNotIn("decrypt", self.calls)
+
+    def test_rejects_imported_or_replicated_recovery_material_before_decrypting(self):
+        expected = self.recovery_metadata
+        for changes in ({"Origin": "EXTERNAL"}, {"MultiRegion": True}):
+            self.recovery_metadata = {**expected, **changes}
+            self.calls.clear()
+            with self.assertRaisesRegex(ValueError, "generated by AWS KMS"):
+                self.wrap()
+            self.assertNotIn("decrypt", self.calls)
 
     def test_rechecks_expiration_after_the_destination_policy_is_verified(self):
         with patch("wrap_share.time", return_value=self.manifest["expiresAt"]):

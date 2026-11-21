@@ -8,10 +8,10 @@ from threading import Lock
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
-from approval import sha256, signature_args
-from custody_ledger import ACKNOWLEDGEMENT, LABEL, acknowledge, ledger_policy, load_epoch, publish, record
+from approval import approval_keys, sha256
+from custody_ledger import ACKNOWLEDGEMENT, LABEL, acknowledge, ledger_policy, load_epoch, publish, record, verify_archive
 from kms_policy import acknowledgement_policy
-from test_target_approval import DER_SIGNATURE, DOMAIN, HOST, key
+from nitro_fixtures import DOMAIN, HOST, key, pin, schedule, sign
 
 READ_ROLE = "arn:aws:iam::000000000001:role/custodian"
 PUBLISHER = "arn:aws:iam::000000000008:role/publisher"
@@ -20,18 +20,17 @@ PUBLISHER = "arn:aws:iam::000000000008:role/publisher"
 class CustodyLedgerTests(unittest.TestCase):
     def setUp(self):
         self.trust = {
-            "network": "devnet", "securityDomainId": DOMAIN, "approvalKeys": [key(i) for i in (8, 9, 10)],
+            "network": "devnet", "securityDomainId": DOMAIN, "approvalKeys": [schedule()],
             "ledger": {"bucket": "custody-journal", "account": "000000000008", "region": "eu-north-1"},
         }
         self.objects = {}
         self.lock = Lock()
-        self.signatures = set()
         self.enterContext(patch("custody_ledger.aws", side_effect=self.aws))
-        self.enterContext(patch("approval.kms", side_effect=self.kms))
+        self.enterContext(patch("approval.kms", side_effect=AssertionError("receipt verification must not call KMS")))
 
     def document(self, epoch, predecessor=None, variant="ab"):
         roster = [{
-            "recoveryKeyArn": key(index, epoch), "acknowledgementKeyArn": key(index, 8),
+            "recoveryKeyArn": key(index, epoch), "acknowledgementKey": pin(key(index, 8)),
             "custodianRole": f"arn:aws:iam::{index:012}:role/custodian",
             "retirementRole": f"arn:aws:iam::{index:012}:role/retirement",
         } for index in range(1, 7)]
@@ -49,14 +48,13 @@ class CustodyLedgerTests(unittest.TestCase):
         }
         return {"authorization": {"manifest": manifest, "signatures": []}, "acknowledgements": []}
 
-    def sign(self, document):
+    def sign(self, document, approvals=None):
         manifest = document["authorization"]["manifest"]
-        def signatures(label, keys):
-            for arn in keys:
-                self.signatures.add((arn, tuple(signature_args(label, manifest))))
-            return [{"keyArn": arn, "signature": DER_SIGNATURE} for arn in keys]
-        document["authorization"]["signatures"] = signatures(LABEL, self.trust["approvalKeys"][:2])
-        document["acknowledgements"] = signatures(ACKNOWLEDGEMENT, [c["acknowledgementKeyArn"] for c in manifest["custodians"]])
+        if approvals is None:
+            approvals = approval_keys(self.trust, manifest["capture"]["receipt"]["custody"]["epoch"])
+        document["authorization"]["signatures"] = [sign(LABEL, manifest, key["keyArn"]) for key in approvals[:2]]
+        document["acknowledgements"] = [sign(ACKNOWLEDGEMENT, manifest, c["acknowledgementKey"]["keyArn"])
+                                        for c in manifest["custodians"]]
         return document
 
     def aws(self, region, service, operation, args):
@@ -75,10 +73,6 @@ class CustodyLedgerTests(unittest.TestCase):
             else:
                 raise ValueError("object missing")
         return {}
-
-    def kms(self, arn, operation, args=(), body=None):
-        self.assertEqual(operation, "verify")
-        return {"KeyId": arn, "SigningAlgorithm": "ECDSA_SHA_256", "SignatureValid": (arn, tuple(args[:-2])) in self.signatures}
 
     def test_one_concurrent_commit_wins_and_retry_reads_winner(self):
         left, right = [self.sign(self.document(1, variant=variant)) for variant in ("ab", "fe")]
@@ -127,6 +121,28 @@ class CustodyLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "distinct accounts"):
             publish(self.trust, self.sign(document))
         self.assertEqual(self.objects, {})
+
+    def test_approval_rotation_keeps_old_receipts_verifiable_but_cannot_approve_new_epochs(self):
+        publish(self.trust, self.sign(self.document(1)))
+        self.trust["approvalKeys"].append(schedule("2", 9))
+        _, previous, _ = load_epoch(self.trust, "1")
+        draft = self.document(2, previous)
+        with self.assertRaisesRegex(ValueError, "invalid or duplicate approval"):
+            publish(self.trust, self.sign(draft, approval_keys(self.trust, "1")))
+        publish(self.trust, self.sign(draft))
+        self.assertEqual(load_epoch(self.trust, "1")[1], previous)
+        self.assertEqual(load_epoch(self.trust, "2")[1]["custody"]["epoch"], "2")
+
+    def test_archive_verifies_without_s3_or_kms_and_requires_the_exact_document_pin(self):
+        document = self.sign(self.document(1))
+        digest = sha256(document)
+        with patch("custody_ledger.aws", side_effect=AssertionError("archive verification must not call S3")):
+            self.assertEqual(verify_archive(self.trust, document, digest), record(self.trust, document)[0])
+            document["acknowledgements"][0]["signature"] = document["authorization"]["signatures"][0]["signature"]
+            with self.assertRaisesRegex(ValueError, "pinned custody document digest"):
+                verify_archive(self.trust, document, digest)
+            with self.assertRaisesRegex(ValueError, "invalid custody approval signature"):
+                verify_archive(self.trust, document, sha256(document))
 
     @patch("custody_ledger.add_approval")
     @patch("custody_ledger.open_share", side_effect=ValueError("recovery package failed"))

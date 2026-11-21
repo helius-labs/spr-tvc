@@ -10,18 +10,20 @@ wrapping keys in independently administered accounts.
 Use six independently administered AWS accounts, a separate enclave host
 account and a dedicated publisher role for the custody bucket. Each custodian
 uses distinct IAM roles for opening its share and retiring its keys. In each
-custody account provision an RSA KMS `ENCRYPT_DECRYPT` key and a P-256 KMS
-`SIGN_VERIFY` key. Only the custodian role should sign acknowledgements. The
-three approval keys are P-256 KMS keys in three separately administered
-accounts. The commands need `kms:Verify` on the public signing keys they check.
-They only need `kms:Sign` when approving or acknowledging a record.
+custody account provision a single-region, KMS-generated RSA `ENCRYPT_DECRYPT`
+key and a P-256 `SIGN_VERIFY` key. Only the custodian role signs acknowledgements.
+The three approval keys are P-256 KMS keys in three separately administered
+accounts. Sign with KMS and verify the signatures locally with OpenSSL.
+Export public keys as `{keyArn, publicKey}` with `python3 enclave/deploy/nitro/approval.py "$key_arn"`.
 
 Pin `trust.json` outside the host and artifact distributor. It contains
 `network`, `securityDomainId` (32 random bytes in lowercase hex), `approvalKeys`
-(three immutable KMS signing key ARNs), and `ledger` with `bucket`, `region` and
-`account` (the 12-digit bucket owner's account ID). The ordered `roster.json`
-contains six entries with `recoveryKeyArn`, `acknowledgementKeyArn`,
-`custodianRole` and `retirementRole`. The first entry owns share 1.
+and `ledger` with `bucket`, `region` and `account` (the 12-digit bucket owner's
+account ID). `approvalKeys` is an increasing array of `{fromEpoch, keys}`.
+Start with `fromEpoch: "1"` and three exported approval key objects. The ordered
+`roster.json` contains six entries with `recoveryKeyArn`, `acknowledgementKey`
+(an exported key object), `custodianRole` and `retirementRole`. The first entry
+owns share 1.
 
 ```sh
 nitro=enclave/deploy/nitro
@@ -40,9 +42,8 @@ reading directly from S3. Install each custodian's two policies at key creation
 with `--bypass-policy-lockout-safety-check`. Only the custodian role can decrypt
 with the recovery key or sign with the acknowledgement key. The recovery
 policy is sealed under its assigned epoch. Operators use six fresh recovery
-keys for the next epoch and keep acknowledgement keys available for verifying
-ledger history. Governance reviewers can retrieve the recovery public key to
-verify its fingerprint. Grant the corresponding cross-account IAM permissions.
+keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
+`kms:GetPublicKey` for the proposed recovery and acknowledgement keys.
 
 ## Commit a custody epoch
 
@@ -94,7 +95,16 @@ verify its fingerprint. Grant the corresponding cross-account IAM permissions.
    candidate. The first successful conditional write fixes the receipt for that
    epoch. Each rotation must name the previous committed receipt and preserve
    its seed commitment. The encrypted packages and attestation stay in the
-   ledger. Custodians can retain separate copies for disaster recovery.
+   ledger. Use `archive <epoch>` to retain the full signed record and pin its
+   SHA-256 over canonical JSON without a trailing newline. `verify-archive`
+   takes that independent pin and verifies the record without AWS access.
+
+   To change custody approval keys, append a schedule entry for the first
+   uncommitted epoch and distribute the updated trust file independently.
+   Each receipt uses the roster for its epoch. Target approvals use the
+   newest pinned roster. Keep the historical public keys in disaster
+   recovery copies of the trust file. The retired private signing keys can
+   be disabled once the new roster is ready.
 
 ## Commission a measured target
 

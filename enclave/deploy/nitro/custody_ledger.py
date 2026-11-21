@@ -10,13 +10,15 @@ from pathlib import Path
 
 from approval import (
     KEY_ARN, ROLE_ARN, MAX_DOCUMENT_BYTES, add_approval, approval_keys, arn, aws, canonical, check_approvals,
-    fields, file_digest, hex_digest, key_result, kms, parse_json, read_json, sha256,
+    fields, file_digest, get_signing_key, hex_digest, key_result, kms, parse_json, read_json, require_kms_key,
+    sha256, signing_key,
 )
 from kms_policy import acknowledgement_policy, context, recovery_policy, validate_custodian_roles
 from provenance import verify as verify_build
 
 LABEL = "custody-epoch"
 ACKNOWLEDGEMENT = "custodian-acknowledgement"
+RECOVERY_SPECS = {"RSA_2048", "RSA_3072", "RSA_4096"}
 
 
 def record(trust, document):
@@ -52,17 +54,21 @@ def record(trust, document):
 
 def validate_roster(custodians, host):
     accounts = {arn(ROLE_ARN, host)[1]}
+    public_keys = set()
     if not isinstance(custodians, list) or len(custodians) != 6:
         raise ValueError("custody requires six recovery accounts")
     for custodian in custodians:
-        fields(custodian, "recoveryKeyArn", "acknowledgementKeyArn", "custodianRole", "retirementRole")
-        recovery, acknowledgement = custodian["recoveryKeyArn"], custodian["acknowledgementKeyArn"]
+        fields(custodian, "recoveryKeyArn", "acknowledgementKey", "custodianRole", "retirementRole")
+        ack = custodian["acknowledgementKey"]
+        public = signing_key(ack)
+        recovery, acknowledgement = custodian["recoveryKeyArn"], ack["keyArn"]
         account = arn(KEY_ARN, recovery)[2]
-        if (account in accounts or recovery == acknowledgement or arn(KEY_ARN, acknowledgement)[2] != account or
+        if (public in public_keys or account in accounts or recovery == acknowledgement or arn(KEY_ARN, acknowledgement)[2] != account or
                 arn(ROLE_ARN, custodian["custodianRole"])[1] != account):
             raise ValueError("custody requires distinct accounts and a separate acknowledgment key per custodian")
         validate_custodian_roles(custodian["custodianRole"], custodian["retirementRole"])
         accounts.add(account)
+        public_keys.add(public)
 
 
 def ledger_prefix(trust):
@@ -113,7 +119,7 @@ def load_epoch(trust, epoch):
     receipt, custodians = record(trust, document)
     if receipt["custody"]["epoch"] != epoch:
         raise ValueError("canonical custody receipt belongs to another epoch")
-    check_commit(trust, document, custodians)
+    check_commit(trust, document, receipt, custodians)
     return document, receipt, custodians
 
 
@@ -121,10 +127,18 @@ def acknowledgements(document):
     return {"manifest": document["authorization"]["manifest"], "signatures": document["acknowledgements"]}
 
 
-def check_commit(trust, document, custodians):
-    check_approvals(approval_keys(trust), LABEL, document["authorization"])
-    check_approvals([custodian["acknowledgementKeyArn"] for custodian in custodians],
+def check_commit(trust, document, receipt, custodians):
+    check_approvals(approval_keys(trust, receipt["custody"]["epoch"]), LABEL, document["authorization"])
+    check_approvals([custodian["acknowledgementKey"] for custodian in custodians],
                     ACKNOWLEDGEMENT, acknowledgements(document), minimum=6)
+
+
+def verify_archive(trust, document, expected_digest):
+    if sha256(document) != hex_digest(expected_digest):
+        raise ValueError("archive does not match the pinned custody document digest")
+    receipt, custodians = record(trust, document)
+    check_commit(trust, document, receipt, custodians)
+    return receipt
 
 
 def draft(trust, capture, build, host, roster):
@@ -154,11 +168,18 @@ def check_previous(trust, document, receipt):
 
 
 def check_recovery_key(key, expected_fingerprint):
+    require_kms_key(kms(key, "describe-key")["KeyMetadata"], key, RECOVERY_SPECS, "ENCRYPT_DECRYPT")
     public = key_result(key, "get-public-key")
     fingerprint = hashlib.sha256(base64.b64decode(public["PublicKey"], validate=True)).hexdigest()
-    if (public.get("KeyUsage") != "ENCRYPT_DECRYPT" or public.get("KeySpec") not in {"RSA_2048", "RSA_3072", "RSA_4096"} or
+    if (public.get("KeyUsage") != "ENCRYPT_DECRYPT" or public.get("KeySpec") not in RECOVERY_SPECS or
             "RSAES_OAEP_SHA_256" not in public.get("EncryptionAlgorithms", []) or fingerprint != expected_fingerprint):
         raise ValueError("recovery key does not match its recovery package")
+
+
+def check_acknowledgement_key(custodian):
+    key = custodian["acknowledgementKey"]
+    if get_signing_key(key["keyArn"]) != key:
+        raise ValueError("acknowledgement public key does not match the custodian KMS key")
 
 
 def open_share(custodian, receipt, index):
@@ -203,29 +224,31 @@ def sign_epoch(trust, document, key, build, source_commit):
                    input=canonical(capture), timeout=25, check=True)
     for custodian, package in zip(custodians, receipt["packages"], strict=True):
         check_recovery_key(custodian["recoveryKeyArn"], package["recipientSha256"])
-    return {**document, "authorization": add_approval(approval_keys(trust), LABEL, authorization, key)}
+        check_acknowledgement_key(custodian)
+    keys = approval_keys(trust, receipt["custody"]["epoch"])
+    return {**document, "authorization": add_approval(keys, LABEL, authorization, key)}
 
 
 def acknowledge(trust, document, index):
     receipt, custodians = record(trust, document)
-    check_approvals(approval_keys(trust), LABEL, document["authorization"])
+    check_approvals(approval_keys(trust, receipt["custody"]["epoch"]), LABEL, document["authorization"])
     check_previous(trust, document, receipt)
     if index not in range(1, 7):
         raise ValueError("invalid custody slot")
     custodian = custodians[index - 1]
-    key = custodian["acknowledgementKeyArn"]
+    key = custodian["acknowledgementKey"]["keyArn"]
     expected = acknowledgement_policy(custodian["custodianRole"], custodian["retirementRole"])
     if parse_json(kms(key, "get-key-policy", ["--policy-name", "default"])["Policy"]) != expected:
         raise ValueError("installed acknowledgement policy does not match the custodian role")
     open_share(custodian, receipt, index)
-    keys = [member["acknowledgementKeyArn"] for member in custodians]
+    keys = [member["acknowledgementKey"] for member in custodians]
     approved = add_approval(keys, ACKNOWLEDGEMENT, acknowledgements(document), key)
     return {**document, "acknowledgements": approved["signatures"]}
 
 
 def publish(trust, document):
     receipt, custodians = record(trust, document)
-    check_commit(trust, document, custodians)
+    check_commit(trust, document, receipt, custodians)
     check_previous(trust, document, receipt)
     epoch = receipt["custody"]["epoch"]
     region, args = ledger_object(trust, epoch)
@@ -267,6 +290,11 @@ def main():
     post.add_argument("candidate", type=Path)
     get = commands.add_parser("read")
     get.add_argument("epoch")
+    archive = commands.add_parser("archive")
+    archive.add_argument("epoch")
+    verify = commands.add_parser("verify-archive")
+    verify.add_argument("archive", type=Path)
+    verify.add_argument("sha256")
     policy = commands.add_parser("policy")
     policy.add_argument("publisher")
     policy.add_argument("readers", nargs="+")
@@ -293,9 +321,12 @@ def main():
             document = draft(trust, read_json(args.capture), args.build, args.host_role, read_json(args.roster))
             print(canonical(document).decode())
             return
-        if args.command == "read":
-            _, receipt, _ = load_epoch(trust, args.epoch)
-            print(canonical(receipt).decode())
+        if args.command in {"read", "archive"}:
+            document, receipt, _ = load_epoch(trust, args.epoch)
+            print(canonical(receipt if args.command == "read" else document).decode())
+            return
+        if args.command == "verify-archive":
+            print(canonical(verify_archive(trust, read_json(args.archive), args.sha256)).decode())
             return
         document = read_json(args.candidate)
         if args.command == "publish":

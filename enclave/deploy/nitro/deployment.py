@@ -10,7 +10,7 @@ from pathlib import Path
 from approval import (
     KEY_ARN, ROLE_ARN, add_approval, approval_keys, arn, canonical, fields, file_digest, hex_digest, read_json, sha256,
 )
-from custody_ledger import check_recovery_key, load_epoch, validate_roster
+from custody_ledger import check_acknowledgement_key, check_recovery_key, load_epoch, validate_roster
 from kms_policy import context, key_policy
 from provenance import verify as verify_build
 
@@ -137,6 +137,8 @@ def main():
         verify_build(args.build, receipt["network"], args.source_commit)
         for key, fingerprint in next_keys:
             check_recovery_key(key, fingerprint)
+        for custodian in document["manifest"]["nextCustodians"] or ():
+            check_acknowledgement_key(custodian)
         approved = add_approval(keys, LABEL, document, args.key)
         with args.output.open("xb") as output:
             output.write(canonical(approved) + b"\n")

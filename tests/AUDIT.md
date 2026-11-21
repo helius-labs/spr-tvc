@@ -21,7 +21,7 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | Q-03 | Release pipeline and fleet | Exercise the protected native EIF workflow, verify its actual provenance bundle and set up the dedicated publisher and signer roles. Verify S3 publication, browser CORS, TLS ingress, rate limits, logs, target isolation, failover, capacity and certificate rotation on a long-running devnet fleet. The production infrastructure and signer roles are outside this worktree. |
 | Q-04 | Mainnet and migration | Confirm whether existing registered or unregistered wallet value depends on the hosted note-key domain. Preserve existing keys or use an owner-authorized migration. Perform a real devnet send, claim and sweep across the upgrade. The AWS drill used synthetic committed notes and the real SPR SDK. |
 | Q-05 | External security review | Review crypto and secret lifetimes, independent custodians' backups, policy replay windows, AWS roles and runtime measurements against the deployable commit. Reproduce the checks below and disposition any remaining dependency and platform risks. Require reviewer sign-off before accepting mainnet funds. |
-| Q-06 | Historical custody verification | Reading the ledger still calls `kms:Verify` on approval and acknowledgement keys. Pin and archive the authorized public keys so cold recovery can verify historical signatures after old signing keys are disabled or replaced. |
+| Q-06 | Historical custody verification | Rehearse exporting a committed receipt and its digest, replacing custody approval keys, disabling retired signing keys, and verifying the archived receipt with the pinned trust schedule. Local tests use real P-256 signatures with KMS unavailable. |
 
 ## 3-of-6 custody rehearsal
 
