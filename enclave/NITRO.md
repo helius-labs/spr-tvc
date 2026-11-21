@@ -45,13 +45,22 @@ epoch. The capture retains the original evidence, challenge and verification
 time. Two approval signers reverify the proof and bind the record to the six
 recovery keys and its exact predecessor. All six custodians attest that their
 sealed key can open its share. A conditional S3 write commits one record for
-the epoch. Signers and custodians fetch that canonical record when authorizing
-and wrapping for a target.
+the epoch. Historical receipts verify with the public keys pinned for their
+epoch. Retiring an approval or acknowledgement signing key leaves those
+receipts verifiable offline.
 
-Custodians verify the quorum-approved build and destination and compare the
-installed KMS policies to the approved role, context and measurements before
-opening a share. A custodian workstation temporarily sees its one share.
-KMS rewraps it for the target. The host sees ciphertext during this flow.
+Custodians verify the quorum-approved build and registered destination and
+compare its KMS policies to the approved role, context and measurements before
+opening a share. A custodian workstation temporarily sees its one share. KMS
+rewraps it for the target. The host sees ciphertext during this flow.
+
+The wallet publisher raises the custody floor after the replacement attests.
+Custody signers then verify the published floor and the exact replacement
+receipt before closing the old epoch. The ledger blocks new wraps and lists
+all registered wrapping keys. The retirement roles make those keys and the
+old recovery keys unusable. Drain the old enclaves before collecting the
+retirement evidence. An already reconstructed seed remains in the memory of
+its serving enclave until that enclave stops.
 
 A serving EIF measures its network, release, security domain and current
 custody record. Both serving and rotation use the same bootstrap:
