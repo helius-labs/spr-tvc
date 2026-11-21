@@ -1,0 +1,76 @@
+name: Build native Nitro EIF
+
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: Network compiled into the enclave
+        required: true
+        type: choice
+        options: [devnet, mainnet]
+      configuration:
+        description: Reviewed configuration.json contents
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: native-eif-${{ inputs.network }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      SPR_NETWORK: ${{ inputs.network }}
+      NITRO_CLI_REVISION: 536dca352e130e23bb39b6227753c91ad702048d # aws-nitro-enclaves-cli v1.5.3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: aws/aws-nitro-enclaves-cli
+          ref: ${{ env.NITRO_CLI_REVISION }}
+          path: .nitro-source
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libclang-dev libssl-dev musl-tools
+          cargo install --locked --path .nitro-source --root "$RUNNER_TEMP/nitro"
+      - name: Build measured artifact
+        env:
+          CONFIGURATION_JSON: ${{ inputs.configuration }}
+        run: |
+          RUSTFLAGS='-C target-feature=+crt-static' \
+            cargo build --release --locked --manifest-path enclave/native/Cargo.toml --target x86_64-unknown-linux-musl
+          printf '%s' "$CONFIGURATION_JSON" > "$RUNNER_TEMP/configuration.json"
+          export PATH="$RUNNER_TEMP/nitro/bin:$PATH"
+          export NITRO_CLI_BLOBS="$GITHUB_WORKSPACE/.nitro-source/blobs/x86_64"
+          export NITRO_CLI_LOGS_PATH="$RUNNER_TEMP/nitro-logs"
+          mkdir -p "$NITRO_CLI_LOGS_PATH" dist
+          enclave/deploy/nitro/build-eif.sh \
+            enclave/native/target/x86_64-unknown-linux-musl/release/spr-nitro-decryption-service \
+            "$RUNNER_TEMP/configuration.json" dist/native
+          python3 -B enclave/deploy/nitro/provenance.py dist/native "$SPR_NETWORK" "$GITHUB_SHA" > dist/native/provenance.json
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: dist/native/provenance.json
+      - name: Package provenance bundle
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE" dist/native/provenance.intoto.jsonl
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-eif-${{ inputs.network }}-${{ github.sha }}
+          path: dist/native/
+          if-no-files-found: error

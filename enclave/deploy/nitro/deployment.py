@@ -12,6 +12,7 @@ from approval import (
 )
 from custody_ledger import check_recovery_key, load_epoch, validate_roster
 from kms_policy import context, key_policy
+from provenance import verify as verify_build
 
 LABEL = "target-approval"
 
@@ -107,6 +108,7 @@ def main():
     sign.add_argument("target", type=Path)
     sign.add_argument("key")
     sign.add_argument("output", type=Path)
+    sign.add_argument("--source-commit", required=True)
     args = parser.parse_args()
     try:
         trust = read_json(args.trust)
@@ -132,12 +134,13 @@ def main():
         document = read_json(args.target)
         _, receipt, custodians = load_epoch(trust, document["manifest"]["custodyEpoch"])
         keys, _, next_keys = target(trust, document, receipt, custodians, args.build)
+        verify_build(args.build, receipt["network"], args.source_commit)
         for key, fingerprint in next_keys:
             check_recovery_key(key, fingerprint)
         approved = add_approval(keys, LABEL, document, args.key)
         with args.output.open("xb") as output:
             output.write(canonical(approved) + b"\n")
-    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         raise SystemExit(str(error)) from None
 
 

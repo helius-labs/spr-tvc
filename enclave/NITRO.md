@@ -16,6 +16,12 @@ SPR senders can encrypt an output for a wallet that has no registry entry. The s
 
 Commissioning requires two approvals of the exact target and three custodian shares. Wallets separately require a signed release policy and fresh attestation. A malicious enclave with three shares can disclose the seed even if wallets refuse to connect. Review the source and the measured artifact before approving share release. Account administration and role assumption must preserve the independence of custodians and approval signers.
 
+Custody and target signers require GitHub build provenance from the designated
+native EIF workflow on `main`, at the exact commit approved in review. The
+workflow attests a manifest that hashes the enclave executable, configuration,
+EIF and PCR0–PCR2. The signer checks those inputs before authorizing the target.
+The KMS wrapping policy additionally pins PCR3 to the parent role.
+
 ## Custody and startup
 
 An initialization EIF measures the network, security domain and six ordered RSA
