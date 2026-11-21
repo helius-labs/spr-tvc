@@ -1,7 +1,7 @@
 import { p256 } from "@noble/curves/p256";
 import { describe, expect, it } from "vitest";
 import {
-  advancesNitroPolicy, nitroPolicySigningDigest, validateNitroTrust, verifyNitroPolicy,
+  advancesNitroPolicy, nextNitroPublication, nitroPolicySigningDigest, nitroPublication, validateNitroTrust, verifyNitroPolicy,
   type NitroPolicy, type NitroTrust,
 } from "../../src/attestation/nitro-policy.js";
 import { signP256Prehash } from "../../src/crypto/p256.js";
@@ -18,6 +18,7 @@ const trust: NitroTrust = {
   keys: keys.slice(0, 3),
   minimumSequence: "9",
   minimumCustodyEpoch: "1",
+  publication: { bucket: "release-test", region: "eu-north-1", account: "000000000001" },
 };
 const binding: NitroPolicy = {
   version: 1,
@@ -26,6 +27,7 @@ const binding: NitroPolicy = {
   securityDomainId: trust.securityDomainId,
   noteSeedCommitment: trust.noteSeedCommitment,
   sequence: "9",
+  previousPolicyDigest: "ab".repeat(32),
   minimumCustodyEpoch: "1",
   validFromMs: String(now - 1n),
   expiresAtMs: String(now + 100n),
@@ -150,5 +152,41 @@ describe("native Nitro release policy", () => {
     expect(advancesNitroPolicy(first, { ...first, sequence: "10", digest: "ab" })).toBe(true);
     expect(advancesNitroPolicy(first, { ...first, sequence: "8", digest: first.digest })).toBe(false);
     expect(advancesNitroPolicy(first, { ...first, sequence: "9", digest: "ab" })).toBe(false);
+  });
+
+  it("resolves the canonical publication in the pinned AWS bucket", () => {
+    const publication = nitroPublication(trust);
+    expect(publication.key).toBe(`spr-release/mainnet/${trust.securityDomainId}/policy.json`);
+    expect(publication.url.href).toBe(`https://release-test.s3.eu-north-1.amazonaws.com/${publication.key}`);
+    expect(() => validateNitroTrust({ ...trust, publication: { ...trust.publication, bucket: "bad.example" } })).toThrow();
+  });
+
+  it("publishes one signed successor of the current digest, including after the current policy expires", () => {
+    const expired = { ...binding, validFromMs: String(now - 1000n), expiresAtMs: String(now - 2n) };
+    const prior = manifest(expired, 0, 1);
+    const successor = { ...binding, sequence: "10", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(expired)) };
+    expect(nextNitroPublication(manifest(successor, 0, 1), prior, trust, now)).toBe(true);
+    expect(nextNitroPublication(manifest(successor, 0, 1), manifest(successor, 0, 2), trust, now)).toBe(false);
+    expect(() => nextNitroPublication(manifest({ ...successor, action: "revoke", targets: [] }, 0, 1),
+      manifest(successor, 0, 1), trust, now)).toThrow();
+    for (const invalid of [{ ...successor, sequence: "11" }, { ...successor, previousPolicyDigest: "44".repeat(32) }, binding]) {
+      expect(() => nextNitroPublication(manifest(invalid, 0, 1), prior, trust, now)).toThrow();
+    }
+    const genesis = { ...binding, sequence: "1", previousPolicyDigest: null };
+    expect(nextNitroPublication(manifest(genesis, 0, 1), undefined, { ...trust, minimumSequence: "1" }, now)).toBe(true);
+    expect(() => nextNitroPublication(manifest(successor, 0, 1), undefined, trust, now)).toThrow();
+  });
+
+  it("rotates signer pins without resetting the publication or its sequence", () => {
+    const successor = { ...binding, sequence: "10", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(binding)) };
+    const previous = manifest(binding, 0, 1);
+    const rotated = { ...trust, keys: keys.slice(2) };
+    const next = manifest(successor, 2, 3);
+    expect(() => nextNitroPublication(next, previous, rotated, now)).toThrow();
+    expect(nextNitroPublication(next, previous, rotated, now, trust)).toBe(true);
+    expect(nextNitroPublication(next, next, rotated, now, trust)).toBe(false);
+    expect(() => nextNitroPublication(next, previous, rotated, now, {
+      ...trust, publication: { ...trust.publication, account: "000000000002" },
+    })).toThrow();
   });
 });

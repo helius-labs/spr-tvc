@@ -35,9 +35,10 @@ and system clock, including when a caller supplies a fresh signed policy.
 ## Native Nitro
 
 Import `createNitroDecryptionService` from
-`@heliuslabs/spr-decryption-service/nitro`. Configure the policy URL, trusted
-network, security domain, note seed commitment, minimum custody epoch and
-threshold signer public keys out-of-band. In browsers, the SDK stores the
+`@heliuslabs/spr-decryption-service/nitro`. Pin the policy publication bucket,
+region and AWS owner account, network, security domain, note seed commitment,
+minimum sequence and custody epoch, and signer quorum out-of-band. The SDK
+reads the policy directly from that bucket. In browsers, the SDK stores the
 checkpoint in IndexedDB. Other runtimes supply an atomic durable `policyStore`
 scoped to the network and domain. Its `accept` method persists the next
 checkpoint before succeeding. Apply `advancesNitroPolicy` against the stored

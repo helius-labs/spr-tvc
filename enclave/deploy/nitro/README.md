@@ -150,25 +150,46 @@ fingerprint. Grant the corresponding cross-account IAM permissions explicitly.
    Refreshing shares controls future access. A seed compromise requires
    owner-authorized migration to a new seed domain.
 
+## Publish wallet policy
+
+Use a versioned publication bucket distinct from the private custody ledger.
+Allow public reads of exactly the policy object and disable lifecycle deletion
+for its versions. Configure CORS for the wallet origins to `GET` with
+`x-amz-expected-bucket-owner`. Restrict the dedicated publisher role to the
+reviewed release workflow. The wallet reads this S3 object directly and checks
+the expected bucket owner. The publisher and bucket administrators are trusted
+for freshness. Restrict their access separately from the host and ingress.
+Pass absolute file paths to commands run with `pnpm --dir example`.
+
 The canonical policy starts with `{"policy":...,"signatures":[]}`. Its policy
 fields are `version`, `action`, `network`, `securityDomainId`, `noteSeedCommitment`,
-`minimumCustodyEpoch`, `sequence`, `validFromMs`, `expiresAtMs` and `targets`.
+`minimumCustodyEpoch`, `sequence`, `previousPolicyDigest`, `validFromMs`, `expiresAtMs` and `targets`.
+Sequence 1 has `previousPolicyDigest: null`. Each later sequence signs the
+digest of the current published policy. Use the domain-separated policy
+digest specified in [the Nitro security spec](../../NITRO.md#proposal-and-publication).
 Each target contains `endpoint`, `releaseId`, `executableSha256`,
 `custodyEpoch` and `pcrs`. Pin network, domain, seed commitment, minimum sequence,
-minimum custody epoch, signer keys and threshold out-of-band. Times, sequence
+minimum custody epoch, signer keys, threshold and `publication` with `bucket`,
+`region` and `account` in `wallet-trust.json`. Times, sequence
 and epochs are canonical decimal strings. The wallet stores the sequence,
 policy digest and custody floor atomically. `activate` requires a verified
 replica before the wallet advances the checkpoint. An emergency `revoke`
 requires an empty target list and advances the checkpoint as soon as the wallet
-verifies the policy signatures. Publish policy changes through a
-single conditional writer and alert before expiration.
+verifies the policy signatures. The publisher checks the predecessor, verifies
+that every activation target attests, and then writes against the observed S3
+ETag. Concurrent candidates cannot both succeed. Alert before expiration.
 
 ```sh
 cargo xtask nitro-sign policy.json --key "$signing_key_arn" --public-key "$signer_sec1_hex"
+pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" --bucket-policy "$publisher_role"
+pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$signed_policy"
 ```
 
 Wrap-key replacements for a new EIF use the existing receipt and new sealed key
-ARNs. Custodian replacements use a measured rotation. Wallet release signing
-keys rotate through the wallet's independently distributed trust configuration.
+ARNs. Custodian replacements use a measured rotation. For wallet signing-key
+rotation, distribute the updated trust bundle independently. Keep a common
+signing quorum during rollout where possible. Use `--previous-trust` on the
+first publication that follows a policy signed under the old pins. The domain,
+bucket, sequence and custody floor carry through the transition.
 
 [Security model](../../NITRO.md) · [Test invariants](../../../tests/INVARIANTS.md) · [Audit handoff](../../../tests/AUDIT.md)

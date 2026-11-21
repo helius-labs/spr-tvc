@@ -15,15 +15,16 @@ const secrets = [1, 2].map(value => new Uint8Array(32).fill(value));
 const trust: NitroTrust = {
   network: "mainnet", securityDomainId: "55".repeat(32), noteSeedCommitment: "66".repeat(32),
   minimumSequence: "1", minimumCustodyEpoch: "1", threshold: 2,
+  publication: { bucket: "release-test", region: "eu-north-1", account: "000000000001" },
   keys: secrets.map(secret => encodeLowerHex(p256.getPublicKey(secret, false))),
 };
-const policyUrl = new URL("https://policy.example.com/release.json");
 
 function signedPolicy(overrides: Partial<NitroPolicy> = {}) {
   const now = Date.now();
   const policy: NitroPolicy = {
     network: trust.network, securityDomainId: trust.securityDomainId, noteSeedCommitment: trust.noteSeedCommitment,
     version: 1, action: "activate", sequence: "2", minimumCustodyEpoch: "1",
+    previousPolicyDigest: "88".repeat(32),
     validFromMs: String(now - 1000), expiresAtMs: String(now + 100_000),
     targets: [{
       endpoint: "https://replica.example.com/",
@@ -75,11 +76,13 @@ describe("native client trust gate", () => {
       .mockResolvedValueOnce(attestedDiscovery());
     vi.stubGlobal("fetch", fetch);
     const stored = vi.fn(async () => false);
-    const client = createNitroDecryptionService({ trust, policyUrl, policyStore: { ...emptyStore, accept: stored } });
+    const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept: stored } });
     await expect(client.open(signer, proofs)).rejects.toThrow("policy rollback or checkpoint");
     expect(stored).toHaveBeenCalledOnce();
     expect(verifyNativeNitroEvidence).toHaveBeenCalledBefore(stored);
     expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[0]?.[0].href).toBe(`https://release-test.s3.eu-north-1.amazonaws.com/spr-release/mainnet/${trust.securityDomainId}/policy.json`);
+    expect(new Headers(fetch.mock.calls[0]?.[1].headers).get("x-amz-expected-bucket-owner")).toBe(trust.publication.account);
     expect(signMessages).not.toHaveBeenCalled();
   });
 
@@ -87,7 +90,7 @@ describe("native client trust gate", () => {
     const fetch = vi.fn(async () => new Response("x".repeat(32_769)));
     vi.stubGlobal("fetch", fetch);
     const stored = vi.fn(async () => true);
-    const client = createNitroDecryptionService({ trust, policyUrl, policyStore: { ...emptyStore, accept: stored } });
+    const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept: stored } });
     await expect(client.open(signer, proofs)).rejects.toThrow("ResponseTooLarge");
     expect(stored).not.toHaveBeenCalled();
     expect(fetch).toHaveBeenCalledOnce();
@@ -99,7 +102,7 @@ describe("native client trust gate", () => {
       .mockResolvedValueOnce(new Response(signedPolicy()))
       .mockResolvedValueOnce(new Response('{"info":{},"evidence":"00"}'));
     vi.stubGlobal("fetch", fetch);
-    const client = createNitroDecryptionService({ trust, policyUrl, policyStore: { ...emptyStore, async accept() { return true; } } });
+    const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, async accept() { return true; } } });
     await expect(client.open(signer, proofs)).rejects.toThrow("no authorized Nitro replica");
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(fetch.mock.calls[1]?.[0].href).toBe("https://replica.example.com/v1/nitro/attestation");
@@ -117,7 +120,7 @@ describe("native client trust gate", () => {
       .mockResolvedValueOnce(attestedDiscovery());
     vi.stubGlobal("fetch", fetch);
     const stored = vi.fn(async () => false);
-    const client = createNitroDecryptionService({ trust, policyUrl, policyStore: { ...emptyStore, accept: stored } });
+    const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept: stored } });
     await expect(client.open(signer, proofs)).rejects.toThrow("no authorized Nitro replica");
     expect(stored).not.toHaveBeenCalled();
     await expect(client.open(signer, proofs)).rejects.toThrow("checkpoint unavailable");
@@ -130,7 +133,7 @@ describe("native client trust gate", () => {
     const fetch = vi.fn().mockResolvedValueOnce(new Response(revoked)).mockResolvedValueOnce(new Response(signedPolicy()));
     vi.stubGlobal("fetch", fetch);
     const stored = vi.fn(async () => true);
-    const client = createNitroDecryptionService({ trust, policyUrl, policyStore: { ...emptyStore, accept: stored } });
+    const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept: stored } });
     await expect(client.open(signer, proofs)).rejects.toThrow("ReleasePolicyRevoked");
     expect(stored).toHaveBeenCalledWith(expect.objectContaining({ sequence: "3", minimumCustodyEpoch: "2" }));
     await expect(client.open(signer, proofs)).rejects.toThrow("policy rollback");
@@ -146,9 +149,19 @@ describe("native client trust gate", () => {
       async accept() { return true; },
       async current() { return { sequence: "3", minimumCustodyEpoch: "2", digest: "aa".repeat(32) }; },
     };
-    const client = createNitroDecryptionService({ trust, policyUrl, policyStore: store });
+    const client = createNitroDecryptionService({ trust, policyStore: store });
     await expect(client.open(signer, proofs)).rejects.toThrow("ReleasePolicySuperseded");
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(signMessages).not.toHaveBeenCalled();
+  });
+
+  it("allows policy URL overrides only for devnet loopback rehearsals", () => {
+    const arbitrary = new URL("https://relay.example.com/policy.json");
+    const rehearsal = new URL("http://127.0.0.1:8201/policy");
+    const policyStore = { ...emptyStore, async accept() { return true; } };
+    expect(() => createNitroDecryptionService({ trust, policyUrl: arbitrary, policyStore })).toThrow();
+    expect(() => createNitroDecryptionService({ trust, policyUrl: rehearsal, policyStore })).toThrow();
+    expect(() => createNitroDecryptionService({ trust: { ...trust, network: "devnet" }, policyUrl: arbitrary, policyStore })).toThrow();
+    expect(() => createNitroDecryptionService({ trust: { ...trust, network: "devnet" }, policyUrl: rehearsal, policyStore })).not.toThrow();
   });
 });

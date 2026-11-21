@@ -25,6 +25,7 @@ export type NitroPolicy = {
   readonly noteSeedCommitment: string;
   readonly minimumCustodyEpoch: string;
   readonly sequence: string;
+  readonly previousPolicyDigest: string | null;
   readonly validFromMs: string;
   readonly expiresAtMs: string;
   readonly targets: readonly NitroTarget[];
@@ -36,6 +37,7 @@ export type NitroTrust = {
   readonly noteSeedCommitment: string;
   readonly minimumCustodyEpoch: string;
   readonly minimumSequence: string;
+  readonly publication: Readonly<{ bucket: string; region: string; account: string }>;
   readonly threshold: number;
   /** Uncompressed SEC1 P-256 public keys pinned by the wallet integrator. */
   readonly keys: readonly string[];
@@ -62,7 +64,7 @@ const MAX_AUTHORITIES = 8;
 const MAX_LIFETIME_MS = 7n * 24n * 60n * 60n * 1000n;
 const POLICY_KEYS = [
   "version", "action", "network", "securityDomainId", "noteSeedCommitment", "sequence",
-  "validFromMs", "expiresAtMs", "minimumCustodyEpoch", "targets",
+  "validFromMs", "expiresAtMs", "minimumCustodyEpoch", "previousPolicyDigest", "targets",
 ];
 const TARGET_KEYS = ["endpoint", "releaseId", "executableSha256", "custodyEpoch", "pcrs"];
 const te = new TextEncoder();
@@ -90,6 +92,15 @@ export function nitroEndpoint(text: string, network: Network): URL {
   return url;
 }
 
+export function nitroPublication(trust: NitroTrust): { url: URL; key: string } {
+  const { bucket, region, account } = trust.publication;
+  if (typeof bucket !== "string" || !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(bucket) ||
+      typeof region !== "string" || !/^[a-z]{2}-[a-z]+-[1-9][0-9]*$/.test(region) ||
+      typeof account !== "string" || !/^[0-9]{12}$/.test(account)) invalid();
+  const key = `spr-release/${trust.network}/${trust.securityDomainId}/policy.json`;
+  return { key, url: new URL(`https://${bucket}.s3.${region}.amazonaws.com/${key}`) };
+}
+
 export function nitroPolicySigningDigest(policy: NitroPolicy): Uint8Array {
   return sha256(te.encode("SPR/native-nitro/release-policy/v1" + canonicalizeJsonValue(policy)));
 }
@@ -98,6 +109,8 @@ export function validateNitroTrust(trust: NitroTrust): void {
   if (trust.network !== "devnet" && trust.network !== "mainnet") invalid();
   checkDigest(trust.securityDomainId, 32);
   checkDigest(trust.noteSeedCommitment, 32);
+  assertExactObjectKeys(trust.publication, ["bucket", "region", "account"], "ReleasePolicyInvalid");
+  nitroPublication(trust);
   if (decodeDecimalU64(trust.minimumSequence) < 1n || decodeDecimalU64(trust.minimumCustodyEpoch) < 1n ||
       !Array.isArray(trust.keys) || trust.keys.length > MAX_AUTHORITIES ||
       !Number.isSafeInteger(trust.threshold) || trust.threshold < 2 ||
@@ -122,6 +135,11 @@ export function verifyNitroPolicy(
   const expiresAt = decodeDecimalU64(policy.expiresAtMs);
   if (sequence < decodeDecimalU64(trust.minimumSequence) || floor < decodeDecimalU64(trust.minimumCustodyEpoch) || now < validFrom ||
       now >= expiresAt || expiresAt - validFrom > MAX_LIFETIME_MS) invalid();
+  if (sequence === 1n) {
+    if (policy.previousPolicyDigest !== null) invalid();
+  } else {
+    checkDigest(policy.previousPolicyDigest, 32);
+  }
   if (!Array.isArray(policy.targets) || policy.targets.length > MAX_TARGETS) invalid();
   if (policy.action === "activate" ? policy.targets.length === 0 : policy.action !== "revoke" || policy.targets.length !== 0) invalid();
   const endpoints = new Set<string>();
@@ -151,6 +169,30 @@ export function verifyNitroPolicy(
     policy, validFrom, expiresAt,
     checkpoint: { sequence: policy.sequence, digest: encodeLowerHex(digest), minimumCustodyEpoch: policy.minimumCustodyEpoch },
   };
+}
+
+/** Validate a publication before writing it against the exact observed S3 ETag. */
+export function nextNitroPublication(
+  text: string, previous: string | undefined, trust: NitroTrust, now: bigint, previousTrust = trust,
+): boolean {
+  const next = verifyNitroPolicy(text, trust, now);
+  if (!previous) {
+    if (next.policy.sequence !== "1") invalid();
+    return true;
+  }
+  const { policy } = parseStrictJson<{ policy: NitroPolicy }>(previous, ["policy", "signatures"]);
+  if (previousTrust.network !== trust.network || previousTrust.securityDomainId !== trust.securityDomainId ||
+      previousTrust.noteSeedCommitment !== trust.noteSeedCommitment ||
+      nitroPublication(previousTrust).url.href !== nitroPublication(trust).url.href ||
+      previousTrust.publication.account !== trust.publication.account) invalid();
+  const priorTrust = encodeLowerHex(nitroPolicySigningDigest(policy)) === next.checkpoint.digest ? trust : previousTrust;
+  const prior = verifyNitroPolicy(previous, { ...priorTrust, minimumSequence: "1", minimumCustodyEpoch: "1" },
+    decodeDecimalU64(policy.validFromMs));
+  if (prior.checkpoint.digest === next.checkpoint.digest) return false;
+  if (decodeDecimalU64(next.policy.sequence) !== decodeDecimalU64(prior.policy.sequence) + 1n ||
+      next.policy.previousPolicyDigest !== prior.checkpoint.digest ||
+      !advancesNitroPolicy(prior.checkpoint, next.checkpoint)) invalid();
+  return true;
 }
 
 /** Returns true for a new policy or a repeat of the exact same policy. */

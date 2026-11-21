@@ -15,8 +15,13 @@ export class DecryptionServiceError extends Error {
 
 /** HTTP failures retain rate-limit information without returning an untrusted response body. */
 export class DecryptionServiceHttpError extends DecryptionServiceError {
-  constructor(code: string, readonly status: number, readonly retryAfter: string | null) {
+  readonly status: number;
+  readonly retryAfter: string | null;
+
+  constructor(code: string, status: number, retryAfter: string | null) {
     super(code, `HTTP ${status}`);
     this.name = "DecryptionServiceHttpError";
+    this.status = status;
+    this.retryAfter = retryAfter;
   }
 }

@@ -7,5 +7,5 @@
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["release-api.ts"]
+  "include": ["*.ts"]
 }
