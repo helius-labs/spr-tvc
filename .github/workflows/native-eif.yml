@@ -1,6 +1,15 @@
 name: Build native Nitro EIF
 
 on:
+  pull_request:
+    paths:
+      - .github/workflows/native-eif.yml
+      - enclave/deploy/nitro/build-eif.sh
+      - enclave/deploy/nitro/provenance.py
+      - enclave/native/**
+      - enclave/src/**
+      - protocol/**
+      - rust-toolchain.toml
   workflow_dispatch:
     inputs:
       network:
@@ -18,15 +27,13 @@ permissions:
 
 jobs:
   build:
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    environment: native-eif-${{ inputs.network }}
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
+    timeout-minutes: 25
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact-id }}
     env:
-      SPR_NETWORK: ${{ inputs.network }}
+      SPR_NETWORK: ${{ inputs.network || 'devnet' }}
       NITRO_CLI_REVISION: 536dca352e130e23bb39b6227753c91ad702048d # aws-nitro-enclaves-cli v1.5.3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,16 +49,22 @@ jobs:
         run: |
           rustup toolchain install
           rustup target add x86_64-unknown-linux-musl
+          rustup toolchain install 1.94.1 --profile minimal
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends libclang-dev libssl-dev musl-tools
-          cargo install --locked --path .nitro-source --root "$RUNNER_TEMP/nitro"
+          cargo +1.94.1 install --locked --path .nitro-source --root "$RUNNER_TEMP/nitro"
       - name: Build measured artifact
         env:
           CONFIGURATION_JSON: ${{ inputs.configuration }}
+          RELEASE_BUILD: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           RUSTFLAGS='-C target-feature=+crt-static' \
             cargo build --release --locked --manifest-path enclave/native/Cargo.toml --target x86_64-unknown-linux-musl
-          printf '%s' "$CONFIGURATION_JSON" > "$RUNNER_TEMP/configuration.json"
+          if [[ "$RELEASE_BUILD" == true ]]; then
+            printf '%s' "$CONFIGURATION_JSON" > "$RUNNER_TEMP/configuration.json"
+          else
+            jq -nc '{releaseId:"ci", securityDomainId:("ab"*32), deployment:{mode:"serve", custody:{epoch:"1", noteSeedCommitment:("cd"*32), shareCommitments:[range(1;7) | ("0"+tostring)*32]}}}' > "$RUNNER_TEMP/configuration.json"
+          fi
           export PATH="$RUNNER_TEMP/nitro/bin:$PATH"
           export NITRO_CLI_BLOBS="$GITHUB_WORKSPACE/.nitro-source/blobs/x86_64"
           export NITRO_CLI_LOGS_PATH="$RUNNER_TEMP/nitro-logs"
@@ -60,6 +73,27 @@ jobs:
             enclave/native/target/x86_64-unknown-linux-musl/release/spr-nitro-decryption-service \
             "$RUNNER_TEMP/configuration.json" dist/native
           python3 -B enclave/deploy/nitro/provenance.py dist/native "$SPR_NETWORK" "$GITHUB_SHA" > dist/native/provenance.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        id: upload
+        with:
+          name: unsigned-native-eif-${{ env.SPR_NETWORK }}-${{ github.sha }}
+          path: dist/native/
+          if-no-files-found: error
+
+  attest:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: native-eif-${{ inputs.network }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact }}
+          path: dist/native
       - name: Attest build provenance
         id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
