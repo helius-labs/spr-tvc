@@ -19,6 +19,7 @@ on:
       - enclave/native/**
       - enclave/nsm/**
       - enclave/src/**
+      - enclave/tests/fixtures/nitro-serving-configuration.json
       - protocol/**
       - rust-toolchain.toml
   workflow_call:
@@ -92,7 +93,7 @@ jobs:
           if [[ "$RELEASE_BUILD" == true ]]; then
             printf '%s' "$CONFIGURATION_JSON" > "$RUNNER_TEMP/configuration.json"
           else
-            jq -nc '{releaseId:"ci", securityDomainId:("ab"*32), deployment:{mode:"serve", custody:{epoch:"1", noteSeedCommitment:("cd"*32), shareCommitments:[range(1;7) | ("0"+tostring)*32]}}}' > "$RUNNER_TEMP/configuration.json"
+            cp enclave/tests/fixtures/nitro-serving-configuration.json "$RUNNER_TEMP/configuration.json"
           fi
           export PATH="$RUNNER_TEMP/nitro/bin:$PATH"
           export NITRO_CLI_BLOBS="$GITHUB_WORKSPACE/.nitro-source/blobs/x86_64"

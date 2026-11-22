@@ -7,12 +7,12 @@ fn hashes_the_canonical_custody_record_for_release_attestation() {
     let custody = Custody {
         epoch: 7,
         note_seed_commitment: [0x11; 32],
-        canary_key_digest: [0x22; 32],
+        canary_digest: [0x22; 32],
         share_commitments: (1..=6).map(|byte| [byte; 32]).collect(),
     };
     assert_eq!(
         spr_tvc_protocol::encoding::encode_lower_hex(&custody.digest().unwrap()),
-        "1bd46c3a1df15bf3a0f210383a4dc0b27d1af374237205df6171af12c2584d08"
+        "c3aaa4b6abefac03d5eedfa6fcb47d0cc37fdeab530c1093085c39b581e26227"
     );
 }
 
@@ -24,9 +24,7 @@ pub(crate) fn fixture(epoch: u64, seed: &NoteSeed) -> (Custody, Zeroizing<Vec<Ve
     let custody = Custody {
         epoch,
         note_seed_commitment,
-        canary_key_digest: seed
-            .canary_key_digest(&DOMAIN, &note_seed_commitment)
-            .unwrap(),
+        canary_digest: seed.canary_digest(&DOMAIN, &note_seed_commitment).unwrap(),
         share_commitments: shares
             .iter()
             .map(|share| share_commitment(&DOMAIN, share))
@@ -97,7 +95,7 @@ fn rejects_insufficient_duplicate_foreign_and_wrong_seed_shares() {
     wrong_seed.note_seed_commitment = [0x66; 32];
     assert!(restore_seed(&wrong_seed, &DOMAIN, &shares).is_none());
     let mut wrong_canary = custody.clone();
-    wrong_canary.canary_key_digest[0] ^= 1;
+    wrong_canary.canary_digest[0] ^= 1;
     assert!(restore_seed(&wrong_canary, &DOMAIN, &shares).is_none());
 
     let available = Zeroizing::new(vec![
@@ -172,7 +170,7 @@ fn rotation_issues_encrypted_shares_to_new_keys_and_preserves_derived_keys() {
     let next = Recipients::parse(&new_spkis).unwrap();
     let (new, new_packages) = next.issue(&DOMAIN, 2, &live).unwrap();
     assert_eq!(old.note_seed_commitment, new.note_seed_commitment);
-    assert_eq!(old.canary_key_digest, new.canary_key_digest);
+    assert_eq!(old.canary_digest, new.canary_digest);
     assert_ne!(old.share_commitments, new.share_commitments);
     assert!(import(&keys[0], &new_packages[0]).is_none());
     assert!(restore_seed(&new, &DOMAIN, &old_shares).is_none());

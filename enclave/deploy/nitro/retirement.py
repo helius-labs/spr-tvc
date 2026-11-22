@@ -20,7 +20,7 @@ from approval import (
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
     check_recovery_bucket, check_registered_target, find_retirement, ledger_replica, list_objects, load_epoch,
-    load_epoch_with_time, load_retirement, note_key_identity, publication_time, read_registered_target, read_replicated_record,
+    load_epoch_with_time, load_retirement, note_identity, publication_time, read_registered_target, read_replicated_record,
     recovery_deadline, replica_trust,
     require_active_epoch, require_pinned_publications,
     require_publication_roster, require_replicated_custody, retirement_approval, retirement_bootstrap,
@@ -39,8 +39,8 @@ def retirement_scope(trust, epoch, replacement):
     _, new, custodians, new_at = load_epoch_with_time(trust, replacement)
     if time.time() < max(old_at, new_at):
         raise ValueError("retirement cannot precede a committed custody receipt")
-    if note_key_identity(old["custody"]) != note_key_identity(new["custody"]):
-        raise ValueError("replacement epoch must preserve the note seed and canary keys")
+    if note_identity(old["custody"]) != note_identity(new["custody"]):
+        raise ValueError("replacement epoch must preserve the note seed and canary")
     return {
         "network": trust["network"], "securityDomainId": trust["securityDomainId"],
         "epoch": epoch, "receiptSha256": sha256(old), "replacementEpoch": replacement,
@@ -116,7 +116,7 @@ def attested_boots(pinned_trust, candidates, scope, custody, *, after_ms=0, dead
     if timeout <= 0:
         raise ReplacementNotReady("replacement boot wait expired")
     root = Path(__file__).resolve().parents[3]
-    seed, canary_digest = note_key_identity(custody)
+    seed, canary_digest = note_identity(custody)
     reply = run_command([
         "pnpm", "--dir", str(root / "example"), "exec", "tsx", str(root / "xtask/nitro-retirement.ts"),
         scope["network"], scope["securityDomainId"], seed, canary_digest, scope["replacementEpoch"], scope["replacementCustodyDigest"],

@@ -142,9 +142,12 @@ function signedReply(request: ServiceRequest, boot: readonly Uint8Array[], resul
 }
 
 function openCanaryItem(viewing: ViewingKey, item: DecryptItem) {
-  return viewing.decryptUtxo(requireHex(item.ciphertext),
-    X25519PublicKey.fromBytes(requireHex(item.ephemeral_viewing_public_key, 33)),
-    requireHex(item.salt, 16) as Bytes16, Number(item.slot_index));
+  const ciphertext = requireHex(item.ciphertext);
+  const sender = X25519PublicKey.fromBytes(requireHex(item.ephemeral_viewing_public_key, 33));
+  const salt = requireHex(item.salt, 16) as Bytes16;
+  return item.label === "Transfer"
+    ? viewing.decryptUtxo(ciphertext, sender, salt, Number(item.slot_index))
+    : viewing.decryptRingDeposit(ciphertext, sender, salt);
 }
 
 afterEach(() => {
@@ -168,16 +171,19 @@ describe("operator replica probe", () => {
       }));
     await expect(probeNitroTarget(target, trust)).rejects.toThrow("BootProofUnverified");
 
-    for (const [viewing, nullifier, error] of [
-      ["04" + "01".repeat(32), "01".repeat(31), "InvalidHex"],
-      ["01".repeat(33), "01".repeat(32), "KEYPAIR_INVALID_PUBLIC_KEY"],
-      ["04" + "01".repeat(32), nullifierModulus, "InvalidPublicKey"],
+    for (const [viewing, nullifier] of [
+      ["04" + "01".repeat(32), "01".repeat(31)],
+      ["01".repeat(33), "01".repeat(32)],
+      ["04" + "01".repeat(32), nullifierModulus],
     ] as const) {
       fetch.mockResolvedValueOnce(attestedDiscovery()).mockImplementationOnce(async (_url, init) =>
         signedReply(openRequest(init, secrets), secrets, {
           type: "PublicKeys", viewing_public_key: viewing, nullifier_public_key: nullifier,
         }));
-      await expect(probeNitroTarget(target, trust)).rejects.toThrow(error);
+      const probe = probeNitroTarget(target, trust);
+      await expect(probe).rejects.toThrow("invalid canary recipient keys");
+      const results = await Promise.allSettled([probe]);
+      expect(() => requireCanaryAgreement(results)).toThrow("invalid canary recipient keys");
     }
 
     const paths = ["/v1/nitro/attestation", "/v1/operations"];
@@ -315,7 +321,8 @@ describe("operator replica probe", () => {
     },
   );
 
-  it.each([false, true])("checks a cold replacement against the Rust custody vector (changed keys %s)", async changed => {
+  it.each(["match", "changed keys", "changed ciphertext", "wrong ring plaintext", "missing ring plaintext", "invalid nullifier secret"])(
+    "checks a cold replacement against both original ciphertexts (%s)", async fault => {
     await initializePoseidon();
     const { policy } = JSON.parse(signedPolicy()) as { policy: NitroPolicy };
     const owner = address("HipQetrvjSHETfCDtgUcdVaP4n3UdYcfhhqxCfscvz8C");
@@ -324,9 +331,10 @@ describe("operator replica probe", () => {
       concatBytes(new TextEncoder().encode("TSPP/decryption-service/view_key/x25519/v1"), ownerBytes), 32) as Bytes32);
     const secret = requireHex("70ad8470a7e869d8996911862ea64081249839c0384eac02e59dcad1487763", 31) as Bytes31;
     const nullifier = NullifierKey.fromSecret(secret);
-    const canary = createDecryptionCanary({
-      ...trust, canaryKeyDigest: "3330b4eb540f903309ea229bb8ef75872c94f487b96ef864c8265142326f3c1c",
-    });
+    // The changed ciphertext digest differs only by one byte of the ring-deposit ciphertext.
+    const canary = createDecryptionCanary({ ...trust, canaryDigest: fault === "changed ciphertext"
+      ? "3e51734de66d49ac117c8d132ba0fc299d02c46b40dfdbe9c8850d00d0b87a8c"
+      : "1b94ae1a401fa7ad8325ee93fa4ca43f99ac844689a5e52a4a74a95c848aa960" });
     const fetch = vi.fn(async (url: URL, init: RequestInit) => {
       if (url.pathname === "/v1/nitro/attestation") return attestedDiscovery();
       const request = openRequest(init, secrets);
@@ -335,23 +343,35 @@ describe("operator replica probe", () => {
         expect(operation.address).toBe(owner);
         return signedReply(request, secrets, {
           type: "PublicKeys", viewing_public_key: encodeLowerHex(viewing.publicKey().toBytes()),
-          nullifier_public_key: changed ? "01".repeat(32) : encodeLowerHex(nullifier.publicKey()),
+          nullifier_public_key: fault === "changed keys" ? "01".repeat(32) : encodeLowerHex(nullifier.publicKey()),
         });
       }
       expect(operation.signer).toBe(owner);
       expect(ed25519.verify(requireHex(operation.signature, 64),
         decryptMessage(ownerBytes, trust.network, serviceRequestDigest(request)), ownerBytes)).toBe(true);
+      expect(operation.items.map(({ label, slot_index, ciphertext }) => [label, slot_index, ciphertext])).toEqual([
+        ["Transfer", "1", "9a2f49ddfa219a7eb2c118af23e554e5f0ba4ad2947d6008694394970b3b97df"],
+        ["RingDeposit", "0", "d3eba4cb46b23b92bda860554cf33c0e7f4f24839be4eec970228eb24acfcac4"],
+      ]);
+      const plaintexts = operation.items.map(item => encodeLowerHex(openCanaryItem(viewing, item)));
+      if (fault === "wrong ring plaintext") plaintexts[1] = "00".repeat(32);
+      if (fault === "missing ring plaintext") plaintexts.pop();
       return signedReply(request, secrets, {
-        type: "Decrypt", nullifier_secret: encodeLowerHex(secret),
-        plaintexts: operation.items.map(item => encodeLowerHex(openCanaryItem(viewing, item))),
+        type: "Decrypt", nullifier_secret: fault === "invalid nullifier secret" ? "00" : encodeLowerHex(secret), plaintexts,
       });
     });
     vi.stubGlobal("fetch", fetch);
     try {
       const probe = probeNitroTarget(policy.targets[0]!, trust, { canary });
-      if (changed) await expect(probe).rejects.toThrow("canary recipient keys differ from the custody receipt");
+      const differentDigest = fault === "changed keys" || fault === "changed ciphertext";
+      if (differentDigest) await expect(probe).rejects.toThrow("canary keys or ciphertext differ from the custody receipt");
+      else if (fault === "wrong ring plaintext" || fault === "missing ring plaintext") {
+        await expect(probe).rejects.toThrow("canary plaintext");
+      } else if (fault === "invalid nullifier secret") await expect(probe).rejects.toThrow("invalid canary nullifier secret");
       else await expect(probe).resolves.toBeDefined();
-      expect(fetch).toHaveBeenCalledTimes(changed ? 2 : 3);
+      const results = await Promise.allSettled([probe]);
+      if (fault !== "match") expect(() => requireCanaryAgreement(results)).toThrow();
+      expect(fetch).toHaveBeenCalledTimes(differentDigest ? 2 : 3);
     } finally {
       viewing.destroy();
       nullifier.destroy();

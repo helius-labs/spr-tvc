@@ -28,32 +28,62 @@ impl NoteSeed {
     }
 
     #[cfg(any(test, all(feature = "native-nitro", target_os = "linux")))]
-    pub(crate) fn canary_key_digest(
+    pub(crate) fn canary_digest(
         &self,
         domain: &[u8; 32],
         note_seed_commitment: &[u8; 32],
     ) -> std::io::Result<[u8; 32]> {
+        use std::io;
+
         use spr_tvc_protocol::digest::sha256;
 
-        let public_signer_seed = sha256(
-            &[
-                b"SPR/native-nitro/canary-owner/v1".as_slice(),
-                domain,
-                note_seed_commitment,
-            ]
-            .concat(),
-        );
+        let reference = |label: &[u8]| sha256(&[label, domain, note_seed_commitment].concat());
+        let public_signer_seed = reference(b"SPR/native-nitro/canary-owner/v1");
         let owner = ed25519_dalek::SigningKey::from_bytes(&public_signer_seed).verifying_key();
         let keys = self.for_address(owner.as_bytes());
-        let nullifier = keys
-            .nullifier
-            .pubkey()
-            .map_err(|_| std::io::Error::other("derive canary public key"))?;
+        let viewing = keys.viewing.pubkey();
+        let nullifier = keys.nullifier.pubkey().map_err(io::Error::other)?;
+        let sender = ViewingKey::from_bytes(&reference(b"SPR/native-nitro/canary-sender/v1"));
+        let sender_key = sender.pubkey();
+        let salt = [0; 16];
+        let transfer_slot = 1u32;
+        let transfer = reference(b"SPR/native-nitro/canary-transfer/v1");
+        let ring = reference(b"SPR/native-nitro/canary-ring-deposit/v1");
+        let transfer_ciphertext = sender
+            .encrypt_slot(&viewing, &transfer, salt, transfer_slot)
+            .map_err(io::Error::other)?;
+        let ring_ciphertext = sender
+            .encrypt_ring_deposit(&viewing, &ring, salt)
+            .map_err(io::Error::other)?;
+        if transfer_ciphertext.len() != transfer.len()
+            || ring_ciphertext.len() != ring.len()
+            || keys
+                .viewing
+                .decrypt_utxo(&transfer_ciphertext, &sender_key, salt, transfer_slot)
+                .map_err(io::Error::other)?
+                != transfer
+            || keys
+                .viewing
+                .decrypt_ring_deposit(&ring_ciphertext, &sender_key, salt)
+                .map_err(io::Error::other)?
+                != ring
+        {
+            return Err(io::Error::other(
+                "custody canary note cipher does not round-trip",
+            ));
+        }
         Ok(sha256(
             &[
-                b"SPR/native-nitro/canary-keys/v1".as_slice(),
-                keys.viewing.pubkey().as_bytes(),
+                b"SPR/native-nitro/canary/v1".as_slice(),
+                viewing.as_bytes(),
                 &nullifier,
+                sender_key.as_bytes(),
+                &salt,
+                &transfer_slot.to_be_bytes(),
+                &transfer,
+                &ring,
+                &transfer_ciphertext,
+                &ring_ciphertext,
             ]
             .concat(),
         ))

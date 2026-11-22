@@ -1,5 +1,5 @@
 import { initializePoseidon, NullifierKey, ViewingKey } from "@heliuslabs/spr";
-import { randomSalt, type Bytes31 } from "@heliuslabs/spr/keypair";
+import { randomSalt, type Bytes16, type Bytes31, type Bytes32 } from "@heliuslabs/spr/keypair";
 import { sha256 } from "@noble/hashes/sha256";
 import { concatBytes } from "@noble/hashes/utils";
 import { createKeyPairSignerFromPrivateKeyBytes, generateKeyPairSigner } from "@solana/kit";
@@ -14,14 +14,13 @@ import { DecryptionServiceError } from "../protocol/error.js";
 import { bytesEqual, encodeLowerHex, requireHex } from "../protocol/hex.js";
 import type { DecryptItem } from "../protocol/types.js";
 import { decodePublicKeys, executeServiceCall } from "./exchange.js";
-import { checkPlaintexts, decryptItem } from "./items.js";
+import { decryptItem } from "./items.js";
 
 const nowMs = () => BigInt(Date.now());
 const encoder = new TextEncoder();
-const OWNER_DOMAIN = encoder.encode("SPR/native-nitro/canary-owner/v1");
-const KEYS_DOMAIN = encoder.encode("SPR/native-nitro/canary-keys/v1");
+const CANARY_DOMAIN = encoder.encode("SPR/native-nitro/canary/v1");
 type CanaryAnchor = Pick<NitroTrust, "securityDomainId" | "noteSeedCommitment"> & {
-  readonly canaryKeyDigest: string;
+  readonly canaryDigest: string;
 };
 
 export async function probeNitroTarget(
@@ -49,26 +48,45 @@ export async function probeNitroTarget(
   return { ...connected, window };
 }
 
-function makeCanaryNote(keys: ReturnType<typeof decodePublicKeys>) {
+function makeCanaryNote(
+  keys: ReturnType<typeof decodePublicKeys>,
+  reference?: (label: string) => Uint8Array,
+) {
   const { viewingPublicKey } = keys;
-  const plaintext = crypto.getRandomValues(new Uint8Array(32));
-  const salt = randomSalt();
-  const sender = ViewingKey.generate();
-  let item: DecryptItem;
+  const transfer = reference?.("canary-transfer") ?? crypto.getRandomValues(new Uint8Array(32));
+  const salt = reference ? new Uint8Array(16) as Bytes16 : randomSalt();
+  const sender = reference ? ViewingKey.fromBytes(reference("canary-sender") as Bytes32) : ViewingKey.generate();
+  const items: DecryptItem[] = [];
+  const plaintexts = [encodeLowerHex(transfer)];
+  let digest: Uint8Array | undefined;
   try {
-    item = decryptItem({
-      ciphertext: sender.encryptSlot(viewingPublicKey, plaintext, salt, 1),
-      viewingPublicKey, txViewingPublicKey: sender.publicKey(), salt, slotIndex: 1, label: "transfer",
-    });
+    const transferCiphertext = sender.encryptSlot(viewingPublicKey, transfer, salt, 1);
+    const txViewingPublicKey = sender.publicKey();
+    items.push(decryptItem({
+      ciphertext: transferCiphertext, viewingPublicKey, txViewingPublicKey, salt, slotIndex: 1, label: "transfer",
+    }));
+    if (reference) {
+      const ring = reference("canary-ring-deposit");
+      const ringCiphertext = sender.encryptRingDeposit(viewingPublicKey, ring, salt);
+      if (transferCiphertext.length !== 32 || ringCiphertext.length !== 32) {
+        throw new CanaryMismatch("custody canary ciphertext length");
+      }
+      items.push(decryptItem({
+        ciphertext: ringCiphertext, viewingPublicKey, txViewingPublicKey, salt, slotIndex: 0, label: "ringDeposit",
+      }));
+      plaintexts.push(encodeLowerHex(ring));
+      digest = sha256(concatBytes(CANARY_DOMAIN, viewingPublicKey.toBytes(), keys.nullifierPublicKey,
+        txViewingPublicKey.toBytes(), salt, Uint8Array.of(0, 0, 0, 1), transfer, ring, transferCiphertext, ringCiphertext));
+    }
   } finally {
     sender.destroy();
   }
-  return { keys, plaintext: encodeLowerHex(plaintext), items: [item] };
+  return { keys, plaintexts, items, digest };
 }
 
 export type DecryptionCanary = ReturnType<typeof createDecryptionCanary>;
 
-export class CanaryRecipientMismatch extends DecryptionServiceError {
+export class CanaryMismatch extends DecryptionServiceError {
   constructor(detail = "canary recipient keys differ between replicas") {
     super("ReleaseBindingMismatch", detail);
   }
@@ -77,7 +95,7 @@ export class CanaryRecipientMismatch extends DecryptionServiceError {
 /** A missing replica supplies no comparison. A verified disagreement blocks the group. */
 export function requireCanaryAgreement(results: readonly PromiseSettledResult<unknown>[]): void {
   for (const result of results) {
-    if (result.status === "rejected" && result.reason instanceof CanaryRecipientMismatch) throw result.reason;
+    if (result.status === "rejected" && result.reason instanceof CanaryMismatch) throw result.reason;
   }
 }
 
@@ -86,31 +104,35 @@ export function createDecryptionCanary(anchor?: CanaryAnchor) {
   let signer: ReturnType<typeof generateKeyPairSigner> | undefined;
   let referenceKeys: ReturnType<typeof decodePublicKeys> | undefined;
   let note: ReturnType<typeof makeCanaryNote> | undefined;
-  const digest = anchor && requireHex(anchor.canaryKeyDigest, 32);
+  const digest = anchor && requireHex(anchor.canaryDigest, 32);
+  const scope = anchor && concatBytes(requireHex(anchor.securityDomainId, 32), requireHex(anchor.noteSeedCommitment, 32));
+  const reference = scope && ((label: string) => sha256(concatBytes(encoder.encode(`SPR/native-nitro/${label}/v1`), scope)));
 
   return {
     async check(runtime: ConnectedTvcRuntime, signal: AbortSignal): Promise<void> {
-      signer ??= anchor
-        ? createKeyPairSignerFromPrivateKeyBytes(sha256(concatBytes(OWNER_DOMAIN,
-          requireHex(anchor.securityDomainId, 32), requireHex(anchor.noteSeedCommitment, 32))))
+      signer ??= reference
+        ? createKeyPairSignerFromPrivateKeyBytes(reference("canary-owner"))
         : generateKeyPairSigner();
       const owner = await awaitWithSignal(signer, signal);
-      const keys = decodePublicKeys(
-        await executeServiceCall(runtime, { type: "PublicKeys", address: owner.address }, signal),
-      );
-      signal.throwIfAborted();
-      if (digest && !bytesEqual(digest, sha256(concatBytes(KEYS_DOMAIN,
-        keys.viewingPublicKey.toBytes(), keys.nullifierPublicKey)))) {
-        throw new CanaryRecipientMismatch("canary recipient keys differ from the custody receipt");
+      const result = await executeServiceCall(runtime, { type: "PublicKeys", address: owner.address }, signal);
+      let keys: ReturnType<typeof decodePublicKeys>;
+      try {
+        keys = decodePublicKeys(result);
+      } catch {
+        throw new CanaryMismatch("invalid canary recipient keys");
       }
+      signal.throwIfAborted();
       const expected = referenceKeys ??= keys;
       if (!bytesEqual(keys.viewingPublicKey.toBytes(), expected.viewingPublicKey.toBytes()) ||
           !bytesEqual(keys.nullifierPublicKey, expected.nullifierPublicKey)) {
-        throw new CanaryRecipientMismatch();
+        throw new CanaryMismatch();
       }
       await awaitWithSignal(initializePoseidon(), signal);
       signal.throwIfAborted();
-      note ??= makeCanaryNote(expected);
+      note ??= makeCanaryNote(expected, reference);
+      if (digest && (!note.digest || !bytesEqual(digest, note.digest))) {
+        throw new CanaryMismatch("canary keys or ciphertext differ from the custody receipt");
+      }
       await openCanaryNote(runtime, owner, note, signal);
     },
   };
@@ -119,23 +141,28 @@ export function createDecryptionCanary(anchor?: CanaryAnchor) {
 async function openCanaryNote(
   runtime: ConnectedTvcRuntime,
   owner: Awaited<ReturnType<typeof generateKeyPairSigner>>,
-  { items, plaintext, keys }: ReturnType<typeof makeCanaryNote>,
+  { items, plaintexts, keys }: ReturnType<typeof makeCanaryNote>,
   signal: AbortSignal,
 ): Promise<void> {
   const result = await executeServiceCall(runtime, { type: "Decrypt", owner, items }, signal);
-  const secret = requireHex(result.nullifier_secret, 31) as Bytes31;
+  let secret: Bytes31 | undefined;
   let nullifier: NullifierKey | undefined;
   try {
-    checkPlaintexts(result.plaintexts, items);
-    if (result.plaintexts[0] !== plaintext) {
-      throw new DecryptionServiceError("ReleaseBindingMismatch", "canary plaintext");
+    if (!Array.isArray(result.plaintexts) || result.plaintexts.length !== plaintexts.length ||
+        plaintexts.some((plaintext, index) => result.plaintexts[index] !== plaintext)) {
+      throw new CanaryMismatch("canary plaintext");
     }
-    nullifier = NullifierKey.fromSecret(secret);
+    try {
+      secret = requireHex(result.nullifier_secret, 31) as Bytes31;
+      nullifier = NullifierKey.fromSecret(secret);
+    } catch {
+      throw new CanaryMismatch("invalid canary nullifier secret");
+    }
     if (!bytesEqual(nullifier.publicKey(), keys.nullifierPublicKey)) {
-      throw new DecryptionServiceError("ReleaseBindingMismatch", "canary nullifier key");
+      throw new CanaryMismatch("canary nullifier key");
     }
   } finally {
     nullifier?.destroy();
-    secret.fill(0);
+    secret?.fill(0);
   }
 }

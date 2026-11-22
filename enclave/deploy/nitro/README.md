@@ -765,9 +765,9 @@ it verifies both signed heads, before contacting a replica. An activation
 still requires fresh replica attestation before use. A revocation has an
 empty target list. The primary publisher checks the predecessor and attests
 each activation target. It uses `/v1/operations` to look up the receipt's
-public canary owner and sends an owner-signed `Decrypt` request for the same
-freshly encrypted note to each target. Each boot must return the recipient
-keys pinned by the receipt and open that note. The publisher includes outgoing
+public canary owner and sends an owner-signed `Decrypt` request for the
+receipt's reference transfer and ring-deposit ciphertexts. Each boot must
+return the committed recipient keys and open both ciphertexts. The publisher includes outgoing
 targets from the signed predecessor in the comparison. The receipt still
 anchors the comparison when every predecessor endpoint is offline. The publisher
 rereads the peer and custody ledger after the probes, checks the active

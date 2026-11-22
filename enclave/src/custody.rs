@@ -31,7 +31,7 @@ pub(crate) struct Custody {
     #[serde(with = "hex")]
     pub(crate) note_seed_commitment: [u8; 32],
     #[serde(with = "hex")]
-    canary_key_digest: [u8; 32],
+    canary_digest: [u8; 32],
     #[serde(with = "hex")]
     share_commitments: Vec<[u8; 32]>,
 }
@@ -45,7 +45,7 @@ impl Custody {
     pub(crate) fn validate(&self) -> io::Result<()> {
         if self.epoch == 0
             || self.note_seed_commitment == [0; 32]
-            || self.canary_key_digest == [0; 32]
+            || self.canary_digest == [0; 32]
             || self.share_commitments.len() != SHARE_COUNT
             || self.share_commitments.contains(&[0; 32])
             || self.share_commitments.iter().collect::<BTreeSet<_>>().len() != SHARE_COUNT
@@ -88,9 +88,9 @@ impl Custody {
         if !openssl::memcmp::eq(&note_commitment(domain, &seed), &self.note_seed_commitment)
             || !openssl::memcmp::eq(
                 &seed
-                    .canary_key_digest(domain, &self.note_seed_commitment)
+                    .canary_digest(domain, &self.note_seed_commitment)
                     .ok()?,
-                &self.canary_key_digest,
+                &self.canary_digest,
             )
         {
             return None;
@@ -214,7 +214,7 @@ impl Recipients {
         let custody = Custody {
             epoch,
             note_seed_commitment,
-            canary_key_digest: seed.canary_key_digest(domain, &note_seed_commitment)?,
+            canary_digest: seed.canary_digest(domain, &note_seed_commitment)?,
             share_commitments: shares
                 .iter()
                 .map(|share| share_commitment(domain, share))

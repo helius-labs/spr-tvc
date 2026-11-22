@@ -96,7 +96,7 @@ class CustodyLedgerTests(unittest.TestCase):
             "custodianRole": f"arn:aws:iam::{index:012}:role/custodian",
             "retirementRole": f"arn:aws:iam::{index:012}:role/retirement",
         } for index in range(1, 7)]
-        custody = {"epoch": str(epoch), "noteSeedCommitment": "34" * 32, "canaryKeyDigest": "35" * 32,
+        custody = {"epoch": str(epoch), "noteSeedCommitment": "34" * 32, "canaryDigest": "35" * 32,
                    "shareCommitments": [variant * 32] * 6}
         receipt = {
             "network": self.trust["network"], "securityDomainId": DOMAIN, "releaseId": f"custody-{epoch}",
@@ -415,7 +415,7 @@ class CustodyLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "canonical previous receipt"):
             publish(self.trust, self.sign(bad))
         bad = copy.deepcopy(new)
-        bad["authorization"]["manifest"]["capture"]["receipt"]["custody"]["canaryKeyDigest"] = "12" * 32
+        bad["authorization"]["manifest"]["capture"]["receipt"]["custody"]["canaryDigest"] = "12" * 32
         with self.assertRaisesRegex(ValueError, "canonical previous receipt"):
             publish(self.trust, self.sign(bad))
         bad = copy.deepcopy(new)
@@ -424,16 +424,16 @@ class CustodyLedgerTests(unittest.TestCase):
             publish(self.trust, self.sign(bad))
         publish(self.trust, self.sign(new))
         self.assertEqual(load_epoch(self.trust, "2")[1]["custody"]["noteSeedCommitment"], previous["custody"]["noteSeedCommitment"])
-        self.assertEqual(load_epoch(self.trust, "2")[1]["custody"]["canaryKeyDigest"], previous["custody"]["canaryKeyDigest"])
+        self.assertEqual(load_epoch(self.trust, "2")[1]["custody"]["canaryDigest"], previous["custody"]["canaryDigest"])
 
     def test_receipt_requires_a_nonzero_canonical_canary_digest(self):
         for value in (None, "00" * 32, "ff", "AA" * 32):
             document = self.document(1)
             custody = document["authorization"]["manifest"]["capture"]["receipt"]["custody"]
             if value is None:
-                del custody["canaryKeyDigest"]
+                del custody["canaryDigest"]
             else:
-                custody["canaryKeyDigest"] = value
+                custody["canaryDigest"] = value
             with self.subTest(value=value), self.assertRaises(ValueError):
                 record(self.trust, document)
 
@@ -1408,14 +1408,14 @@ class CustodyLedgerTests(unittest.TestCase):
         self.trust["approvalKeys"].append(incoming)
         self.assertEqual(check(), {"custodyKeys": [base64.b64decode(pin["publicKey"])[-65:].hex()
                                                    for pin in self.trust["approvalKeys"][0]["keys"]],
-                                   "nextCutover": str(incoming["activeFrom"]), "canaryKeyDigest": "35" * 32})
+                                   "nextCutover": str(incoming["activeFrom"]), "canaryDigest": "35" * 32})
         self.now = incoming["activeFrom"]
         with self.assertRaisesRegex(ValueError, "active custody approval roster"):
             check(custody_signer=signer)
         next_pin = approval_roster(self.trust)["keys"][0]
         self.assertEqual(check(custody_signer=(next_pin["keyArn"], base64.b64decode(next_pin["publicKey"])[-65:].hex())),
                          {"custodyKeys": [base64.b64decode(pin["publicKey"])[-65:].hex() for pin in incoming["keys"]],
-                          "nextCutover": None, "canaryKeyDigest": "35" * 32})
+                          "nextCutover": None, "canaryDigest": "35" * 32})
         def close_during_target_read(*args, **options):
             subject = read_registered_target(*args, **options)
             if subject["mode"] == "serve":
@@ -1929,7 +1929,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, custody, expected=self.qualification(registered)).evidence,
                                  self.qualification(registered))
                 self.assertEqual(query.call_args.kwargs["input"], body)
-                self.assertIn(custody["canaryKeyDigest"], query.call_args.args[0])
+                self.assertIn(custody["canaryDigest"], query.call_args.args[0])
                 self.assertNotIn(str(wallet_trust), query.call_args.args[0])
                 query.reset_mock()
                 wallet_trust.write_bytes(b"{}")

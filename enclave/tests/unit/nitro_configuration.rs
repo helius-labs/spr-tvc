@@ -14,28 +14,29 @@ fn configuration(deployment: Value) -> Value {
 }
 
 fn custody() -> Value {
-    json!({
-        "epoch": "1",
-        "noteSeedCommitment": "34".repeat(32),
-        "canaryKeyDigest": "35".repeat(32),
-        "shareCommitments": (1..=6).map(|index| format!("{index:02x}").repeat(32)).collect::<Vec<_>>(),
-    })
+    serving_configuration()["deployment"]["custody"].clone()
+}
+
+const SERVING_CONFIGURATION: &str = include_str!("../fixtures/nitro-serving-configuration.json");
+
+fn serving_configuration() -> Value {
+    serde_json::from_str(SERVING_CONFIGURATION).unwrap()
 }
 
 #[test]
 fn validates_the_serving_configuration() {
-    let mut config = configuration(json!({"mode": "serve", "custody": custody()}));
-    assert!(parse_configuration(&config.to_string()).is_ok());
+    assert!(parse_configuration(SERVING_CONFIGURATION).is_ok());
+    let mut config = serving_configuration();
     config["deployment"]["custody"]["shareCommitments"][1] =
         config["deployment"]["custody"]["shareCommitments"][0].clone();
     assert!(parse_configuration(&config.to_string()).is_err());
 
-    let mut config = configuration(json!({"mode": "serve", "custody": custody()}));
+    let mut config = serving_configuration();
     for release_id in ["", "Uppercase", "-start", "with_under"] {
         config["releaseId"] = json!(release_id);
         assert!(parse_configuration(&config.to_string()).is_err());
     }
-    config["releaseId"] = json!("release-1");
+    config["releaseId"] = serving_configuration()["releaseId"].clone();
     config["securityDomainId"] = json!("00".repeat(32));
     assert!(parse_configuration(&config.to_string()).is_err());
 }
