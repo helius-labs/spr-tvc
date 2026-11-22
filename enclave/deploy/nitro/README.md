@@ -579,8 +579,11 @@ epochs are canonical decimal strings. The wallet stores the
 sequence, policy digest, custody floor and recovery mode atomically once
 it verifies both signed heads, before contacting a replica. An activation
 still requires fresh replica attestation before use. A revocation has an
-empty target list. Each publisher checks the predecessor, verifies
-that every activation target attests, and writes against its observed ETag.
+empty target list. Each publisher checks the predecessor, attests each
+activation target and verifies its encrypted `PublicKeys` reply through
+`/v1/operations`. The reply must be signed by the attested boot. The probe
+uses a fixed public address and needs no wallet signature. The publisher
+writes against its observed ETag.
 Publish from the first listed bucket's AWS account, then mirror the exact signed
 file from the second account. The tool checks the full signed file at both
 buckets before advancing past it. Use a new revision to change its signatures.
@@ -600,7 +603,8 @@ Before distributing a wallet trust file, run this read-only check. It requires
 both buckets to serve the exact same signed file at the pinned revision, with
 the expected custody floor and recovery mode. Run it with scoped custody ledger
 read access for an activation. It verifies the registered serving targets and
-active roster, then rechecks both buckets. For a target-free revocation during
+active roster, runs the same operation probe on each target, then rechecks
+both buckets. For a target-free revocation during
 a ledger outage, omit `--custody-trust`. Use the reported `trustSha256` to
 identify the exact file in the wallet release.
 

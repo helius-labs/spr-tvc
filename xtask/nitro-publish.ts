@@ -5,11 +5,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
-import { connectNitroTarget } from "../sdk/src/attestation/nitro-connection.js";
 import {
-  nextNitroPublication, nitroPublication, requireNitroTrustTransition, validateNitroTrust, verifyNitroPolicy, type NitroTrust,
+  nextNitroPublication, nitroPublication, requireNitroTrustTransition, validateNitroTrust, verifyNitroPolicy, type NitroTarget, type NitroTrust,
 } from "../sdk/src/attestation/nitro-policy.js";
 import { readNitroPolicy, readPublishedNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
+import { probeNitroTarget } from "../sdk/src/client/nitro-probe.js";
 import { decodeDecimalU64 } from "../sdk/src/protocol/decimal.js";
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
 
@@ -28,6 +28,7 @@ type PublicationOptions = {
   nextTrust?: NitroTrust;
   emergencyFrom?: NitroTrust;
   run?: Run;
+  probe?: (target: NitroTarget, trust: NitroTrust) => Promise<unknown>;
 };
 
 async function readPolicy(path: string): Promise<string> {
@@ -98,7 +99,7 @@ export function bucketPolicy(trust: NitroTrust, name: string, administrator: str
 
 export async function publish(
   trust: NitroTrust, name: string, text: string,
-  { custodyTrust, nextTrust, emergencyFrom, run = runCommand }: PublicationOptions = {},
+  { custodyTrust, nextTrust, emergencyFrom, run = runCommand, probe = probeNitroTarget }: PublicationOptions = {},
 ): Promise<void> {
   const now = BigInt(Date.now());
   const { policy, signatures, custodySignatures } = verifyNitroPolicy(text, trust, now);
@@ -157,7 +158,7 @@ export async function publish(
       ? await checkActivationRoster(candidate, custodyTrust, nextTrust ?? trust, run)
       : undefined;
     requireCustodyWriteWindow(nextCutover, BigInt(Date.now()));
-    await Promise.all(policy.targets.map(target => connectNitroTarget(target, trust)));
+    await Promise.all(policy.targets.map(target => probe(target, trust)));
     const beforeWrite = BigInt(Date.now());
     verifyNitroPolicy(text, trust, beforeWrite);
     requireCustodyWriteWindow(nextCutover, beforeWrite);
@@ -188,7 +189,8 @@ async function pinnedPublication(trust: NitroTrust) {
 
 /** Verify the exact current, witnessed revision before shipping a new pin file. */
 export async function verifyDistributionPins(
-  trust: NitroTrust, { custodyTrust, run = runCommand }: Pick<PublicationOptions, "custodyTrust" | "run"> = {},
+  trust: NitroTrust,
+  { custodyTrust, run = runCommand, probe = probeNitroTarget }: Pick<PublicationOptions, "custodyTrust" | "run" | "probe"> = {},
 ) {
   validateNitroTrust(trust);
   const published = await pinnedPublication(trust);
@@ -200,6 +202,7 @@ export async function verifyDistributionPins(
     const candidate = join(directory, "published.json");
     await writeFile(candidate, published.text, { mode: 0o600, flag: "wx" });
     const nextCutover = await checkActivationRoster(candidate, custodyTrust, trust, run);
+    await Promise.all(published.policy.targets.map(target => probe(target, trust)));
     const confirmed = await pinnedPublication(trust);
     if (confirmed.text !== published.text) throw new Error("signed policy changed during wallet trust verification");
     if (nextCutover !== undefined && BigInt(Date.now()) >= nextCutover) {

@@ -1,4 +1,4 @@
-import { connectNitroTarget, nitroTransport } from "../attestation/nitro-connection.js";
+import { connectNitroTarget, nitroOperationBinding } from "../attestation/nitro-connection.js";
 import { indexedDbNitroPolicyStore } from "../attestation/nitro-checkpoint.js";
 import {
   advancesNitroPolicy, validateNitroTrust,
@@ -103,7 +103,7 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
       previousFailure = new Promise(resolve => { void candidate.catch(() => resolve()); });
       return candidate;
     });
-    const { connected: { endpoint, info, proofKey }, index, window } = await Promise.any(candidates)
+    const { connected, index, window } = await Promise.any(candidates)
       .catch(() => {
         signal.throwIfAborted();
         currentTime();
@@ -114,9 +114,7 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
     requireCurrentReleasePolicy(window, currentTime());
     next = index + 1;
     return {
-      backend: { endpoint },
-      info,
-      transport: nitroTransport,
+      ...nitroOperationBinding(connected),
       responseTimeoutMs: RESPONSE_TIMEOUT_MS,
       recoveryOnly: policy.recoveryOnly,
       nowMs: clock,
@@ -128,11 +126,6 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
             current.recoveryOnly !== checkpoint.recoveryOnly) {
           throw new DecryptionServiceError("ReleasePolicySuperseded");
         }
-      },
-      trustVerifier: {
-        async verifyOperationAppProof(proof) {
-          if (proof.publicKey !== proofKey) throw new DecryptionServiceError("BootProofUnverified");
-        },
       },
     };
   });

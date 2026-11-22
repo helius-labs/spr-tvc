@@ -160,6 +160,36 @@ test("qualifies a planned custody transition only after the incoming roster acti
   assert.equal(attestationRequests, 1);
 });
 
+test("requires a successful operation probe on every target before writing an activation", async () => {
+  const other = { ...target, endpoint: "https://other.example.com/" };
+  const activate: NitroPolicy = { ...first, action: "activate", targets: [target, other] };
+  const text = signed(activate);
+  const pinned = pins(activate);
+  const checked: string[] = [];
+  let failing = true;
+  let writes = 0;
+  const probe = async (replica: typeof target, supplied: NitroTrust) => {
+    assert.equal(supplied, pinned);
+    checked.push(replica.endpoint);
+    if (replica.endpoint === other.endpoint && failing) throw new Error("operation probe failed");
+  };
+  const run = async (command: string, args: string[]) => {
+    if (command === "python3") return { stdout: JSON.stringify({ custodyKeys: trust.custodyKeys, nextCutover: null }) };
+    assert.equal(command, "aws");
+    assert.ok(args.includes("put-object"));
+    assert.equal(await readFile(args.at(-1)!, "utf8"), text);
+    writes += 1;
+    return { stdout: "{}" };
+  };
+  const options = { run, probe, custodyTrust: "/pinned/custody.json" };
+  await assert.rejects(publish(pinned, trust.publications[0].bucket, text, options), /operation probe failed/);
+  assert.equal(writes, 0);
+  failing = false;
+  await publish(pinned, trust.publications[0].bucket, text, options);
+  assert.equal(writes, 1);
+  assert.deepEqual(checked, [target.endpoint, other.endpoint, target.endpoint, other.endpoint]);
+});
+
 test("mirrors the first publisher's policy into only the selected pinned bucket", async context => {
   const [primary, peer] = trust.publications;
   context.mock.method(globalThis, "fetch", async (url: URL, options: RequestInit) => {
@@ -326,12 +356,20 @@ test("wallet activation pins require the active custody roster and a stable publ
     if (changedEnvelope) head = changedEnvelope;
     return { stdout: JSON.stringify({ custodyKeys: incoming.custodyKeys, nextCutover }) };
   };
-  const options = { custodyTrust, run };
+  let failing = false;
+  const probe = async (replica: typeof target) => {
+    assert.deepEqual(replica, target);
+    if (failing) throw new Error("operation probe failed");
+  };
+  const options = { custodyTrust, run, probe };
   await assert.rejects(verifyDistributionPins(incoming), /requires --custody-trust/);
   await assert.rejects(verifyDistributionPins(pins(activate), options), /active custody approval roster/);
   nextCutover = String(Math.floor(Date.now() / 1_000));
   await assert.rejects(verifyDistributionPins(incoming, options), /roster changed/);
   nextCutover = null;
+  failing = true;
+  await assert.rejects(verifyDistributionPins(incoming, options), /operation probe failed/);
+  failing = false;
   assert.equal((await verifyDistributionPins(incoming, options)).sequence, "2");
   changedEnvelope = signed(activate, [1, 0], [0, 1, 3, 4]);
   await assert.rejects(verifyDistributionPins(incoming, options), /signed policy changed/);

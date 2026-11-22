@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { verifyNativeNitroEvidence } from "../../src/attestation/boot-proof.js";
 import { indexedDbNitroPolicyStore } from "../../src/attestation/nitro-checkpoint.js";
 import { nitroCustodySigningDigest, nitroPolicySigningDigest, type NitroPolicy, type NitroPolicyCheckpoint, type NitroPolicyUpdate, type NitroTrust } from "../../src/attestation/nitro-policy.js";
+import { probeNitroTarget } from "../../src/client/nitro-probe.js";
 import { createNitroDecryptionService } from "../../src/client/nitro.js";
 import { signP256Message, signP256Prehash } from "../../src/crypto/p256.js";
 import { qosDecrypt, qosEncrypt } from "../../src/crypto/qos.js";
@@ -109,9 +110,9 @@ function openRequest(init: RequestInit, boot: readonly Uint8Array[]): ServiceReq
   return JSON.parse(new TextDecoder().decode(qosDecrypt(boot[0]!, requireHex(ciphertext)))) as ServiceRequest;
 }
 
-function lookupReply(init: RequestInit, boot: readonly Uint8Array[]) {
+function lookupReply(init: RequestInit, boot: readonly Uint8Array[], owner: string = signer.address) {
   const request = openRequest(init, boot);
-  expect(request.operation).toEqual({ type: "PublicKeys", address: signer.address });
+  expect(request.operation).toEqual({ type: "PublicKeys", address: owner });
   const viewing = ViewingKey.generate();
   try {
     return signedReply(request, boot, { type: "PublicKeys", viewing_public_key: encodeLowerHex(viewing.publicKey().toBytes()),
@@ -137,6 +138,62 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.mocked(verifyNativeNitroEvidence).mockReset();
   signMessages.mockClear();
+});
+
+describe("operator replica probe", () => {
+  it("requires the operation route and a signed reply from the attested boot", async () => {
+    const { policy } = JSON.parse(signedPolicy()) as { policy: NitroPolicy };
+    const target = policy.targets[0]!;
+    const probeAddress = "6x5SYnLroiN7WYq8NQYU9KHcH4YjpBbwpUfVu3EB7ieH";
+    const fetch = vi.fn<(url: URL, init: RequestInit) => Promise<Response>>();
+    vi.stubGlobal("fetch", fetch);
+    fetch.mockResolvedValueOnce(attestedDiscovery()).mockResolvedValueOnce(new Response(null, { status: 503 }));
+    await expect(probeNitroTarget(target, trust)).rejects.toThrow("HTTP 503");
+
+    fetch.mockResolvedValueOnce(attestedDiscovery()).mockImplementationOnce(async (_url, init) =>
+      signedReply(openRequest(init, secrets), replacementBoot, {
+        type: "PublicKeys", viewing_public_key: "01".repeat(33), nullifier_public_key: "01".repeat(32),
+      }));
+    await expect(probeNitroTarget(target, trust)).rejects.toThrow("BootProofUnverified");
+
+    for (const [viewing, nullifier, error] of [
+      ["04" + "01".repeat(32), "01".repeat(31), "InvalidHex"],
+      ["01".repeat(33), "01".repeat(32), "KEYPAIR_INVALID_PUBLIC_KEY"],
+    ] as const) {
+      fetch.mockResolvedValueOnce(attestedDiscovery()).mockImplementationOnce(async (_url, init) =>
+        signedReply(openRequest(init, secrets), secrets, {
+          type: "PublicKeys", viewing_public_key: viewing, nullifier_public_key: nullifier,
+        }));
+      await expect(probeNitroTarget(target, trust)).rejects.toThrow(error);
+    }
+
+    fetch.mockResolvedValueOnce(attestedDiscovery())
+      .mockImplementationOnce(async (_url, init) => lookupReply(init, secrets, probeAddress));
+    const boot = await probeNitroTarget(target, trust);
+    expect(boot.bootstrapSlots).toEqual([1, 3, 5]);
+    expect(fetch.mock.calls.map(([url]) => url.pathname)).toEqual([
+      "/v1/nitro/attestation", "/v1/operations",
+      "/v1/nitro/attestation", "/v1/operations",
+      "/v1/nitro/attestation", "/v1/operations",
+      "/v1/nitro/attestation", "/v1/operations",
+      "/v1/nitro/attestation", "/v1/operations",
+    ]);
+    expect(signMessages).not.toHaveBeenCalled();
+  });
+
+  it("honors an operator deadline while the operation route is stalled", async () => {
+    const { policy } = JSON.parse(signedPolicy()) as { policy: NitroPolicy };
+    const controller = new AbortController();
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(attestedDiscovery())
+      .mockImplementationOnce(() => {
+        controller.abort(new Error("operator deadline expired"));
+        return new Promise<Response>(() => {});
+      });
+    vi.stubGlobal("fetch", fetch);
+    await expect(probeNitroTarget(policy.targets[0]!, trust, controller.signal)).rejects.toThrow("operator deadline expired");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("native client trust gate", () => {

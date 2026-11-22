@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
-import { connectNitroTarget } from "../sdk/src/attestation/nitro-connection.js";
 import { requireRetirementPolicy, validateNitroTrust, type NitroTrust } from "../sdk/src/attestation/nitro-policy.js";
 import { readPublishedNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
+import { probeNitroTarget } from "../sdk/src/client/nitro-probe.js";
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
 
 async function main() {
@@ -14,12 +14,12 @@ async function main() {
   if (trust.network !== network || trust.securityDomainId !== domain || trust.noteSeedCommitment !== seed) {
     throw new Error("wallet trust does not match the committed custody domain");
   }
-  const signal = AbortSignal.timeout(15_000);
+  const signal = AbortSignal.timeout(20_000);
   const before = await readPublishedNitroPolicy(trust, signal);
   requireRetirementPolicy(before, epoch, custodyDigest);
   const candidates = before.policy.targets.filter(target => target.custodyEpoch === epoch && target.custodyDigest === custodyDigest);
   const targets = await Promise.allSettled(candidates.map(async target => {
-    const { info, bootstrapSlots, bootedAtMs } = await connectNitroTarget(target, trust, signal);
+    const { info, bootstrapSlots, bootedAtMs } = await probeNitroTarget(target, trust, signal);
     return { target, bootstrap: { bootKeyId: info.quorum_key_id, bootedAtMs, slots: [...bootstrapSlots].sort((a, b) => a - b) } };
   }));
   signal.throwIfAborted();

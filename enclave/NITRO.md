@@ -212,10 +212,12 @@ policy. Their digest uses `SPR/native-nitro/custody-release-policy/v1`
 followed by the same canonical JSON. The SDK verifies both quorums before
 contacting a replica. Separate key pins prevent the release quorum from
 substituting its own recipient keys through an unapproved image. Each publisher
-checks the predecessor, matches the activation's wallet custody pins to the
-active operator roster, and attests every target. A planned transition matches
-the incoming pins. The publisher checks for a scheduled cutover before
-attestation and again before submitting the write. A revocation
+checks the predecessor and matches the activation's wallet custody pins to
+the active operator roster. For each target it attests the boot and sends an
+encrypted `PublicKeys` request through the wallet route. The reply must carry
+a proof from that same boot. Wallet trust distribution and retirement use
+the same probe. A planned transition matches the incoming pins. The publisher
+checks for a scheduled cutover before qualification and before the write. A revocation
 has no targets. Its sequence, custody floor and recovery flag can permanently
 change wallet state, so it also requires both quorums.
 Revocation can proceed while the custody ledger and replicas are offline.

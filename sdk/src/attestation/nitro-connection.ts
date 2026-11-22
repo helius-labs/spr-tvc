@@ -12,6 +12,7 @@ import { assertExactObjectKeys, parseStrictJson } from "../protocol/json.js";
 import { SERVICE_INFO_KEYS, type ServiceInfo } from "../protocol/types.js";
 import { verifyNativeNitroEvidence } from "./boot-proof.js";
 import { nitroEndpoint, type NitroTarget, type NitroTrust } from "./nitro-policy.js";
+import type { TurnkeyAppProofWire } from "./turnkey.js";
 
 const MAX_DISCOVERY_BYTES = 49_152n;
 const MAX_ATTESTATION_BYTES = 16_384;
@@ -87,4 +88,19 @@ export async function connectNitroTarget(target: NitroTarget, trust: NitroTrust,
     throw new DecryptionServiceError("BootProofUnverified");
   }
   return { endpoint, info, bootstrapSlots, bootedAtMs, ...verified };
+}
+
+export function nitroOperationBinding(
+  { endpoint, info, proofKey }: Awaited<ReturnType<typeof connectNitroTarget>>,
+) {
+  return {
+    backend: { endpoint },
+    info,
+    transport: nitroTransport,
+    trustVerifier: {
+      async verifyOperationAppProof(proof: TurnkeyAppProofWire) {
+        if (proof.publicKey !== proofKey) throw new DecryptionServiceError("BootProofUnverified");
+      },
+    },
+  };
 }

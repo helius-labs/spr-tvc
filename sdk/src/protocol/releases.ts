@@ -1,6 +1,6 @@
-import devnet from "../../releases/devnet.json";
-import mainnet from "../../releases/mainnet.json";
-import mainnetTrust from "../../trust/mainnet.json";
+import devnet from "../../releases/devnet.json" with { type: "json" };
+import mainnet from "../../releases/mainnet.json" with { type: "json" };
+import mainnetTrust from "../../trust/mainnet.json" with { type: "json" };
 import type { QosIdentityPcrs } from "../attestation/boot-proof.js";
 import { decodeDecimalU64 } from "./decimal.js";
 import { DecryptionServiceError } from "./error.js";
