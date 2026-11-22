@@ -12,6 +12,7 @@ from approval import (
 )
 from custody_ledger import load_epoch, require_active_epoch, verify_target_approval
 from deployment import require_registered_target, require_reviewed_target, target
+from kms_policy import RSA_CIPHERTEXT_BYTES
 from relay import live_recipient, recover_to_relay, relay_pins, relay_request, sealed_rsa_key
 
 LABEL = "relay-release"
@@ -93,7 +94,7 @@ def release(trust, approval, build, index, port, authorization, *, review):
     ]})
     still_authorized()
     ciphertext = relay_request(port, "/rewrap", body, 512)
-    if len(ciphertext) not in (256, 384, 512):
+    if len(ciphertext) not in RSA_CIPHERTEXT_BYTES:
         raise ValueError("invalid relay destination ciphertext length")
     still_authorized()
     return ciphertext

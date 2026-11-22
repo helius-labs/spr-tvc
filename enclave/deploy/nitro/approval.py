@@ -76,6 +76,10 @@ def aws_environment():
     return {**os.environ, "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS": "true"}
 
 
+class InvalidAwsResponse(ValueError):
+    """An AWS CLI call succeeded but returned an invalid response."""
+
+
 def aws(region, service, operation, arguments, body=None, *, profile=None, absent=None):
     credentials = ["--profile", profile] if profile is not None else []
     error_format = ["--cli-error-format", "json"] if absent is not None else []
@@ -92,9 +96,12 @@ def aws(region, service, operation, arguments, body=None, *, profile=None, absen
             if isinstance(error, dict) and error.get("Code") == absent:
                 return None
         raise ValueError(f"AWS {service} {operation} failed")
-    result = parse_json(reply.stdout)
+    try:
+        result = parse_json(reply.stdout)
+    except (ValueError, RecursionError) as error:
+        raise InvalidAwsResponse(f"unexpected AWS {service} {operation} response") from error
     if not isinstance(result, dict):
-        raise ValueError(f"unexpected AWS {service} {operation} response")
+        raise InvalidAwsResponse(f"unexpected AWS {service} {operation} response")
     return result
 
 

@@ -408,7 +408,11 @@ pinned history and excluded versions.
    access to pinned versions of the EIF, signed target and wrapped shares.
    Record the SHA-256 of `target-signed.json` in the reviewed host deployment
    configuration. Copy it verbatim and place each wrapped share at
-   `shares/<slot>.kms` next to it. Omit the file for an unavailable slot.
+   `shares/<slot>.kms` next to it as a regular binary file. The parent reads
+   only 256-, 384- or 512-byte RSA ciphertexts. Omit the file for an
+   unavailable slot. Failed calls can leave a slot unavailable. A successful
+   KMS reply with the wrong key or algorithm, plaintext, or a malformed
+   recipient envelope stops provisioning.
    The approval deadline gates first registration and new share wraps. Cold
    boots can use existing wrapped shares from the pinned target until the keys
    are retired.
@@ -416,6 +420,9 @@ pinned history and excluded versions.
    ```sh
    python3 "$nitro/provision.py" 16 "$approved_target" --target-sha256 "$target_sha256"
    ```
+   If fewer than three KMS envelopes are available, the command checks the
+   parent credentials with STS and reports a role mismatch. Healthy
+   provisioning uses the KMS endpoints. [AWS KMS recipient response](https://docs.aws.amazon.com/kms/latest/APIReference/API_Decrypt.html)
 
 4. Keep port 44031 private. Forward port 44030 through TLS without caching.
    Open one HTTP/1 request per upstream vsock connection. The enclave closes
@@ -440,9 +447,9 @@ pinned history and excluded versions.
    ceremony capture. Commit the new receipt after all six keys acknowledge it.
 2. Commission serving slots from the new receipt on separate EC2 parents. On a fresh enclave run,
    pass `--slots 2 4 6` to `provision.py` to use only those three current slots.
-   Provisioning fails if any selected slot fails. Save the three slots that
-   the enclave reports using to restore the seed. Readiness has a 20-second
-   deadline. Each provisioning and relay HTTP exchange has an eight-second
+   Provisioning fails if any selected slot fails. Save the three slots from the
+   local acknowledgement and confirm them in wallet attestation. Readiness
+   has a 20-second deadline. Each provisioning and relay HTTP exchange has an eight-second
    deadline for connection, request and reply. If the submission result is
    unconfirmed, verify serving attestation or the rotation receipt before
    restarting.

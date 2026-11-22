@@ -11,11 +11,11 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
-from approval import aws, require_profile_account
+from approval import InvalidAwsResponse, aws, require_profile_account
 from deployment import host_policy
 from kms_policy import RSA_OAEP, acknowledgement_policy, key_policy, recovery_policy, validate_scope
-from provision import UnconfirmedBootstrap, provision, read_target, recipient_for
-from relay import decrypt_recipient
+from provision import InsufficientShares, UnconfirmedBootstrap, main as provision_main, provision, read_target, recipient_for
+from relay import InvalidRecipientResponse, decrypt_recipient
 from retirement import inspect_inventory
 
 HOST = "arn:aws:iam::111111111111:role/host"
@@ -31,7 +31,6 @@ TARGET = {"network": "mainnet", "securityDomainId": DOMAIN, "releaseId": "releas
           "hostRole": HOST, "hostRegion": "eu-north-1", "instanceId": INSTANCE, "pcrs": PINS, "wrappingKeys": KEYS, "mode": "serve", "expiresAt": 2_000_000_000,
           "nextCustodians": None, "nextRelay": None, "approvalFromEpoch": "1", "receiptSha256": "11" * 32,
           "eifSha256": "22" * 32, "configurationSha256": "33" * 32, "executableSha256": "44" * 32}
-SHARES = pathlib.Path("shares")
 
 
 class KeyPolicyTests(unittest.TestCase):
@@ -153,6 +152,45 @@ class KeyPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid CloudTrail continuation token"):
             inspect_inventory(inventory, True, profile="slot")
 
+class ProvisioningTests(unittest.TestCase):
+    def setUp(self):
+        self.shares = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for slot in range(1, 7):
+            (self.shares / f"{slot}.kms").write_bytes(bytes([slot]) * 256)
+
+    @patch("provision.provision", return_value=[2, 4, 6])
+    @patch("provision.aws")
+    def test_cli_diagnoses_host_credentials_only_when_kms_cannot_supply_a_quorum(self, aws, start):
+        target = self.shares / "target.json"
+        body = json.dumps({"manifest": {**TARGET, "hostRole": HOST.replace("/host", "/service/host")},
+                           "signatures": []}).encode()
+        target.write_bytes(body)
+        args = ["provision.py", "16", str(target), "--target-sha256", hashlib.sha256(body).hexdigest()]
+        caller = {"Account": "111111111111", "Arn": f"arn:aws:sts::111111111111:assumed-role/host/{INSTANCE}"}
+        with patch("sys.argv", args):
+            with patch("builtins.print") as report:
+                provision_main()
+            aws.assert_not_called()
+            start.assert_called_once_with(16, json.loads(body)["manifest"], target.parent / "shares", None)
+            report.assert_called_once_with("enclave acknowledged custody slots [2, 4, 6]")
+
+            start.side_effect = InsufficientShares("fewer than three envelopes")
+            for identity in ({**caller, "Arn": HOST}, {**caller, "Account": "222222222222"},
+                             {**caller, "Arn": caller["Arn"].replace("/host/", "/other/")},
+                             {**caller, "Arn": caller["Arn"].replace(INSTANCE, "")}, {**caller, "Arn": None}, {}):
+                aws.return_value = identity
+                with self.subTest(identity=identity), self.assertRaisesRegex(
+                    SystemExit, "fewer than three envelopes.*approved host role",
+                ):
+                    provision_main()
+            aws.return_value = caller
+            with self.assertRaisesRegex(SystemExit, "^fewer than three envelopes$"):
+                provision_main()
+            aws.side_effect = ValueError("STS unavailable")
+            with self.assertRaisesRegex(SystemExit, "fewer than three envelopes.*STS unavailable"):
+                provision_main()
+        aws.assert_called_with("eu-north-1", "sts", "get-caller-identity", [])
+
     @patch("provision.decrypt_recipient")
     @patch("provision.request", side_effect=[(200, b"evidence"), (200, bytes([2, 4, 6]))])
     def test_three_available_accounts_are_enough(self, request, decrypt):
@@ -163,9 +201,9 @@ class KeyPolicyTests(unittest.TestCase):
             raise ValueError("unavailable custodian")
 
         decrypt.side_effect = wrapped
-        self.assertEqual(provision(16, TARGET, SHARES), [2, 4, 6])
+        self.assertEqual(provision(16, TARGET, self.shares), [2, 4, 6])
         self.assertCountEqual([call.args for call in decrypt.call_args_list],
-                              [(key, f"fileb://{SHARES / f'{slot}.kms'}", b"evidence")
+                              [(key, base64.b64encode(bytes([slot]) * 256).decode(), b"evidence")
                                for slot, key in enumerate(KEYS, start=1)])
         request.assert_called_with(16, "POST", "/shares",
                                    b"".join(struct.pack(">BH", slot, 1) + str(slot).encode() for slot in (2, 4, 6)), limit=3)
@@ -175,14 +213,14 @@ class KeyPolicyTests(unittest.TestCase):
     def test_does_not_forward_fewer_than_three_shares(self, request, decrypt):
         decrypt.side_effect = [b"one", b"two", *[ValueError("unavailable")] * 4]
         with self.assertRaisesRegex(ValueError, "fewer than three"):
-            provision(16, TARGET, SHARES)
+            provision(16, TARGET, self.shares)
         request.assert_called_once()
         self.assertEqual(request.call_args.args, (16, "GET", "/recipient"))
 
     @patch("provision.decrypt_recipient", return_value=b"envelope")
     @patch("provision.request", side_effect=[(200, b"evidence"), (200, bytes([2, 4, 6]))])
     def test_rehearsal_uses_exactly_the_requested_slots_without_fallback(self, request, decrypt):
-        self.assertEqual(provision(16, TARGET, SHARES, [6, 2, 4]), [2, 4, 6])
+        self.assertEqual(provision(16, TARGET, self.shares, [6, 2, 4]), [2, 4, 6])
         self.assertEqual({call.args[0] for call in decrypt.call_args_list}, {KEYS[1], KEYS[3], KEYS[5]})
         request.assert_called_with(16, "POST", "/shares",
                                    b"".join(struct.pack(">BH", slot, 8) + b"envelope" for slot in (2, 4, 6)), limit=3)
@@ -191,7 +229,7 @@ class KeyPolicyTests(unittest.TestCase):
         decrypt.reset_mock(side_effect=True)
         decrypt.side_effect = [b"one", b"two", ValueError("custodian key denied")]
         with self.assertRaisesRegex(ValueError, "fewer than three"):
-            provision(16, TARGET, SHARES, [2, 4, 6])
+            provision(16, TARGET, self.shares, [2, 4, 6])
         self.assertEqual(decrypt.call_count, 3)
         request.assert_called_once()
         self.assertEqual(request.call_args.args, (16, "GET", "/recipient"))
@@ -200,29 +238,59 @@ class KeyPolicyTests(unittest.TestCase):
     @patch("provision.request")
     def test_reports_the_restored_slots_and_rejects_an_invalid_or_missing_acknowledgement(self, request, _):
         request.side_effect = [(200, b"evidence"), (200, bytes([2, 4, 6]))]
-        self.assertEqual(provision(16, TARGET, SHARES), [2, 4, 6])
+        self.assertEqual(provision(16, TARGET, self.shares), [2, 4, 6])
         for ack in (b"", bytes([2, 4]), bytes([2, 2, 6]), bytes([2, 4, 5]), bytes([2, 4, 6, 7])):
             request.side_effect = [(200, b"evidence"), (200, ack)]
             with self.subTest(ack=ack), self.assertRaisesRegex(UnconfirmedBootstrap, "invalid enclave acknowledgement"):
-                provision(16, TARGET, SHARES, [2, 4, 6])
+                provision(16, TARGET, self.shares, [2, 4, 6])
         request.side_effect = [(200, b"evidence"), (400, b"")]
         with self.assertRaisesRegex(ValueError, "refused the shares with HTTP 400"):
-            provision(16, TARGET, SHARES, [2, 4, 6])
+            provision(16, TARGET, self.shares, [2, 4, 6])
         for result in (TimeoutError("lost response"), (404, b""), (410, b""), (503, b"")):
             request.side_effect = [(200, b"evidence"), result]
             with self.subTest(result=result), self.assertRaisesRegex(UnconfirmedBootstrap, "could not confirm"):
-                provision(16, TARGET, SHARES, [2, 4, 6])
+                provision(16, TARGET, self.shares, [2, 4, 6])
 
     @patch("provision.request")
     def test_refuses_keys_or_slot_selections_outside_the_approved_custody_set(self, request):
         host_key = KEY_1.replace("222222222222", "111111111111")
         for key in [KEYS[0], KEYS[0][:-1] + "d", "alias/other", host_key]:
             with self.assertRaises(ValueError):
-                provision(16, {**TARGET, "wrappingKeys": [*KEYS[:5], key]}, SHARES)
+                provision(16, {**TARGET, "wrappingKeys": [*KEYS[:5], key]}, self.shares)
         for slots in ([1, 1, 3], [1, 2, 8], [1, 2], [1, 2, 3, 4]):
             with self.assertRaisesRegex(ValueError, "exactly three distinct"):
-                provision(16, TARGET, SHARES, slots)
+                provision(16, TARGET, self.shares, slots)
         request.assert_not_called()
+
+    @patch("provision.decrypt_recipient", return_value=b"wrapped")
+    @patch("provision.request", side_effect=[(200, b"evidence"), (200, bytes([2, 4, 6]))])
+    def test_missing_nonregular_and_oversized_files_never_reach_kms(self, request, decrypt):
+        (self.shares / "1.kms").unlink()
+        (self.shares / "3.kms").unlink()
+        os.mkfifo(self.shares / "3.kms")
+        (self.shares / "5.kms").write_bytes(b"x" * 513)
+        (self.shares / "4.kms").write_bytes(b"x" * 384)
+        (self.shares / "6.kms").write_bytes(b"x" * 512)
+        self.assertEqual(provision(16, TARGET, self.shares), [2, 4, 6])
+        self.assertCountEqual([(call.args[0], len(base64.b64decode(call.args[1]))) for call in decrypt.call_args_list],
+                              [(KEYS[1], 256), (KEYS[3], 384), (KEYS[5], 512)])
+        self.assertEqual(request.call_count, 2)
+
+    @patch("provision.decrypt_recipient")
+    @patch("provision.request", return_value=(200, b"evidence"))
+    def test_an_invalid_recipient_reply_stops_bootstrap_even_with_three_other_slots(self, request, decrypt):
+        for failure in (InvalidRecipientResponse("unexpected plaintext"), InvalidAwsResponse("invalid success reply")):
+            with self.subTest(failure=failure):
+                request.reset_mock()
+                def decrypt_slot(key, _blob, _evidence):
+                    if key == KEYS[4]:
+                        raise failure
+                    return b"wrapped"
+                decrypt.side_effect = decrypt_slot
+                with self.assertRaisesRegex(InvalidRecipientResponse, "invalid recipient reply for custody slot 5"):
+                    provision(16, TARGET, self.shares)
+                request.assert_called_once()
+                self.assertEqual(request.call_args.args, (16, "GET", "/recipient"))
 
     def test_provisioning_requires_the_exact_pinned_target_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -270,18 +338,25 @@ class KeyPolicyTests(unittest.TestCase):
 
     @patch("approval.subprocess.run")
     def test_decrypt_accepts_only_ciphertext_for_the_requested_recipient(self, run):
-        result = {"KeyId": KEY_1, "CiphertextForRecipient": base64.b64encode(b"wrapped").decode()}
+        ciphertext = base64.b64encode(bytes(256)).decode()
+        result = {"KeyId": KEY_1, "EncryptionAlgorithm": RSA_OAEP,
+                  "CiphertextForRecipient": base64.b64encode(b"wrapped").decode()}
         for expected, reply in [(b"wrapped", result), (b"wrapped", {**result, "Plaintext": ""}),
                                 (b"wrapped", {**result, "Plaintext": None}), (None, {**result, "Plaintext": "YQ=="}),
-                                (None, {**result, "KeyId": KEYS[0]}), (None, {**result, "CiphertextForRecipient": ""})]:
+                                (None, {**result, "KeyId": KEYS[0]}), (None, {**result, "CiphertextForRecipient": ""}),
+                                (None, {**result, "EncryptionAlgorithm": "RSAES_OAEP_SHA_1"}),
+                                (None, {**result, "CiphertextForRecipient": "!"}),
+                                (None, {**result, "CiphertextForRecipient": base64.b64encode(b"a" * 6145).decode()})]:
             run.return_value = subprocess.CompletedProcess([], 0, json.dumps(reply), "")
-            args = (KEY_1, "fileb://shares/1.kms", b"evidence")
+            args = (KEY_1, ciphertext, b"evidence")
             if expected is None:
-                with self.assertRaises(ValueError):
+                with self.assertRaises(InvalidRecipientResponse):
                     decrypt_recipient(*args)
             else:
                 self.assertEqual(decrypt_recipient(*args), expected)
         call = run.call_args.args[0]
+        self.assertEqual(call[call.index("--ciphertext-blob") + 1], ciphertext)
+        self.assertEqual(call[call.index("--cli-binary-format") + 1], "base64")
         self.assertEqual(call[call.index("--encryption-algorithm") + 1], RSA_OAEP)
         self.assertEqual(json.loads(call[call.index("--recipient") + 1])["AttestationDocument"], "ZXZpZGVuY2U=")
         self.assertNotIn("--encryption-context", call)
@@ -308,9 +383,10 @@ class KeyPolicyTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "get-bucket-lifecycle-configuration failed"):
                     aws(*args, absent=absent)
 
-        run.return_value = subprocess.CompletedProcess([], 0, b"null", b"")
-        with self.assertRaisesRegex(ValueError, "unexpected AWS"):
-            aws(*args, absent=absent)
+        for payload in (b"null", b'{"partial":', b'{"same":true,"same":false}'):
+            run.return_value = subprocess.CompletedProcess([], 0, payload, b"")
+            with self.subTest(payload=payload), self.assertRaisesRegex(InvalidAwsResponse, "unexpected AWS"):
+                aws(*args, absent=absent)
 
 if __name__ == "__main__":
     unittest.main()

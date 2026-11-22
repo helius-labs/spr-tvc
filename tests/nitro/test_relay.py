@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import canonical, signing_sec1
+from kms_policy import RSA_OAEP
 from provenance import describe
 from relay import prove_share, recover_to_relay, verify_relay_build
 from relay_wrap import LABEL, prepare, release, sign_release
@@ -139,11 +140,12 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(release_keys, NEXT_KEYS)
 
     @patch("relay.sealed_rsa_key", return_value=PUBLIC)
-    @patch("relay.key_result")
+    @patch("relay.kms")
     def test_source_requests_only_attested_ciphertext_for_the_committed_recovery_key(self, kms, sealed):
         checks = []
         attested = b"attested relay recipient"
-        result = {"CiphertextForRecipient": base64.b64encode(b"ciphertext").decode()}
+        result = {"KeyId": key(1), "EncryptionAlgorithm": RSA_OAEP,
+                  "CiphertextForRecipient": base64.b64encode(b"ciphertext").decode()}
         kms.return_value = {**result, "Plaintext": "YQ=="}
         with self.assertRaisesRegex(ValueError, "unexpected plaintext"):
             recover_to_relay(TRUST, RECEIPT, CUSTODIAN, 1, attested, lambda: checks.append(1))

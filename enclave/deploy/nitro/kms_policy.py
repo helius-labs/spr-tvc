@@ -9,6 +9,7 @@ from approval import ROLE_ARN, arn, epoch_number, hex_digest
 
 RSA_OAEP = "RSAES_OAEP_SHA_256"
 RSA_KEYS = {"RSA_2048", "RSA_3072", "RSA_4096"}
+RSA_CIPHERTEXT_BYTES = (256, 384, 512)
 
 
 def validate_scope(network, domain, release, epoch):

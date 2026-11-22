@@ -106,17 +106,26 @@ def custody_recovery_policy(trust, custodian, epoch):
     return recovery_policy(custodian["custodianRole"], custodian["retirementRole"], scope["hostRole"], scope["pcrs"], epoch)
 
 
+class InvalidRecipientResponse(ValueError):
+    """KMS returned a response outside the attested decryption contract."""
+
+
 def decrypt_recipient(key, ciphertext, evidence):
-    result = key_result(key, "decrypt", [
+    result = kms(key, "decrypt", [
         "--encryption-algorithm", RSA_OAEP, "--ciphertext-blob", ciphertext,
         "--recipient", json.dumps({"KeyEncryptionAlgorithm": RSA_OAEP,
                                    "AttestationDocument": base64.b64encode(evidence).decode()}),
     ])
+    if result.get("KeyId") != key or result.get("EncryptionAlgorithm") != RSA_OAEP:
+        raise InvalidRecipientResponse("unexpected KMS recipient key or decryption algorithm")
     if result.get("Plaintext") not in (None, ""):
-        raise ValueError("unexpected plaintext in attested KMS response")
-    envelope = base64.b64decode(result["CiphertextForRecipient"], validate=True)
+        raise InvalidRecipientResponse("unexpected plaintext in attested KMS response")
+    try:
+        envelope = base64.b64decode(result["CiphertextForRecipient"], validate=True)
+    except (KeyError, TypeError, ValueError) as error:
+        raise InvalidRecipientResponse("invalid KMS recipient envelope encoding") from error
     if not 1 <= len(envelope) <= MAX_CMS:
-        raise ValueError("invalid KMS recipient envelope length")
+        raise InvalidRecipientResponse("invalid KMS recipient envelope length")
     return envelope
 
 

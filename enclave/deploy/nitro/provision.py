@@ -1,20 +1,24 @@
 """Forward KMS recipient ciphertexts from a 3-of-6 custody set into a measured SPR Nitro enclave."""
 
 import argparse
+import base64
 import errno
 import hashlib
 import http.client
+import os
 import socket
+import stat
 import struct
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import monotonic, sleep
 
-from approval import KEY_ARN, MAX_DOCUMENT_BYTES, ROLE_ARN, arn, fields, hex_digest, parse_json
+from approval import KEY_ARN, ROLE_ARN, InvalidAwsResponse, arn, aws, fields, hex_digest, parse_json, read_document
 from custody_ledger import target_fields
+from kms_policy import RSA_CIPHERTEXT_BYTES
 from operator_http import HTTP_TIMEOUT, request_bytes
-from relay import MAX_EVIDENCE, decrypt_recipient
+from relay import MAX_EVIDENCE, InvalidRecipientResponse, decrypt_recipient
 
 THRESHOLD = 3
 SHARE_COUNT = 6
@@ -49,8 +53,7 @@ def recipient_for(cid):
 
 
 def read_target(path, expected_digest):
-    with path.open("rb") as source:
-        payload = source.read(MAX_DOCUMENT_BYTES + 1)
+    payload = read_document(path)
     if hashlib.sha256(payload).hexdigest() != hex_digest(expected_digest):
         raise ValueError("target file does not match the independently pinned digest")
     document = parse_json(payload)
@@ -59,10 +62,26 @@ def read_target(path, expected_digest):
     return document["manifest"]
 
 
+def require_host_identity(manifest):
+    role = manifest["hostRole"]
+    account = arn(ROLE_ARN, role)[1]
+    role_name = role.rsplit("/", 1)[-1]
+    identity = aws(manifest["hostRegion"], "sts", "get-caller-identity", [])
+    caller = identity.get("Arn")
+    if (identity.get("Account") != account or not isinstance(caller, str) or
+            not caller.startswith(f"arn:aws:sts::{account}:assumed-role/{role_name}/") or
+            caller.count("/") != 2 or caller.endswith("/")):
+        raise ValueError("parent AWS credentials must use the approved host role")
+
+
 class UnconfirmedBootstrap(ValueError):
     def __init__(self, reason):
         super().__init__(f"could not confirm seed restoration ({reason}). "
                          "Verify serving attestation or the rotation receipt before restarting")
+
+
+class InsufficientShares(ValueError):
+    """Fewer than three KMS envelopes are available."""
 
 
 def provision(cid, manifest, directory, slots=None):
@@ -81,9 +100,17 @@ def provision(cid, manifest, directory, slots=None):
     recipient = recipient_for(cid)
 
     def unwrap(entry):
-        _, key, blob = entry
+        slot, key, blob = entry
         try:
-            return decrypt_recipient(key, f"fileb://{blob}", recipient)
+            with open(blob, "rb", opener=lambda path, flags: os.open(path, flags | os.O_NONBLOCK)) as source:
+                if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                    return None
+                ciphertext = source.read(max(RSA_CIPHERTEXT_BYTES) + 1)
+            if len(ciphertext) not in RSA_CIPHERTEXT_BYTES:
+                return None
+            return decrypt_recipient(key, base64.b64encode(ciphertext).decode(), recipient)
+        except (InvalidAwsResponse, InvalidRecipientResponse) as error:
+            raise InvalidRecipientResponse(f"invalid recipient reply for custody slot {slot}: {error}") from error
         except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
             return None
 
@@ -92,7 +119,7 @@ def provision(cid, manifest, directory, slots=None):
                   if share is not None]
     submitted = [slot for slot, _ in shares]
     if len(shares) < THRESHOLD:
-        raise ValueError(f"KMS returned fewer than three share envelopes; successful slots: {submitted}")
+        raise InsufficientShares(f"KMS returned fewer than three share envelopes; successful slots: {submitted}")
     frame = b"".join(struct.pack(">BH", slot, len(share)) + share for slot, share in shares)
     try:
         status, body = request(cid, "POST", "/shares", frame, limit=THRESHOLD)
@@ -117,8 +144,15 @@ def main():
     args = parser.parse_args()
     try:
         target = read_target(args.target, args.target_sha256)
-        slots = provision(args.cid, target, args.target.parent / "shares", args.slots)
-        print(f"enclave restored the seed from custody slots {slots}")
+        try:
+            slots = provision(args.cid, target, args.target.parent / "shares", args.slots)
+        except InsufficientShares as unavailable:
+            try:
+                require_host_identity(target)
+            except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as identity:
+                raise ValueError(f"{unavailable}. {identity}") from identity
+            raise
+        print(f"enclave acknowledged custody slots {slots}")
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
         raise SystemExit(str(error)) from None
 

@@ -212,10 +212,15 @@ custody record. Both serving and rotation use the same bootstrap:
    key on vsock port 44031. The parent calls KMS with that evidence and each
    wrapped share. The host's inline IAM policy and each sealed key require
    RSA-OAEP-SHA-256 and PCR0–PCR4. The host gets the six ordered key ARNs
-   from the approved target pinned by file hash. The enclave checks the
-   domain, epoch and slot against the measured share commitments.
+   from the approved target pinned by file hash. It reads each RSA wrapper
+   into a bounded buffer and sends those bytes to the matching key. The
+   enclave checks the domain, epoch and slot against the measured share
+   commitments.
 2. KMS encrypts its response for that temporary recipient. The parent sends up
-   to six CMS records. Each starts with a one-byte slot and a two-byte
+   to six CMS records. A missing wrapper or failed KMS call leaves that slot
+   unavailable. A successful KMS reply must name the requested key and
+   algorithm and contain only a bounded recipient envelope. An invalid reply
+   stops submission. Each record starts with a one-byte slot and a two-byte
    big-endian length, followed by up to 6,144 bytes of ciphertext. Bootstrap
    and the relay accept CMS EnvelopedData with one RSA-2048 OAEP recipient,
    SHA-256 for both OAEP and MGF1, an empty OAEP label and AES-256-CBC content
@@ -226,8 +231,10 @@ custody record. Both serving and rotation use the same bootstrap:
    measured configuration. The enclave restores
    the seed from three distinct slots and verifies the seed commitment. It
    replies with HTTP 200 and the three slot numbers as raw bytes. A serving
-   enclave keeps those same slot numbers for wallet attestation. Invalid
-   framing fails the batch and another request can retry.
+   enclave keeps those same slot numbers for wallet attestation. The HTTP
+   acknowledgement is local status. Use wallet attestation or the signed
+   rotation receipt to confirm the result. Invalid framing fails the batch
+   and another request can retry.
 3. Boot expires after two minutes. Successful boot drops the RSA recipient.
    A serving enclave generates fresh P-256 request-encryption and
    response-signing keys and listens on vsock port 44030. The boot transport ID

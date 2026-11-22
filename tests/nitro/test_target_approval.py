@@ -14,7 +14,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/de
 from approval import sha256
 from custody_ledger import TARGET_APPROVAL, target_object_name
 from deployment import HostUnobserved, file_digest, main, require_host_state, target
-from kms_policy import recovery_policy
+from kms_policy import RSA_OAEP, recovery_policy
 from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, schedule, sign
 from provenance import describe
 from relay_wrap import LABEL, release
@@ -80,7 +80,7 @@ class TargetApprovalTests(unittest.TestCase):
         self.active = self.enterContext(patch("relay_wrap.require_active_epoch"))
         self.enterContext(patch("relay_wrap.live_recipient", return_value=(BOOT, b"evidence")))
         self.relay = self.enterContext(patch("relay_wrap.relay_request", return_value=b"c" * 256))
-        self.decrypt_reply = {"KeyId": key(1), "CiphertextForRecipient": "ZW52ZWxvcGU="}
+        self.decrypt_reply = {"KeyId": key(1), "EncryptionAlgorithm": RSA_OAEP, "CiphertextForRecipient": "ZW52ZWxvcGU="}
         statement = {
             "network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "5", "slot": 1,
             "shareCommitment": commitment, "relayKeyId": BOOT, "targetDigest": sha256(self.manifest),
