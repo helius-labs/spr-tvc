@@ -116,7 +116,8 @@ replicated deletions. [AWS replication permissions](https://docs.aws.amazon.com/
 Replication is asynchronous. For a planned cutover, freeze the source and
 record a checkpoint once the pinned destination has every record. The tool
 compares the record set in both buckets and checks each original S3 version
-ID, write time and record body. Replace the destination's receiving policy
+ID, write time and record body. It rejects a second version of any key and
+any delete marker. Replace the destination's receiving policy
 with the normal frozen ledger policy to close replication writes, then
 compare the destination with that checkpoint.
 While the source is unavailable, the frozen replica can be inspected against
@@ -220,14 +221,17 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    bucket policy with `--frozen` to deny all writes in the custody prefix. Let
    the policy propagate and verify the installed controls with
    `--frozen --check-installed`. Keep that policy in place while recording and
-   comparing checkpoints. The checkpoint command verifies the write deny and
-   absence of lifecycle rules before and after reading the records.
+   comparing checkpoints. Before and after reading the records, the
+   checkpoint command verifies the write deny, versioning, bucket ownership,
+   all public access blocks and absence of lifecycle rules.
    [S3 consistency model](https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html)
 
    Include the inspection role from the bucket owner's account in the reader
    list. Give its IAM identity policy
-   `s3:GetBucketPolicy`, `s3:GetLifecycleConfiguration`, `s3:ListBucket` on the full
-   custody prefix, and `s3:GetObject` on its records. When checkpointing a
+   `s3:GetBucketPolicy`, `s3:GetBucketVersioning`, `s3:GetBucketOwnershipControls`,
+   `s3:GetBucketPublicAccessBlock` and `s3:GetLifecycleConfiguration`. Grant
+   `s3:ListBucketVersions` on the full custody prefix and `s3:GetObject` on its
+   records. When checkpointing a
    source with a configured replica, include the checkpoint identity in the
    recovery bucket's reader list and grant it the same listing and object
    read permissions there. Retain the digest
@@ -235,7 +239,11 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    every receipt, target registration and retirement marker, including each
    object's original version ID, write time and exact bytes. Keep the pinned
    approval schedule and relay keys when updating the bucket, owner and region
-   in the recovered trust file.
+   in the recovered trust file. Install the repository's pnpm dependencies on
+   the checkpoint and promotion hosts so they can verify stored Nitro
+   evidence. The tool authenticates that evidence, the receipt chain, target
+   approvals and retirement proofs before printing the digest.
+   [S3 version listing](https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectVersions.html)
 
    ```sh
    python3 "$nitro/custody_ledger.py" trust.json policy "$ledger_admin_role" "$publisher_role" "$reader_role" --frozen > ledger-frozen-policy.json

@@ -13,7 +13,7 @@ from approval import (
 )
 from custody_ledger import (
     check_custody_history_entry, check_recovery_bucket, ledger_object, ledger_prefix, ledger_record_fingerprint,
-    ledger_replica, list_objects, load_retirement, read_object, read_registered_target, read_replicated_record,
+    ledger_replica, list_ledger_versions, load_retirement, read_object, read_registered_target, read_replicated_record,
     read_stored_object, read_stored_payload, replica_trust, require_frozen_ledger, require_pinned_replication,
     rotation_target_name, verify_ceremony_capture,
 )
@@ -63,7 +63,10 @@ def verify_ledger_records(trust, names, **options):
     receipts = {name for name in names if "/" not in name}
     if receipts != {f"{epoch}.json" for epoch in range(1, len(receipts) + 1)}:
         raise ValueError("custody ledger receipts must be consecutive from genesis")
-    digests = {epoch: sha256(receipt) for epoch, _, receipt in custody_history(trust, str(len(receipts)), **options)}
+    digests = {}
+    for epoch, entry, receipt in custody_history(trust, str(len(receipts)), **options):
+        verify_ceremony_capture(entry["document"]["authorization"]["manifest"]["capture"])
+        digests[epoch] = sha256(receipt)
     for name in names:
         if name in receipts:
             continue
@@ -78,7 +81,7 @@ def verify_ledger_records(trust, names, **options):
             raise ValueError(f"unexpected custody ledger record {name}")
 
 
-def ledger_checkpoint(trust, expected=None, *, authenticate=False, **options):
+def ledger_checkpoint(trust, expected=None, **options):
     if expected is not None:
         hex_digest(expected)
     require_frozen_ledger(trust, **options)
@@ -86,28 +89,29 @@ def ledger_checkpoint(trust, expected=None, *, authenticate=False, **options):
     replica = ledger_replica(trust)
     destination = replica_trust(trust, replica) if replica is not None else None
     checksum = hashlib.sha256(b"SPR/native-nitro/ledger-checkpoint/v1\0" + prefix.encode())
-    names = tuple(list_objects(trust, "", **options))
-    if "1.json" not in names:
+    versions = list_ledger_versions(trust, **options)
+    if "1.json" not in versions:
         raise ValueError("custody ledger checkpoint requires a committed genesis")
-    checkpoint_records = {} if authenticate else None
+    records = {}
+    names = tuple(sorted(versions))
     for name in names:
         if destination is None:
             payload, metadata = read_stored_payload(trust, name, **options)
             fingerprint = ledger_record_fingerprint(name, payload, metadata)
         else:
             _, fingerprint = read_replicated_record(trust, destination, name, **options)
+        if fingerprint[0] != versions[name]:
+            raise ValueError(f"custody ledger record {name} differs from its listed version")
         checksum.update(canonical([name, *fingerprint]) + b"\n")
-        if checkpoint_records is not None:
-            checkpoint_records[name] = fingerprint
+        records[name] = fingerprint
     actual = checksum.hexdigest()
     if expected is not None and actual != expected:
         raise ValueError("custody ledger differs from the independently pinned checkpoint")
-    if checkpoint_records is not None:
-        verify_ledger_records(trust, names, checkpoint_records=checkpoint_records, **options)
-    if names != tuple(list_objects(trust, "", **options)):
+    verify_ledger_records(trust, names, checkpoint_records=records, **options)
+    if versions != list_ledger_versions(trust, **options):
         raise ValueError("custody ledger changed during checkpoint")
-    if destination is not None and names != tuple(list_objects(destination, "", **options)):
-        raise ValueError("pinned replica namespace differs from the custody ledger")
+    if destination is not None and versions != list_ledger_versions(destination, **options):
+        raise ValueError("pinned replica versions differ from the custody ledger")
     require_frozen_ledger(trust, **options)
     return actual
 
@@ -135,7 +139,7 @@ def verify_promotion(trust, promoted, expected, source_profile, recovery_profile
     require_profile_account(source_profile, source["region"], source["account"])
     require_profile_account(recovery_profile, recovery["region"], recovery["account"])
     require_frozen_ledger(original, profile=source_profile)
-    ledger_checkpoint(promoted, expected, authenticate=True, profile=recovery_profile)
+    ledger_checkpoint(promoted, expected, profile=recovery_profile)
     require_pinned_replication(promoted, profile=recovery_profile)
     # Re-read the original history after checking the recovered copy.
     ledger_checkpoint(original, expected, profile=source_profile)

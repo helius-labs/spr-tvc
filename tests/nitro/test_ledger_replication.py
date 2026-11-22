@@ -10,7 +10,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/de
 from custody_archive import ledger_checkpoint, verify_promotion
 from custody_ledger import (
     check_installed_ledger, check_recovery_bucket, custody_history_statement, ledger_policy, ledger_replica_plan,
-    replica_trust, replication_configuration, require_frozen_ledger, write_once,
+    list_ledger_versions, replica_trust, replication_configuration, require_frozen_ledger, write_once,
 )
 from nitro_fixtures import DOMAIN
 
@@ -66,6 +66,7 @@ class LedgerReplicationTests(unittest.TestCase):
         source_policy = {rule["Sid"]: rule for rule in ledger_policy(TRUST, *SOURCE_ROLES)["Statement"]}
         self.assertIn(ROLE, source_policy["RestrictRecordReads"]["Condition"]["StringNotEquals"]["aws:PrincipalArn"])
         self.assertNotIn(ROLE, source_policy["ReadCustodyRecords"]["Principal"]["AWS"])
+        self.assertIn("s3:ListBucketVersions", source_policy["ListCustodyRecords"]["Action"])
         self.assertEqual(source_policy["RequireSseS3"]["Condition"], {
             "StringNotEquals": {"s3:x-amz-server-side-encryption": "AES256"},
         })
@@ -151,6 +152,34 @@ class LedgerReplicationTests(unittest.TestCase):
                 check_recovery_bucket(TRUST, REPLICA, "recovery-read")
             inspect.assert_not_called()
 
+    def test_version_inventory_rejects_old_versions_and_delete_markers_across_pages(self):
+        start = {"Name": SOURCE_BUCKET, "Prefix": PREFIX, "IsTruncated": False}
+        first = {"Key": PREFIX + "1.json", "VersionId": "one", "IsLatest": True, "LastModified": "2026-11-01T00:00:00Z"}
+        second = {**first, "Key": PREFIX + "2.json", "VersionId": "two"}
+        page_one = {**start, "Versions": [first], "IsTruncated": True,
+                    "NextKeyMarker": first["Key"], "NextVersionIdMarker": first["VersionId"]}
+        page_two = {**start, "Versions": [second]}
+        with patch("custody_ledger.storage", side_effect=[page_one, page_two]) as storage:
+            self.assertEqual(list_ledger_versions(TRUST, profile="reader"), {"1.json": "one", "2.json": "two"})
+            args = ["--prefix", PREFIX, "--max-keys", "32", "--no-paginate"]
+            storage.assert_called_with(TRUST, "list-object-versions",
+                                       [*args, "--key-marker", first["Key"], "--version-id-marker", "one"], profile="reader")
+
+        for bad, message in (
+            ({**page_two, "Versions": [{**first, "IsLatest": False}, second]}, "one current version"),
+            ({**page_two, "Versions": [first, second]}, "one current version"),
+            ({**page_two, "DeleteMarkers": [{**first, "Key": PREFIX + "hidden.json"}]}, "delete markers"),
+            ({**page_two, "Versions": [{**second, "VersionId": "null"}]}, "requires an original S3 version"),
+            ({**page_two, "Versions": [{**second, "Key": "another-prefix/2.json"}]}, "one current version"),
+            ({**page_two, "Prefix": "another-prefix/"}, "invalid custody ledger version listing"),
+            ({**page_one, "Versions": [second], "NextKeyMarker": second["Key"], "NextVersionIdMarker": None},
+             "invalid custody ledger version continuation"),
+            ({**page_one, "Versions": [second]}, "invalid custody ledger version continuation"),
+        ):
+            with self.subTest(bad=bad), patch("custody_ledger.storage", side_effect=[page_one, bad]):
+                with self.assertRaisesRegex(ValueError, message):
+                    list_ledger_versions(TRUST)
+
     def test_checkpoint_requires_the_pinned_replica_before_and_after_promotion(self):
         names = ["1.json", "retired/1.json"]
         new_replica = {"bucket": "custody-replacement", "account": "000000000011", "region": "eu-west-2",
@@ -171,10 +200,11 @@ class LedgerReplicationTests(unittest.TestCase):
             except KeyError as error:
                 raise ValueError("missing S3 record") from error
 
-        def list_names(trust, _name):
-            return sorted(records[trust["ledger"]["bucket"]])
+        def versions(trust):
+            return {name: record[1]["VersionId"] for name, record in records[trust["ledger"]["bucket"]].items()}
 
-        with (patch("custody_archive.require_frozen_ledger"), patch("custody_archive.list_objects", side_effect=list_names),
+        with (patch("custody_archive.require_frozen_ledger"), patch("custody_archive.list_ledger_versions", side_effect=versions),
+              patch("custody_archive.verify_ledger_records"),
               patch("custody_archive.read_stored_payload", side_effect=read),
               patch("custody_ledger.read_stored_payload", side_effect=read)):
             pin = ledger_checkpoint(TRUST)
@@ -198,7 +228,12 @@ class LedgerReplicationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "retired/1.json differs from the pinned replica"):
                     ledger_checkpoint(promoted)
             with patch.dict(records[new_replica["bucket"]], {"retired/2.json": (body, metadata)}):
-                with self.assertRaisesRegex(ValueError, "pinned replica namespace differs"):
+                with self.assertRaisesRegex(ValueError, "pinned replica versions differ"):
+                    ledger_checkpoint(promoted)
+            with patch("custody_archive.list_ledger_versions", return_value={
+                **versions(promoted), "1.json": "changed-after-list",
+            }):
+                with self.assertRaisesRegex(ValueError, "differs from its listed version"):
                     ledger_checkpoint(promoted)
             self.assertEqual(ledger_checkpoint(promoted, pin), pin)
 
@@ -220,6 +255,7 @@ class LedgerReplicationTests(unittest.TestCase):
             f"arn:aws:iam::{new_replica['account']}:role/publisher", [],
         )["destinationPolicy"]
         replica_controls = BUCKET_CONTROLS.copy()
+        freeze_controls = {bucket: BUCKET_CONTROLS.copy() for bucket in policies}
 
         def policy(ledger, *, profile):
             bucket = ledger["ledger"]["bucket"]
@@ -236,17 +272,16 @@ class LedgerReplicationTests(unittest.TestCase):
                 return {"ReplicationConfiguration": replication}
             bucket = ledger["ledger"]["bucket"]
             if bucket in policies:
-                self.assertEqual(operation, "get-bucket-lifecycle-configuration")
                 self.assertEqual(options["profile"], profiles[bucket])
-                return None
+                return freeze_controls[bucket][operation]
             self.assertEqual(ledger, replica_trust(promoted, new_replica))
             self.assertEqual(options["profile"], "new-replica-read")
             return replica_controls[operation]
 
-        def list_names(ledger, _prefix, *, profile):
+        def versions(ledger, *, profile):
             bucket = ledger["ledger"]["bucket"]
             self.assertEqual(profile, profiles[bucket])
-            return names[bucket]
+            return {name: f"version-{name}" for name in names[bucket]}
 
         def read(ledger, name, *, profile):
             bucket = ledger["ledger"]["bucket"]
@@ -257,7 +292,7 @@ class LedgerReplicationTests(unittest.TestCase):
 
         with (patch("custody_ledger.installed_ledger_policy", side_effect=policy),
               patch("custody_ledger.storage", side_effect=bucket_controls),
-              patch("custody_archive.list_objects", side_effect=list_names),
+              patch("custody_archive.list_ledger_versions", side_effect=versions),
               patch("custody_archive.read_stored_payload", side_effect=read),
               patch("custody_ledger.read_stored_payload", side_effect=read),
               patch("custody_archive.verify_ledger_records") as verify_records,
@@ -269,7 +304,8 @@ class LedgerReplicationTests(unittest.TestCase):
                 return verify_promotion(trust, candidate, pin, "source-read", "recovery-read", replica_profile="new-replica-read")
 
             self.assertEqual(verify(), pin)
-            verify_records.assert_called_once_with(
+            self.assertEqual(verify_records.call_count, 3)
+            verify_records.assert_any_call(
                 promoted, tuple(names[DESTINATION_BUCKET]), profile="recovery-read",
                 checkpoint_records={
                     name: (f"version-{name}", "2026-11-01T00:00:00+00:00", hashlib.sha256(name.encode()).hexdigest())
@@ -292,6 +328,14 @@ class LedgerReplicationTests(unittest.TestCase):
                 with self.subTest(writable=bucket), patch.dict(policies, {bucket: {"Statement": []}}):
                     with self.assertRaisesRegex(ValueError, "requires the frozen bucket policy"):
                         verify()
+                for operation, message in (
+                    ("get-bucket-versioning", "requires versioning"),
+                    ("get-bucket-ownership-controls", "requires bucket-owner-enforced"),
+                    ("get-public-access-block", "requires all four public access blocks"),
+                ):
+                    with self.subTest(bucket=bucket, operation=operation), patch.dict(freeze_controls[bucket], {operation: {}}):
+                        with self.assertRaisesRegex(ValueError, message):
+                            verify()
             with patch.dict(names, {SOURCE_BUCKET: ["1.json", "retired/1.json", "retired/2.json"]}):
                 with self.assertRaisesRegex(ValueError, "differs from the independently pinned checkpoint"):
                     verify()
@@ -300,7 +344,7 @@ class LedgerReplicationTests(unittest.TestCase):
             ]):
                 with self.assertRaisesRegex(ValueError, "requires the frozen bucket policy"):
                     verify()
-            with patch("custody_ledger.storage", return_value=None):
+            with patch.dict(replication, {}, clear=True):
                 with self.assertRaisesRegex(ValueError, "does not match the pinned ledger replica"):
                     verify()
             with patch("custody_ledger.installed_ledger_policy", side_effect=OSError("original bucket unreachable")):

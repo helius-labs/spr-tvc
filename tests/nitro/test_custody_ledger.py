@@ -22,7 +22,7 @@ from custody_archive import (
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
     check_custody_roster, check_installed_ledger, check_release_policy, draft, ledger_policy, ledger_reader_policy,
-    list_objects, load_epoch, publish, read_object, read_registered_target, read_stored_payload,
+    list_ledger_versions, list_objects, load_epoch, publish, read_object, read_registered_target, read_stored_payload,
     record, require_active_epoch,
     sign_epoch, target_attestation,
     target_object_name, write_once,
@@ -72,6 +72,7 @@ class CustodyLedgerTests(unittest.TestCase):
         self.enterContext(patch("custody_ledger.aws", side_effect=self.aws))
         self.enterContext(patch("approval.kms", side_effect=AssertionError("receipt verification must not call KMS")))
         self.capture_verifier = self.enterContext(patch("custody_ledger.verify_ceremony_capture"))
+        self.archive_capture_verifier = self.enterContext(patch("custody_archive.verify_ceremony_capture"))
 
     def rotate_approvals(self, epoch):
         self.now += 60
@@ -139,14 +140,33 @@ class CustodyLedgerTests(unittest.TestCase):
         if operation == "get-bucket-lifecycle-configuration":
             self.assertEqual(options, {"absent": "NoSuchLifecycleConfiguration"})
             return self.lifecycle
+        if operation == "get-bucket-versioning":
+            return {"Status": "Enabled"}
+        if operation == "get-bucket-ownership-controls":
+            return {"OwnershipControls": {"Rules": [{"ObjectOwnership": "BucketOwnerEnforced"}]}}
+        if operation == "get-public-access-block":
+            return {"PublicAccessBlockConfiguration": {
+                flag: True for flag in ("BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets")
+            }}
         if operation == "list-objects-v2":
             prefix = args[args.index("--prefix") + 1]
             self.assertTrue(prefix.startswith(f"spr-custody/{self.trust['network']}/{DOMAIN}/"))
             with self.lock:
                 return listing(prefix, [name for name in sorted(self.objects) if name.startswith(prefix)])
+        now = datetime.fromtimestamp(time.time(), timezone.utc).isoformat()
+
+        def metadata(name):
+            return {"LastModified": self.timestamps.get(name, now),
+                    "VersionId": self.versions.get(name, hashlib.sha256(name.encode()).hexdigest())}
+
+        if operation == "list-object-versions":
+            prefix = args[args.index("--prefix") + 1]
+            with self.lock:
+                entries = [{"Key": name, "IsLatest": True, **metadata(name)}
+                           for name in sorted(self.objects) if name.startswith(prefix)]
+            return {"Name": "custody-journal", "Prefix": prefix, "Versions": entries, "IsTruncated": False}
         name = args[args.index("--key") + 1]
         self.assertTrue(name.startswith(f"spr-custody/{self.trust['network']}/{DOMAIN}/"))
-        now = datetime.fromtimestamp(time.time(), timezone.utc).isoformat()
         with self.lock:
             if operation == "put-object":
                 self.assertEqual(args[args.index("--if-none-match") + 1], "*")
@@ -156,8 +176,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 self.timestamps[name] = now
             elif operation == "get-object" and name in self.objects:
                 pathlib.Path(args[-1]).write_bytes(self.objects[name])
-                return {"LastModified": self.timestamps.get(name, now),
-                        "VersionId": self.versions.get(name, hashlib.sha256(name.encode()).hexdigest())}
+                return metadata(name)
             else:
                 raise ValueError("object missing")
         return {}
@@ -494,6 +513,11 @@ class CustodyLedgerTests(unittest.TestCase):
 
         self.bucket_policy = ledger_policy(self.trust, ADMIN, PUBLISHER, [READ_ROLE], frozen=True)
         pinned = ledger_checkpoint(self.trust)
+        self.assertEqual(self.archive_capture_verifier.call_count, 2)
+        self.archive_capture_verifier.side_effect = ValueError("invalid historical Nitro evidence")
+        with self.assertRaisesRegex(ValueError, "invalid historical Nitro evidence"):
+            ledger_checkpoint(self.trust)
+        self.archive_capture_verifier.side_effect = None
         self.now = max(marker["recoveryDeadline"], rotation["manifest"]["expiresAt"]) + 1
         prefix = f"spr-custody/devnet/{DOMAIN}/"
         target = prefix + target_object_name(replacement)
@@ -510,7 +534,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 return {"Policy": canonical(replica_policy).decode()}
             original = ["--bucket", "custody-journal", "--expected-bucket-owner", "000000000008", *args[4:]]
             reply = self.aws("eu-north-1", service, operation, original, **options)
-            return {**reply, "Name": "custody-recovery"} if operation == "list-objects-v2" else reply
+            return {**reply, "Name": "custody-recovery"} if operation in {"list-objects-v2", "list-object-versions"} else reply
 
         with patch("custody_ledger.aws", side_effect=replica_aws):
             self.assertEqual(ledger_checkpoint(replica, pinned), pinned)
@@ -540,7 +564,10 @@ class CustodyLedgerTests(unittest.TestCase):
                 document = json.loads(self.objects[name])
                 document["acknowledgements" if name == genesis else "signatures"] = []
                 with self.subTest(name=name), patch.dict(self.objects, {name: canonical(document)}):
-                    corrupt_pin = ledger_checkpoint(self.trust, profile="source-read")
+                    with self.assertRaisesRegex(ValueError, "signing quorum"):
+                        ledger_checkpoint(self.trust, profile="source-read")
+                    with patch("custody_archive.verify_ledger_records"):
+                        corrupt_pin = ledger_checkpoint(self.trust, profile="source-read")
                     with self.assertRaisesRegex(ValueError, "signing quorum"):
                         promote(corrupt_pin)
 
@@ -553,10 +580,10 @@ class CustodyLedgerTests(unittest.TestCase):
                     promote(pinned)
             with patch.dict(self.objects, {prefix + "unexpected/key.json": b"{}"}):
                 with self.assertRaisesRegex(ValueError, "unexpected custody ledger record"):
-                    promote(ledger_checkpoint(self.trust, profile="source-read"))
+                    ledger_checkpoint(self.trust, profile="source-read")
             with patch.dict(self.objects, {prefix + "4.json": self.objects[prefix + "2.json"]}):
                 with self.assertRaisesRegex(ValueError, "receipts must be consecutive"):
-                    promote(ledger_checkpoint(self.trust, profile="source-read"))
+                    ledger_checkpoint(self.trust, profile="source-read")
 
         for objects in (
             {name: body for name, body in self.objects.items() if name != retired},
@@ -577,8 +604,10 @@ class CustodyLedgerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "requires an original S3 version"):
                 ledger_checkpoint(self.trust, pinned)
 
-        names = [name.removeprefix(prefix) for name in sorted(self.objects)]
-        with patch("custody_archive.list_objects", side_effect=[iter(names), iter(names[:-1])]):
+        versions = list_ledger_versions(self.trust)
+        changed_versions = dict(versions)
+        changed_versions.pop(target.removeprefix(prefix))
+        with patch("custody_archive.list_ledger_versions", side_effect=[versions, changed_versions]):
             with self.assertRaisesRegex(ValueError, "changed during checkpoint"):
                 ledger_checkpoint(self.trust, pinned)
 

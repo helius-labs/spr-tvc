@@ -297,12 +297,49 @@ def list_objects(trust, name, **options):
             return
 
 
+def list_ledger_versions(trust, **options):
+    ledger, prefix = ledger_prefix(trust)
+    page_size = 32
+    args = ["--prefix", prefix, "--max-keys", str(page_size), "--no-paginate"]
+    continuation = []
+    seen_markers = set()
+    versions = {}
+    while True:
+        page = storage(trust, "list-object-versions", [*args, *continuation], **options)
+        entries = page.get("Versions", [])
+        truncated = page.get("IsTruncated")
+        if (page.get("Name") != ledger["bucket"] or page.get("Prefix") != prefix or
+                type(truncated) is not bool or not isinstance(entries, list) or len(entries) > page_size or
+                page.get("CommonPrefixes", []) != []):
+            raise ValueError("invalid custody ledger version listing")
+        if page.get("DeleteMarkers", []) != []:
+            raise ValueError("custody ledger contains delete markers")
+        for entry in entries:
+            key = entry.get("Key") if isinstance(entry, dict) else None
+            if not isinstance(key, str) or not key.startswith(prefix) or entry.get("IsLatest") is not True:
+                raise ValueError("custody ledger requires one current version per record")
+            name = key[len(prefix):]
+            if name in versions:
+                raise ValueError("custody ledger requires one current version per record")
+            versions[name] = ledger_record_version(name, entry)
+        if not truncated:
+            if "NextKeyMarker" in page or "NextVersionIdMarker" in page:
+                raise ValueError("invalid custody ledger version continuation")
+            return versions
+        key, version = page.get("NextKeyMarker"), page.get("NextVersionIdMarker")
+        if (not entries or not isinstance(key, str) or not key.startswith(prefix) or
+                not isinstance(version, str) or not version or version == "null" or (key, version) in seen_markers):
+            raise ValueError("invalid custody ledger version continuation")
+        seen_markers.add((key, version))
+        continuation = ["--key-marker", key, "--version-id-marker", version]
+
+
 def ledger_reader_policy(trust):
     ledger, prefix = ledger_prefix(trust)
     bucket = f"arn:aws:s3:::{ledger['bucket']}"
     return {"Version": "2012-10-17", "Statement": [
         {"Sid": "ReadCustodyRecords", "Effect": "Allow", "Action": "s3:GetObject", "Resource": f"{bucket}/{prefix}*"},
-        {"Sid": "ListCustodyRecords", "Effect": "Allow", "Action": "s3:ListBucket", "Resource": bucket,
+        {"Sid": "ListCustodyRecords", "Effect": "Allow", "Action": ["s3:ListBucket", "s3:ListBucketVersions"], "Resource": bucket,
          "Condition": {"StringLike": {"s3:prefix": [prefix, f"{prefix}targets/*", f"{prefix}retired/*"]}}},
     ]}
 
@@ -448,7 +485,7 @@ def require_frozen_ledger(trust, **options):
     statements = policy.get("Statement") if isinstance(policy, dict) else None
     if not isinstance(statements, list) or custody_history_statement(trust, frozen=True) not in statements:
         raise ValueError("custody ledger checkpoint requires the frozen bucket policy")
-    require_no_ledger_lifecycle(trust, **options)
+    check_ledger_bucket_controls(trust, **options)
 
 
 def check_ledger_bucket_controls(trust, **options):
