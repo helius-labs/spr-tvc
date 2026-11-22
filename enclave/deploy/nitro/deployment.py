@@ -8,12 +8,12 @@ import time
 from pathlib import Path
 
 from approval import (
-    KEY_ARN, ROLE_ARN, add_approval, approval_keys, arn, canonical, fields, file_digest, hex_digest,
+    KEY_ARN, ROLE_ARN, add_approval, approval_roster, arn, canonical, fields, file_digest, hex_digest,
     parse_json, read_document, read_json, sha256,
 )
 from custody_ledger import (
-    TARGET_APPROVAL, check_acknowledgement_key, check_recovery_key, load_epoch, read_object, require_active_epoch,
-    target_object_name, validate_roster, verify_target_approval, write_once,
+    TARGET_APPROVAL, check_acknowledgement_key, check_recovery_key, load_epoch, read_registered_target, require_active_epoch,
+    require_publication_roster, target_object_name, validate_roster, verify_target_approval, write_once,
 )
 from kms_policy import boot_pins, decrypt_conditions, key_policy, target_context
 from provenance import MAIN_REF, verify as verify_build
@@ -36,28 +36,29 @@ def register_target(trust, document):
     manifest = verify_target_approval(trust, document)
     epoch = manifest["custodyEpoch"]
     require_active_epoch(trust, epoch)
+    require_publication_roster(trust, manifest["approvalFromEpoch"])
     write_once(trust, target_object_name(manifest), document,
-               lambda stored: target_binding(verify_target_approval(trust, stored, historical=True)))
-    require_active_epoch(trust, epoch)
+               lambda stored: target_binding(stored["manifest"]))
+    require_registered_target(trust, manifest)
 
 
 def require_registered_target(trust, manifest):
     # Registration precedes the retirement check. Every wrap admitted before
     # the marker will appear in the subsequent inventory, even if it ends later.
-    recorded = read_object(trust, target_object_name(manifest))
-    if target_binding(verify_target_approval(trust, recorded, historical=True)) != target_binding(manifest):
+    recorded = read_registered_target(trust, target_object_name(manifest), manifest["custodyEpoch"], manifest["receiptSha256"])
+    if target_binding(recorded) != target_binding(manifest):
         raise ValueError("target does not match the immutable deployment register")
     require_active_epoch(trust, manifest["custodyEpoch"])
 
 
 def target(trust, document, receipt, custodians, build):
-    keys = approval_keys(trust)
+    roster = approval_roster(trust)
     fields(document, "manifest", "signatures")
     manifest = document["manifest"]
     fields(manifest, "network", "securityDomainId", "custodyEpoch", "receiptSha256", "releaseId", "mode", "expiresAt",
            "eifSha256", "configurationSha256", "executableSha256", "pcrs", "hostRole", "wrappingKeys",
            "nextCustodians", "approvalFromEpoch")
-    if manifest["approvalFromEpoch"] != trust["approvalKeys"][-1]["fromEpoch"]:
+    if manifest["approvalFromEpoch"] != roster["fromEpoch"]:
         raise ValueError("target requires the current approval roster")
     network, domain, release = manifest["network"], manifest["securityDomainId"], manifest["releaseId"]
     if (network, domain) != (trust["network"], trust["securityDomainId"]) or (
@@ -127,7 +128,7 @@ def target(trust, document, receipt, custodians, build):
             raise ValueError("each custody slot requires separate keys and roles in its own account")
         accounts.add(account)
         policies.append(key_policy(host, custodian, retirement, pins, target_context(manifest, index)))
-    return keys, policies, next_keys
+    return roster["keys"], policies, next_keys
 
 
 def main():
@@ -169,7 +170,7 @@ def main():
                 "configurationSha256": file_digest(config_path), "pcrs": {pcr: measured[pcr] for pcr in ("PCR0", "PCR1", "PCR2")},
                 "hostRole": args.host_role, "wrappingKeys": read_json(args.wrapping_keys),
                 "nextCustodians": read_json(args.next_roster) if args.next_roster else None,
-                "approvalFromEpoch": trust["approvalKeys"][-1]["fromEpoch"],
+                "approvalFromEpoch": approval_roster(trust)["fromEpoch"],
             }, "signatures": []}
             target(trust, document, receipt, custodians, args.build)
             print(canonical(document).decode())

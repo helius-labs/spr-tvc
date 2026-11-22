@@ -8,13 +8,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from approval import (
-    MAX_DOCUMENT_BYTES, add_approval, approval_keys, canonical, check_approvals, epoch_number, fields, hex_digest, kms,
+    MAX_DOCUMENT_BYTES, add_approval, approval_keys, approval_roster, canonical, check_approvals, epoch_number, fields, hex_digest, kms,
     parse_json, read_json, require_kms_key, sha256,
 )
 from custody_ledger import (
-    RECOVERY_SPECS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, find_retirement, list_objects, load_epoch,
+    LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_SPECS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
+    find_retirement, list_objects, load_epoch,
     load_retirement, read_registered_target, recovery_deadline, require_active_epoch, retirement_approval, retirement_object_name,
-    retirement_recovery, sign_share_recovery, target_attestation, write_once,
+    require_publication_roster, retirement_recovery, sign_share_recovery, target_attestation, write_once,
 )
 from kms_policy import key_policy, recovery_policy, target_context
 
@@ -30,7 +31,7 @@ def retirement_scope(trust, epoch, replacement):
         "network": trust["network"], "securityDomainId": trust["securityDomainId"],
         "epoch": epoch, "receiptSha256": sha256(old), "replacementEpoch": replacement,
         "replacementReceiptSha256": sha256(new), "replacementCustodyDigest": sha256(new["custody"]),
-        "approvalFromEpoch": trust["approvalKeys"][-1]["fromEpoch"],
+        "approvalFromEpoch": approval_roster(trust)["fromEpoch"],
     }, new, custodians
 
 
@@ -143,8 +144,8 @@ def commit_retirement(trust, wallet_trust, document):
         return
     check_approvals(approval_keys(trust), RETIREMENT, approval)
     verify_qualification(trust, wallet_trust, document)
-    # Leave room for the AWS CLI's 25-second request deadline.
-    require_recovery_window(manifest, remaining=30)
+    require_recovery_window(manifest, remaining=LEDGER_WRITE_MARGIN_SECONDS)
+    require_publication_roster(trust, manifest["approvalFromEpoch"])
 
     write_once(trust, retirement_object_name(epoch), document, lambda stored: stored)
     load_retirement(trust, epoch)

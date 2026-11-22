@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 KEY_ARN = re.compile(r"arn:aws:kms:([a-z0-9-]+):([0-9]{12}):key/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
@@ -122,19 +123,24 @@ def signing_key(key):
     return public
 
 
-def approval_keys(trust, epoch=None):
+def approval_roster(trust, *, epoch=None, at=None):
     schedule = trust["approvalKeys"]
     if not isinstance(schedule, list) or not schedule:
         raise ValueError("expected a custody approval key schedule")
-    upto = epoch_number(epoch) if epoch is not None else 2**64 - 1
-    selected, previous = None, 0
+    upto = epoch_number(epoch) if epoch is not None else (time.time() if at is None else at)
+    selected, previous, previous_time = None, 0, -1
     known_keys, known_arns = {}, {}
     for entry in schedule:
-        fields(entry, "fromEpoch", "keys")
+        fields(entry, "fromEpoch", "activeFrom", "keys")
         start = epoch_number(entry["fromEpoch"])
+        active_from = entry["activeFrom"]
         if (previous == 0 and start != 1) or start <= previous:
             raise ValueError("approval key schedule must start at 1 and increase")
+        if (type(active_from) is not int or not previous_time < active_from < 2**53 or
+                (previous == 0 and active_from != 0)):
+            raise ValueError("approval key activation times must start at 0 and increase")
         previous = start
+        previous_time = active_from
         keys = entry["keys"]
         if not isinstance(keys, list) or len(keys) != 3:
             raise ValueError("expected three approval keys in independent AWS accounts")
@@ -147,9 +153,15 @@ def approval_keys(trust, epoch=None):
                 raise ValueError("a signing key must have one stable public key and ARN")
         if len(accounts) != 3:
             raise ValueError("expected three approval keys in independent AWS accounts")
-        if start <= upto:
-            selected = keys
+        if (start if epoch is not None else active_from) <= upto:
+            selected = entry
+    if selected is None:
+        raise ValueError("no active custody approval roster")
     return selected
+
+
+def approval_keys(trust, epoch=None):
+    return approval_roster(trust, epoch=epoch)["keys"]
 
 
 def approval_message(label, manifest):

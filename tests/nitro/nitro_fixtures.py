@@ -37,5 +37,5 @@ def sign(label, manifest, identity):
     return {"keyArn": identity, "signature": b64encode(signature).decode()}
 
 
-def schedule(epoch="1", slot=7):
-    return {"fromEpoch": epoch, "keys": [pin(key(account, slot)) for account in (8, 9, 10)]}
+def schedule(epoch="1", slot=7, active_from=0):
+    return {"fromEpoch": epoch, "activeFrom": active_from, "keys": [pin(key(account, slot)) for account in (8, 9, 10)]}

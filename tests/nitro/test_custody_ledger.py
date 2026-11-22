@@ -12,10 +12,11 @@ from threading import Lock
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
-from approval import approval_keys, canonical, sha256
+from approval import approval_keys, approval_roster, canonical, sha256
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
-    check_serving_policy, draft, ledger_policy, ledger_reader_policy, list_objects, load_epoch, publish, record, require_active_epoch,
+    check_serving_policy, draft, ledger_policy, ledger_reader_policy, list_objects, load_epoch, publish, read_registered_target,
+    record, require_active_epoch,
     sign_epoch, target_attestation,
     target_object_name, verify_archive, write_once,
 )
@@ -48,8 +49,14 @@ class CustodyLedgerTests(unittest.TestCase):
         self.objects = {}
         self.timestamps = {}
         self.lock = Lock()
+        self.now = int(time.time())
+        self.enterContext(patch("time.time", side_effect=lambda: self.now))
         self.enterContext(patch("custody_ledger.aws", side_effect=self.aws))
         self.enterContext(patch("approval.kms", side_effect=AssertionError("receipt verification must not call KMS")))
+
+    def rotate_approvals(self, epoch):
+        self.now += 60
+        self.trust["approvalKeys"].append(schedule(epoch, 9, self.now))
 
     def document(self, epoch, predecessor=None, variant="ab"):
         roster = [{
@@ -80,7 +87,7 @@ class CustodyLedgerTests(unittest.TestCase):
         document = self.document(2, predecessor, variant)
         manifest = document["authorization"]["manifest"]
         target = {"network": "devnet", "securityDomainId": DOMAIN, "receiptSha256": sha256(predecessor),
-                  "custodyEpoch": "1", "approvalFromEpoch": self.trust["approvalKeys"][-1]["fromEpoch"],
+                  "custodyEpoch": "1", "approvalFromEpoch": approval_roster(self.trust)["fromEpoch"],
                   "releaseId": manifest["capture"]["receipt"]["releaseId"], "mode": "rotate", "hostRole": HOST,
                   "pcrs": PINS, "eifSha256": manifest["ceremonyEifSha256"],
                   "executableSha256": hashlib.sha256(b"rotation executable fixture").hexdigest(),
@@ -111,16 +118,17 @@ class CustodyLedgerTests(unittest.TestCase):
                 return listing(prefix, [name for name in sorted(self.objects) if name.startswith(prefix)])
         name = args[args.index("--key") + 1]
         self.assertTrue(name.startswith(f"spr-custody/devnet/{DOMAIN}/"))
+        now = datetime.fromtimestamp(time.time(), timezone.utc).isoformat()
         with self.lock:
             if operation == "put-object":
                 self.assertEqual(args[args.index("--if-none-match") + 1], "*")
                 if name in self.objects:
                     raise ValueError("precondition failed")
                 self.objects[name] = pathlib.Path(args[-1]).read_bytes()
-                self.timestamps[name] = datetime.now(timezone.utc).isoformat()
+                self.timestamps[name] = now
             elif operation == "get-object" and name in self.objects:
                 pathlib.Path(args[-1]).write_bytes(self.objects[name])
-                return {"LastModified": self.timestamps.get(name, datetime.now(timezone.utc).isoformat())}
+                return {"LastModified": self.timestamps.get(name, now)}
             else:
                 raise ValueError("object missing")
         return {}
@@ -298,7 +306,7 @@ class CustodyLedgerTests(unittest.TestCase):
 
     def test_approval_rotation_keeps_old_receipts_verifiable_but_cannot_approve_new_epochs(self):
         publish(self.trust, self.sign(self.document(1)))
-        self.trust["approvalKeys"].append(schedule("2", 9))
+        self.rotate_approvals("2")
         _, previous, _ = load_epoch(self.trust, "1")
         draft, _ = self.rotation_document(previous)
         with self.assertRaisesRegex(ValueError, "invalid or duplicate approval"):
@@ -381,7 +389,7 @@ class CustodyLedgerTests(unittest.TestCase):
     def replacement_target(self, **overrides):
         _, receipt, _ = load_epoch(self.trust, "2")
         return {"network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "2",
-                "receiptSha256": sha256(receipt), "approvalFromEpoch": self.trust["approvalKeys"][-1]["fromEpoch"],
+                "receiptSha256": sha256(receipt), "approvalFromEpoch": approval_roster(self.trust)["fromEpoch"],
                 "releaseId": "new-slot", "mode": "serve", "hostRole": HOST,
                 "executableSha256": "ab" * 32,
                 "pcrs": {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)}, **overrides}
@@ -476,7 +484,7 @@ class CustodyLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "retired"):
             register_target(self.trust, target_doc)
 
-        self.trust["approvalKeys"].append(schedule("3", 9))
+        self.rotate_approvals("3")
         role, inventory = key_inventory(self.trust, "1", 1)
         self.assertTrue(role.endswith(":role/retirement"))
         self.assertEqual(set(inventory), {key(1), key(1, 11), key(1, 12), key(1, 21)})
@@ -499,7 +507,7 @@ class CustodyLedgerTests(unittest.TestCase):
     def test_unverified_retirement_halts_share_release_without_authorizing_key_retirement(self, qualification, _):
         publish(self.trust, self.sign(self.document(1)))
         _, old, _ = load_epoch(self.trust, "1")
-        self.trust["approvalKeys"].append(schedule("2", 9))
+        self.rotate_approvals("2")
         rotated, _ = self.rotation_document(old)
         publish(self.trust, self.sign(rotated))
         path = f"spr-custody/devnet/{DOMAIN}/retired/1.json"
@@ -528,7 +536,7 @@ class CustodyLedgerTests(unittest.TestCase):
 
         self.objects[path] = json.dumps(self.signed_retirement(marker)).encode()
         stale = {**self.trust, "approvalKeys": self.trust["approvalKeys"][:1]}
-        with self.assertRaisesRegex(ValueError, "cannot verify.*unknown retirement approval roster"):
+        with self.assertRaisesRegex(ValueError, "cannot verify.*approval roster does not match"):
             require_active_epoch(stale, "1")
         with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
             require_active_epoch(self.trust, "1")
@@ -594,11 +602,59 @@ class CustodyLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not match"):
             require_registered_target(self.trust, loser)
 
-        self.trust["approvalKeys"].append(schedule("3", 9))
+        self.rotate_approvals("3")
         renewed = {**winner, "expiresAt": 2, "approvalFromEpoch": "3"}
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, renewed))
         require_registered_target(self.trust, renewed)
         self.assertEqual(len([name for name in self.objects if "/targets/2/" in name]), 1)
+
+    def test_target_registration_uses_the_roster_active_at_s3_publication(self):
+        publish(self.trust, self.sign(self.document(1)))
+        _, old, _ = load_epoch(self.trust, "1")
+        rotated, _ = self.rotation_document(old)
+        publish(self.trust, self.sign(rotated))
+        existing = self.replacement_target()
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, existing))
+
+        cutoff = self.now + 60
+        self.trust["approvalKeys"].append(schedule("3", 9, cutoff))
+        candidate = {**existing, "releaseId": "new-roster", "approvalFromEpoch": "3"}
+        future = {"manifest": candidate, "signatures": [
+            sign(TARGET_APPROVAL, candidate, member["keyArn"]) for member in approval_keys(self.trust, "3")[:2]
+        ]}
+        with self.assertRaisesRegex(ValueError, "approval roster does not match"):
+            register_target(self.trust, future)
+
+        old_target = {**existing, "releaseId": "late-old-roster"}
+        old_approval = self.signed_subject(TARGET_APPROVAL, old_target)
+        self.now = cutoff - 10
+        with self.assertRaisesRegex(ValueError, "cutover is too close"):
+            register_target(self.trust, old_approval)
+
+        self.now = cutoff
+        require_registered_target(self.trust, existing)
+        name = target_object_name(old_target)
+        with self.assertRaisesRegex(ValueError, "approval roster does not match"):
+            register_target(self.trust, old_approval)
+        path = f"spr-custody/devnet/{DOMAIN}/{name}"
+        self.objects[path] = canonical(old_approval)
+        self.timestamps[path] = datetime.fromtimestamp(self.now, timezone.utc).isoformat()
+        with self.assertRaisesRegex(ValueError, "approval roster does not match its publication time"):
+            read_registered_target(self.trust, name, "2", old_target["receiptSha256"])
+        register_target(self.trust, future)
+        require_registered_target(self.trust, candidate)
+
+    def test_approval_schedule_rejects_ambiguous_activation_times(self):
+        for entries in (
+            [schedule(active_from=1)],
+            [schedule(), schedule("2", 9, 0)],
+            [schedule(), schedule("2", 9, True)],
+            [schedule(), schedule("2", 9, "60")],
+            [schedule(), schedule("2", 9, 2**53)],
+        ):
+            with self.subTest(times=[entry["activeFrom"] for entry in entries]):
+                with self.assertRaisesRegex(ValueError, "activation times"):
+                    approval_roster({**self.trust, "approvalKeys": entries})
 
     @patch("retirement.qualified_policy")
     def test_retirement_requires_three_proven_replacement_keys_to_stay_enabled(self, qualification):
@@ -674,7 +730,7 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertNotIn(path, self.objects)
         commit_retirement(self.trust, None, retired)
         commit_retirement(self.trust, None, retired)
-        self.trust["approvalKeys"].append(schedule("3", 9))
+        self.rotate_approvals("3")
         qualification.reset_mock()
         quorum.reset_mock()
         with patch("retirement.time.time", return_value=deadline + 1):
@@ -687,6 +743,9 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertIn(key(1), key_inventory(self.trust, "1", 1)[1])
         qualification.assert_not_called()
         quorum.assert_not_called()
+        self.timestamps[path] = datetime.fromtimestamp(self.now, timezone.utc).isoformat()
+        with self.assertRaisesRegex(ValueError, "approval roster does not match its publication time"):
+            key_inventory(self.trust, "1", 1)
         self.timestamps[path] = datetime.fromtimestamp(deadline, timezone.utc).isoformat()
         with self.assertRaisesRegex(ValueError, "outside the recovery window"):
             key_inventory(self.trust, "1", 1)

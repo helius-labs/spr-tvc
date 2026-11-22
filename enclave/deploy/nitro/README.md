@@ -19,8 +19,9 @@ Export public keys as `{keyArn, publicKey}` with `python3 enclave/deploy/nitro/a
 Pin `trust.json` outside the host and artifact distributor. It contains
 `network`, `securityDomainId` (32 random bytes in lowercase hex), `approvalKeys`
 and `ledger` with `bucket`, `region` and `account` (the 12-digit bucket owner's
-account ID). `approvalKeys` is an increasing array of `{fromEpoch, keys}`.
-Start with `fromEpoch: "1"` and three exported approval key objects. The ordered
+account ID). Each `approvalKeys` entry contains `fromEpoch`, `activeFrom`
+in Unix seconds, and three exported key objects. Start at epoch `"1"` with
+`activeFrom: 0`. Both values increase with each roster change. The ordered
 `roster.json` contains six entries with `recoveryKeyArn`, `acknowledgementKey`
 (an exported key object), `custodianRole` and `retirementRole`. The first entry
 owns share 1.
@@ -35,10 +36,12 @@ python3 "$nitro/custody_ledger.py" trust.json acknowledgement-policy "$custodian
 
 Supply every ledger reader role to `policy`, and attach the generated read
 policy to each cross-account reader role in its own account. Install the bucket
-policy on a private, versioned general-purpose bucket with bucket-owner-enforced ownership,
-public access blocked, and lifecycle expiration and replication off. The bucket
-policy restricts administration to a separate role and permits the publisher
-to create objects conditionally. Protect account root and keep the publisher
+policy on a private, versioned general-purpose bucket with bucket-owner-enforced
+ownership, public access blocked, and lifecycle expiration and replication
+off. The policy restricts administration to a separate role and allows
+conditional single-request uploads. Keep multipart uploads and copies
+disallowed so S3's recorded write time can govern custody approvals. Protect
+account root and keep the publisher
 and host unable to assume the administrator role. Readers verify two pinned
 approvals and six custodian acknowledgements even when reading directly from
 S3. If a canonical record fails verification, halt the affected operation and
@@ -119,11 +122,13 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    evidence.
 
    To change custody approval keys, append a schedule entry for the first
-   uncommitted epoch and distribute the updated trust file independently.
-   Each receipt uses the roster for its epoch. Target approvals use the
-   newest pinned roster. Keep the historical public keys in disaster
-   recovery copies of the trust file. The retired private signing keys can
-   be disabled once the new roster is ready.
+   uncommitted epoch and set a cutover time. Distribute the updated trust file
+   independently before cutover. Custody receipts use the roster for their
+   epoch. Target and retirement approvals use the roster active when S3
+   committed the record. The tools pause new writes during the final 30
+   seconds before cutover. Re-sign unpublished targets and requalify and sign
+   unpublished retirements under the new roster after cutover. Preserve the
+   historical public keys and original S3 records. [S3 object timestamps](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingMetadata.html) · [Conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes-enforce.html)
 
 ## Commission a measured target
 

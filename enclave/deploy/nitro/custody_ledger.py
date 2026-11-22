@@ -6,12 +6,13 @@ import hashlib
 import re
 import subprocess
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
 from approval import (
-    KEY_ARN, ROLE_ARN, MAX_DOCUMENT_BYTES, add_approval, approval_keys, arn, aws, canonical, check_approvals,
+    KEY_ARN, ROLE_ARN, MAX_DOCUMENT_BYTES, add_approval, approval_keys, approval_roster, arn, aws, canonical, check_approvals,
     epoch_number, fields, file_digest, get_signing_key, hex_digest, key_result, kms, parse_json, read_document,
     read_json, require_kms_key, sha256, signing_key,
 )
@@ -24,6 +25,7 @@ TARGET_APPROVAL = "target-approval"
 RETIREMENT = "custody-retirement"
 RETIREMENT_RECOVERY = "retirement-recovery"
 RECOVERY_WINDOW_SECONDS = 24 * 60 * 60
+LEDGER_WRITE_MARGIN_SECONDS = 30
 RECOVERY_SPECS = {"RSA_2048", "RSA_3072", "RSA_4096"}
 
 
@@ -135,6 +137,21 @@ def read_stored_object(trust, name):
         path = Path(directory) / "record.json"
         metadata = storage(trust, "get-object", ["--key", prefix + name, "--range", f"bytes=0-{MAX_DOCUMENT_BYTES}", str(path)])
         return read_json(path), metadata
+
+
+def publication_time(metadata):
+    committed = datetime.fromisoformat(metadata["LastModified"])
+    if committed.tzinfo is None:
+        raise ValueError("custody ledger publication time requires a timezone")
+    return committed.timestamp()
+
+
+def require_publication_roster(trust, start):
+    # Leave room for the AWS CLI's 25-second request deadline.
+    now = time.time()
+    if any(approval_roster(trust, at=instant)["fromEpoch"] != start
+           for instant in (now, now + LEDGER_WRITE_MARGIN_SECONDS)):
+        raise ValueError("custody approval cutover is too close for a ledger write")
 
 
 def write_once(trust, name, document, subject):
@@ -264,24 +281,18 @@ def check_commit(trust, document, receipt, custodians):
                     ACKNOWLEDGEMENT, acknowledgements(document), minimum=6)
 
 
-def verify_target_approval(trust, document, historical=False):
+def verify_target_approval(trust, document, *, at=None):
     manifest = document["manifest"]
-    epoch = manifest["approvalFromEpoch"]
-    schedule = trust["approvalKeys"]
-    if historical:
-        if not any(entry["fromEpoch"] == epoch for entry in schedule):
-            raise ValueError("unknown target approval roster")
-        keys = approval_keys(trust, epoch)
-    else:
-        keys = approval_keys(trust)
-        if schedule[-1]["fromEpoch"] != epoch:
-            raise ValueError("target requires the current approval roster")
-    check_approvals(keys, TARGET_APPROVAL, document)
+    roster = approval_roster(trust, at=at)
+    if roster["fromEpoch"] != manifest["approvalFromEpoch"]:
+        raise ValueError("target approval roster does not match its publication time")
+    check_approvals(roster["keys"], TARGET_APPROVAL, document)
     return manifest
 
 
 def read_registered_target(trust, name, epoch, receipt_digest):
-    target = verify_target_approval(trust, read_object(trust, name), historical=True)
+    document, metadata = read_stored_object(trust, name)
+    target = verify_target_approval(trust, document, at=publication_time(metadata))
     if (name != target_object_name(target) or
             (target["network"], target["securityDomainId"], target["custodyEpoch"], target["receiptSha256"]) !=
             (trust["network"], trust["securityDomainId"], epoch, receipt_digest)):
@@ -309,13 +320,15 @@ def recovery_deadline(manifest):
     return deadline
 
 
-def verify_retirement(trust, document, epoch):
+def verify_retirement(trust, document, epoch, published_at):
     approval = retirement_approval(document)
     manifest = document["manifest"]
     fields(manifest, "network", "securityDomainId", "epoch", "receiptSha256", "replacementEpoch",
            "replacementReceiptSha256", "replacementCustodyDigest", "replacementTargetIdentity", "replacementTargetSha256",
            "approvalFromEpoch", "walletPolicyDigest", "recoveryDeadline")
-    recovery_deadline(manifest)
+    deadline = recovery_deadline(manifest)
+    if not deadline - RECOVERY_WINDOW_SECONDS <= published_at < deadline:
+        raise ValueError("retirement was published outside the recovery window")
     if ((manifest["network"], manifest["securityDomainId"], manifest["epoch"]) !=
             (trust["network"], trust["securityDomainId"], epoch) or
             epoch_number(manifest["replacementEpoch"]) <= epoch_number(epoch)):
@@ -323,20 +336,16 @@ def verify_retirement(trust, document, epoch):
     for field in ("receiptSha256", "replacementReceiptSha256", "replacementCustodyDigest", "replacementTargetIdentity",
                   "replacementTargetSha256", "walletPolicyDigest"):
         hex_digest(manifest[field])
-    start = manifest["approvalFromEpoch"]
-    if not any(entry["fromEpoch"] == start for entry in trust["approvalKeys"]):
-        raise ValueError("unknown retirement approval roster")
-    check_approvals(approval_keys(trust, start), RETIREMENT, approval)
+    roster = approval_roster(trust, at=published_at)
+    if roster["fromEpoch"] != manifest["approvalFromEpoch"]:
+        raise ValueError("retirement approval roster does not match its publication time")
+    check_approvals(roster["keys"], RETIREMENT, approval)
     return manifest
 
 
 def load_retirement(trust, epoch):
     document, metadata = read_stored_object(trust, retirement_object_name(epoch))
-    marker = verify_retirement(trust, document, epoch)
-    committed = datetime.fromisoformat(metadata["LastModified"])
-    deadline = recovery_deadline(marker)
-    if committed.tzinfo is None or not deadline - RECOVERY_WINDOW_SECONDS <= committed.timestamp() < deadline:
-        raise ValueError("retirement was published outside the recovery window")
+    marker = verify_retirement(trust, document, epoch, publication_time(metadata))
     _, previous, custodians = load_epoch(trust, epoch)
     replacement_epoch = marker["replacementEpoch"]
     _, replacement, replacement_custodians = load_epoch(trust, replacement_epoch)

@@ -59,8 +59,10 @@ rotation approval and must match its measured image, host role and successor
 roster. All six custodians attest that their sealed key can open its share.
 A conditional S3 write commits one record for
 the epoch. Historical receipts verify with the public keys pinned for their
-epoch. Retiring an approval or acknowledgement signing key leaves those
-receipts verifiable offline.
+epoch. Target approvals and retirement records verify under the roster
+active at the original S3 write. Publishing after a cutover requires
+approval from the incoming roster. Retiring an approval or acknowledgement
+signing key leaves custody receipts verifiable offline.
 
 Custodians verify the quorum-approved build and registered destination and
 compare its KMS policies to the approved role, context and measurements before
