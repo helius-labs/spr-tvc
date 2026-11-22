@@ -119,7 +119,7 @@ async function checkEvidence(pin: NitroTarget) {
     signal,
   });
   assert.equal(response.status, 200);
-  const decoded = await response.json() as { boot: { info: ServiceInfo; bootstrapSlots: number[] }; evidence: string };
+  const decoded = await response.json() as { boot: { info: ServiceInfo; bootstrapSlots: number[]; bootedAtMs: string }; evidence: string };
   const { boot } = decoded;
   const { info, bootstrapSlots } = boot;
   const evidence = requireHex(decoded.evidence);

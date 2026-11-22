@@ -82,18 +82,23 @@ opens the share and wraps it to the approved RSA key inside Nitro.
 
 The wallet publishers raise the custody floor after the replacement attests.
 The replacement enclave attests the three distinct slots used to restore the
-seed and its boot transport key ID. Those exact three custodians reopen their
+seed, its boot transport key ID and the Nitro time after restoring the seed.
+Those exact three custodians reopen their
 committed recovery packages and sign the retirement candidate with their
 acknowledgement keys. Their proofs bind the boot, both receipts, the wallet
-policy, the registered serving target and a 24-hour deadline. Signers and the
-publisher reattest the same boot and confirm that all three recovery keys
-remain enabled. Restarting the replacement before publication requires a new
+policy, the registered serving target and the deadline 24 hours after its
+bootstrap. Signers and the publisher reattest the same boot and confirm
+that both the recovery and target wrapping keys for its three slots remain
+enabled. Restarting the replacement before publication requires a new
 candidate.
 The ledger checks the S3 write time against the proof window and verifies
 both receipts, the signatures and the target before producing the key
 inventory. An unverifiable record halts new wraps and requires ledger recovery.
 Drain the old enclaves before collecting retirement evidence. A reconstructed
 seed remains in its serving enclave's memory until that enclave stops.
+The read-only retirement verifier checks the old key inventory in all six
+accounts, then checks for a later attested replacement boot and rechecks the
+old keys. Record old enclave shutdown and the on-chain canary separately.
 
 A serving EIF measures its network, release, security domain and current
 custody record. Both serving and rotation use the same bootstrap:
@@ -186,7 +191,7 @@ is complete. [Cutover runbook](deploy/nitro/README.md#replace-a-compromised-seed
 ## Wallet connection and operations
 
 1. Fetch both policies with a five-second deadline and a 32 KiB limit per response. Require both quorums on each head. Check the network, domain, seed commitment and allowed lifetime. Atomically advance the wallet's durable checkpoint to the authenticated primary before contacting any replica. An `activate` policy lists eligible replicas. A `revoke` policy has an empty target list and returns `ReleasePolicyRevoked` after the same checkpoint write.
-2. POST a random 32-byte nonce to one authorized target's `/v1/nitro/attestation`. The reply includes `boot` and AWS-signed COSE `evidence`. The `boot` object contains `info` and the three `bootstrapSlots` that restored this replica. The document signs the nonce, SHA-256 of `SPR/native-nitro/discovery/v1` followed by the canonical `boot` object, and the replica's response-signing public pair.
+2. POST a random 32-byte nonce to one authorized target's `/v1/nitro/attestation`. The reply includes `boot` and AWS-signed COSE `evidence`. The `boot` object contains `info`, the three `bootstrapSlots` that restored this replica, and `bootedAtMs` as a decimal string from the Nitro Secure Module. The document signs the nonce, SHA-256 of `SPR/native-nitro/discovery/v1` followed by the canonical `boot` object, and the replica's response-signing public pair.
 3. Verify the exact pinned AWS root, the current certificate path and usages, the ES384 COSE signature, the signed timestamp and nonce, PCR0–PCR3 and the discovery bindings. Verify both public pairs before use. Compute the discovery release digest as SHA-256 of `SPR/native-nitro/release/v1` followed by the 32-byte executable hash, seed commitment and custody digest. The custody digest is SHA-256 of the RFC 8785 canonical `custody` object from the committed receipt. The signed target binds both that record and its epoch. The checkpoint remains in force if every listed replica is unavailable. Wallets send only after a replica attests. Raising the floor retires earlier epochs for that wallet. A later policy can authorize a previous build at or above that floor. New installs use independently pinned minimum values. The SDK uses one verified target for up to 60 seconds. The signed policy must be current for attestation and use. Every certificate in the attestation path must remain valid while the SDK uses that target.
 4. Encrypt the request to that boot's P-256 transport key. A decrypt approval binds the signer, network, release, boot transport key ID, ordered outputs, request ID and the ephemeral client response key. The enclave verifies the approval before deriving or opening note keys. Its signed response binds the operation, request digest and encrypted result. Before opening the reply, the SDK verifies the replica signature and rechecks the persisted checkpoint and session deadline. It checks recovered notes against their indexed commitments.
 

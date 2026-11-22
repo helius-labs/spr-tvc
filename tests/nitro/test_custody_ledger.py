@@ -10,6 +10,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from threading import Lock
+from types import SimpleNamespace
 from unittest.mock import ANY, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
@@ -26,7 +27,7 @@ from kms_policy import acknowledgement_policy, boot_pins
 from nitro_fixtures import DOMAIN, HOST, key, pin, schedule, sign
 from provenance import describe
 from retirement import (commit_retirement, inspect_keys, key_inventory, prove_recovery, qualified_manifest, qualified_policy,
-                        retirement_scope, sign_retirement)
+                        retirement_scope, sign_retirement, verify_retired)
 
 READ_ROLE = "arn:aws:iam::000000000001:role/custodian"
 PUBLISHER = "arn:aws:iam::000000000008:role/publisher"
@@ -52,6 +53,7 @@ class CustodyLedgerTests(unittest.TestCase):
         self.timestamps = {}
         self.lock = Lock()
         self.now = int(time.time())
+        self.booted_at_ms = self.now * 1000
         self.enterContext(patch("time.time", side_effect=lambda: self.now))
         self.enterContext(patch("custody_ledger.aws", side_effect=self.aws))
         self.enterContext(patch("approval.kms", side_effect=AssertionError("receipt verification must not call KMS")))
@@ -440,7 +442,7 @@ class CustodyLedgerTests(unittest.TestCase):
     def qualification(self, target, policy_digest="fe" * 32):
         return {"walletPolicyDigest": policy_digest, "replacementTargetIdentity": sha256(target_attestation(target)),
                 "replacementTargetSha256": sha256(target),
-                "replacementBootstrap": {"bootKeyId": "de" * 32, "slots": [1, 2, 3]}}
+                "replacementBootstrap": {"bootKeyId": "de" * 32, "bootedAtMs": str(self.booted_at_ms), "slots": [1, 2, 3]}}
 
     def signed_retirement(self, manifest, slots=(1, 2, 3)):
         result = self.signed_subject(RETIREMENT, manifest)
@@ -652,8 +654,8 @@ class CustodyLedgerTests(unittest.TestCase):
             body = b'{"wallet":"trust fixture"}\n'
             wallet_trust.write_bytes(body)
             self.trust["walletTrustSha256"] = hashlib.sha256(body).hexdigest()
-            with patch("retirement.subprocess") as subprocess:
-                subprocess.run.return_value.stdout = json.dumps(evidence).encode()
+            with patch("retirement.run_command") as query:
+                query.return_value.stdout = json.dumps(evidence).encode()
                 with self.assertRaisesRegex(ValueError, "no registered serving target"):
                     qualified_policy(self.trust, wallet_trust, scope, seed)
 
@@ -663,29 +665,95 @@ class CustodyLedgerTests(unittest.TestCase):
                 register_target(self.trust, self.signed_subject(TARGET_APPROVAL, rotation))
                 with self.assertRaisesRegex(ValueError, "no registered serving target"):
                     qualified_policy(self.trust, wallet_trust, scope, seed)
-                subprocess.run.assert_not_called()
+                query.assert_not_called()
 
                 register_target(self.trust, self.signed_subject(TARGET_APPROVAL, registered))
-                subprocess.run.return_value.stdout = json.dumps({**evidence, "targets": [
+                query.return_value.stdout = json.dumps({**evidence, "targets": [
                     {**observed, "pcrs": {**pins, "3": "ab" * 48}},
                 ]}).encode()
-                with self.assertRaisesRegex(ValueError, "no attested serving target"):
+                with self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
                     qualified_policy(self.trust, wallet_trust, scope, seed)
 
                 for slots in ([1, 2], [1, 1, 2], [1, 2, 7], [True, 2, 3], [3, 2, 1]):
                     bootstrap = {**observed["bootstrap"], "slots": slots}
-                    subprocess.run.return_value.stdout = json.dumps({**evidence, "targets": [{**observed, "bootstrap": bootstrap}]}).encode()
+                    query.return_value.stdout = json.dumps({**evidence, "targets": [{**observed, "bootstrap": bootstrap}]}).encode()
                     with self.assertRaisesRegex(ValueError, "three distinct attested bootstrap slots"):
                         qualified_policy(self.trust, wallet_trust, scope, seed)
-                subprocess.run.return_value.stdout = json.dumps(evidence).encode()
+                query.return_value.stdout = json.dumps(evidence).encode()
                 self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, seed), self.qualification(registered))
-                self.assertEqual(subprocess.run.call_args.kwargs["input"], body)
-                self.assertNotIn(str(wallet_trust), subprocess.run.call_args.args[0])
-                subprocess.run.reset_mock()
+                with self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
+                    qualified_policy(self.trust, wallet_trust, scope, seed, after_ms=self.booted_at_ms)
+                with patch("retirement.time.time", return_value=self.now + RECOVERY_WINDOW_SECONDS):
+                    with self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
+                        qualified_policy(self.trust, wallet_trust, scope, seed)
+                self.assertEqual(query.call_args.kwargs["input"], body)
+                self.assertNotIn(str(wallet_trust), query.call_args.args[0])
+                query.reset_mock()
                 wallet_trust.write_bytes(b"{}")
                 with self.assertRaisesRegex(ValueError, "does not match the pinned digest"):
                     qualified_policy(self.trust, wallet_trust, scope, seed)
-                subprocess.run.assert_not_called()
+                query.assert_not_called()
+
+    def test_retirement_report_requires_all_old_keys_inactive_and_a_later_boot(self):
+        publish(self.trust, self.sign(self.document(1)))
+        rotated, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
+        publish(self.trust, self.sign(rotated))
+        replacement = self.replacement_target()
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
+        with (patch("retirement.qualified_policy", return_value=self.qualification(replacement)),
+              patch("retirement.require_recovery_quorum")):
+            marker = qualified_manifest(self.trust, None, "1", "2")
+            retired = self.signed_retirement(marker)
+            commit_retirement(self.trust, None, retired)
+
+        profiles = [f"old-slot-{index}" for index in range(1, 7)]
+        inventory = {arn: (profile, policy) for index, profile in enumerate(profiles, 1)
+                     for arn, policy in key_inventory(self.trust, "1", index)[1].items()}
+        active = key(6, 21)
+        visited = []
+
+        def kms(arn, operation, args=(), *, profile):
+            expected_profile, policy = inventory[arn]
+            self.assertEqual(profile, expected_profile)
+            if operation == "get-key-policy":
+                return {"Policy": json.dumps(policy)}
+            self.assertEqual(operation, "describe-key")
+            visited.append(arn)
+            return {"KeyMetadata": {"Arn": arn, "KeyState": "Enabled" if arn == active else "PendingDeletion"}}
+
+        boot = self.qualification(replacement)["replacementBootstrap"]
+        observed = {**target_attestation(replacement), "bootstrap": boot}
+        stale = json.dumps({"policyDigest": "fe" * 32, "targets": [observed]}).encode()
+        fresh = {**boot, "bootKeyId": "be" * 32, "bootedAtMs": str(self.booted_at_ms + 1_000)}
+        ready = json.dumps({"policyDigest": "fe" * 32, "targets": [{**observed, "bootstrap": fresh}]}).encode()
+
+        wallet = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory())) / "wallet.json"
+        wallet.write_bytes(b"{}")
+        self.trust["walletTrustSha256"] = hashlib.sha256(wallet.read_bytes()).hexdigest()
+        with (patch("retirement.kms", side_effect=kms),
+              patch("retirement.run_command") as query, patch("retirement.time.sleep"),
+              patch("retirement.require_recovery_quorum") as quorum):
+            with self.assertRaisesRegex(ValueError, active):
+                verify_retired(self.trust, wallet, "1", profiles, 5)
+            query.assert_not_called()
+            active = None
+            visited.clear()
+            with patch("retirement.time.monotonic", side_effect=[0, 6]):
+                query.return_value.stdout = stale
+                with self.assertRaisesRegex(ValueError, "no replacement boot observed"):
+                    verify_retired(self.trust, wallet, "1", profiles, 5)
+            quorum.assert_not_called()
+            visited.clear()
+            query.reset_mock()
+            query.side_effect = [SimpleNamespace(stdout=body) for body in (stale, ready)]
+            report = verify_retired(self.trust, wallet, "1", profiles, 5)
+            self.assertEqual(set(inventory), set(visited))
+            self.assertEqual(len(visited), 2 * len(inventory))
+            self.assertEqual(report["retirementSha256"], sha256(retired))
+            self.assertEqual(report["inactiveObservedAtMs"], str(self.booted_at_ms))
+            self.assertEqual(report["replacement"]["replacementBootstrap"], fresh)
+            self.assertEqual({row["keyArn"] for slot in report["slots"] for row in slot["keys"]}, set(inventory))
+            quorum.assert_called_once()
 
     def test_one_wrapping_set_per_attested_identity_and_reauthorizing_keeps_the_registration(self):
         publish(self.trust, self.sign(self.document(1)))
@@ -788,43 +856,50 @@ class CustodyLedgerTests(unittest.TestCase):
                     approval_roster({**self.trust, "approvalKeys": entries})
 
     @patch("retirement.qualified_policy")
-    def test_retirement_requires_three_proven_replacement_keys_to_stay_enabled(self, qualification):
+    def test_retirement_requires_the_recovery_and_wrapping_keys_for_the_three_bootstrap_slots(self, qualification):
         publish(self.trust, self.sign(self.document(1)))
         _, old, _ = load_epoch(self.trust, "1")
         rotated, _ = self.rotation_document(old)
         publish(self.trust, self.sign(rotated))
         _, _, custodians = load_epoch(self.trust, "2")
-        keys = [item["recoveryKeyArn"] for item in custodians]
-        states = ["Enabled", "Enabled", "Disabled", "Enabled", None, "foreign"]
+        replacement = self.replacement_target()
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
+        recovery_keys = [item["recoveryKeyArn"] for item in custodians]
+        wrapping_keys = replacement["wrappingKeys"]
+        proven = {*recovery_keys[:3], *wrapping_keys[:3]}
+        states = dict.fromkeys(proven, "Enabled")
+        states[recovery_keys[2]] = "Disabled"
+        inspected = set()
 
         def describe(arn, operation):
             self.assertEqual(operation, "describe-key")
-            state = states[keys.index(arn)]
-            if state is None:
-                raise ValueError("unavailable account")
+            inspected.add(arn)
+            state = states[arn]
             return {"KeyMetadata": {"Arn": arn if state != "foreign" else key(99), "Origin": "AWS_KMS", "MultiRegion": False,
                                     "KeyUsage": "ENCRYPT_DECRYPT", "KeySpec": "RSA_2048",
                                     "KeyState": "Enabled" if state == "foreign" else state}}
 
         with patch("retirement.kms", side_effect=describe):
-            replacement = self.replacement_target()
-            register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
             qualification.return_value = self.qualification(replacement)
             marker = qualified_manifest(self.trust, None, "1", "2")
             retirement = self.signed_retirement(marker)
-            with self.assertRaisesRegex(ValueError, "only 2 proven replacement recovery keys"):
+            with self.assertRaisesRegex(ValueError, recovery_keys[2]):
                 commit_retirement(self.trust, None, retirement)
-            states[2] = "Enabled"
+            self.assertEqual(inspected, proven)
+            states[recovery_keys[2]] = "Enabled"
             with patch("retirement.add_approval", return_value={"signatures": retirement["signatures"]}):
                 self.assertEqual(sign_retirement(self.trust, None, {**retirement, "signatures": []},
                                                  approval_keys(self.trust)[0]["keyArn"]), retirement)
-            states[2] = "PendingDeletion"
-            with self.assertRaisesRegex(ValueError, "only 2 proven replacement recovery keys"):
+            states[wrapping_keys[1]] = "PendingDeletion"
+            with self.assertRaisesRegex(ValueError, wrapping_keys[1]):
+                commit_retirement(self.trust, None, retirement)
+            states[wrapping_keys[1]] = "foreign"
+            with self.assertRaisesRegex(ValueError, wrapping_keys[1]):
                 commit_retirement(self.trust, None, retirement)
             self.assertTrue(all("/retired/" not in name for name in self.objects))
             with self.assertRaisesRegex(ValueError, "invalid or duplicate approval"):
                 commit_retirement(self.trust, None, self.signed_retirement(marker, (1, 2, 4)))
-            states[2] = "Enabled"
+            states[wrapping_keys[1]] = "Enabled"
             qualification.return_value = {**self.qualification(replacement),
                                           "replacementBootstrap": {**marker["replacementBootstrap"], "bootKeyId": "bc" * 32}}
             with self.assertRaisesRegex(ValueError, "no longer matches the qualified replacement"):
@@ -862,6 +937,8 @@ class CustodyLedgerTests(unittest.TestCase):
         quorum.assert_not_called()
 
         deadline = marker["recoveryDeadline"]
+        with self.assertRaisesRegex(ValueError, "measured from the replacement boot"):
+            sign_retirement(self.trust, None, other, approval_keys(self.trust)[0]["keyArn"])
         for now in (deadline - RECOVERY_WINDOW_SECONDS - 1, deadline, deadline - 1):
             with patch("retirement.time.time", return_value=now):
                 with self.assertRaisesRegex(ValueError, "recovery window"):

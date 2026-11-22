@@ -21,7 +21,8 @@ describe("native Nitro evidence from a disposable AWS enclave", () => {
     const start = Math.max(...certificates.map(cert => Date.parse(cert.validFrom)));
     const end = Math.min(...certificates.map(cert => Date.parse(cert.validTo)));
     await expect(verifyNativeNitroEvidence(evidence, nonce, binding, pcrs, now)).resolves.toEqual({
-      proofKey: fixture.proofKey, certificateValidFromMs: BigInt(start) + 1n, certificateValidThroughMs: BigInt(end) - 1n,
+      proofKey: fixture.proofKey, attestedAtMs: 1_795_290_719_965n,
+      certificateValidFromMs: BigInt(start) + 1n, certificateValidThroughMs: BigInt(end) - 1n,
     });
   });
 

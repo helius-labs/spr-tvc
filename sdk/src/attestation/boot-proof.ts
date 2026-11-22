@@ -98,7 +98,7 @@ export async function verifyNativeNitroEvidence(
     const { attestation, validity } = await verifyNativeBinding(document, nonce, discoveryBinding, expectedPcrs, nowMs);
     const publicKey = asBytes(attestation.get("public_key"));
     parseQosP256Public(publicKey);
-    return { proofKey: encodeLowerHex(publicKey), ...validity };
+    return { proofKey: encodeLowerHex(publicKey), attestedAtMs: BigInt(attestation.get("timestamp") as number), ...validity };
   } catch {
     throw new DecryptionServiceError("BootProofUnverified");
   }

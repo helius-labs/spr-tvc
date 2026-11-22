@@ -202,9 +202,16 @@ async fn serve(
         quorum: KeyPair::Native(transport),
         note_seed,
     });
+    let booted_at_ms = nsm_now_ms().ok_or_else(|| io::Error::other("read Nitro bootstrap time"))?;
     nitro_http::serve(
         ParentListener::bind(44030)?,
-        serving_router(service, slots),
+        serving_router(
+            service,
+            BootstrapEvidence {
+                slots,
+                booted_at_ms,
+            },
+        ),
         MAX_SERVING_CONNECTIONS,
         pending(),
     )
@@ -213,13 +220,16 @@ async fn serve(
 }
 
 #[derive(Clone, Copy)]
-struct BootstrapSlots([u8; THRESHOLD]);
+struct BootstrapEvidence {
+    slots: [u8; THRESHOLD],
+    booted_at_ms: u64,
+}
 
-fn serving_router(service: Arc<Service>, slots: [u8; THRESHOLD]) -> Router {
+fn serving_router(service: Arc<Service>, bootstrap: BootstrapEvidence) -> Router {
     let attestation = Router::new()
         .route("/v1/nitro/attestation", post(client_attestation))
         .layer(DefaultBodyLimit::max(32))
-        .layer(Extension(BootstrapSlots(slots)))
+        .layer(Extension(bootstrap))
         .layer(Extension(Arc::new(Semaphore::new(1))))
         .layer(middleware::from_fn_with_state(
             Arc::new(Semaphore::new(MAX_ATTESTATION_REQUESTS)),
@@ -353,11 +363,7 @@ async fn relay_rewrap(
     let request: RelayRequest = parse_strict_json(json).map_err(|_| StatusCode::BAD_REQUEST)?;
     with_nsm(worker, move || {
         let ciphertext = relay
-            .rewrap(request, || {
-                // Read time from the enclave's NSM device on each check.
-                let (_, document) = attest(None, None, None).ok()?;
-                nsm_timestamp_ms(&document)
-            })
+            .rewrap(request, nsm_now_ms)
             .ok_or(StatusCode::BAD_REQUEST)?;
         Ok(([(CONTENT_TYPE, "application/octet-stream")], ciphertext))
     })
@@ -515,11 +521,13 @@ type Reply<T> = Result<([(axum::http::HeaderName, &'static str); 1], T), StatusC
 struct ServingBoot<'a> {
     info: &'a ServiceInfo,
     bootstrap_slots: [u8; THRESHOLD],
+    #[serde(with = "decimal_u64")]
+    booted_at_ms: u64,
 }
 
 async fn client_attestation(
     State(service): State<Arc<Service>>,
-    Extension(BootstrapSlots(slots)): Extension<BootstrapSlots>,
+    Extension(bootstrap): Extension<BootstrapEvidence>,
     Extension(worker): Extension<Arc<Semaphore>>,
     nonce: Bytes,
 ) -> Reply<String> {
@@ -528,7 +536,8 @@ async fn client_attestation(
     }
     let discovery = jcs_serialize(&ServingBoot {
         info: &service.info,
-        bootstrap_slots: slots,
+        bootstrap_slots: bootstrap.slots,
+        booted_at_ms: bootstrap.booted_at_ms,
     })
     .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let public = service.ephemeral.public_bytes();
@@ -603,6 +612,11 @@ fn attest(
         }
         _ => Err(StatusCode::SERVICE_UNAVAILABLE),
     }
+}
+
+fn nsm_now_ms() -> Option<u64> {
+    let (_, document) = attest(None, None, None).ok()?;
+    nsm_timestamp_ms(&document)
 }
 
 // The caller gets fresh COSE_Sign1 bytes directly from NSM, never over vsock.

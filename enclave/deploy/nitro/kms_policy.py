@@ -111,6 +111,7 @@ def key_policy(host, custodian, key_admin, measurements):
         seal(),
         *restrict_decrypt(host, pins),
         retirement(key_admin),
+        statement("ReadWrappingKeyState", "Allow", "*", "kms:DescribeKey"),
         # The slot account may delegate read-only inspection to independent approvers.
         allow("InspectWrappingKey", f"arn:aws:iam::{account}:root", ["kms:DescribeKey", "kms:GetKeyPolicy", "kms:GetPublicKey"]),
         allow("InspectBeforeWrap", custodian, ["kms:DescribeKey", "kms:GetKeyPolicy", "kms:GetPublicKey"]),

@@ -3,9 +3,11 @@
 import argparse
 import hashlib
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from subprocess import run as run_command
 
 from approval import (
     MAX_DOCUMENT_BYTES, add_approval, approval_keys, approval_roster, canonical, check_approvals, epoch_number, fields, hex_digest, kms,
@@ -15,7 +17,8 @@ from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
     find_retirement, list_objects, load_epoch,
     load_retirement, read_registered_target, recovery_deadline, require_active_epoch, retirement_approval, retirement_object_name,
-    require_publication_roster, retirement_bootstrap, retirement_recovery, sign_share_recovery, target_attestation, write_once,
+    require_publication_roster, retirement_bootstrap, retirement_recovery, retirement_target, sign_share_recovery,
+    target_attestation, write_once,
 )
 from kms_policy import RSA_KEYS, key_policy
 from relay import custody_recovery_policy
@@ -36,20 +39,20 @@ def retirement_scope(trust, epoch, replacement):
     }, new, custodians
 
 
-def require_recovery_quorum(custodians):
-    def enabled(member):
-        key = member["recoveryKeyArn"]
+def require_recovery_quorum(trust, manifest, custodians):
+    target = retirement_target(trust, manifest)
+    slots = retirement_bootstrap(manifest["replacementBootstrap"])
+    keys = [member["recoveryKeyArn"] for member in custodians] + [target["wrappingKeys"][slot - 1] for slot in slots]
+
+    def require_enabled(key):
         try:
             metadata = kms(key, "describe-key")["KeyMetadata"]
             require_kms_key(metadata, key, RSA_KEYS, "ENCRYPT_DECRYPT")
-            return True
-        except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired):
-            return False
+        except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as error:
+            raise ValueError(f"proven replacement key is unavailable: {key}") from error
 
-    with ThreadPoolExecutor(max_workers=len(custodians)) as workers:
-        count = sum(workers.map(enabled, custodians))
-    if count < 3:
-        raise ValueError(f"only {count} proven replacement recovery keys are still enabled. Three are required.")
+    with ThreadPoolExecutor(max_workers=len(keys)) as workers:
+        list(workers.map(require_enabled, keys))
 
 
 def registered_targets(trust, epoch, receipt_digest):
@@ -57,7 +60,11 @@ def registered_targets(trust, epoch, receipt_digest):
         yield read_registered_target(trust, name, epoch, receipt_digest)
 
 
-def qualified_policy(trust, wallet_trust, scope, seed):
+class ReplacementNotReady(ValueError):
+    pass
+
+
+def qualified_policy(trust, wallet_trust, scope, seed, *, after_ms=0):
     with wallet_trust.open("rb") as source:
         pinned_trust = source.read(MAX_DOCUMENT_BYTES + 1)
     if (len(pinned_trust) > MAX_DOCUMENT_BYTES or
@@ -70,7 +77,7 @@ def qualified_policy(trust, wallet_trust, scope, seed):
     if not candidates:
         raise ValueError("no registered serving target for the replacement epoch")
     root = Path(__file__).resolve().parents[3]
-    reply = subprocess.run([
+    reply = run_command([
         "pnpm", "--dir", str(root / "example"), "exec", "tsx", str(root / "xtask/nitro-retirement.ts"),
         scope["network"], scope["securityDomainId"], seed, epoch, scope["replacementCustodyDigest"],
     ], input=pinned_trust, stdout=subprocess.PIPE, check=True, timeout=25)
@@ -83,16 +90,22 @@ def qualified_policy(trust, wallet_trust, scope, seed):
         if identity in by_identity:
             bootstrap = observed["bootstrap"]
             retirement_bootstrap(bootstrap)
+            booted_at = epoch_number(bootstrap["bootedAtMs"])
+            if booted_at <= after_ms or booted_at // 1000 + RECOVERY_WINDOW_SECONDS <= time.time():
+                continue
             return {"walletPolicyDigest": hex_digest(evidence["policyDigest"]),
                     "replacementTargetIdentity": identity, "replacementTargetSha256": sha256(by_identity[identity]),
                     "replacementBootstrap": bootstrap}
-    raise ValueError("no attested serving target matches the registered replacement")
+    raise ReplacementNotReady("no fresh attested serving boot matches the registered replacement")
 
 
 def qualified_manifest(trust, wallet_trust, epoch, replacement):
     scope, receipt, _ = retirement_scope(trust, epoch, replacement)
     policy = qualified_policy(trust, wallet_trust, scope, receipt["custody"]["noteSeedCommitment"])
-    return {**scope, **policy, "recoveryDeadline": int(time.time()) + RECOVERY_WINDOW_SECONDS}
+    booted_at = epoch_number(policy["replacementBootstrap"]["bootedAtMs"]) // 1000
+    manifest = {**scope, **policy, "recoveryDeadline": booted_at + RECOVERY_WINDOW_SECONDS}
+    require_recovery_window(manifest)
+    return manifest
 
 
 def require_recovery_window(manifest, remaining=0):
@@ -128,7 +141,8 @@ def verify_qualification(trust, wallet_trust, document):
     policy = qualified_policy(trust, wallet_trust, scope, receipt["custody"]["noteSeedCommitment"])
     if manifest != {**scope, **policy, "recoveryDeadline": manifest["recoveryDeadline"]}:
         raise ValueError("retirement no longer matches the qualified replacement and wallet policy")
-    require_recovery_quorum(proven)
+    require_recovery_quorum(trust, manifest, proven)
+    require_active_epoch(trust, scope["replacementEpoch"])
 
 
 def sign_retirement(trust, wallet_trust, document, key):
@@ -163,10 +177,13 @@ def key_inventory(trust, epoch, index):
         raise ValueError("invalid custody slot")
     document, custodians = load_retirement(trust, epoch)
     marker = document["manifest"]
-    member = custodians[index - 1]
+    return slot_inventory(trust, epoch, custodians[index - 1], registered_targets(trust, epoch, marker["receiptSha256"]), index)
+
+
+def slot_inventory(trust, epoch, member, targets, index):
     custodian, admin = member["custodianRole"], member["retirementRole"]
     keys = {member["recoveryKeyArn"]: custody_recovery_policy(trust, member, epoch)}
-    for target in registered_targets(trust, epoch, marker["receiptSha256"]):
+    for target in targets:
         key = target["wrappingKeys"][index - 1]
         expected = key_policy(target["hostRole"], custodian, admin, target["pcrs"])
         if keys.setdefault(key, expected) != expected:
@@ -175,11 +192,15 @@ def key_inventory(trust, epoch, index):
 
 
 def inspect_keys(trust, epoch, index, check_inactive):
-    role, keys = key_inventory(trust, epoch, index)
+    return inspect_inventory(key_inventory(trust, epoch, index), check_inactive)
+
+
+def inspect_inventory(inventory, check_inactive, **options):
+    role, keys = inventory
     result = []
     for key, expected in sorted(keys.items()):
-        installed = parse_json(kms(key, "get-key-policy", ["--policy-name", "default"])["Policy"])
-        metadata = kms(key, "describe-key")["KeyMetadata"]
+        installed = parse_json(kms(key, "get-key-policy", ["--policy-name", "default"], **options)["Policy"])
+        metadata = kms(key, "describe-key", **options)["KeyMetadata"]
         if installed != expected or metadata.get("Arn") != key:
             raise ValueError("retirement key does not match the recorded epoch policy")
         state = metadata["KeyState"]
@@ -187,6 +208,45 @@ def inspect_keys(trust, epoch, index, check_inactive):
             raise ValueError(f"retirement key {key} remains usable or unverified")
         result.append({"keyArn": key, "state": state})
     return {"retirementRole": role, "keys": result}
+
+
+def verify_retired(trust, wallet_trust, epoch, profiles, wait_seconds):
+    if len(profiles) != 6 or len(set(profiles)) != 6 or wait_seconds <= 0:
+        raise ValueError("provide six distinct read-only profiles in slot order and a positive wait time")
+    document, custodians = load_retirement(trust, epoch)
+    marker = document["manifest"]
+    _, replacement, replacement_custodians = load_epoch(trust, marker["replacementEpoch"])
+
+    def inspect_all():
+        targets = list(registered_targets(trust, epoch, marker["receiptSha256"]))
+        with ThreadPoolExecutor(max_workers=6) as workers:
+            slots = list(workers.map(
+                lambda index, member, profile: inspect_inventory(
+                    slot_inventory(trust, epoch, member, targets, index), True, profile=profile),
+                range(1, 7), custodians, profiles,
+            ))
+        return slots
+
+    inspect_all()
+    after_ms = int(time.time() * 1000)
+    deadline = time.monotonic() + wait_seconds
+    print("All six old slots verified inactive. Waiting for a newer replacement boot.", file=sys.stderr, flush=True)
+    while True:
+        try:
+            evidence = qualified_policy(trust, wallet_trust, marker, replacement["custody"]["noteSeedCommitment"],
+                                        after_ms=after_ms)
+            break
+        except (ReplacementNotReady, subprocess.SubprocessError) as error:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError("no replacement boot observed after verifying the old keys") from error
+            time.sleep(min(2, remaining))
+
+    slots = retirement_bootstrap(evidence["replacementBootstrap"])
+    require_recovery_quorum(trust, {**marker, **evidence}, [replacement_custodians[slot - 1] for slot in slots])
+    require_active_epoch(trust, marker["replacementEpoch"])
+    return {"retirementSha256": sha256(document), "inactiveObservedAtMs": str(after_ms),
+            "replacement": evidence, "slots": inspect_all()}
 
 
 def main():
@@ -212,11 +272,18 @@ def main():
     inspect.add_argument("epoch")
     inspect.add_argument("share", type=int, choices=range(1, 7))
     inspect.add_argument("--check-inactive", action="store_true")
+    verify = commands.add_parser("verify-retired")
+    verify.add_argument("wallet_trust", type=Path)
+    verify.add_argument("epoch")
+    verify.add_argument("--inspection-profiles", nargs=6, required=True)
+    verify.add_argument("--wait-seconds", type=int, default=300)
     args = parser.parse_args()
     try:
         trust = read_json(args.trust)
         if args.command == "inspect":
             result = inspect_keys(trust, args.epoch, args.share, args.check_inactive)
+        elif args.command == "verify-retired":
+            result = verify_retired(trust, args.wallet_trust, args.epoch, args.inspection_profiles, args.wait_seconds)
         elif args.command == "draft":
             result = {"manifest": qualified_manifest(trust, args.wallet_trust, args.epoch, args.replacement),
                       "signatures": [], "recoveryProofs": []}

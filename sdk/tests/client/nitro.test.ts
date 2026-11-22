@@ -72,9 +72,9 @@ function attestedDiscovery(custodyDigest = "99".repeat(32), boot = secrets, cert
     ...requireHex(executable, 32), ...requireHex(trust.noteSeedCommitment, 32), ...requireHex(custodyDigest, 32),
   ]));
   vi.mocked(verifyNativeNitroEvidence).mockResolvedValue({
-    proofKey: pair, certificateValidFromMs: BigInt(Date.now()) - 1_000n, certificateValidThroughMs,
+    proofKey: pair, attestedAtMs: BigInt(Date.now()), certificateValidFromMs: BigInt(Date.now()) - 1_000n, certificateValidThroughMs,
   });
-  return Response.json({ boot: { bootstrapSlots: [1, 3, 5], info: {
+  return Response.json({ boot: { bootstrapSlots: [1, 3, 5], bootedAtMs: String(Date.now() - 10_000), info: {
     version: 1, network: trust.network, security_domain_id: trust.securityDomainId, release_id: "nitro-2",
     manifest_digest: encodeLowerHex(identity), executable_digest: executable, quorum_public_key: pair,
     quorum_key_id: encodeLowerHex(sha256(requireHex(pair, 130))), quorum_key_epoch: "1",
@@ -147,7 +147,8 @@ describe("native client trust gate", () => {
     const verified = vi.mocked(verifyNativeNitroEvidence);
     verified.mockImplementation(async (_evidence, _nonce, received) => {
       if (encodeLowerHex(received) !== encodeLowerHex(binding)) throw new Error("wrong attestation binding");
-      return { proofKey: publicPair(secrets), certificateValidFromMs: 0n, certificateValidThroughMs: BigInt(Date.now()) + 60_000n };
+      return { proofKey: publicPair(secrets), attestedAtMs: BigInt(Date.now()),
+        certificateValidFromMs: 0n, certificateValidThroughMs: BigInt(Date.now()) + 60_000n };
     });
     const fetch = policyHeads(vi.fn(), policy).mockResolvedValueOnce(Response.json({
       ...response, boot: { ...response.boot, bootstrapSlots: [1, 3, 6] },
@@ -171,6 +172,18 @@ describe("native client trust gate", () => {
     const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
     await expect(client.address(signer.address)).rejects.toThrow("no authorized Nitro replica");
     expect(verifyNativeNitroEvidence).not.toHaveBeenCalled();
+  });
+
+  it("rejects a serving boot time later than its AWS attestation", async () => {
+    const response = await attestedDiscovery().json();
+    const fetch = policyHeads().mockResolvedValueOnce(Response.json({
+      ...response, boot: { ...response.boot, bootedAtMs: String(Date.now() + 60_000) },
+    }));
+    vi.stubGlobal("fetch", fetch);
+    await expect(createNitroDecryptionService({ trust, policyStore: checkpointStore() })
+      .open(signer, proofs)).rejects.toThrow("no authorized Nitro replica");
+    expect(verifyNativeNitroEvidence).toHaveBeenCalledOnce();
+    expect(signMessages).not.toHaveBeenCalled();
   });
 
   it("refuses payment addresses while the owner can still open and decrypt a recovery note", async () => {

@@ -227,16 +227,17 @@ accounts. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
    enclaves. An older executable can be built for the current epoch if needed.
 4. Pin the file SHA-256 of the independently distributed wallet trust bundle
    as `walletTrustSha256` in the custody trust file. The retirement draft
-   records the replacement's attested boot key ID and actual bootstrap slots.
+   records the replacement's attested boot key ID, Nitro bootstrap time and
+   actual bootstrap slots.
    The three custodians named by those slots run `prove-recovery` in their
    respective roles. Each command reopens that custodian's package from the
    replacement receipt and signs the candidate with its acknowledgement key. Keep those keys enabled for the
    current epoch. Pass each output to the next custodian.
 
    Two custody approval signers then sign, and the ledger publisher commits
-   the record within 24 hours of drafting. Signers and the publisher need
-   `kms:DescribeKey` on the proven recovery keys and check that at least
-   three are enabled. Draft, sign and publish check that both public buckets
+   the record within 24 hours of the replacement boot. Signers and the
+   publisher need `kms:DescribeKey` on the recovery and target wrapping keys
+   for those exact three slots. All six keys must still be enabled. Draft, sign and publish check that both public buckets
    agree before and after attestation and that the replacement matches the
    registered serving target. If the attested boot key or slots change, draft
    a new candidate and collect proofs for those slots. After a timeout, retry the same signed
@@ -263,11 +264,21 @@ accounts. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
    inventory, schedules approved keys, and repeats `inspect --check-inactive`.
    Scheduling immediately disables cryptographic use. Canceling leaves the
    key disabled, and the sealed policy grants no permission to re-enable it.
-   Capture the results before AWS deletes the metadata. Repeat the cold boot
-   and canary after retirement. The attested slot record proves which shares
-   booted the replacement. Record the cold-boot timing, shutdown of the old
-   fleet and the on-chain canary separately. Retain the old signed receipt
-   and public trust pins. [AWS key deletion](https://docs.aws.amazon.com/kms/latest/APIReference/API_ScheduleKeyDeletion.html) · [AWS cancellation behavior](https://docs.aws.amazon.com/kms/latest/APIReference/API_CancelKeyDeletion.html)
+   Run the read-only verification before AWS deletes the key metadata. Give
+   it one read-only inspection profile for each of the six old custody
+   accounts. Use an operator host with a synchronized clock.
+
+   ```sh
+   python3 "$nitro/retirement.py" trust.json verify-retired wallet-trust.json 1 \
+     --inspection-profiles "${old_inspection_profiles[@]}" > retirement-report.json
+   ```
+
+   After it verifies the old keys, cold-boot a registered replacement with
+   exactly three slots. The verifier waits for a later attested boot, checks
+   the six keys used by its slots, and checks the entire old key inventory a
+   second time. Record the shutdown of the old fleet and the on-chain canary
+   alongside the report. Retain the old signed receipt and public trust pins.
+   [AWS KMS key states](https://docs.aws.amazon.com/kms/latest/developerguide/key-state.html)
 
 ## Share release
 

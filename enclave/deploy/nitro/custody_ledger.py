@@ -343,8 +343,10 @@ def retirement_approval(document):
 
 
 def retirement_bootstrap(bootstrap):
-    fields(bootstrap, "bootKeyId", "slots")
+    fields(bootstrap, "bootKeyId", "bootedAtMs", "slots")
     hex_digest(bootstrap["bootKeyId"])
+    if epoch_number(bootstrap["bootedAtMs"]) >= 2**53:
+        raise ValueError("invalid replacement boot time")
     slots = bootstrap["slots"]
     if (not isinstance(slots, list) or len(slots) != 3 or
             any(type(slot) is not int or slot not in range(1, 7) for slot in slots) or slots != sorted(set(slots))):
@@ -362,8 +364,9 @@ def retirement_recovery(document, custodians):
 
 def recovery_deadline(manifest):
     deadline = manifest["recoveryDeadline"]
-    if type(deadline) is not int or not RECOVERY_WINDOW_SECONDS < deadline < 2**53:
-        raise ValueError("invalid retirement recovery deadline")
+    booted_at = epoch_number(manifest["replacementBootstrap"]["bootedAtMs"]) // 1000
+    if type(deadline) is not int or deadline != booted_at + RECOVERY_WINDOW_SECONDS:
+        raise ValueError("retirement deadline must be measured from the replacement boot")
     return deadline
 
 
@@ -391,6 +394,15 @@ def verify_retirement(trust, document, epoch, published_at):
     return manifest
 
 
+def retirement_target(trust, marker):
+    replacement = marker["replacementEpoch"]
+    name = target_path(replacement, marker["replacementTargetIdentity"])
+    target = read_registered_target(trust, name, replacement, marker["replacementReceiptSha256"])
+    if target["mode"] != "serve" or sha256(target) != marker["replacementTargetSha256"]:
+        raise ValueError("replacement target does not match the registered serving enclave")
+    return target
+
+
 def load_retirement(trust, epoch):
     document, metadata = read_stored_object(trust, retirement_object_name(epoch))
     marker = verify_retirement(trust, document, epoch, publication_time(metadata))
@@ -402,10 +414,7 @@ def load_retirement(trust, epoch):
             previous["custody"]["noteSeedCommitment"] != replacement["custody"]["noteSeedCommitment"]):
         raise ValueError("retirement receipts do not match the ledger")
     retirement_recovery(document, replacement_custodians)
-    name = target_path(replacement_epoch, marker["replacementTargetIdentity"])
-    target = read_registered_target(trust, name, replacement_epoch, marker["replacementReceiptSha256"])
-    if target["mode"] != "serve" or sha256(target) != marker["replacementTargetSha256"]:
-        raise ValueError("replacement target does not match the registered serving enclave")
+    retirement_target(trust, marker)
     return document, custodians
 
 

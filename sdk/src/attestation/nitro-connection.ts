@@ -3,6 +3,7 @@ import { endpointUrl, fetchWithSignal, httpError, readBoundedText } from "../con
 import { awaitWithSignal } from "../connection/request.js";
 import { parseQosP256Public } from "../crypto/qos.js";
 import { API_VERSION, QOS_P256_PUBLIC_LEN } from "../protocol/constants.js";
+import { decodeDecimalU64 } from "../protocol/decimal.js";
 import { SERVICE_PROOF_TYPE } from "../protocol/decryption.js";
 import { DecryptionServiceError } from "../protocol/error.js";
 import { encodeLowerHex, requireHex } from "../protocol/hex.js";
@@ -27,7 +28,11 @@ export const nitroTransport = {
   },
 };
 
-type ServingBoot = { readonly info: ServiceInfo; readonly bootstrapSlots: readonly [number, number, number] };
+type ServingBoot = {
+  readonly info: ServiceInfo;
+  readonly bootstrapSlots: readonly [number, number, number];
+  readonly bootedAtMs: string;
+};
 
 /** Attests one replica before returning values used to build or sign a request. */
 export async function connectNitroTarget(target: NitroTarget, trust: NitroTrust, requestSignal?: AbortSignal) {
@@ -44,11 +49,12 @@ export async function connectNitroTarget(target: NitroTarget, trust: NitroTrust,
   const { boot, evidence } = parseStrictJson<{ boot: ServingBoot; evidence: string }>(
     await readBoundedText(response, MAX_DISCOVERY_BYTES, signal), ["boot", "evidence"],
   );
-  assertExactObjectKeys(boot, ["info", "bootstrapSlots"], "DiscoveryUntrusted");
-  const { info, bootstrapSlots } = boot;
+  assertExactObjectKeys(boot, ["info", "bootstrapSlots", "bootedAtMs"], "DiscoveryUntrusted");
+  const { info, bootstrapSlots, bootedAtMs } = boot;
   assertExactObjectKeys(info, SERVICE_INFO_KEYS, "DiscoveryUntrusted");
+  const bootedAt = decodeDecimalU64(bootedAtMs);
   if (!Array.isArray(bootstrapSlots) || bootstrapSlots.length !== 3 || new Set(bootstrapSlots).size !== 3 ||
-      bootstrapSlots.some(slot => !Number.isInteger(slot) || slot < 1 || slot > 6)) {
+      bootstrapSlots.some(slot => !Number.isInteger(slot) || slot < 1 || slot > 6) || bootedAt === 0n) {
     throw new DecryptionServiceError("DiscoveryUntrusted");
   }
   if (typeof evidence !== "string" || evidence.length > 2 * MAX_ATTESTATION_BYTES) {
@@ -77,8 +83,8 @@ export async function connectNitroTarget(target: NitroTarget, trust: NitroTrust,
     verifyNativeNitroEvidence(requireHex(evidence), nonce, binding, target.pcrs, BigInt(Date.now())), signal,
   );
   const now = BigInt(Date.now());
-  if (now < verified.certificateValidFromMs || now > verified.certificateValidThroughMs) {
+  if (bootedAt > verified.attestedAtMs || now < verified.certificateValidFromMs || now > verified.certificateValidThroughMs) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
-  return { endpoint, info, bootstrapSlots, ...verified };
+  return { endpoint, info, bootstrapSlots, bootedAtMs, ...verified };
 }

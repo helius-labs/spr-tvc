@@ -17,15 +17,20 @@ async function main() {
   const signal = AbortSignal.timeout(15_000);
   const before = await readPublishedNitroPolicy(trust, signal);
   requireRetirementPolicy(before, epoch, custodyDigest);
-  const targets = await Promise.all(before.policy.targets.map(async target => {
-    const { info, bootstrapSlots } = await connectNitroTarget(target, trust, signal);
-    return { target, bootstrap: { bootKeyId: info.quorum_key_id, slots: [...bootstrapSlots].sort((a, b) => a - b) } };
+  const candidates = before.policy.targets.filter(target => target.custodyEpoch === epoch && target.custodyDigest === custodyDigest);
+  const targets = await Promise.allSettled(candidates.map(async target => {
+    const { info, bootstrapSlots, bootedAtMs } = await connectNitroTarget(target, trust, signal);
+    return { target, bootstrap: { bootKeyId: info.quorum_key_id, bootedAtMs, slots: [...bootstrapSlots].sort((a, b) => a - b) } };
   }));
+  signal.throwIfAborted();
   const after = await readPublishedNitroPolicy(trust, signal);
   requireRetirementPolicy(after, epoch, custodyDigest);
   if (before.checkpoint.digest !== after.checkpoint.digest) throw new Error("wallet policy changed during qualification");
-  const matching = targets.filter(({ target }) => target.custodyEpoch === epoch && target.custodyDigest === custodyDigest)
-    .map(({ target: { releaseId, pcrs }, bootstrap }) => ({ releaseId, pcrs, bootstrap }));
+  const matching = targets.flatMap(result => {
+    if (result.status === "rejected") return [];
+    const { target: { releaseId, pcrs }, bootstrap } = result.value;
+    return [{ releaseId, pcrs, bootstrap }];
+  });
   process.stdout.write(JSON.stringify({ policyDigest: after.checkpoint.digest, targets: matching }));
 }
 
