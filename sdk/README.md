@@ -65,6 +65,9 @@ The wallet requires an exact match at the checkpoint sequence and an exact
 predecessor link at the next sequence. It checks the saved revision before
 sending, after owner approval, and before opening a reply. Policy acceptance
 commits before replica attestation.
+The wallet refreshes on use after 60 seconds from the start of the policy
+fetch. Both elapsed and wall time bound that window. Signed policy and
+certificate expiry can end it earlier.
 
 The client uses the first verified boot from its staggered probes. A
 recovery-only client refuses `address()` with `ReleasePolicyRecoveryOnly` and

@@ -7,6 +7,7 @@ import { createSignableMessage, getAddressEncoder, type MessagePartialSigner } f
 import type { ConnectedTvcRuntime } from "../connection/connect.js";
 import {
   checkSignedRequestSize,
+  remainingReleasePolicyMs,
   requireCurrentReleasePolicy,
   sealedExchange,
 } from "../connection/operations.js";
@@ -59,14 +60,13 @@ async function signBeforeReleaseExpires(
   context: ConnectedTvcRuntime,
   signal: AbortSignal,
 ) {
-  const now = context.nowMs();
-  requireCurrentReleasePolicy(context, now);
+  const remaining = remainingReleasePolicyMs(context, context.nowMs());
+  if (!(remaining > 0)) throw new DecryptionServiceError("ExpiredRequest");
   signal.throwIfAborted();
   const controller = new AbortController();
   const approvalSignal = AbortSignal.any([signal, controller.signal]);
-  const remaining = Number(context.releasePolicyExpiresAtMs - now + 1n);
   const timer = setTimeout(() => controller.abort(new DecryptionServiceError("ExpiredRequest")),
-    Math.min(remaining, 2_147_483_647));
+    Math.min(Math.ceil(remaining), 2_147_483_647));
   try {
     return await awaitWithSignal(
       owner.signMessages([createSignableMessage(message)], { abortSignal: approvalSignal }),

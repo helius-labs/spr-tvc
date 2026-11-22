@@ -1,4 +1,5 @@
 import { awaitWithSignal } from "./request.js";
+import { remainingReleasePolicyMs } from "./operations.js";
 import {
   connectAndVerifyTvc,
   type ConnectedTvcRuntime,
@@ -21,8 +22,7 @@ export type DecryptionServiceSession = {
 
 /** Whether the connection's release policy is still in force. Operations check the same window again before they sign. */
 function holds(context: ConnectedTvcRuntime): boolean {
-  const now = context.nowMs();
-  return now >= context.releasePolicyValidFromMs && now <= context.releasePolicyExpiresAtMs;
+  return remainingReleasePolicyMs(context, context.nowMs()) > 0;
 }
 
 export function sessionFromConnector(

@@ -26,7 +26,7 @@ export type NitroDecryptionServiceConfig = {
   readonly requiredBootKeyId?: string;
 };
 
-const CONNECTION_TTL_MS = 60_000n;
+const CONNECTION_TTL_MS = 60_000;
 const RESPONSE_TIMEOUT_MS = 12_000;
 const ATTESTATION_STAGGER_MS = 200;
 const clock = () => BigInt(Date.now());
@@ -53,10 +53,14 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
   }
 
   const session = sessionFromConnector(async (signal): Promise<ConnectedTvcRuntime> => {
+    const sessionExpiry = clock() + BigInt(CONNECTION_TTL_MS) - 1n;
+    const freshnessDeadline = performance.now() + CONNECTION_TTL_MS;
+    const policyFreshnessRemainingMs = () => freshnessDeadline - performance.now();
     const { policy, checkpoint, validFrom, expiresAt, update } = await readPublishedNitroPolicy(trust, signal);
     function currentTime(): bigint {
       const now = clock();
       if (now < validFrom || now >= expiresAt) throw new DecryptionServiceError("ReleasePolicyInvalid");
+      if (now > sessionExpiry || policyFreshnessRemainingMs() <= 0) throw new DecryptionServiceError("ExpiredRequest");
       return now;
     }
     // The signed policy advances trust even if every listed replica is offline.
@@ -86,12 +90,12 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
         throw new DecryptionServiceError("BootProofUnverified");
       }
       const now = currentTime();
-      const sessionExpiry = now + CONNECTION_TTL_MS;
       const policyExpiry = sessionExpiry < expiresAt ? sessionExpiry : expiresAt - 1n;
       const { certificateValidFromMs, certificateValidThroughMs } = connected;
       const window = {
         releasePolicyValidFromMs: validFrom > certificateValidFromMs ? validFrom : certificateValidFromMs,
         releasePolicyExpiresAtMs: policyExpiry < certificateValidThroughMs ? policyExpiry : certificateValidThroughMs,
+        policyFreshnessRemainingMs,
       };
       requireCurrentReleasePolicy(window, now);
       return { connected, window, index };

@@ -703,6 +703,72 @@ describe("native client trust gate", () => {
     expect(signMessages).toHaveBeenCalledOnce();
   });
 
+  it.each(["both clocks advance", "wall clock rolls back", "monotonic clock pauses"] as const)(
+    "refreshes within 60 seconds of fetching policy when %s", async clocks => {
+    const started = Date.now();
+    let elapsed = 0;
+    let wall = started;
+    const time = vi.spyOn(Date, "now").mockImplementation(() => wall);
+    const ticks = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+    try {
+      const old = signedPolicy();
+      const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(old).policy));
+      const revoked = signedPolicy({ sequence: "3", previousPolicyDigest, action: "revoke", targets: [] });
+      let published = old;
+      const fetch = vi.fn(async (url: URL, init: RequestInit) => {
+        if (url.pathname.endsWith("/policy.json")) {
+          if (elapsed === 0) { elapsed = 2_000; wall = started + elapsed; }
+          return new Response(published);
+        }
+        if (url.pathname === "/v1/nitro/attestation") {
+          elapsed = 3_000;
+          wall = started + elapsed;
+          return attestedDiscovery();
+        }
+        return lookupReply(init, secrets);
+      });
+      vi.stubGlobal("fetch", fetch);
+      const store = checkpointStore();
+      const client = createNitroDecryptionService({ trust, policyStore: store });
+      await client.address(signer.address);
+      published = revoked;
+      const advance = (milliseconds: number) => {
+        elapsed = clocks === "monotonic clock pauses" ? 3_000 : milliseconds;
+        wall = started + (clocks === "wall clock rolls back" ? 2_500 : milliseconds);
+      };
+      advance(59_999);
+      await expect(client.address(signer.address)).resolves.toBeDefined();
+      fetch.mockClear();
+      advance(60_000);
+      await expect(client.address(signer.address)).rejects.toMatchObject({ code: "ReleasePolicyRevoked" });
+      expect(await store.current()).toMatchObject({ sequence: "3" });
+      expect(fetch.mock.calls.map(([url]) => url.pathname)).toEqual([
+        expect.stringMatching(/\/policy\.json$/), expect.stringMatching(/\/policy\.json$/),
+      ]);
+    } finally {
+      ticks.mockRestore();
+      time.mockRestore();
+    }
+  });
+
+  it("discards owner approval returned after the monotonic policy window", async () => {
+    let elapsed = 0;
+    const ticks = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+    try {
+      const fetch = policyHeads().mockResolvedValueOnce(attestedDiscovery())
+        .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+      vi.stubGlobal("fetch", fetch);
+      signMessages.mockImplementationOnce(async () => {
+        elapsed = 60_000;
+        return [{ [signer.address]: signatureBytes(new Uint8Array(64).fill(1)) }];
+      });
+      const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
+      await expect(client.open(signer, proofs)).rejects.toMatchObject({ code: "ExpiredRequest" });
+      expect(signMessages).toHaveBeenCalledOnce();
+      expect(fetch.mock.calls.filter(([url]) => url.pathname === "/v1/operations")).toHaveLength(1);
+    } finally { ticks.mockRestore(); }
+  });
+
   it("requires the second publication even if the first returned a usable signed policy", async () => {
     const fetch = vi.fn().mockResolvedValueOnce(new Response(signedPolicy()))
       .mockResolvedValueOnce(new Response(null, { status: 503 }));

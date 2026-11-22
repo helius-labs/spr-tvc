@@ -56,16 +56,17 @@ type OperationProofPayload = {
   operation: OperationKind;
 };
 
-export function requireCurrentReleasePolicy(
-  window: {
-    readonly releasePolicyValidFromMs: bigint;
-    readonly releasePolicyExpiresAtMs: bigint;
-  },
-  nowMs: bigint,
-): void {
-  if (nowMs < window.releasePolicyValidFromMs || nowMs > window.releasePolicyExpiresAtMs) {
-    throw new DecryptionServiceError("ExpiredRequest");
-  }
+type ReleasePolicyWindow = Pick<ConnectedTvcRuntime,
+  "releasePolicyValidFromMs" | "releasePolicyExpiresAtMs" | "policyFreshnessRemainingMs">;
+
+export function remainingReleasePolicyMs(window: ReleasePolicyWindow, nowMs: bigint): number {
+  if (nowMs < window.releasePolicyValidFromMs) return 0;
+  return Math.min(Number(window.releasePolicyExpiresAtMs - nowMs + 1n),
+    window.policyFreshnessRemainingMs?.() ?? Infinity);
+}
+
+export function requireCurrentReleasePolicy(window: ReleasePolicyWindow, nowMs: bigint): void {
+  if (!(remainingReleasePolicyMs(window, nowMs) > 0)) throw new DecryptionServiceError("ExpiredRequest");
 }
 
 /** One request, complete and signed, and what its answer must prove. */
