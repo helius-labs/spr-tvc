@@ -101,16 +101,18 @@ class CustodyLedgerTests(unittest.TestCase):
         return {"authorization": {"manifest": manifest, "signatures": []}, "acknowledgements": []}
 
     def rotation_document(self, predecessor, variant="fe", register=True):
-        document = self.document(2, predecessor, variant)
+        previous = predecessor["custody"]["epoch"]
+        epoch = int(previous) + 1
+        document = self.document(epoch, predecessor, variant)
         manifest = document["authorization"]["manifest"]
         target = {"network": self.trust["network"], "securityDomainId": DOMAIN, "receiptSha256": sha256(predecessor),
-                  "custodyEpoch": "1", "approvalFromEpoch": approval_roster(self.trust)["fromEpoch"], "expiresAt": self.now + 3600,
+                  "custodyEpoch": previous, "approvalFromEpoch": approval_roster(self.trust)["fromEpoch"], "expiresAt": self.now + 3600,
                   "releaseId": manifest["capture"]["receipt"]["releaseId"], "mode": "rotate", "hostRole": HOST,
                   "hostRegion": REGION, "instanceId": INSTANCE, "pcrs": PINS, "eifSha256": manifest["ceremonyEifSha256"],
                   "executableSha256": hashlib.sha256(b"rotation executable fixture").hexdigest(),
                   "configurationSha256": sha256(manifest["capture"]["configuration"]),
                   "nextCustodians": copy.deepcopy(manifest["custodians"]), "nextRelay": copy.deepcopy(manifest["relay"]),
-                  "wrappingKeys": [key(i, 21) for i in range(1, 7)]}
+                  "wrappingKeys": [key(i, 19 + epoch) for i in range(1, 7)]}
         manifest["capture"]["pcrs"] = target_attestation(target)["pcrs"]
         manifest["rotationTargetSha256"] = sha256(target)
         approval = self.signed_subject(TARGET_APPROVAL, target)
@@ -822,9 +824,9 @@ class CustodyLedgerTests(unittest.TestCase):
                                     for index in slots]
         return result
 
-    def replacement_target(self, **overrides):
-        _, receipt, _ = load_epoch(self.trust, "2")
-        return {"network": self.trust["network"], "securityDomainId": DOMAIN, "custodyEpoch": "2",
+    def replacement_target(self, *, epoch="2", **overrides):
+        _, receipt, _ = load_epoch(self.trust, epoch)
+        return {"network": self.trust["network"], "securityDomainId": DOMAIN, "custodyEpoch": epoch,
                 "receiptSha256": sha256(receipt), "approvalFromEpoch": approval_roster(self.trust)["fromEpoch"],
                 "releaseId": "new-slot", "mode": "serve", "hostRole": HOST, "expiresAt": self.now + 3600,
                 "hostRegion": REGION, "instanceId": "i-1234567890abcdef1",
@@ -923,13 +925,16 @@ class CustodyLedgerTests(unittest.TestCase):
         _, previous, _ = load_epoch(self.trust, "1")
         rotated, rotation_approval = self.rotation_document(previous)
         publish(self.trust, self.sign(rotated))
-        _, receipt, _ = load_epoch(self.trust, "2")
-        registered = self.replacement_target()
+        _, second, _ = load_epoch(self.trust, "2")
+        rotated, second_rotation_approval = self.rotation_document(second, variant="cd")
+        publish(self.trust, self.sign(rotated))
+        _, receipt, _ = load_epoch(self.trust, "3")
+        registered = self.replacement_target(epoch="3")
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, registered))
-        target = {**target_attestation(registered), "custodyEpoch": "2",
+        target = {**target_attestation(registered), "custodyEpoch": "3",
                   "executableSha256": registered["executableSha256"], "custodyDigest": sha256(receipt["custody"])}
         policy = {"action": "activate", "recoveryOnly": False, "network": "mainnet", "securityDomainId": DOMAIN,
-                  "noteSeedCommitment": receipt["custody"]["noteSeedCommitment"], "minimumCustodyEpoch": "2",
+                  "noteSeedCommitment": receipt["custody"]["noteSeedCommitment"], "minimumCustodyEpoch": "3",
                   "publications": self.trust["publications"], "targets": [target]}
         document = {"policy": policy, "signatures": [], "custodySignatures": []}
         with self.assertRaisesRegex(ValueError, "mainnet activation requires a pinned custody ledger replica"):
@@ -938,7 +943,8 @@ class CustodyLedgerTests(unittest.TestCase):
         replica = {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1",
                    "role": "arn:aws:iam::000000000008:role/replication"}
         self.trust["ledgerReplica"] = replica
-        expected = {"1.json", "2.json", target_object_name(rotation_approval["manifest"]), target_object_name(registered)}
+        expected = {"1.json", "2.json", "3.json", target_object_name(rotation_approval["manifest"]),
+                    target_object_name(second_rotation_approval["manifest"]), target_object_name(registered)}
         copied = set()
         missing = set()
         changes = {}
@@ -956,6 +962,21 @@ class CustodyLedgerTests(unittest.TestCase):
         with patch("custody_ledger.read_stored_payload", side_effect=read):
             check_release_policy(self.trust, document)
             self.assertEqual(copied, expected)
+            prefix = f"spr-custody/mainnet/{DOMAIN}/"
+            genesis_path = prefix + "1.json"
+            genesis = json.loads(self.objects[genesis_path])
+            with patch.dict(self.objects, {genesis_path: canonical({**genesis, "acknowledgements": []})}):
+                with self.assertRaisesRegex(ValueError, "signing quorum"):
+                    check_release_policy(self.trust, document)
+            unrelated_genesis = self.sign(self.document(1, variant="cd"))
+            with patch.dict(self.objects, {genesis_path: canonical(unrelated_genesis)}):
+                with self.assertRaisesRegex(ValueError, "canonical previous receipt"):
+                    check_release_policy(self.trust, document)
+            first_rotation = rotation_approval["manifest"]
+            late_write = datetime.fromtimestamp(first_rotation["expiresAt"], timezone.utc).isoformat()
+            with patch.dict(self.timestamps, {prefix + target_object_name(first_rotation): late_write}):
+                with self.assertRaisesRegex(ValueError, "target approval has expired"):
+                    check_release_policy(self.trust, document)
             for name in sorted(expected):
                 missing.add(name)
                 with self.subTest(missing=name), self.assertRaisesRegex(ValueError, "from the pinned replica"):

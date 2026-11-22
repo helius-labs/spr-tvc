@@ -214,9 +214,11 @@ each activation target matches an active epoch, the committed custody receipt,
 and a custody-approved serving executable, release ID and PCR0–PCR4. They
 require a pinned mainnet custody replica and compare the receipt chain,
 rotation approvals and serving registrations against it. Each copy must
-match the source bytes, S3 version ID and write time. Two of
-three independently pinned custody approval keys also sign the entire
-policy. Their digest uses `SPR/native-nitro/custody-release-policy/v1`
+match the source bytes, S3 version ID and write time. They verify each receipt
+and predecessor link from genesis and check each rotation approval at its
+original S3 write time. Two of the three independently pinned custody approval
+keys also sign the entire policy. Their digest uses
+`SPR/native-nitro/custody-release-policy/v1`
 followed by the same canonical JSON. The SDK verifies both quorums before
 contacting a replica. Separate key pins prevent the release quorum from
 substituting its own recipient keys through an unapproved image. Each publisher

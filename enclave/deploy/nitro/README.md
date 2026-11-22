@@ -576,8 +576,10 @@ publication tools match its executable, release ID and PCR0–PCR4 to the
 registered serving image and verify its committed, active custody epoch.
 For mainnet and any devnet with a pinned replica, signers and publishers
 also check both copies of the receipt chain, its rotation approvals and
-the serving registrations. Resolve missing or failed replication before
-retrying activation. [S3 replication status](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication-status.html)
+the serving registrations. They verify every epoch and rotation approval
+from genesis under its historical roster. Renewals run the same checks.
+Resolve missing or failed replication before retrying activation.
+[S3 replication status](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication-status.html)
 Both publishers require the activation's wallet custody pins to match the
 active roster in their independently distributed custody trust file. They
 leave at least 30 seconds before a scheduled roster cutover to submit the S3 write.

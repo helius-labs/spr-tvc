@@ -197,20 +197,27 @@ def require_replicated_custody(trust, replica, epoch, registrations):
     destination = replica_trust(trust, replica)
 
     def read(name):
-        return read_replicated_record(trust, destination, name)[0]
+        payload, (_, published_at, _) = read_replicated_record(trust, destination, name)
+        return parse_json(payload), published_at
 
-    def check_epoch(number):
-        payload = read(ledger_object(trust, str(number)))
+    def read_entry(number):
+        document, _ = read(ledger_object(trust, str(number)))
+        rotation = None
         if number > 1:
-            manifest = parse_json(payload)["authorization"]["manifest"]
-            read(rotation_target_name(manifest, str(number - 1)))
+            manifest = document["authorization"]["manifest"]
+            approval, published_at = read(rotation_target_name(manifest, str(number - 1)))
+            rotation = {"approval": approval, "publishedAt": published_at}
+        return {"document": document, "rotation": rotation}
 
     # Schedule bounded batches even when a signed epoch number is very large.
     last = epoch_number(epoch)
     batch_size = 8
+    previous = None
     with ThreadPoolExecutor(max_workers=batch_size) as workers:
         for start in range(1, last + 1, batch_size):
-            list(workers.map(check_epoch, range(start, min(start + batch_size, last + 1))))
+            batch = range(start, min(start + batch_size, last + 1))
+            for number, entry in zip(batch, workers.map(read_entry, batch), strict=True):
+                previous = check_custody_history_entry(trust, str(number), entry, previous)
         list(workers.map(read, sorted(registrations)))
 
 
@@ -803,6 +810,32 @@ def check_previous(trust, document, receipt):
     if manifest["rotationTargetSha256"] != sha256(target):
         raise ValueError("custody record does not pin the registered rotation target")
     return target
+
+
+def check_custody_history_entry(trust, epoch, entry, previous):
+    fields(entry, "document", "rotation")
+    document, rotation = entry["document"], entry["rotation"]
+    receipt, custodians = record(trust, document)
+    if receipt["custody"]["epoch"] != epoch:
+        raise ValueError("custody history epochs must be consecutive from genesis")
+    check_commit(trust, document, receipt, custodians)
+    manifest = document["authorization"]["manifest"]
+    if previous is None:
+        if rotation is not None:
+            raise ValueError("genesis history cannot include a rotation")
+    else:
+        predecessor, previous_roster = previous
+        check_predecessor(document, receipt, predecessor, previous_roster)
+        fields(rotation, "approval", "publishedAt")
+        prior_epoch = predecessor["custody"]["epoch"]
+        target = check_registered_target(
+            trust, rotation_target_name(manifest, prior_epoch), prior_epoch, sha256(predecessor),
+            rotation["approval"], publication_time({"LastModified": rotation["publishedAt"]}),
+        )
+        check_rotation_target(manifest, target)
+        if manifest["rotationTargetSha256"] != sha256(target):
+            raise ValueError("custody record does not pin the registered rotation target")
+    return receipt, custodians
 
 
 def check_custody_roster(trust, epoch, custodians, fingerprints, inspection_profiles, relay_build=None):
