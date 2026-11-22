@@ -10,12 +10,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from subprocess import run as run_command
-from tempfile import TemporaryDirectory
 
 from approval import (
     KEY_ARN, MAX_DOCUMENT_BYTES, ROLE_ARN, add_approval, approval_keys, approval_roster, arn, aws, canonical, check_approvals,
     epoch_number, fields, hex_digest, kms,
-    parse_json, read_document, read_json, require_inspection_profiles, require_kms_key, require_profile_account, sha256,
+    parse_json, publish_new_file, read_document, read_json, require_inspection_profiles, require_kms_key,
+    require_profile_account, sha256,
 )
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
@@ -622,13 +622,6 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
     return report
 
 
-def write_report(path, report):
-    with TemporaryDirectory(dir=path.parent) as directory:
-        staged = Path(directory) / "report.json"
-        staged.write_bytes(canonical(report) + b"\n")
-        path.hardlink_to(staged)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("trust", type=Path)
@@ -688,7 +681,7 @@ def main():
             result = verify_retired(trust, args.wallet_trust, args.epoch, args.inspection_profiles, host_profiles,
                                     args.wait_seconds, replica_profile=args.replica_profile, requalification=requalification)
             if args.output is not None:
-                write_report(args.output, result)
+                publish_new_file(args.output, canonical(result) + b"\n")
                 return
         elif args.command == "draft":
             result = {"manifest": qualified_manifest(trust, args.wallet_trust, args.epoch, args.replacement,

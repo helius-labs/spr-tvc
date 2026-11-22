@@ -405,7 +405,9 @@ pinned history and excluded versions.
    Supply six read-only profiles in slot order to verify the installed wrapping
    policies and RSA key metadata before signing. STS checks that each profile
    resolves to its slot account and that the host profile resolves to the
-   approved host account. A rotation draft takes
+   approved host account. The signer checks the epoch, expiry and active
+   roster again after KMS signs and before publishing the approval file.
+   A rotation draft takes
    `--next-roster roster-next.json` and binds the successor relay from custody trust. Before authorizing a
    rotation, both signers verify the successor's build and keys with
    `--next-relay-build BUILD REVIEW` and `--next-inspection-profiles`.
@@ -651,6 +653,8 @@ policy, sends the recovery package and relay
 attestation to KMS, and passes the encrypted response to the relay. The relay
 checks the signatures, share commitment and authorization deadline, then
 returns an RSA-OAEP-SHA-256 ciphertext for the registered destination.
+The tool stages each wrapped share and publishes the complete file before
+the signed deadline.
 
 For custody acknowledgements and retirement recovery proofs, the relay attests
 the exact KMS envelope, its own public key, the slot and the share commitment.

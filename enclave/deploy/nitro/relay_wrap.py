@@ -7,7 +7,7 @@ from pathlib import Path
 from time import time
 
 from approval import (
-    KEY_ARN, add_approval, approval_roster, arn, canonical, check_approvals, epoch_number, read_json,
+    KEY_ARN, add_approval, approval_roster, arn, canonical, check_approvals, epoch_number, publish_new_file, read_json,
     require_profile_account, sha256,
 )
 from custody_ledger import load_epoch_with_time, require_active_epoch, verify_target_approval
@@ -123,9 +123,10 @@ def main():
         trust, approval = map(read_json, (args.trust, args.target))
         source = (trust, approval, args.build, args.slot, args.relay_port)
         if args.command == "wrap":
-            ciphertext = release(*source, read_json(args.authorization), review=args.review)
-            with args.output.open("xb") as file:
-                file.write(ciphertext)
+            authorization = read_json(args.authorization)
+            ciphertext = release(*source, authorization, review=args.review)
+            publish_new_file(args.output, ciphertext,
+                             before_publish=lambda: require_release_window(authorization["manifest"]["expiresAt"]))
         else:
             statement, keys, _, _, _ = prepare(*source, inspection_profile=args.inspection_profile)
             document = {"manifest": statement, "signatures": []}

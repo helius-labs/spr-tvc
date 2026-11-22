@@ -208,6 +208,31 @@ class TargetApprovalTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
             inspect.side_effect = None
+            active.side_effect = [None, None, ValueError("epoch retired while KMS was signing")]
+            with self.assertRaisesRegex(SystemExit, "retired while KMS was signing"):
+                main()
+            sign_target.assert_called_once()
+            self.assertFalse(output.exists())
+            active.side_effect = None
+            signed_at = self.manifest["expiresAt"] - 60
+
+            def late_signature(*_args):
+                nonlocal signed_at
+                signed_at = self.manifest["expiresAt"]
+                return self.approval
+
+            sign_target.side_effect = late_signature
+            with patch("deployment.time.time", side_effect=lambda: signed_at):
+                with self.assertRaisesRegex(SystemExit, "target approval has expired"):
+                    main()
+            self.assertFalse(output.exists())
+            sign_target.side_effect = None
+            with patch("deployment.require_publication_roster", side_effect=[None, ValueError("approval roster changed")]):
+                with self.assertRaisesRegex(SystemExit, "approval roster changed"):
+                    main()
+            self.assertFalse(output.exists())
+
+            sign_target.reset_mock()
             inspect.reset_mock()
             inspect_key.reset_mock()
             identity.reset_mock()

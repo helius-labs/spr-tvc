@@ -9,7 +9,7 @@ from pathlib import Path
 
 from approval import (
     KEY_ARN, ROLE_ARN, add_approval, approval_roster, arn, aws, canonical, fields, file_digest, hex_digest,
-    parse_json, read_document, read_json, require_inspection_profiles, require_profile_account, sha256,
+    parse_json, publish_new_file, read_document, read_json, require_inspection_profiles, require_profile_account, sha256,
 )
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_custody_roster, list_objects, load_epoch_with_time,
@@ -282,12 +282,15 @@ def main():
             require_profile_account(profile, region, account)
             sealed_rsa_key(key, policy, profile=profile)
         require_host_state(manifest, "running", args.host_inspection_profile)
-        require_active_epoch(trust, manifest["custodyEpoch"])
-        require_target_approval_window(manifest, time.time(), remaining=LEDGER_WRITE_MARGIN_SECONDS)
-        require_publication_roster(trust, manifest["approvalFromEpoch"])
+
+        def require_signing_window():
+            require_active_epoch(trust, manifest["custodyEpoch"])
+            require_target_approval_window(manifest, time.time(), remaining=LEDGER_WRITE_MARGIN_SECONDS)
+            require_publication_roster(trust, manifest["approvalFromEpoch"])
+
+        require_signing_window()
         approved = add_approval(keys, TARGET_APPROVAL, document, args.key)
-        with args.output.open("xb") as output:
-            output.write(canonical(approved) + b"\n")
+        publish_new_file(args.output, canonical(approved) + b"\n", before_publish=require_signing_window)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         raise SystemExit(str(error)) from None
 

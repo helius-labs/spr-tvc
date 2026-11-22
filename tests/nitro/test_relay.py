@@ -11,7 +11,7 @@ from approval import canonical, signing_sec1
 from kms_policy import RSA_OAEP
 from provenance import describe
 from relay import prove_share, recover_to_relay, verify_relay_build
-from relay_wrap import LABEL, prepare, release, sign_release
+from relay_wrap import LABEL, main as relay_wrap_main, prepare, release, sign_release
 from nitro_fixtures import DOMAIN, HOST, key, pin, sign
 
 SCOPE = {"hostRole": HOST, "pcrs": {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)}}
@@ -26,6 +26,38 @@ NEXT_KEYS = [pin(key(i, 9)) for i in (13, 14, 15)]
 
 
 class RelayTests(unittest.TestCase):
+    def test_wrap_publishes_only_a_complete_unexpired_file(self):
+        directory = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        trust, target, authorization, output = (directory / name for name in
+                                                ("trust.json", "target.json", "authorization.json", "share.kms"))
+        trust.write_bytes(canonical(TRUST))
+        target.write_bytes(b"{}")
+        authorization.write_bytes(canonical({"manifest": {"expiresAt": 20}}))
+        args = ["relay_wrap.py", str(trust), str(target), str(directory), "1", "--relay-port", "7443",
+                "wrap", str(authorization), str(output), "--review", str(directory / "review.json")]
+        ciphertext = b"x" * 256
+        write_bytes = pathlib.Path.write_bytes
+        with (patch("sys.argv", args), patch("relay_wrap.release", return_value=ciphertext),
+              patch("relay_wrap.time", return_value=19) as now):
+            def expire_while_staging(path, payload):
+                self.assertFalse(output.exists())
+                written = write_bytes(path, payload)
+                now.return_value = 20
+                return written
+
+            with patch.object(pathlib.Path, "write_bytes", expire_while_staging):
+                with self.assertRaisesRegex(SystemExit, "relay authorization has expired"):
+                    relay_wrap_main()
+            self.assertFalse(output.exists())
+            now.return_value = 19
+            relay_wrap_main()
+            self.assertEqual(output.read_bytes(), ciphertext)
+
+            output.write_bytes(b"prior release")
+            with self.assertRaisesRegex(SystemExit, "File exists"):
+                relay_wrap_main()
+            self.assertEqual(output.read_bytes(), b"prior release")
+
     @patch("provenance.verify_eif")
     @patch("provenance.subprocess.run")
     def test_relay_must_match_the_reviewed_build_and_ordered_epoch_roster(self, github, _eif):

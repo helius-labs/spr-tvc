@@ -12,7 +12,7 @@ from pathlib import Path
 
 from approval import (
     KEY_ARN, ROLE_ARN, MAX_DOCUMENT_BYTES, add_approval, approval_keys, approval_roster, arn, aws, canonical, check_approvals,
-    epoch_number, fields, file_digest, get_signing_key, hex_digest, kms, parse_json, read_document,
+    epoch_number, fields, file_digest, get_signing_key, hex_digest, kms, parse_json, publish_new_file, read_document,
     read_json, require_inspection_profiles, require_kms_key, require_profile_account, sha256, signing_key, signing_sec1,
 )
 from kms_policy import RSA_KEYS, acknowledgement_policy, boot_pins, target_boot_pins, validate_custodian_roles, validate_scope
@@ -1262,8 +1262,7 @@ def main():
                              args.inspection_profiles, args.relay_build)
                   if args.command == "sign"
                   else acknowledge(trust, document, args.share, args.relay_port, args.build, args.review))
-        with args.output.open("xb") as output:
-            output.write(canonical(signed) + b"\n")
+        publish_new_file(args.output, canonical(signed) + b"\n")
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         raise SystemExit(str(error)) from None
 

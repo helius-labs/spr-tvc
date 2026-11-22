@@ -55,6 +55,15 @@ def read_json(path):
     return parse_json(read_document(path))
 
 
+def publish_new_file(path, payload, *, before_publish=None):
+    with tempfile.TemporaryDirectory(dir=path.parent) as directory:
+        staged = Path(directory) / path.name
+        staged.write_bytes(payload)
+        if before_publish is not None:
+            before_publish()
+        path.hardlink_to(staged)
+
+
 def canonical(value):
     # Custody signatures and hashes use sorted keys and ASCII JSON escapes.
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode()
