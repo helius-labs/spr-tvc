@@ -337,6 +337,11 @@ An operator can restore the exact bytes of an independently recorded S3
 version when one head is damaged. Restoration requires the intact peer and
 checks every intervening version for a different authenticated policy.
 Wallet expiry and checkpoint checks still apply to the restored bytes.
+Mainnet payment publication and wallet pin verification inspect both
+publication buckets with read-only identities in the owning accounts.
+They require the generated policies, versioning, enforced bucket ownership
+and absence of lifecycle rules. Pin verification also requires both
+current policies to have original S3 version IDs.
 
 Shipped pins bind the minimum sequence to its exact policy digest. The
 immediate successor must name that digest as its predecessor. The checkpoint

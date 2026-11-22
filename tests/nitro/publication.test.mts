@@ -704,6 +704,94 @@ test("each wallet policy bucket separates control-plane administration from publ
   }
 });
 
+test("mainnet checks both installed publication buckets before enabling payments or shipping pins", async context => {
+  const activation: NitroPolicy = { ...first, network: "mainnet", action: "activate", targets: [target] };
+  const mainnet = { ...pins(activation), network: activation.network };
+  const text = signed(activation);
+  const [primary, mirror] = mainnet.publications;
+  let peer = text;
+  context.mock.method(globalThis, "fetch", async () => new Response(peer));
+  const inspected = new Set<string>();
+  let unsafe = "";
+  let probes = 0;
+  let writes = 0;
+  const options = {
+    custodyTrust: "custody.json",
+    publicationProfiles: ["primary-read", "mirror-read"],
+    async run(command: string, args: string[]) {
+      if (command === "python3") {
+        return { stdout: JSON.stringify({ custodyKeys: mainnet.custodyKeys, nextCutover: null }) };
+      }
+      assert.equal(command, "aws");
+      if (args.includes("put-object")) {
+        assert.ok(!args.includes("--profile"));
+        assert.equal(args[args.indexOf("--bucket") + 1], primary.bucket);
+        writes++;
+        return { stdout: "{}" };
+      }
+      assert.ok(probes > 0);
+      const bucket = args[args.indexOf("--bucket") + 1];
+      const pin = bucket === primary.bucket ? primary : mirror;
+      const correct = pin === primary ? "primary-read" : "mirror-read";
+      assert.equal(bucket, pin.bucket);
+      assert.equal(args[args.indexOf("--profile") + 1], correct);
+      assert.equal(args[args.indexOf("--expected-bucket-owner") + 1], pin.account);
+      inspected.add(bucket);
+      const hazard = pin === mirror ? unsafe : undefined;
+      if (args.includes("get-bucket-lifecycle-configuration")) {
+        assert.equal(args[args.indexOf("--cli-error-format") + 1], "json");
+        if (hazard === "lifecycle") return { stdout: '{"Rules":[{"Status":"Enabled"}]}' };
+        const Code = hazard === "permission" ? "AccessDenied" : "NoSuchLifecycleConfiguration";
+        throw Object.assign(new Error(Code), { stderr: JSON.stringify({ Code }) });
+      }
+      if (args.includes("get-bucket-versioning")) {
+        return { stdout: JSON.stringify({ Status: hazard === "versioning" ? "Suspended" : "Enabled" }) };
+      }
+      if (args.includes("get-bucket-ownership-controls")) {
+        const ObjectOwnership = hazard === "ownership" ? "ObjectWriter" : "BucketOwnerEnforced";
+        return { stdout: JSON.stringify({ OwnershipControls: { Rules: [{ ObjectOwnership }] } }) };
+      }
+      if (args.includes("head-object")) {
+        assert.equal(args[args.indexOf("--key") + 1], nitroPublication(mainnet, pin).key);
+        return { stdout: JSON.stringify({ VersionId: hazard === "version-id" ? "null" : `version-${pin.account}` }) };
+      }
+      assert.ok(args.includes("get-bucket-policy"));
+      const policy = bucketPolicy(mainnet, pin.bucket, `arn:aws:iam::${pin.account}:role/admin`, `arn:aws:iam::${pin.account}:role/publisher`);
+      if (hazard === "policy") policy.Statement.pop();
+      return { stdout: JSON.stringify({ Policy: JSON.stringify(policy) }) };
+    },
+    async probe() { probes++; return freshProbe(); },
+  };
+  const missingProfiles = { custodyTrust: options.custodyTrust, run: options.run, probe: options.probe };
+  await assert.rejects(publish(mainnet, primary.bucket, text, missingProfiles), /provide --publication-profile twice/);
+  await assert.rejects(verifyDistributionPins(mainnet, missingProfiles), /provide --publication-profile twice/);
+  assert.equal(probes, 0);
+  for (const [hazard, message] of [
+    ["lifecycle", /must have no lifecycle/], ["permission", /AccessDenied/], ["versioning", /requires versioning/],
+    ["ownership", /requires bucket-owner-enforced ownership/], ["policy", /differs from the generated bucket policy/],
+  ] as const) {
+    unsafe = hazard;
+    await assert.rejects(publish(mainnet, primary.bucket, text, options), message);
+    await assert.rejects(verifyDistributionPins(mainnet, options), message);
+  }
+  assert.equal(writes, 0);
+  assert.deepEqual(inspected, new Set([primary.bucket, mirror.bucket]));
+  unsafe = "version-id";
+  await assert.rejects(verifyDistributionPins(mainnet, options), /expected an original S3 policy version/);
+  unsafe = "";
+  await publish(mainnet, primary.bucket, text, options);
+  assert.equal((await verifyDistributionPins(mainnet, options)).sequence, "1");
+  assert.equal(writes, 1);
+
+  inspected.clear();
+  const recovery = { ...activation, recoveryOnly: true };
+  peer = signed(recovery);
+  const recoveryPins = { ...pins(recovery), network: recovery.network, recoveryOnly: true };
+  await publish(recoveryPins, primary.bucket, peer, missingProfiles);
+  assert.equal((await verifyDistributionPins(recoveryPins, missingProfiles)).recoveryOnly, true);
+  assert.equal(inspected.size, 0);
+});
+
 test("ships only the exact current policy agreed by the two pinned buckets", async context => {
   let current = { ...first, sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest };
   let peer = first;

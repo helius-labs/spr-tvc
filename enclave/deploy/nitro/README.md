@@ -676,9 +676,9 @@ Use two versioned S3 publication buckets in independently administered AWS
 accounts, separate from the private custody ledger. Give each bucket a publisher
 role and a separate administrator role in its own account. Keep all role
 assumption paths independent across the two accounts and separate from the host
-and ingress. The bucket policy bars publishers from changing its controls.
-Allow public reads of exactly the policy object. Disable lifecycle
-deletion and configure CORS for wallet origins to `GET` with
+and ingress. Install the generated bucket policies, enable
+`BucketOwnerEnforced` ownership and remove lifecycle rules. Allow public reads
+of exactly the policy object and configure CORS for wallet origins to `GET` with
 `x-amz-expected-bucket-owner`. The wallet reads both buckets directly.
 Pass absolute file paths to commands run with `pnpm --dir example`.
 
@@ -754,6 +754,15 @@ and `--check-wallet-trust` for a mainnet payment policy. The read-only profile
 must be in the custody replica owner's account. It checks versioning, ownership,
 public access blocks, lifecycle rules and the installed replication write policy.
 Use the same flag with a pinned devnet replica to rehearse these checks.
+Also pass `--publication-profile "$primary_read_profile" --publication-profile
+"$mirror_read_profile"` to mainnet payment publication and
+`--check-wallet-trust`. Each read-only profile belongs to its bucket owner's
+account and needs `s3:GetBucketPolicy`, `s3:GetBucketVersioning`,
+`s3:GetBucketOwnershipControls` and `s3:GetLifecycleConfiguration`.
+Wallet pin verification also needs `s3:GetObject` on the policy key to check
+the current version ID. These checks verify the installed policies and
+versioning so a damaged publication can be restored. Pass the same profiles
+on devnet to rehearse them.
 Recovery-only activation can proceed during a key or replica inspection outage
 while the required records remain readable.
 [Cross-account KMS permissions](https://docs.aws.amazon.com/kms/latest/developerguide/key-policy-modifying-external-accounts.html) · [S3 bucket policy permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketPolicy.html)
