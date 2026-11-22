@@ -73,7 +73,7 @@ def sign_release(trust, approval, statement, keys, authorization, key):
     return signed
 
 
-def release(trust, approval, build, index, port, authorization, *, review):
+def release(trust, approval, build, index, port, authorization, output, *, review):
     statement, keys, receipt, custodian, evidence = prepare(trust, approval, build, index, port)
     if authorization["manifest"] != statement:
         raise ValueError("relay release does not match the live boot and registered target")
@@ -96,8 +96,7 @@ def release(trust, approval, build, index, port, authorization, *, review):
     ciphertext = relay_request(port, "/rewrap", body, 512)
     if len(ciphertext) not in RSA_CIPHERTEXT_BYTES:
         raise ValueError("invalid relay destination ciphertext length")
-    still_authorized()
-    return ciphertext
+    publish_new_file(output, ciphertext, before_publish=still_authorized)
 
 
 def main():
@@ -123,10 +122,7 @@ def main():
         trust, approval = map(read_json, (args.trust, args.target))
         source = (trust, approval, args.build, args.slot, args.relay_port)
         if args.command == "wrap":
-            authorization = read_json(args.authorization)
-            ciphertext = release(*source, authorization, review=args.review)
-            publish_new_file(args.output, ciphertext,
-                             before_publish=lambda: require_release_window(authorization["manifest"]["expiresAt"]))
+            release(*source, read_json(args.authorization), args.output, review=args.review)
         else:
             statement, keys, _, _, _ = prepare(*source, inspection_profile=args.inspection_profile)
             document = {"manifest": statement, "signatures": []}

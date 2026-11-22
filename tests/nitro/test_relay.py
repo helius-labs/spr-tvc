@@ -26,30 +26,48 @@ NEXT_KEYS = [pin(key(i, 9)) for i in (13, 14, 15)]
 
 
 class RelayTests(unittest.TestCase):
-    def test_wrap_publishes_only_a_complete_unexpired_file(self):
+    def test_wrap_publishes_only_a_complete_authorized_file(self):
         directory = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
         trust, target, authorization, output = (directory / name for name in
                                                 ("trust.json", "target.json", "authorization.json", "share.kms"))
         trust.write_bytes(canonical(TRUST))
-        target.write_bytes(b"{}")
-        authorization.write_bytes(canonical({"manifest": {"expiresAt": 20}}))
+        target.write_bytes(canonical({"manifest": {}}))
+        statement = {"custodyEpoch": "1", "expiresAt": 20}
+        signatures = [sign(LABEL, statement, key["keyArn"]) for key in KEYS[:2]]
+        authorization.write_bytes(canonical({"manifest": statement, "signatures": signatures}))
         args = ["relay_wrap.py", str(trust), str(target), str(directory), "1", "--relay-port", "7443",
                 "wrap", str(authorization), str(output), "--review", str(directory / "review.json")]
         ciphertext = b"x" * 256
         write_bytes = pathlib.Path.write_bytes
-        with (patch("sys.argv", args), patch("relay_wrap.release", return_value=ciphertext),
+        with (patch("sys.argv", args),
+              patch("relay_wrap.prepare", return_value=(statement, KEYS, RECEIPT, CUSTODIAN, b"evidence")),
+              patch("relay_wrap.require_reviewed_target"), patch("relay_wrap.recover_to_relay", return_value=b"envelope"),
+              patch("relay_wrap.relay_request", return_value=ciphertext),
+              patch("relay_wrap.verify_target_approval") as approved, patch("relay_wrap.require_active_epoch") as active,
               patch("relay_wrap.time", return_value=19) as now):
-            def expire_while_staging(path, payload):
-                self.assertFalse(output.exists())
-                written = write_bytes(path, payload)
-                now.return_value = 20
-                return written
+            for check, result, message in (
+                (now, 20, "relay authorization has expired"),
+                (active, ValueError("custody epoch is retired"), "custody epoch is retired"),
+                (approved, ValueError("target approval roster changed"), "target approval roster changed"),
+            ):
+                def revoke_while_staging(path, payload):
+                    if path.name != output.name:
+                        return write_bytes(path, payload)
+                    self.assertFalse(output.exists())
+                    written = write_bytes(path, payload)
+                    if isinstance(result, ValueError):
+                        check.side_effect = result
+                    else:
+                        check.return_value = result
+                    return written
 
-            with patch.object(pathlib.Path, "write_bytes", expire_while_staging):
-                with self.assertRaisesRegex(SystemExit, "relay authorization has expired"):
-                    relay_wrap_main()
-            self.assertFalse(output.exists())
-            now.return_value = 19
+                with (self.subTest(message=message), patch.object(pathlib.Path, "write_bytes", revoke_while_staging)):
+                    with self.assertRaisesRegex(SystemExit, message):
+                        relay_wrap_main()
+                    self.assertFalse(output.exists())
+                check.side_effect = None
+                now.return_value = 19
+                output.unlink(missing_ok=True)
             relay_wrap_main()
             self.assertEqual(output.read_bytes(), ciphertext)
 
@@ -240,6 +258,7 @@ class RelayTests(unittest.TestCase):
         signatures = [sign(LABEL, statement, pin["keyArn"]) for pin in KEYS[:2]]
         approved = {"manifest": statement, "signatures": signatures}
         source = (TRUST, {"manifest": {}}, pathlib.Path("build"), 1, 7443)
+        output = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory())) / "share.kms"
         review = {"review": pathlib.Path("review.json")}
         for edited in [
             {**approved, "manifest": {**statement, "relayKeyId": "ef" * 32}},
@@ -247,11 +266,12 @@ class RelayTests(unittest.TestCase):
             {**approved, "signatures": [signatures[0], signatures[0]]},
         ]:
             with self.assertRaises(ValueError):
-                release(*source, edited, **review)
+                release(*source, edited, output, **review)
         recover.assert_not_called()
         request.assert_not_called()
         reviewed.assert_not_called()
-        self.assertEqual(release(*source, approved, **review), b"x" * 256)
+        release(*source, approved, output, **review)
+        self.assertEqual(output.read_bytes(), b"x" * 256)
         self.assertEqual(request.call_args.args[:2], (7443, "/rewrap"))
         payload = request.call_args.args[2]
         self.assertIn(b'"envelope":"656e76656c6f7065"', payload)
@@ -259,7 +279,7 @@ class RelayTests(unittest.TestCase):
         request.reset_mock()
         now.return_value = 20
         with self.assertRaisesRegex(ValueError, "relay authorization has expired"):
-            release(*source, approved, **review)
+            release(*source, approved, output, **review)
         request.assert_not_called()
 
     @patch("relay_wrap.time", return_value=10)
