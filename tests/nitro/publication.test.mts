@@ -27,7 +27,7 @@ const trust: NitroTrust = {
 };
 const now = Date.now();
 const first: NitroPolicy = {
-  version: 1, action: "revoke", network: trust.network, securityDomainId: trust.securityDomainId,
+  version: 1, action: "revoke", recoveryOnly: false, network: trust.network, securityDomainId: trust.securityDomainId,
   noteSeedCommitment: trust.noteSeedCommitment, sequence: "1", minimumCustodyEpoch: "1", previousPolicyDigest: null,
   validFromMs: String(now - 1000), expiresAtMs: String(now + 60_000), targets: [],
 };

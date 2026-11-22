@@ -11,7 +11,7 @@ function storageError() {
 }
 
 function validate(value: NitroPolicyCheckpoint): void {
-  if (decodeDecimalU64(value.sequence) === 0n || decodeDecimalU64(value.minimumCustodyEpoch) === 0n ||
+  if (typeof value.recoveryOnly !== "boolean" || decodeDecimalU64(value.sequence) === 0n || decodeDecimalU64(value.minimumCustodyEpoch) === 0n ||
       !requireHex(value.digest, 32).some(byte => byte !== 0)) throw storageError();
 }
 

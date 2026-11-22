@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { indexedDbNitroPolicyStore } from "../../src/attestation/nitro-checkpoint.js";
 
 const scope = { network: "devnet" as const, securityDomainId: "aa".repeat(32) };
-const first = { sequence: "1", minimumCustodyEpoch: "1", digest: "11".repeat(32) };
-const next = { sequence: "2", minimumCustodyEpoch: "2", digest: "22".repeat(32) };
+const first = { sequence: "1", minimumCustodyEpoch: "1", recoveryOnly: false, digest: "11".repeat(32) };
+const next = { sequence: "2", minimumCustodyEpoch: "2", recoveryOnly: true, digest: "22".repeat(32) };
 
 beforeEach(() => vi.stubGlobal("indexedDB", new IDBFactory()));
 afterEach(() => vi.unstubAllGlobals());
@@ -20,6 +20,7 @@ describe("browser Nitro checkpoints", () => {
     expect(await reopened.accept(first)).toBe(false);
     expect(await reopened.accept({ ...first, sequence: "3" })).toBe(false);
     expect(await reopened.accept(next)).toBe(true);
+    expect(await reopened.accept({ ...next, sequence: "3", recoveryOnly: false })).toBe(false);
     expect(await indexedDbNitroPolicyStore({ ...scope, network: "mainnet" }).current()).toBeUndefined();
     expect(await indexedDbNitroPolicyStore({ ...scope, securityDomainId: "bb".repeat(32) }).current()).toBeUndefined();
   });

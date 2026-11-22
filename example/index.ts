@@ -28,7 +28,6 @@ async function main(): Promise<void> {
     }
     await checkRecipient();
     const recipientAddress = await service.address(recipient.address);
-    await nitro?.beforeSend();
     keys = await localWalletKeys(sender, zolana.proofService);
     const send = sendAndConfirmFactory(zolana, sender);
 
@@ -50,9 +49,10 @@ async function main(): Promise<void> {
       recipient: recipientAddress,
       amount: AMOUNT,
     });
+    await nitro?.beforeSend();
     const transferTx = await send(transfer);
-    if (nitro) console.log(`transfer recipient=${recipient.address} tx=${transferTx.signature} awaiting the replacement custody epoch`);
-    const reader = nitro ? await nitro.afterTransfer(recipient.address) : service;
+    if (nitro) console.log(`transfer recipient=${recipient.address} tx=${transferTx.signature} awaiting ${nitro.seedChanged ? "the seed cutover" : "the replacement custody epoch"}`);
+    const reader = nitro ? await nitro.afterTransfer(recipientAddress) : service;
     serviceKeys = await reader.open(recipient, zolana.proofService);
 
     // The recipient signs, the service decrypts, the SDK keeps what matches its commitment.

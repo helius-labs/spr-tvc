@@ -44,12 +44,15 @@ and two custody signatures over the exact policy. A revocation needs only the
 release quorum. The SDK reads both policy heads. In browsers, it stores the
 checkpoint in IndexedDB. Other runtimes supply an atomic durable `policyStore`
 scoped to the network and domain. Its `accept` method persists the next
-checkpoint before succeeding. Apply `advancesNitroPolicy` against the stored
-checkpoint inside the transaction. `current` reads the last committed
+checkpoint, including its `recoveryOnly` flag, before succeeding. Apply
+`advancesNitroPolicy` against the stored checkpoint inside the transaction. `current` reads the last committed
 checkpoint. The SDK checks it before sending an operation, after a wallet
 approval returns, and before opening the reply.
-A signed activation advances the checkpoint after a replica attests. A signed
-revocation advances it immediately and returns `ReleasePolicyRevoked`.
+A normal activation advances the checkpoint after a replica attests. Revocation
+and recovery-only policies advance it as soon as they verify. A recovery-only
+client refuses `address()` with `ReleasePolicyRecoveryOnly` and supports
+owner-signed `open()`. Use new domain pins for sending and retain separate
+recovery pins with `recoveryOnly: true` for old notes.
 
 The same `address` and `open` APIs work with the attested client. Nitro allows
 12 seconds for an operation's HTTP response within the caller's overall

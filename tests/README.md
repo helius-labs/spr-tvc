@@ -36,7 +36,20 @@ accepted. It then opens the recipient, verifies the transfer amount, and
 sweeps the note to the recipient's own privacy keys. It checks that the
 recipient remains unregistered and holds no public SOL throughout the run.
 
-### Synthetic recovery drill
+## Live seed cutover
+
+Prepare two devnet seed domains with separately initialized seeds and approved
+wallet trust files. Start with the old domain serving an ordinary activation.
+Run the command above with `NITRO_REPLACEMENT_TRUST="$new_wallet_trust"` in
+place of `NITRO_REPLACEMENT_EPOCH`. Use a fresh checkpoint file. After the
+transfer confirms, publish the recovery-only successor to both old-domain
+buckets and activate the new domain. Keep the old recovery replicas running.
+The example waits for both policy pairs to agree. It checks that old payment
+lookup fails and the new domain returns different viewing and nullifier keys
+for the same recipient. It then opens the old note and sweeps it to the
+recipient's wallet-local keys.
+
+## Synthetic recovery drill
 
 Use two test EIFs commissioned according to the [native runbook](../enclave/deploy/nitro/README.md).
 In a scratch directory write `a-pin.json` and `b-pin.json` with each release ID,

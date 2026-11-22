@@ -251,9 +251,24 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    Capture the results before AWS deletes the metadata. Repeat the cold boot
    and canary after retirement. Retain the old signed receipt and public
    trust pins. [AWS key deletion](https://docs.aws.amazon.com/kms/latest/APIReference/API_ScheduleKeyDeletion.html) · [AWS cancellation behavior](https://docs.aws.amazon.com/kms/latest/APIReference/API_CancelKeyDeletion.html)
-5. A leaked threshold of old shares still exposes the underlying seed.
-   Refreshing shares controls future access. A seed compromise requires
-   owner-authorized migration to a new seed domain.
+## Replace a compromised seed
+
+1. Freeze new sends that resolve through the old service. Initialize a fresh
+   domain with a newly generated seed and an independent release namespace.
+   Commission its serving slots and publish an activation with
+   `recoveryOnly: false`. Verify both buckets and the serving replicas before
+   distributing the new send pins.
+2. Publish `recoveryOnly: true` in the next old-domain policy. If recovery
+   replicas are offline, publish a target-free revocation with the flag set.
+   Publish a recovery-only activation once the old replicas are ready. Preserve
+   `recoveryOnly: true` in all later old-domain policies. Pin the flag and the
+   cutover sequence when distributing old-domain recovery trust to wallets.
+3. Keep the old domain available for owner-signed recovery. Open it with the
+   recovery pins, scan the owner's outputs, verify commitments, and sweep to
+   wallet-local notes. Switch new sends to the new domain. Rehearse both paths
+   using [the on-chain devnet procedure](../../../tests/README.md#live-seed-cutover).
+   Retain the old recovery capability until affected owners have a recovery
+   path. Treat previously exposed note data as compromised.
 
 ## Publish wallet policy
 
@@ -269,7 +284,7 @@ Pass absolute file paths to commands run with `pnpm --dir example`.
 
 The canonical envelope starts with `{"custodySignatures":[],"policy":...,"signatures":[]}`. Its policy
 fields are `version`, `action`, `network`, `securityDomainId`, `noteSeedCommitment`,
-`minimumCustodyEpoch`, `sequence`, `previousPolicyDigest`, `validFromMs`, `expiresAtMs` and `targets`.
+`minimumCustodyEpoch`, `sequence`, `previousPolicyDigest`, `validFromMs`, `expiresAtMs`, `recoveryOnly` and `targets`.
 Sequence 1 has `previousPolicyDigest: null`. Each later sequence signs the
 digest of the current published policy. Use the domain-separated policy
 digest specified in [the Nitro security spec](../../NITRO.md#proposal-and-publication).
@@ -290,9 +305,11 @@ release `keys` and `threshold`, the three `custodyKeys`, and `publications` with
 two `{bucket, region, account}` entries in `wallet-trust.json`. The key lists
 must be disjoint and use uncompressed SEC1 hex. Export that format with
 `python3 "$nitro/approval.py" "$key_arn" --sec1`. List the primary bucket first.
-Times, sequence and epochs are canonical decimal strings. The wallet stores the sequence,
-policy digest and custody floor atomically. `activate` requires a verified
-replica before the wallet advances the checkpoint. An emergency `revoke`
+Times, sequence and epochs are canonical decimal strings. The wallet stores the
+sequence, policy digest, custody floor and recovery mode atomically. Normal
+activation requires a verified replica before the wallet advances the
+checkpoint. A recovery-only policy advances the checkpoint when the signatures
+verify, before any replica attests. An emergency `revoke`
 requires an empty target list and advances the checkpoint as soon as the wallet
 verifies both signed heads. Each publisher checks the predecessor, verifies
 that every activation target attests, and writes against its observed ETag.

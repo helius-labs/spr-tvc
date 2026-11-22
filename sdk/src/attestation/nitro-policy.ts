@@ -21,6 +21,7 @@ export type NitroTarget = {
 export type NitroPolicy = {
   readonly version: 1;
   readonly action: "activate" | "revoke";
+  readonly recoveryOnly: boolean;
   readonly network: Network;
   readonly securityDomainId: string;
   readonly noteSeedCommitment: string;
@@ -40,6 +41,8 @@ export type NitroTrust = {
   readonly noteSeedCommitment: string;
   readonly minimumCustodyEpoch: string;
   readonly minimumSequence: string;
+  /** Pin recovery mode when distributing the old domain after a cutover. */
+  readonly recoveryOnly?: boolean;
   readonly publications: readonly [primary: Publication, mirror: Publication];
   readonly threshold: number;
   /** Uncompressed SEC1 P-256 public keys pinned by the wallet integrator. */
@@ -52,12 +55,13 @@ export type NitroPolicyCheckpoint = {
   readonly sequence: string;
   readonly digest: string;
   readonly minimumCustodyEpoch: string;
+  readonly recoveryOnly: boolean;
 };
 
 /**
  * An atomic durable compare-and-set per pinned network and security domain.
  * Accept a higher sequence or the identical checkpoint. The custody floor
- * may only increase. Refuse writes which cannot persist.
+ * may only increase and recovery-only mode is permanent. Refuse writes which cannot persist.
  */
 export type NitroPolicyStore = {
   current(): Promise<NitroPolicyCheckpoint | undefined>;
@@ -72,7 +76,7 @@ const POLICY_ENVELOPE_KEYS = ["policy", "signatures", "custodySignatures"];
 const MAX_LIFETIME_MS = 7n * 24n * 60n * 60n * 1000n;
 const POLICY_KEYS = [
   "version", "action", "network", "securityDomainId", "noteSeedCommitment", "sequence",
-  "validFromMs", "expiresAtMs", "minimumCustodyEpoch", "previousPolicyDigest", "targets",
+  "validFromMs", "expiresAtMs", "minimumCustodyEpoch", "previousPolicyDigest", "targets", "recoveryOnly",
 ];
 const TARGET_KEYS = ["endpoint", "releaseId", "executableSha256", "custodyEpoch", "custodyDigest", "pcrs"];
 const te = new TextEncoder();
@@ -120,6 +124,7 @@ export function nitroCustodySigningDigest(policy: NitroPolicy): Uint8Array {
 
 export function validateNitroTrust(trust: NitroTrust): void {
   if (trust.network !== "devnet" && trust.network !== "mainnet") invalid();
+  if (trust.recoveryOnly !== undefined && typeof trust.recoveryOnly !== "boolean") invalid();
   checkDigest(trust.securityDomainId, 32);
   checkDigest(trust.noteSeedCommitment, 32);
   if (!Array.isArray(trust.publications) || trust.publications.length !== 2) invalid();
@@ -164,7 +169,7 @@ function verifySignedPolicy(text: string, trust: NitroTrust) {
   assertExactObjectKeys(policy, POLICY_KEYS, "ReleasePolicyInvalid");
   if (policy.version !== 1 || policy.network !== trust.network ||
       policy.securityDomainId !== trust.securityDomainId ||
-      policy.noteSeedCommitment !== trust.noteSeedCommitment) invalid();
+      policy.noteSeedCommitment !== trust.noteSeedCommitment || typeof policy.recoveryOnly !== "boolean") invalid();
   const sequence = decodeDecimalU64(policy.sequence);
   const floor = decodeDecimalU64(policy.minimumCustodyEpoch);
   const validFrom = decodeDecimalU64(policy.validFromMs);
@@ -202,7 +207,10 @@ function verifySignedPolicy(text: string, trust: NitroTrust) {
   } else if (!Array.isArray(custodySignatures) || custodySignatures.length !== 0) invalid();
   return {
     policy, validFrom, expiresAt,
-    checkpoint: { sequence: policy.sequence, digest: encodeLowerHex(digest), minimumCustodyEpoch: policy.minimumCustodyEpoch },
+    checkpoint: {
+      sequence: policy.sequence, digest: encodeLowerHex(digest),
+      minimumCustodyEpoch: policy.minimumCustodyEpoch, recoveryOnly: policy.recoveryOnly,
+    },
   };
 }
 
@@ -211,7 +219,7 @@ type VerifiedPolicy = ReturnType<typeof verifySignedPolicy>;
 function requireCurrent({ policy, validFrom, expiresAt }: VerifiedPolicy, trust: NitroTrust, now: bigint): void {
   if (decodeDecimalU64(policy.sequence) < decodeDecimalU64(trust.minimumSequence) ||
       decodeDecimalU64(policy.minimumCustodyEpoch) < decodeDecimalU64(trust.minimumCustodyEpoch) ||
-      now < validFrom || now >= expiresAt) invalid();
+      (trust.recoveryOnly && !policy.recoveryOnly) || now < validFrom || now >= expiresAt) invalid();
 }
 
 export function verifyNitroPolicy(text: string, trust: NitroTrust, now: bigint): VerifiedPolicy {
@@ -268,10 +276,13 @@ export function requireRetirementPolicy(
 
 /** Returns true for a new policy or a repeat of the exact same policy. */
 export function advancesNitroPolicy(current: NitroPolicyCheckpoint | undefined, next: NitroPolicyCheckpoint): boolean {
+  if (typeof next.recoveryOnly !== "boolean") return false;
   if (!current) return true;
+  if (typeof current.recoveryOnly !== "boolean" || (current.recoveryOnly && !next.recoveryOnly)) return false;
   const nextSequence = decodeDecimalU64(next.sequence);
   const currentSequence = decodeDecimalU64(current.sequence);
   return decodeDecimalU64(next.minimumCustodyEpoch) >= decodeDecimalU64(current.minimumCustodyEpoch) &&
     (nextSequence > currentSequence || (nextSequence === currentSequence &&
-      next.digest === current.digest && next.minimumCustodyEpoch === current.minimumCustodyEpoch));
+      next.digest === current.digest && next.minimumCustodyEpoch === current.minimumCustodyEpoch &&
+      next.recoveryOnly === current.recoveryOnly));
 }

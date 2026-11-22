@@ -404,7 +404,7 @@ class CustodyLedgerTests(unittest.TestCase):
         registered = self.replacement_target(expiresAt=self.now + 60)
         replica = {**target_attestation(registered), "custodyEpoch": "2",
                    "executableSha256": registered["executableSha256"], "custodyDigest": sha256(replacement["custody"])}
-        policy = {"action": "activate", "network": "devnet", "securityDomainId": DOMAIN,
+        policy = {"action": "activate", "recoveryOnly": False, "network": "devnet", "securityDomainId": DOMAIN,
                   "noteSeedCommitment": replacement["custody"]["noteSeedCommitment"], "minimumCustodyEpoch": "2",
                   "targets": [replica]}
 
@@ -427,7 +427,9 @@ class CustodyLedgerTests(unittest.TestCase):
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, registered))
         key_pin = approval_roster(self.trust)["keys"][0]
         signer = (key_pin["keyArn"], base64.b64decode(key_pin["publicKey"])[-65:].hex())
-        check(custody_signer=signer)
+        check(custody_signer=signer, recoveryOnly=True)
+        with self.assertRaisesRegex(ValueError, "expected a recoveryOnly boolean"):
+            check(recoveryOnly="true")
         with self.assertRaisesRegex(ValueError, "active custody approval roster"):
             check(custody_signer=(signer[0], "04" + "00" * 64))
         # The wrap deadline can pass after a valid registration.

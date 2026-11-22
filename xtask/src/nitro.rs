@@ -69,6 +69,10 @@ fn digest(policy: &serde_json::Value, custody: bool) -> Result<[u8; 32]> {
 }
 
 fn validate_action(policy: &serde_json::Value) -> Result<()> {
+    ensure!(
+        policy["recoveryOnly"].is_boolean(),
+        "expected a recoveryOnly boolean"
+    );
     let targets = policy["targets"]
         .as_array()
         .context("expected a release target list")?;

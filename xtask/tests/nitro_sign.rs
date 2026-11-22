@@ -6,11 +6,13 @@ use super::*;
 fn signing_distinguishes_activation_and_explicit_revocation() {
     use serde_json::json;
 
-    assert!(validate_action(&json!({"action":"activate","targets":[{}]})).is_ok());
-    assert!(validate_action(&json!({"action":"revoke","targets":[]})).is_ok());
+    assert!(
+        validate_action(&json!({"action":"activate","recoveryOnly":false,"targets":[{}]})).is_ok()
+    );
+    assert!(validate_action(&json!({"action":"revoke","recoveryOnly":true,"targets":[]})).is_ok());
     for policy in [
-        json!({"action":"activate","targets":[]}),
-        json!({"action":"revoke","targets":[{}]}),
+        json!({"action":"activate","recoveryOnly":false,"targets":[]}),
+        json!({"action":"revoke","recoveryOnly":true,"targets":[{}]}),
         json!({"targets":[]}),
     ] {
         assert!(validate_action(&policy).is_err());
@@ -20,7 +22,7 @@ fn signing_distinguishes_activation_and_explicit_revocation() {
 #[test]
 fn refuses_to_sign_an_activation_without_pinned_custody_trust() {
     let mut file = tempfile::NamedTempFile::new().unwrap();
-    file.write_all(br#"{"custodySignatures":[],"policy":{"action":"activate","targets":[{}]},"signatures":[]}"#)
+    file.write_all(br#"{"custodySignatures":[],"policy":{"action":"activate","recoveryOnly":false,"targets":[{}]},"signatures":[]}"#)
         .unwrap();
     let signer = SigningKey::from_bytes(&[1; 32].into()).unwrap();
     let error = sign(Args {

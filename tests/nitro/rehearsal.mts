@@ -57,7 +57,7 @@ const start = Date.now() - 30_000;
 const heads: [string, string] = ["", ""];
 function signPolicy(sequence: string, replicas: readonly NitroTarget[], minimumCustodyEpoch: string, previous?: string): string {
   const policy: NitroPolicy = {
-    version: 1, action: "activate", network: trust.network, securityDomainId: domain, noteSeedCommitment: seed,
+    version: 1, action: "activate", recoveryOnly: false, network: trust.network, securityDomainId: domain, noteSeedCommitment: seed,
     validFromMs: String(start), expiresAtMs: String(start + 15 * 60_000),
     sequence, targets: replicas, minimumCustodyEpoch,
     previousPolicyDigest: previous === undefined ? null : encodeLowerHex(nitroPolicySigningDigest(JSON.parse(previous).policy)),

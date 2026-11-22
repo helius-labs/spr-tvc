@@ -64,10 +64,12 @@ export function decryptionServiceFromSession(
   async function call<T extends ServiceCall>(
     operation: T,
     signal: AbortSignal,
+    forPayment = false,
   ): Promise<ServiceCallResult<T>> {
     let retry = retryPublicKeys && operation.type === "PublicKeys";
     for (;;) {
       const context = await session.context(signal);
+      if (forPayment && context.recoveryOnly) throw new DecryptionServiceError("ReleasePolicyRecoveryOnly");
       try {
         return await executeServiceCall(context, operation, signal);
       } catch (error) {
@@ -84,8 +86,8 @@ export function decryptionServiceFromSession(
     }
   }
 
-  async function address(owner: Address, signal: AbortSignal): Promise<ShieldedAddress> {
-    const keys = await call({ type: "PublicKeys", address: owner }, signal);
+  async function address(owner: Address, signal: AbortSignal, forPayment: boolean): Promise<ShieldedAddress> {
+    const keys = await call({ type: "PublicKeys", address: owner }, signal, forPayment);
     return ShieldedAddress.fromPublicKeys(
       ShieldedPublicKey.fromEd25519(new Uint8Array(addressEncoder.encode(owner)) as Bytes32),
       requireHex(keys.nullifier_public_key, 32) as Bytes32,
@@ -105,12 +107,12 @@ export function decryptionServiceFromSession(
 
   return {
     address(owner, options) {
-      return withinRequest(options, (signal) => address(owner, signal));
+      return withinRequest(options, (signal) => address(owner, signal, true));
     },
     open(owner, proofs, options) {
       return withinRequest(options, async (signal) => {
         const signer = { address: owner.address, signMessages: owner.signMessages.bind(owner) };
-        const shielded = await address(signer.address, signal);
+        const shielded = await address(signer.address, signal, false);
         const bootstrap = await decrypt(signer, [], signal);
         const nullifierSecret = requireHex(bootstrap.nullifier_secret, 31) as Bytes31;
         try {

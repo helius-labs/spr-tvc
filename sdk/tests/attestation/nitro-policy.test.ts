@@ -27,7 +27,7 @@ const trust: NitroTrust = {
 };
 const binding: NitroPolicy = {
   version: 1,
-  action: "activate",
+  action: "activate", recoveryOnly: false,
   network: trust.network,
   securityDomainId: trust.securityDomainId,
   noteSeedCommitment: trust.noteSeedCommitment,
@@ -73,7 +73,7 @@ describe("native Nitro release policy", () => {
     const verified = verifyNitroPolicy(manifest(binding, 0, 2), trust, now);
     expect(verified.policy).toEqual(binding);
     expect(verified.checkpoint).toEqual({
-      sequence: "9", minimumCustodyEpoch: "1", digest: encodeLowerHex(nitroPolicySigningDigest(binding)),
+      sequence: "9", minimumCustodyEpoch: "1", recoveryOnly: false, digest: encodeLowerHex(nitroPolicySigningDigest(binding)),
     });
     expect(verifyNitroPolicy(manifest(binding, 2, 0), trust, now).checkpoint).toEqual(verified.checkpoint);
   });
@@ -112,6 +112,23 @@ describe("native Nitro release policy", () => {
       { ...binding, sequence: "09" },
       { ...binding, version: 2 },
     ] as const) expect(() => verifyNitroPolicy(manifest(policy as NitroPolicy, 0, 1), trust, now)).toThrow();
+  });
+
+  it("preserves recovery-only mode through later releases and emergency revocation", () => {
+    const recover = { ...binding, recoveryOnly: true };
+    const current = manifest(recover, 0, 1);
+    const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(recover));
+    const next = { ...recover, sequence: "10", previousPolicyDigest };
+    expect(nextNitroPublication(manifest(next, 0, 1), current, trust, now)).toBe(true);
+    for (const successor of [next, { ...next, action: "revoke", targets: [] } as const]) {
+      expect(nextNitroPublication(manifest(successor, 0, 1), current, trust, now)).toBe(true);
+      const reopened = manifest({ ...successor, recoveryOnly: false }, 0, 1);
+      expect(() => nextNitroPublication(reopened, current, trust, now)).toThrow();
+      expect(() => verifyPublishedNitroPolicy([reopened, current], trust, now)).toThrow();
+    }
+    expect(() => verifyNitroPolicy(manifest(binding, 0, 1), { ...trust, recoveryOnly: true }, now)).toThrow();
+    expect(() => verifyNitroPolicy(manifest({ ...binding, recoveryOnly: undefined } as unknown as NitroPolicy, 0, 1), trust, now)).toThrow();
+    expect(verifyNitroPolicy(current, { ...trust, recoveryOnly: true }, now).checkpoint.recoveryOnly).toBe(true);
   });
 
   it("checks the inclusive start, exclusive expiration and maximum policy lifetime", () => {

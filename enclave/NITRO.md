@@ -13,7 +13,7 @@ SPR senders can encrypt an output for a wallet that has no registry entry. The s
 | EC2 parent and ingress | Can choose when and where to forward requests, and can deny service. See note ciphertexts, wrapped shares, TLS metadata, timings and sizes. Never receive note plaintext or a private key via the protocol. |
 | AWS Nitro, KMS and S3 | Nitro isolates enclave memory and signs evidence. KMS enforces key policies. S3 serializes conditional ledger writes. The bucket policies separate object publishers from bucket administration. Account root and the separate bucket administrator remain trusted. |
 | Policy publishers | Each controls one pinned S3 bucket in a separate AWS account. They publish the same signed release policy independently. Either can interrupt service. Once both publish a policy, replay by one publisher cannot make a wallet use an earlier policy. |
-| Wallet integration | Distributes both publication pins, network, security domain, note seed commitment, release threshold, minimum release sequence, minimum custody epoch, and separate release and custody signer pins. Stores the highest accepted sequence, policy digest and custody floor in durable atomic state. |
+| Wallet integration | Distributes both publication pins, network, security domain, note seed commitment, release threshold, minimum release sequence, minimum custody epoch, and separate release and custody signer pins. Stores the highest accepted sequence, policy digest, custody floor and recovery mode in durable atomic state. |
 
 Commissioning requires two approvals of the exact target and three custodian shares. Wallets separately require a signed release policy and fresh attestation. A malicious enclave with three shares can disclose the seed even if wallets refuse to connect. Review the source and the measured artifact before approving share release. Account administration and role assumption must preserve the independence of custodians and approval signers.
 
@@ -151,11 +151,31 @@ list is empty for revocation. During a signer rotation, both rosters for the
 rotating authority can sign the same policy. Publish it to both buckets before
 distributing the incoming pins.
 
+## Seed compromise and recovery
+
+A share rotation preserves the note seed. Exposure of three shares from one
+epoch can expose past and future notes in that seed domain. Bring up a new
+domain with a freshly generated seed and independently distributed wallet pins.
+Use it for new destinations. Publish `recoveryOnly: true` on the old domain.
+Wallets persist that restriction once the signed policy verifies, even if no old
+replica attests. Later policies, including emergency revocations, must retain
+it. A fresh or restored wallet pins `recoveryOnly: true` and the minimum
+cutover sequence for the old domain.
+
+The old client rejects `address()` and still supports the owner's signed
+`open()` flow against an attested replica. Owners scan old notes and sweep to
+wallet-local privacy keys under their own signatures. Stopping destination
+lookup protects supported wallets after they observe the cutover. A cached
+wallet session can take up to 60 seconds to refresh. A permissionless sender
+can still pay a previously published destination. Earlier ciphertexts retain
+their exposure, and owners must retain access to the old domain until recovery
+is complete. [Cutover runbook](deploy/nitro/README.md#replace-a-compromised-seed)
+
 ## Wallet connection and operations
 
 1. Fetch both policies with a five-second deadline and a 32 KiB limit per response. Require the release quorum on each head and the separate custody quorum on every activation. Check the network, domain, seed commitment and allowed lifetime. Compare the primary's checkpoint with the wallet's durable checkpoint before contacting any replica. An `activate` policy lists eligible replicas. A `revoke` policy has an empty target list and commits its sequence, digest and custody floor immediately, returning `ReleasePolicyRevoked`.
 2. POST a random 32-byte nonce to one authorized target's `/v1/nitro/attestation`. The reply includes discovery and the AWS-signed COSE evidence for that same boot. The document signs the nonce, the SHA-256 of `SPR/native-nitro/discovery/v1` followed by canonical discovery, and the replica's response-signing public pair.
-3. Verify the exact pinned AWS root, the current certificate path and usages, the ES384 COSE signature, the signed timestamp and nonce, PCR0–PCR3 and the discovery bindings. Verify both public pairs before use. Compute the discovery release digest as SHA-256 of `SPR/native-nitro/release/v1` followed by the 32-byte executable hash, seed commitment and custody digest. The custody digest is SHA-256 of the RFC 8785 canonical `custody` object from the committed receipt. The signed target binds both that record and its epoch. After a replica passes verification, atomically persist the new sequence, digest and floor before using it. Raising the floor retires earlier epochs for that wallet. A later policy can authorize a previous build at or above that floor. New installs use independently pinned minimum values. The SDK uses one verified target for up to 60 seconds. The signed policy and every attestation certificate must remain valid through the checkpoint write and while the SDK uses that target.
+3. Verify the exact pinned AWS root, the current certificate path and usages, the ES384 COSE signature, the signed timestamp and nonce, PCR0–PCR3 and the discovery bindings. Verify both public pairs before use. Compute the discovery release digest as SHA-256 of `SPR/native-nitro/release/v1` followed by the 32-byte executable hash, seed commitment and custody digest. The custody digest is SHA-256 of the RFC 8785 canonical `custody` object from the committed receipt. The signed target binds both that record and its epoch. Before using a normal activation, verify a replica and atomically persist the sequence, digest, floor and recovery mode. Recovery-only mode is committed as soon as the signed policy verifies. Raising the floor retires earlier epochs for that wallet. A later policy can authorize a previous build at or above that floor. New installs use independently pinned minimum values. The SDK uses one verified target for up to 60 seconds. The signed policy and every attestation certificate must remain valid through the checkpoint write and while the SDK uses that target.
 4. Encrypt the request to that boot's P-256 transport key. A decrypt approval binds the signer, network, release, boot transport key ID, ordered outputs, request ID and the ephemeral client response key. The enclave verifies the approval before deriving or opening note keys. Its signed response binds the operation, request digest and encrypted result. Before opening the reply, the SDK verifies the replica signature and rechecks the persisted checkpoint and session deadline. It checks recovered notes against their indexed commitments.
 
 The SDK gives each operation's HTTP exchange 12 seconds within the caller's

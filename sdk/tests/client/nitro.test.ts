@@ -1,7 +1,8 @@
 import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha256";
 import { address, signatureBytes, type MessagePartialSigner } from "@solana/kit";
-import { ViewingKey, type ProofService } from "@heliuslabs/spr";
+import { NullifierKey, ViewingKey, initializePoseidon, type ProofService } from "@heliuslabs/spr";
+import type { Bytes16, Bytes31 } from "@heliuslabs/spr/keypair";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { verifyNativeNitroEvidence } from "../../src/attestation/boot-proof.js";
@@ -11,7 +12,7 @@ import { createNitroDecryptionService } from "../../src/client/nitro.js";
 import { signP256Message, signP256Prehash } from "../../src/crypto/p256.js";
 import { qosDecrypt, qosEncrypt } from "../../src/crypto/qos.js";
 import { TVC_APP_PROOF_SCHEME } from "../../src/protocol/constants.js";
-import { SERVICE_PROOF_TYPE, serviceRequestDigest, type ServiceRequest } from "../../src/protocol/decryption.js";
+import { SERVICE_PROOF_TYPE, serviceRequestDigest, type ServiceRequest, type ServiceResult } from "../../src/protocol/decryption.js";
 import { resultDigest } from "../../src/protocol/digest.js";
 import { encodeLowerHex, requireHex } from "../../src/protocol/hex.js";
 import { canonicalizeJsonValue } from "../../src/protocol/jcs.js";
@@ -35,7 +36,7 @@ function signedPolicy(overrides: Partial<NitroPolicy> = {}) {
   const now = Date.now();
   const policy: NitroPolicy = {
     network: trust.network, securityDomainId: trust.securityDomainId, noteSeedCommitment: trust.noteSeedCommitment,
-    version: 1, action: "activate", sequence: "2", minimumCustodyEpoch: "1",
+    version: 1, action: "activate", recoveryOnly: false, sequence: "2", minimumCustodyEpoch: "1",
     previousPolicyDigest: "88".repeat(32),
     validFromMs: String(now - 1000), expiresAtMs: String(now + 100_000),
     targets: [{
@@ -103,20 +104,28 @@ function checkpointStore() {
   };
 }
 
-function lookupReply(init: RequestInit, boot: readonly Uint8Array[]) {
+function openRequest(init: RequestInit, boot: readonly Uint8Array[]): ServiceRequest {
   const { ciphertext } = JSON.parse(String(init.body)) as { ciphertext: string };
-  const request = JSON.parse(new TextDecoder().decode(qosDecrypt(boot[0]!, requireHex(ciphertext)))) as ServiceRequest;
+  return JSON.parse(new TextDecoder().decode(qosDecrypt(boot[0]!, requireHex(ciphertext)))) as ServiceRequest;
+}
+
+function lookupReply(init: RequestInit, boot: readonly Uint8Array[]) {
+  const request = openRequest(init, boot);
   expect(request.operation).toEqual({ type: "PublicKeys", address: signer.address });
   const viewing = ViewingKey.generate();
-  const result = canonicalizeJsonValue({ type: "PublicKeys", viewing_public_key: encodeLowerHex(viewing.publicKey().toBytes()),
-    nullifier_public_key: "01".repeat(32) });
-  viewing.destroy();
+  try {
+    return signedReply(request, boot, { type: "PublicKeys", viewing_public_key: encodeLowerHex(viewing.publicKey().toBytes()),
+      nullifier_public_key: "01".repeat(32) });
+  } finally { viewing.destroy(); }
+}
+
+function signedReply(request: ServiceRequest, boot: readonly Uint8Array[], result: ServiceResult) {
   const text = new TextEncoder();
-  const reply = qosEncrypt(requireHex(request.client_response_public_key), text.encode(result));
+  const reply = qosEncrypt(requireHex(request.client_response_public_key), text.encode(canonicalizeJsonValue(result)));
   const proof = canonicalizeJsonValue({
     type: SERVICE_PROOF_TYPE, version: 1, request_id: request.request_id,
     request_digest: encodeLowerHex(serviceRequestDigest(request)), result_digest: encodeLowerHex(resultDigest(reply)),
-    operation: "ServicePublicKeys",
+    operation: result.type === "PublicKeys" ? "ServicePublicKeys" : "ServiceDecrypt",
   });
   return Response.json({ version: 1, request_id: request.request_id, encrypted_result: encodeLowerHex(reply), tvc_app_proof: {
     scheme: TVC_APP_PROOF_SCHEME, public_key: publicPair(boot), proof_payload: proof,
@@ -131,6 +140,59 @@ afterEach(() => {
 });
 
 describe("native client trust gate", () => {
+  it("refuses payment addresses while the owner can still open and decrypt a recovery note", async () => {
+    await initializePoseidon();
+    const policy = signedPolicy({ recoveryOnly: true });
+    const viewing = ViewingKey.generate();
+    const viewingPublicKey = viewing.publicKey();
+    viewing.destroy();
+    const secret = new Uint8Array(31).fill(5) as Bytes31;
+    const nullifier = NullifierKey.fromSecret(secret);
+    const nullifierPublicKey = encodeLowerHex(nullifier.publicKey());
+    nullifier.destroy();
+    const fetch = vi.fn(async (url: URL, init: RequestInit) => {
+      if (url.pathname.endsWith("/policy.json")) return new Response(policy);
+      if (url.pathname === "/v1/nitro/attestation") return attestedDiscovery();
+      const request = openRequest(init, secrets);
+      if (request.operation.type === "PublicKeys") {
+        return signedReply(request, secrets, { type: "PublicKeys", viewing_public_key: encodeLowerHex(viewingPublicKey.toBytes()),
+          nullifier_public_key: nullifierPublicKey });
+      }
+      expect(request.operation).toMatchObject({ signer: signer.address, signature: "01".repeat(64) });
+      return signedReply(request, secrets, { type: "Decrypt", nullifier_secret: encodeLowerHex(secret),
+        plaintexts: request.operation.items.map(() => "aa") });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const store = checkpointStore();
+    signMessages.mockResolvedValue([{ [signer.address]: signatureBytes(new Uint8Array(64).fill(1)) }]);
+    const client = createNitroDecryptionService({ trust, policyStore: store });
+    await expect(client.address(signer.address)).rejects.toMatchObject({ code: "ReleasePolicyRecoveryOnly" });
+    expect(fetch.mock.calls.some(([url]) => url.pathname === "/v1/operations")).toBe(false);
+    expect(await store.current()).toMatchObject({ recoveryOnly: true });
+    const keys = await client.open(signer, { prove: vi.fn(), proveMerge: vi.fn() } as ProofService);
+    try {
+      const request = { ciphertext: Uint8Array.of(0x11), viewingPublicKey, txViewingPublicKey: viewingPublicKey,
+        salt: new Uint8Array(16) as Bytes16, slotIndex: 0, label: "transfer" as const };
+      await expect(keys.decrypt([request])).resolves.toEqual([Uint8Array.of(0xaa)]);
+      expect(signMessages).toHaveBeenCalledTimes(2);
+    } finally { keys.destroy(); }
+  });
+
+  it("records a recovery-only cutover while replicas are offline and rejects a later reopening", async () => {
+    const recovery = signedPolicy({ recoveryOnly: true });
+    const reopened = signedPolicy({ sequence: "3", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(JSON.parse(recovery).policy)) });
+    const fetch = policyHeads(vi.fn(), recovery).mockResolvedValueOnce(new Response(null, { status: 503 }));
+    policyHeads(fetch, reopened);
+    vi.stubGlobal("fetch", fetch);
+    const store = checkpointStore();
+    const client = createNitroDecryptionService({ trust, policyStore: store });
+    await expect(client.address(signer.address)).rejects.toMatchObject({ code: "BootProofUnverified" });
+    expect(await store.current()).toMatchObject({ sequence: "2", recoveryOnly: true });
+    const fresh = createNitroDecryptionService({ trust, policyStore: store });
+    await expect(fresh.address(signer.address)).rejects.toThrow("policy rollback");
+    expect(fetch.mock.calls.filter(([url]) => !url.pathname.endsWith("/policy.json"))).toHaveLength(1);
+  });
+
   it("refuses a release-only activation before replica contact, checkpoint writes or wallet approval", async () => {
     const activation = JSON.parse(signedPolicy());
     const fetch = policyHeads(vi.fn(), JSON.stringify({ ...activation, custodySignatures: [] }));
@@ -352,7 +414,7 @@ describe("native client trust gate", () => {
     const store = {
       async accept() { return true; },
       current: vi.fn().mockResolvedValueOnce(undefined)
-        .mockResolvedValue({ sequence: "3", minimumCustodyEpoch: "2", digest: "aa".repeat(32) }),
+        .mockResolvedValue({ sequence: "3", minimumCustodyEpoch: "2", recoveryOnly: false, digest: "aa".repeat(32) }),
     };
     const client = createNitroDecryptionService({ trust, policyStore: store });
     await expect(client.open(signer, proofs)).rejects.toThrow("ReleasePolicySuperseded");

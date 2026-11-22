@@ -56,10 +56,10 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
       throw new DecryptionServiceError("ReleasePolicyInvalid", "policy rollback");
     }
     currentTime();
-    if (policy.action === "revoke") {
-      await accept(checkpoint, signal);
-      throw new DecryptionServiceError("ReleasePolicyRevoked");
-    }
+    // Disable sending as soon as the signed cutover is known, even if recovery is temporarily offline.
+    const acceptBeforeAttestation = policy.action === "revoke" || policy.recoveryOnly;
+    if (acceptBeforeAttestation) await accept(checkpoint, signal);
+    if (policy.action === "revoke") throw new DecryptionServiceError("ReleasePolicyRevoked");
     const count = policy.targets.length;
     const start = next % count;
     for (let offset = 0; offset < count; offset++) {
@@ -81,7 +81,7 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
         releasePolicyExpiresAtMs: policyExpiry < certificateValidThroughMs ? policyExpiry : certificateValidThroughMs,
       };
       requireCurrentReleasePolicy(window, now);
-      await accept(checkpoint, signal);
+      if (!acceptBeforeAttestation) await accept(checkpoint, signal);
       requireCurrentReleasePolicy(window, clock());
       next = index + 1;
       return {
@@ -89,12 +89,14 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
         info,
         transport: nitroTransport,
         responseTimeoutMs: RESPONSE_TIMEOUT_MS,
+        recoveryOnly: policy.recoveryOnly,
         nowMs: clock,
         ...window,
         async requireCurrentCheckpoint(signal) {
           const current = await awaitWithSignal(store.current(), signal);
           if (current?.digest !== checkpoint.digest || current.sequence !== checkpoint.sequence ||
-              current.minimumCustodyEpoch !== checkpoint.minimumCustodyEpoch) {
+              current.minimumCustodyEpoch !== checkpoint.minimumCustodyEpoch ||
+              current.recoveryOnly !== checkpoint.recoveryOnly) {
             throw new DecryptionServiceError("ReleasePolicySuperseded");
           }
         },

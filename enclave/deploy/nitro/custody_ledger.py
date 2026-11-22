@@ -392,6 +392,8 @@ def check_serving_policy(trust, document, custody_signer=None):
     fields(document, "policy", "signatures", "custodySignatures")
     policy = document["policy"]
     targets = policy["targets"]
+    if type(policy["recoveryOnly"]) is not bool:
+        raise ValueError("expected a recoveryOnly boolean")
     if policy["action"] != "activate" or not isinstance(targets, list) or not 1 <= len(targets) <= 8:
         raise ValueError("expected an activation with one to eight serving targets")
     if (policy["network"], policy["securityDomainId"]) != (trust["network"], trust["securityDomainId"]):

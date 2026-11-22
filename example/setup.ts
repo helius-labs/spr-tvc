@@ -112,7 +112,11 @@ export async function setup(): Promise<ExampleSetup> {
     const sender = await filePayer();
     const recipient = await generateKeyPairSigner();
     const { nativeDevnet } = await import("./nitro.js");
-    const nitro = await nativeDevnet(nitroTrust, env("NITRO_CHECKPOINT_PATH"), env("NITRO_REPLACEMENT_EPOCH"));
+    const nextTrust = process.env["NITRO_REPLACEMENT_TRUST"]?.trim();
+    const epoch = process.env["NITRO_REPLACEMENT_EPOCH"]?.trim();
+    if (nextTrust && epoch) throw new Error("choose a seed cutover or a custody rotation");
+    const replacement = nextTrust ? { walletTrust: nextTrust } : { epoch: env("NITRO_REPLACEMENT_EPOCH") };
+    const nitro = await nativeDevnet(nitroTrust, env("NITRO_CHECKPOINT_PATH"), replacement);
     return { zolana, sender, recipient, service: nitro.service, nitro };
   }
 
