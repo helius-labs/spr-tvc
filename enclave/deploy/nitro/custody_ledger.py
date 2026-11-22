@@ -28,7 +28,8 @@ def record(trust, document):
     authorization = document["authorization"]
     fields(authorization, "manifest", "signatures")
     manifest = authorization["manifest"]
-    fields(manifest, "capture", "ceremonyEifSha256", "ceremonyHostRole", "custodians", "previousReceiptSha256")
+    fields(manifest, "capture", "ceremonyEifSha256", "ceremonyHostRole", "custodians", "previousReceiptSha256",
+           "rotationTargetSha256")
     hex_digest(manifest["ceremonyEifSha256"])
     capture = manifest["capture"]
     fields(capture, "receipt", "evidence", "nonce", "verifiedAtMs", "configuration", "pcrs")
@@ -42,11 +43,16 @@ def record(trust, document):
     epoch = custody["epoch"]
     context(network, domain, release, epoch, 1)
     previous = manifest["previousReceiptSha256"]
+    rotation = manifest["rotationTargetSha256"]
+    mode = capture["configuration"]["deployment"]["mode"]
     if epoch == "1":
-        if previous is not None:
-            raise ValueError("genesis cannot name a predecessor")
+        if mode != "initialize" or previous is not None or rotation is not None:
+            raise ValueError("genesis requires initialization without a predecessor or rotation target")
     else:
+        if mode != "rotate":
+            raise ValueError("a successor receipt requires a rotation ceremony")
         hex_digest(previous)
+        hex_digest(rotation)
     custodians = manifest["custodians"]
     validate_roster(custodians, manifest["ceremonyHostRole"])
     if not isinstance(receipt["packages"], list) or len(receipt["packages"]) != 6:
@@ -199,12 +205,18 @@ def ledger_policy(trust, administrator, publisher, readers):
     ]}
 
 
-def load_epoch(trust, epoch):
+def read_epoch_record(trust, epoch):
     document = read_object(trust, ledger_object(trust, epoch))
     receipt, custodians = record(trust, document)
     if receipt["custody"]["epoch"] != epoch:
         raise ValueError("canonical custody receipt belongs to another epoch")
     check_commit(trust, document, receipt, custodians)
+    return document, receipt, custodians
+
+
+def load_epoch(trust, epoch):
+    document, receipt, custodians = read_epoch_record(trust, epoch)
+    check_previous(trust, document, receipt)
     return document, receipt, custodians
 
 
@@ -290,19 +302,42 @@ def verify_archive(trust, document, expected_digest):
 def draft(trust, capture, build, host, roster):
     epoch = int(capture["receipt"]["custody"]["epoch"])
     previous = None if epoch == 1 else sha256(load_epoch(trust, str(epoch - 1))[1])
-    document = {"authorization": {"manifest": {
+    manifest = {
         "capture": capture, "ceremonyEifSha256": file_digest(build / "enclave.eif"), "ceremonyHostRole": host,
-        "custodians": roster, "previousReceiptSha256": previous,
-    }, "signatures": []}, "acknowledgements": []}
+        "custodians": roster, "previousReceiptSha256": previous, "rotationTargetSha256": None,
+    }
+    if epoch != 1:
+        target = rotation_target(trust, manifest, str(epoch - 1))
+        if target["configurationSha256"] != file_digest(build / "configuration.json"):
+            raise ValueError("ceremony build configuration does not match the registered rotation target")
+        manifest["rotationTargetSha256"] = sha256(target)
+    document = {"authorization": {"manifest": manifest, "signatures": []}, "acknowledgements": []}
     record(trust, document)
     return document
+
+
+def rotation_target(trust, manifest, previous_epoch):
+    capture = manifest["capture"]
+    pcrs = capture["pcrs"]
+    fields(pcrs, "0", "1", "2", "3")
+    identity = {
+        "releaseId": capture["receipt"]["releaseId"], "hostRole": manifest["ceremonyHostRole"],
+        "pcrs": {f"PCR{i}": pcrs[str(i)] for i in range(3)}, "custodyEpoch": previous_epoch,
+    }
+    target = read_registered_target(trust, target_object_name(identity), previous_epoch, manifest["previousReceiptSha256"])
+    if (target["mode"] != "rotate" or target["hostRole"] != manifest["ceremonyHostRole"] or
+            pcrs != target_attestation(target)["pcrs"] or target["eifSha256"] != manifest["ceremonyEifSha256"] or
+            target["nextCustodians"] != manifest["custodians"]):
+        raise ValueError("ceremony image or successor roster does not match the registered rotation target")
+    return target
 
 
 def check_previous(trust, document, receipt):
     epoch = int(receipt["custody"]["epoch"])
     if epoch == 1:
         return
-    _, predecessor, previous_roster = load_epoch(trust, str(epoch - 1))
+    previous_epoch = str(epoch - 1)
+    _, predecessor, previous_roster = read_epoch_record(trust, previous_epoch)
     manifest = document["authorization"]["manifest"]
     if (sha256(predecessor) != manifest["previousReceiptSha256"] or
             predecessor["custody"]["noteSeedCommitment"] != receipt["custody"]["noteSeedCommitment"] or
@@ -311,6 +346,10 @@ def check_previous(trust, document, receipt):
     previous_keys = {custodian["recoveryKeyArn"] for custodian in previous_roster}
     if previous_keys & {custodian["recoveryKeyArn"] for custodian in manifest["custodians"]}:
         raise ValueError("custody rotation requires fresh recovery keys")
+    target = rotation_target(trust, manifest, previous_epoch)
+    if manifest["rotationTargetSha256"] != sha256(target):
+        raise ValueError("custody record does not pin the registered rotation target")
+    return target
 
 
 def check_recovery_key(key, expected_fingerprint):
@@ -353,7 +392,7 @@ def open_share(custodian, receipt, index):
 
 def sign_epoch(trust, document, key, build, source_commit, source_ref):
     receipt, custodians = record(trust, document)
-    check_previous(trust, document, receipt)
+    target = check_previous(trust, document, receipt)
     authorization = document["authorization"]
     manifest = authorization["manifest"]
     capture = manifest["capture"]
@@ -363,6 +402,8 @@ def sign_epoch(trust, document, key, build, source_commit, source_ref):
     if (capture["configuration"] != read_json(build / "configuration.json") or capture["pcrs"] != pins or
             manifest["ceremonyEifSha256"] != file_digest(build / "enclave.eif")):
         raise ValueError("captured ceremony does not match the reviewed build")
+    if target is not None and target["configurationSha256"] != file_digest(build / "configuration.json"):
+        raise ValueError("ceremony build configuration does not match the registered rotation target")
     verify_build(build, receipt["network"], source_commit, source_ref)
     root = Path(__file__).resolve().parents[3]
     subprocess.run(["pnpm", "--dir", str(root / "example"), "exec", "tsx",

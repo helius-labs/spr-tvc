@@ -102,11 +102,16 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
 
    `publish` requires two approvals and all six acknowledgements on the same
    candidate. The first successful conditional write fixes the receipt for that
-   epoch. Each rotation must name the previous committed receipt and preserve
-   its seed commitment. The encrypted packages and attestation stay in the
-   ledger. Use `archive <epoch>` to retain the full signed record and pin its
-   SHA-256 over canonical JSON without a trailing newline. `verify-archive`
-   takes that independent pin and verifies the record without AWS access.
+   epoch. A rotated receipt pins the previous receipt and the registered
+   rotation approval. Drafting and signing check the measured configuration.
+   Acknowledgement, publication and online reads verify the same image, host
+   role and successor roster. The seed commitment stays stable.
+
+   Use `archive <epoch>` to retain the encrypted packages, evidence and
+   signatures. Pin the SHA-256 over canonical JSON without a trailing newline.
+   `verify-archive` checks the independent pin and signatures without AWS.
+   Retain the original registered approval with each rotated receipt's audit
+   evidence.
 
    To change custody approval keys, append a schedule entry for the first
    uncommitted epoch and distribute the updated trust file independently.

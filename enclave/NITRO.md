@@ -46,8 +46,10 @@ The ceremony serves only the custody port. Its measured recipient list controls
 where shares can be sent. A reboot can issue a different record for the same
 epoch. The capture retains the original evidence, challenge and verification
 time. Two approval signers reverify the proof and bind the record to the six
-recovery keys and its exact predecessor. All six custodians attest that their
-sealed key can open its share. A conditional S3 write commits one record for
+recovery keys and its exact predecessor. A rotated receipt pins the registered
+rotation approval and must match its measured image, host role and successor
+roster. All six custodians attest that their sealed key can open its share.
+A conditional S3 write commits one record for
 the epoch. Historical receipts verify with the public keys pinned for their
 epoch. Retiring an approval or acknowledgement signing key leaves those
 receipts verifiable offline.

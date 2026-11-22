@@ -10,10 +10,10 @@ from threading import Lock
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
-from approval import approval_keys, sha256
+from approval import approval_keys, canonical, sha256
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RETIREMENT, TARGET_APPROVAL, acknowledge, ledger_policy, ledger_reader_policy, load_epoch,
-    publish, record, target_attestation, target_object_name, verify_archive, write_once,
+    draft, publish, record, sign_epoch, target_attestation, target_object_name, verify_archive, write_once,
 )
 from deployment import register_target, require_active_epoch, require_registered_target
 from kms_policy import acknowledgement_policy, boot_pins
@@ -23,6 +23,7 @@ from retirement import commit_retirement, inspect_keys, key_inventory, qualified
 READ_ROLE = "arn:aws:iam::000000000001:role/custodian"
 PUBLISHER = "arn:aws:iam::000000000008:role/publisher"
 ADMIN = "arn:aws:iam::000000000008:role/ledger-admin"
+PINS = {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)}
 
 
 class CustodyLedgerTests(unittest.TestCase):
@@ -47,14 +48,34 @@ class CustodyLedgerTests(unittest.TestCase):
             "network": "devnet", "securityDomainId": DOMAIN, "releaseId": f"custody-{epoch}",
             "custody": custody, "packages": [{}] * 6,
         }
-        deployment = {"mode": "initialize"} if not predecessor else {"mode": "rotate", "previous": predecessor["custody"]}
+        deployment = {"mode": "initialize", "recipientPublicKeys": []}
+        if predecessor:
+            deployment = {**deployment, "mode": "rotate", "previous": predecessor["custody"]}
+        configuration = {"releaseId": receipt["releaseId"], "securityDomainId": DOMAIN, "deployment": deployment}
         manifest = {
             "capture": {"receipt": receipt, "evidence": "aa", "nonce": "88" * 32, "verifiedAtMs": "1",
-                        "configuration": {"deployment": deployment}, "pcrs": {}},
-            "ceremonyEifSha256": "aa" * 32, "ceremonyHostRole": HOST,
+                        "configuration": configuration, "pcrs": {key.removeprefix("PCR"): value
+                                                                    for key, value in boot_pins(HOST, PINS).items()}},
+            "ceremonyEifSha256": hashlib.sha256(b"rotation EIF fixture").hexdigest(), "ceremonyHostRole": HOST,
             "custodians": roster, "previousReceiptSha256": sha256(predecessor) if predecessor else None,
+            "rotationTargetSha256": None,
         }
         return {"authorization": {"manifest": manifest, "signatures": []}, "acknowledgements": []}
+
+    def rotation_document(self, predecessor, variant="fe", register=True):
+        document = self.document(2, predecessor, variant)
+        manifest = document["authorization"]["manifest"]
+        target = {"network": "devnet", "securityDomainId": DOMAIN, "receiptSha256": sha256(predecessor),
+                  "custodyEpoch": "1", "approvalFromEpoch": self.trust["approvalKeys"][-1]["fromEpoch"],
+                  "releaseId": manifest["capture"]["receipt"]["releaseId"], "mode": "rotate", "hostRole": HOST,
+                  "pcrs": PINS, "eifSha256": manifest["ceremonyEifSha256"],
+                  "configurationSha256": sha256(manifest["capture"]["configuration"]),
+                  "nextCustodians": copy.deepcopy(manifest["custodians"]), "wrappingKeys": [key(i, 21) for i in range(1, 7)]}
+        manifest["rotationTargetSha256"] = sha256(target)
+        approval = self.signed_subject(TARGET_APPROVAL, target)
+        if register:
+            register_target(self.trust, approval)
+        return document, approval
 
     def sign(self, document, approvals=None):
         manifest = document["authorization"]["manifest"]
@@ -108,7 +129,7 @@ class CustodyLedgerTests(unittest.TestCase):
         first = self.sign(self.document(1))
         publish(self.trust, first)
         _, previous, roster = load_epoch(self.trust, "1")
-        new = self.document(2, previous, variant="fe")
+        new, _ = self.rotation_document(previous)
         bad = copy.deepcopy(new)
         bad["authorization"]["manifest"]["previousReceiptSha256"] = "11" * 32
         with self.assertRaisesRegex(ValueError, "canonical previous receipt"):
@@ -119,6 +140,62 @@ class CustodyLedgerTests(unittest.TestCase):
             publish(self.trust, self.sign(bad))
         publish(self.trust, self.sign(new))
         self.assertEqual(load_epoch(self.trust, "2")[1]["custody"]["noteSeedCommitment"], previous["custody"]["noteSeedCommitment"])
+
+    def test_rotation_receipt_must_match_the_registered_image_and_successor_roster(self):
+        publish(self.trust, self.sign(self.document(1)))
+        _, previous, _ = load_epoch(self.trust, "1")
+        document, approval = self.rotation_document(previous, register=False)
+        manifest = document["authorization"]["manifest"]
+        capture = manifest["capture"]
+        roster = manifest["custodians"]
+        with tempfile.TemporaryDirectory() as directory:
+            build = pathlib.Path(directory)
+            (build / "enclave.eif").write_bytes(b"rotation EIF fixture")
+            (build / "configuration.json").write_bytes(canonical(capture["configuration"]))
+            (build / "measurements.json").write_bytes(canonical({"Measurements": PINS}))
+            with self.assertRaisesRegex(ValueError, "object missing"):
+                draft(self.trust, capture, build, HOST, roster)
+            with self.assertRaisesRegex(ValueError, "object missing"):
+                publish(self.trust, self.sign(document))
+            register_target(self.trust, approval)
+            self.assertEqual(draft(self.trust, capture, build, HOST, roster)["authorization"]["manifest"], manifest)
+
+            with (build / "configuration.json").open("ab") as configuration:
+                configuration.write(b"\n")
+            with self.assertRaisesRegex(ValueError, "configuration does not match"):
+                draft(self.trust, capture, build, HOST, roster)
+            with patch("custody_ledger.verify_build") as provenance:
+                with self.assertRaisesRegex(ValueError, "configuration does not match"):
+                    sign_epoch(self.trust, document, key(8, 7), build, "", "")
+                provenance.assert_not_called()
+
+            for change, message in (
+                ({"custodians": [{**roster[0], "acknowledgementKey": pin(key(1, 33))}, *roster[1:]]}, "successor roster"),
+                ({"ceremonyEifSha256": "ff" * 32}, "ceremony image"),
+                ({"rotationTargetSha256": "ab" * 32}, "does not pin"),
+                ({"capture": {**capture, "pcrs": {**capture["pcrs"], "3": "ef" * 48}}}, "ceremony image"),
+            ):
+                bad = copy.deepcopy(document)
+                bad["authorization"]["manifest"].update(copy.deepcopy(change))
+                self.sign(bad)
+                with (patch("custody_ledger.verify_build") as provenance, patch("custody_ledger.open_share") as share):
+                    with self.assertRaisesRegex(ValueError, message):
+                        sign_epoch(self.trust, bad, key(8, 7), build, "", "")
+                    with self.assertRaisesRegex(ValueError, message):
+                        acknowledge(self.trust, bad, 1)
+                    with self.assertRaisesRegex(ValueError, message):
+                        publish(self.trust, bad)
+                    provenance.assert_not_called()
+                    share.assert_not_called()
+
+                name = f"spr-custody/devnet/{DOMAIN}/2.json"
+                self.objects[name] = canonical(bad)
+                with self.assertRaisesRegex(ValueError, message):
+                    load_epoch(self.trust, "2")
+                del self.objects[name]
+        publish(self.trust, document)
+        with patch("custody_ledger.aws", side_effect=AssertionError("archive verification must work offline")):
+            self.assertEqual(verify_archive(self.trust, document, sha256(document)), capture["receipt"])
 
     def test_unapproved_roster_or_insufficient_acknowledgements_never_commits(self):
         document = self.sign(self.document(1))
@@ -139,7 +216,7 @@ class CustodyLedgerTests(unittest.TestCase):
         publish(self.trust, self.sign(self.document(1)))
         self.trust["approvalKeys"].append(schedule("2", 9))
         _, previous, _ = load_epoch(self.trust, "1")
-        draft = self.document(2, previous)
+        draft, _ = self.rotation_document(previous)
         with self.assertRaisesRegex(ValueError, "invalid or duplicate approval"):
             publish(self.trust, self.sign(draft, approval_keys(self.trust, "1")))
         publish(self.trust, self.sign(draft))
@@ -223,7 +300,8 @@ class CustodyLedgerTests(unittest.TestCase):
         first = self.sign(self.document(1))
         publish(self.trust, first)
         _, old, _ = load_epoch(self.trust, "1")
-        publish(self.trust, self.sign(self.document(2, old, variant="fe")))
+        rotated, _ = self.rotation_document(old)
+        publish(self.trust, self.sign(rotated))
         target = {
             "network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "1", "receiptSha256": sha256(old),
             "approvalFromEpoch": "1", "releaseId": "old-slot", "hostRole": HOST,
@@ -263,9 +341,9 @@ class CustodyLedgerTests(unittest.TestCase):
         self.trust["approvalKeys"].append(schedule("3", 9))
         role, inventory = key_inventory(self.trust, "1", 1)
         self.assertTrue(role.endswith(":role/retirement"))
-        self.assertEqual(set(inventory), {key(1), key(1, 11), key(1, 12)})
+        self.assertEqual(set(inventory), {key(1), key(1, 11), key(1, 12), key(1, 21)})
 
-        states = {key(1): "PendingDeletion", key(1, 11): "Enabled", key(1, 12): "PendingDeletion"}
+        states = {key(1): "PendingDeletion", key(1, 11): "Enabled", key(1, 12): "PendingDeletion", key(1, 21): "Disabled"}
 
         def describe(arn, operation, args=()):
             if operation == "get-key-policy":
@@ -284,7 +362,8 @@ class CustodyLedgerTests(unittest.TestCase):
         publish(self.trust, self.sign(self.document(1)))
         _, old, _ = load_epoch(self.trust, "1")
         self.trust["approvalKeys"].append(schedule("2", 9))
-        publish(self.trust, self.sign(self.document(2, old, variant="fe")))
+        rotated, _ = self.rotation_document(old)
+        publish(self.trust, self.sign(rotated))
         path = f"spr-custody/devnet/{DOMAIN}/retired/1.json"
         self.objects[path] = b"{}"
         with self.assertRaisesRegex(ValueError, "cannot verify retirement record"):
@@ -319,7 +398,8 @@ class CustodyLedgerTests(unittest.TestCase):
     def test_retirement_qualifies_only_a_live_registered_serving_image_and_role(self):
         publish(self.trust, self.sign(self.document(1)))
         _, old, _ = load_epoch(self.trust, "1")
-        publish(self.trust, self.sign(self.document(2, old, variant="fe")))
+        rotated, _ = self.rotation_document(old)
+        publish(self.trust, self.sign(rotated))
         scope, seed, _ = retirement_scope(self.trust, "1", "2")
         registered = self.replacement_target()
         pins = {key.removeprefix("PCR"): value for key, value in boot_pins(HOST, registered["pcrs"]).items()}
@@ -361,7 +441,8 @@ class CustodyLedgerTests(unittest.TestCase):
     def test_one_wrapping_set_per_attested_identity_and_reauthorizing_keeps_the_registration(self):
         publish(self.trust, self.sign(self.document(1)))
         _, old, _ = load_epoch(self.trust, "1")
-        publish(self.trust, self.sign(self.document(2, old, variant="fe")))
+        rotated, _ = self.rotation_document(old)
+        publish(self.trust, self.sign(rotated))
         original = self.replacement_target(expiresAt=1, wrappingKeys=[key(i, 3) for i in range(1, 7)])
         changed = {**original, "wrappingKeys": [key(i, 4) for i in range(1, 7)]}
         self.assertEqual(target_object_name(original), target_object_name(changed))
@@ -378,13 +459,14 @@ class CustodyLedgerTests(unittest.TestCase):
         renewed = {**winner, "expiresAt": 2, "approvalFromEpoch": "3"}
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, renewed))
         require_registered_target(self.trust, renewed)
-        self.assertEqual(len([name for name in self.objects if "/targets/" in name]), 1)
+        self.assertEqual(len([name for name in self.objects if "/targets/2/" in name]), 1)
 
     @patch("retirement.qualified_policy")
     def test_retirement_requires_three_enabled_recovery_keys_in_the_replacement_epoch(self, qualification):
         publish(self.trust, self.sign(self.document(1)))
         _, old, _ = load_epoch(self.trust, "1")
-        publish(self.trust, self.sign(self.document(2, old, variant="fe")))
+        rotated, _ = self.rotation_document(old)
+        publish(self.trust, self.sign(rotated))
         _, _, custodians = load_epoch(self.trust, "2")
         keys = [item["recoveryKeyArn"] for item in custodians]
         states = ["Enabled", "Enabled", "Disabled", "PendingDeletion", None, "foreign"]
