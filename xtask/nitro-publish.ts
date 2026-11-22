@@ -1,7 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +18,7 @@ import { DecryptionServiceError, DecryptionServiceHttpError } from "../sdk/src/p
 import { requireHex } from "../sdk/src/protocol/hex.js";
 import { canonicalizeJsonValue } from "../sdk/src/protocol/jcs.js";
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
+import { readBoundedDocument } from "./read-document.js";
 
 const execute = promisify(execFile);
 const MAX_BYTES = 32_768;
@@ -66,24 +66,6 @@ async function probeActivationTargets(
 function requireFreshProbes(probes: readonly ReplicaProbe[], now: bigint, margin = 0): void {
   if (probes.some(({ window }) => !(remainingReleasePolicyMs(window, now) > margin))) {
     throw new Error("replica probe expired or has insufficient time remaining");
-  }
-}
-
-async function readDocument(path: string, maxBytes = MAX_BYTES): Promise<string> {
-  const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
-  try {
-    if (!(await file.stat()).isFile()) throw new Error("expected a regular policy or trust file");
-    const buffer = Buffer.alloc(maxBytes + 1);
-    let size = 0;
-    while (size < buffer.length) {
-      const { bytesRead } = await file.read(buffer, size, buffer.length - size, size);
-      if (bytesRead === 0) break;
-      size += bytesRead;
-    }
-    if (size > maxBytes) throw new Error(`JSON document exceeds ${maxBytes / 1024} KiB`);
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, size));
-  } finally {
-    await file.close();
   }
 }
 
@@ -176,7 +158,7 @@ export function bucketPolicy(trust: NitroTrust, name: string, administrator: str
 async function pinnedPublicationPolicies(trust: NitroTrust, custodyTrust: string) {
   const custody = parseStrictJson<Pick<NitroTrust, "network" | "securityDomainId" | "publications"> & {
     publicationRoles: Record<string, { administratorRole: string; publisherRole: string }>;
-  }>(await readDocument(custodyTrust, MAX_CUSTODY_TRUST_BYTES));
+  }>(await readBoundedDocument(custodyTrust, MAX_CUSTODY_TRUST_BYTES));
   if (custody?.network !== trust.network || custody.securityDomainId !== trust.securityDomainId ||
       canonicalizeJsonValue(custody.publications ?? null) !== canonicalizeJsonValue(trust.publications)) {
     throw new Error("custody trust must pin the wallet's publication domain and buckets");
@@ -312,7 +294,7 @@ export async function publish(
   async function readHead() {
     const { stdout } = await call("get-object", ["--range", `bytes=0-${MAX_BYTES}`, current]);
     const { ETag } = JSON.parse(stdout) as { ETag: string };
-    return { etag: etag(ETag), text: await readDocument(current) };
+    return { etag: etag(ETag), text: await readBoundedDocument(current, MAX_BYTES) };
   }
 
   try {
@@ -439,7 +421,7 @@ export async function restorePublication(trust: NitroTrust, name: string, retain
     ]);
     if (JSON.parse(stdout).VersionId !== version.VersionId) throw new Error("S3 returned a different policy version");
     try {
-      const text = await readDocument(path);
+      const text = await readBoundedDocument(path, MAX_BYTES);
       if (Buffer.byteLength(text) !== version.Size) throw new Error("S3 policy size differs from the retained version");
       return text;
     } catch (error) {
@@ -575,7 +557,7 @@ async function main() {
   if (!trustPath || !bucket) {
     throw new Error(usage);
   }
-  const trustText = await readDocument(trustPath);
+  const trustText = await readBoundedDocument(trustPath, MAX_BYTES);
   const trust = parseStrictJson<NitroTrust>(trustText);
   if (bucket === "--check-wallet-trust") {
     const { values } = parseArgs({ args, options: activationFlags });
@@ -616,9 +598,9 @@ async function main() {
   } } = parseArgs({
     args: extra, options: { ...activationFlags, "next-trust": { type: "string" }, "emergency-from": { type: "string" } },
   });
-  const nextTrust = nextPath && parseStrictJson<NitroTrust>(await readDocument(nextPath));
-  const emergencyFrom = emergencyPath && parseStrictJson<NitroTrust>(await readDocument(emergencyPath));
-  await publish(trust, bucket, await readDocument(policyPath), {
+  const nextTrust = nextPath && parseStrictJson<NitroTrust>(await readBoundedDocument(nextPath, MAX_BYTES));
+  const emergencyFrom = emergencyPath && parseStrictJson<NitroTrust>(await readBoundedDocument(emergencyPath, MAX_BYTES));
+  await publish(trust, bucket, await readBoundedDocument(policyPath, MAX_BYTES), {
     ...(custodyTrust ? { custodyTrust } : {}),
     ...(sourceProfile ? { sourceProfile } : {}), ...(replicaProfile ? { replicaProfile } : {}),
     ...(publicationProfiles ? { publicationProfiles } : {}),

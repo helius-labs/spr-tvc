@@ -198,6 +198,8 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-190 | A stalled Solana RPC transport could retain the wallet sync lock past caller cancellation. | Enforce cancellation and timeout at the RPC wrapper and discard late results. [Wallet tests](https://github.com/helius-labs/privacy-rings/pull/652) |
 | N-191 | Retirement could close the old epoch after the replacement lost an approved key, or its policy or boot changed during ledger inspection. | Recheck the exact recovery and wrapping keys, signed boot and both policy heads after inspecting the ledger slot. [Retirement tests](nitro/test_custody_ledger.py) · SPR-NITRO-89 |
 | N-192 | Pre-deletion inspection and the retirement report could use a policy superseded during the final AWS checks. | Read both signed heads after the AWS checks. Require the same policy digest and fresh boot evidence. [Retirement tests](nitro/test_custody_ledger.py) · SPR-NITRO-41 |
+| N-193 | A service-backed payment could broadcast to stale keys when the recipient or service policy changed during the blockhash RPC. | Refresh the recipient again after the blockhash check. Preserve the existing expiry and reservation checks. [Wallet tests](https://github.com/helius-labs/privacy-rings/pull/652) · SPR-NITRO-94 |
+| N-194 | The canary's retirement report read could block on a named pipe or outgrow its size check. | Open without blocking, require a regular file and cap the bytes read before decoding. [Canary tests](../example/tests/nitro.test.ts) · SPR-NITRO-82 |
 
 ## Remaining qualification and review
 

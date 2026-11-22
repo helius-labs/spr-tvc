@@ -7,10 +7,10 @@ import { test } from "node:test";
 import type { NitroPolicy, NitroTarget, NitroPolicyCheckpoint } from "@heliuslabs/spr-decryption-service/nitro";
 import {
   acceptedReplacementPolicy, checkpointStore, nativeDevnet, parseRetirementReport,
-  requireCurrentPolicy, requireOriginalPolicy, requireRetirementPolicy,
+  requireCurrentPolicy, requireOriginalPolicy, requireRetirementPolicy, waitForRetirement,
 } from "../nitro.js";
 
-test("the retirement canary binds the transfer to the exact retired custody record and a later boot", () => {
+test("the retirement canary binds the transfer to the exact retired custody record and a later boot", async context => {
   const original = { custodyEpoch: "2", custodyDigest: "12".repeat(32) };
   const scope = { network: "devnet" as const, securityDomainId: "34".repeat(32), original, transferredAt: 1_999n, replacementEpoch: "3" };
   const bootKeyId = "ab".repeat(32);
@@ -44,6 +44,16 @@ test("the retirement canary binds the transfer to the exact retired custody reco
       ...report, replacement: { ...replacement, replacementBootstrap: { ...bootstrap, slots } },
     }), /later boot from three custody slots/);
   }
+  const directory = await mkdtemp(join(tmpdir(), "spr-nitro-retirement-"));
+  context.after(() => rm(directory, { recursive: true }));
+  const path = join(directory, "report.json");
+  await assert.rejects(waitForRetirement(directory, scope), /expected a regular JSON document/);
+  await writeFile(path, Buffer.alloc(256 * 1024 + 1));
+  await assert.rejects(waitForRetirement(path, scope), /exceeds 256 KiB/);
+  await writeFile(path, Buffer.from([0xff]));
+  await assert.rejects(waitForRetirement(path, scope), { code: "ERR_ENCODING_INVALID_ENCODED_DATA" });
+  await writeFile(path, JSON.stringify(report));
+  assert.deepEqual(await waitForRetirement(path, scope), parse(report));
 });
 
 function agreed(checkpoint: NitroPolicyCheckpoint, previousPolicyDigest: string | null) {

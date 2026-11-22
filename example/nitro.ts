@@ -1,4 +1,4 @@
-import { open, readFile, stat } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout } from "node:timers/promises";
 import type { ShieldedAddress } from "@heliuslabs/spr";
@@ -12,6 +12,7 @@ import { decodeDecimalU64 } from "../sdk/src/protocol/decimal.js";
 import { DecryptionServiceError as PolicyReadError } from "../sdk/src/protocol/error.js";
 import { requireHex } from "../sdk/src/protocol/hex.js";
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
+import { readBoundedDocument } from "../xtask/read-document.js";
 
 export function checkpointStore(path: string, trust: Pick<NitroTrust, "network" | "securityDomainId">) {
   if (!path || path === ":memory:") throw new Error("use a persistent checkpoint file");
@@ -149,22 +150,15 @@ export function requireRetirementPolicy(published: VerifiedPublication, retired:
   }
 }
 
-async function waitForRetirement(path: string, scope: RetirementScope) {
+export async function waitForRetirement(path: string, scope: RetirementScope) {
   const signal = AbortSignal.timeout(60 * 60_000);
   for (;;) {
     signal.throwIfAborted();
-    const file = await open(path, "r").catch((error: NodeJS.ErrnoException) => {
+    const text = await readBoundedDocument(path, 256 * 1024).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
     });
-    if (file) {
-      try {
-        const { size } = await file.stat();
-        if (size > 256 * 1024) throw new Error("retirement report exceeds 256 KiB");
-        return parseRetirementReport(await file.readFile({ encoding: "utf8", signal }), scope);
-      } finally {
-        await file.close();
-      }
-    }
+    signal.throwIfAborted();
+    if (text !== undefined) return parseRetirementReport(text, scope);
     await setTimeout(2_000, undefined, { signal });
   }
 }
@@ -195,7 +189,7 @@ export async function nativeDevnet(walletTrust: string, checkpoint: string, repl
   const replacementEpoch = "epoch" in replacement ? replacement.epoch : undefined;
   const retirementReport = "epoch" in replacement ? replacement.retirementReport : undefined;
   if (retirementReport) {
-    const existing = await stat(retirementReport).catch((error: NodeJS.ErrnoException) => {
+    const existing = await lstat(retirementReport).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
     });
     if (existing) throw new Error("use a new path for the retirement report");
