@@ -3,6 +3,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { address, signatureBytes, type MessagePartialSigner } from "@solana/kit";
 import { NullifierKey, ViewingKey, initializePoseidon, type ProofService } from "@heliuslabs/spr";
 import type { Bytes16, Bytes31 } from "@heliuslabs/spr/keypair";
+import { BN254_MODULUS_DEC } from "@heliuslabs/spr/transaction";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { verifyNativeNitroEvidence } from "../../src/attestation/boot-proof.js";
@@ -91,6 +92,7 @@ const proofs = {} as ProofService;
 const emptyStore = { async current() { return undefined; } };
 const replacementBoot = [3, 4].map(value => new Uint8Array(32).fill(value));
 const replacement = "https://replacement.example.com/";
+const nullifierModulus = BigInt(BN254_MODULUS_DEC).toString(16);
 
 function twoReplicas() {
   const { policy } = JSON.parse(signedPolicy()) as { policy: NitroPolicy };
@@ -160,6 +162,7 @@ describe("operator replica probe", () => {
     for (const [viewing, nullifier, error] of [
       ["04" + "01".repeat(32), "01".repeat(31), "InvalidHex"],
       ["01".repeat(33), "01".repeat(32), "KEYPAIR_INVALID_PUBLIC_KEY"],
+      ["04" + "01".repeat(32), nullifierModulus, "InvalidPublicKey"],
     ] as const) {
       fetch.mockResolvedValueOnce(attestedDiscovery()).mockImplementationOnce(async (_url, init) =>
         signedReply(openRequest(init, secrets), secrets, {
@@ -172,13 +175,8 @@ describe("operator replica probe", () => {
       .mockImplementationOnce(async (_url, init) => lookupReply(init, secrets, probeAddress));
     const boot = await probeNitroTarget(target, trust);
     expect(boot.bootstrapSlots).toEqual([1, 3, 5]);
-    expect(fetch.mock.calls.map(([url]) => url.pathname)).toEqual([
-      "/v1/nitro/attestation", "/v1/operations",
-      "/v1/nitro/attestation", "/v1/operations",
-      "/v1/nitro/attestation", "/v1/operations",
-      "/v1/nitro/attestation", "/v1/operations",
-      "/v1/nitro/attestation", "/v1/operations",
-    ]);
+    const paths = ["/v1/nitro/attestation", "/v1/operations"];
+    expect(fetch.mock.calls.map(([url]) => url.pathname)).toEqual(Array.from({ length: 6 }, () => paths).flat());
     expect(signMessages).not.toHaveBeenCalled();
   });
 
@@ -198,6 +196,25 @@ describe("operator replica probe", () => {
 });
 
 describe("native client trust gate", () => {
+  it("rejects an out-of-field nullifier key before asking the owner to sign", async () => {
+    const viewing = ViewingKey.generate();
+    const viewing_public_key = encodeLowerHex(viewing.publicKey().toBytes());
+    viewing.destroy();
+    const response = (init: RequestInit, nullifier_public_key: string) =>
+      signedReply(openRequest(init, secrets), secrets, { type: "PublicKeys", viewing_public_key, nullifier_public_key });
+    const lastFieldElement = (BigInt(BN254_MODULUS_DEC) - 1n).toString(16);
+    const fetch = policyHeads().mockResolvedValueOnce(attestedDiscovery())
+      .mockImplementationOnce((_url, init) => response(init, nullifierModulus))
+      .mockImplementationOnce((_url, init) => response(init, lastFieldElement));
+    vi.stubGlobal("fetch", fetch);
+    const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
+    await expect(client.open(signer, proofs)).rejects.toMatchObject({ code: "InvalidPublicKey" });
+    await expect(client.address(signer.address)).resolves.toMatchObject({
+      nullifierPublicKey: requireHex(lastFieldElement, 32),
+    });
+    expect(signMessages).not.toHaveBeenCalled();
+  });
+
   it("requires the pinned boot before sending an operation or asking the owner to sign", async () => {
     const discovery = await attestedDiscovery().json();
     const fetch = policyHeads().mockResolvedValueOnce(Response.json(discovery));

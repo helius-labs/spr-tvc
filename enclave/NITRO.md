@@ -216,7 +216,8 @@ substituting its own recipient keys through an unapproved image. Each publisher
 checks the predecessor and matches the activation's wallet custody pins to
 the active operator roster. For each target it attests the boot and sends an
 encrypted `PublicKeys` request through the wallet route. The reply must carry
-a proof from that same boot. Wallet trust distribution and retirement use
+a proof from that same boot and pass the wallet's X25519 and BN254 key checks.
+Wallet trust distribution and retirement use
 the same probe. A planned transition matches the incoming pins. The publisher
 rechecks the peer's signed file, the registered targets, epoch closure and
 the active custody roster after probing. It checks the candidate's deadline

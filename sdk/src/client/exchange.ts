@@ -1,3 +1,6 @@
+import type { Bytes32 } from "@heliuslabs/spr";
+import { X25519PublicKey } from "@heliuslabs/spr/keypair";
+import { BN254_MODULUS_DEC } from "@heliuslabs/spr/transaction";
 import { p256 } from "@noble/curves/p256";
 import { createSignableMessage, getAddressEncoder, type MessagePartialSigner } from "@solana/kit";
 
@@ -10,7 +13,7 @@ import {
 import { awaitWithSignal } from "../connection/request.js";
 import { API_VERSION } from "../protocol/constants.js";
 import { DecryptionServiceError } from "../protocol/error.js";
-import { encodeLowerHex } from "../protocol/hex.js";
+import { encodeLowerHex, requireHex } from "../protocol/hex.js";
 import { parseStrictJson } from "../protocol/json.js";
 import type { DecryptItem } from "../protocol/types.js";
 import {
@@ -22,6 +25,7 @@ import {
 } from "../protocol/decryption.js";
 
 const ED25519_SIGNATURE_BYTES = 64;
+const BN254_MODULUS = BigInt(BN254_MODULUS_DEC);
 const EMPTY_SIGNATURE = "00".repeat(ED25519_SIGNATURE_BYTES);
 const OPERATION_KINDS = { PublicKeys: "ServicePublicKeys", Decrypt: "ServiceDecrypt" } as const;
 const RESULT_KEYS = {
@@ -39,6 +43,15 @@ type DecryptCall = {
 
 export type ServiceCall = Extract<ServiceOperation, { type: "PublicKeys" }> | DecryptCall;
 export type ServiceCallResult<T extends ServiceCall> = Extract<ServiceResult, { type: T["type"] }>;
+
+export function decodePublicKeys(result: Extract<ServiceResult, { type: "PublicKeys" }>) {
+  const nullifierPublicKey = requireHex(result.nullifier_public_key, 32) as Bytes32;
+  if (BigInt(`0x${result.nullifier_public_key}`) >= BN254_MODULUS) {
+    throw new DecryptionServiceError("InvalidPublicKey", "expected a canonical BN254 nullifier public key");
+  }
+  const viewingPublicKey = X25519PublicKey.fromBytes(requireHex(result.viewing_public_key, 33));
+  return { nullifierPublicKey, viewingPublicKey };
+}
 
 async function signBeforeReleaseExpires(
   owner: MessagePartialSigner,

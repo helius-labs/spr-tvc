@@ -1,5 +1,5 @@
 import { ShieldedAddress, ShieldedPublicKey, type Bytes32, type ProofService } from "@heliuslabs/spr";
-import { X25519PublicKey, type Bytes31 } from "@heliuslabs/spr/keypair";
+import type { Bytes31 } from "@heliuslabs/spr/keypair";
 import { sha256 } from "@noble/hashes/sha256";
 import { getAddressEncoder, type Address, type MessagePartialSigner } from "@solana/kit";
 
@@ -13,7 +13,7 @@ import { genesisHashForNetwork, requireNetwork } from "../protocol/network.js";
 import { releaseForConnection, type ReleaseTrust } from "../protocol/releases.js";
 import type { DecryptItem, Network } from "../protocol/types.js";
 import { batched, checkPlaintexts } from "./items.js";
-import { executeServiceCall, type ServiceCall, type ServiceCallResult } from "./exchange.js";
+import { decodePublicKeys, executeServiceCall, type ServiceCall, type ServiceCallResult } from "./exchange.js";
 import { ServiceKeys, type DecryptionServiceKeys } from "./keys.js";
 const addressEncoder = getAddressEncoder();
 
@@ -88,11 +88,13 @@ export function decryptionServiceFromSession(
   }
 
   async function address(owner: Address, signal: AbortSignal, forPayment: boolean): Promise<ShieldedAddress> {
-    const keys = await call({ type: "PublicKeys", address: owner }, signal, forPayment);
+    const { nullifierPublicKey, viewingPublicKey } = decodePublicKeys(
+      await call({ type: "PublicKeys", address: owner }, signal, forPayment),
+    );
     return ShieldedAddress.fromPublicKeys(
       ShieldedPublicKey.fromEd25519(new Uint8Array(addressEncoder.encode(owner)) as Bytes32),
-      requireHex(keys.nullifier_public_key, 32) as Bytes32,
-      X25519PublicKey.fromBytes(requireHex(keys.viewing_public_key, 33)),
+      nullifierPublicKey,
+      viewingPublicKey,
     );
   }
 

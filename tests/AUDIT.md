@@ -105,6 +105,7 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-97 | Hosted Boot Proof verification could use a clock sampled before the lookup and finish after release expiry. The reply could still be opened. | Sample the clock after the lookup. Check the release before publishing the session, dispatching the operation and opening the authenticated reply. [Connection tests](../sdk/tests/connection/connect.test.ts) · [Reply tests](../sdk/tests/connection/operations.test.ts) |
 | N-98 | The TypeScript SDK stopped an unsigned key lookup when another wallet instance advanced the shared checkpoint. The caller had to repeat the lookup to discover the replacement or revocation. | Re-read both signed heads once for an unsigned lookup. Use an attested replacement, surface revocation, or fail if the publications roll back. Discard a superseded signed approval. [Native client tests](../sdk/tests/client/nitro.test.ts) |
 | N-99 | The TypeScript SDK could ask for wallet approval of an output with a malformed slot, cipher label or salt. | Validate all requested items before requesting approval for any batch. [Key handle tests](../sdk/tests/client/keys.test.ts) |
+| N-100 | The TypeScript wallet and release probe accepted a 32-byte nullifier key outside the BN254 scalar field. | Share one public-key decoder and reject out-of-field values before using recipient keys or qualifying a replica. [Wallet and probe tests](../sdk/tests/client/nitro.test.ts) |
 
 ## Remaining qualification and review
 
