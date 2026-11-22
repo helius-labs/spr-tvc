@@ -2,6 +2,7 @@
 
 use std::{
     fs::File,
+    future::pending,
     io::{self, Read},
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -42,6 +43,7 @@ use crate::{
     custody::{CustodianPackage, Custody, Recipients, SHARE_COUNT, THRESHOLD},
     keys::NoteSeed,
     native_crypto::NativePair,
+    nitro_http,
     release::NETWORK,
     service::dispatch,
     wire::KeyPair,
@@ -52,6 +54,8 @@ const MAX_CMS_BYTES: usize = 6144;
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_SERVING_REQUESTS: usize = 32;
 const MAX_ATTESTATION_REQUESTS: usize = 2;
+const MAX_SERVING_CONNECTIONS: usize = 64;
+const MAX_CUSTODY_CONNECTIONS: usize = 4;
 const SERVING_DEADLINE: Duration = Duration::from_secs(5);
 
 #[derive(Parser)]
@@ -175,7 +179,14 @@ async fn serve(
         quorum: KeyPair::Native(transport),
         note_seed,
     });
-    axum::serve(ParentListener::bind(44030)?, serving_router(service)).await
+    nitro_http::serve(
+        ParentListener::bind(44030)?,
+        serving_router(service),
+        MAX_SERVING_CONNECTIONS,
+        pending(),
+    )
+    .await;
+    Ok(())
 }
 
 fn serving_router(service: Arc<Service>) -> Router {
@@ -237,6 +248,7 @@ async fn provision(domain: [u8; 32], custody: Custody) -> io::Result<NoteSeed> {
         .route("/recipient", get(kms_attestation))
         .route("/shares", post(accept_shares))
         .layer(DefaultBodyLimit::max(SHARE_COUNT * (MAX_CMS_BYTES + 2)))
+        .layer(Extension(Arc::new(Semaphore::new(1))))
         .with_state(Arc::new(Bootstrap {
             recipient: Mutex::new(Some(Recipient { private, sender })),
             domain,
@@ -244,33 +256,28 @@ async fn provision(domain: [u8; 32], custody: Custody) -> io::Result<NoteSeed> {
         }));
     let listener = ParentListener::bind(44031)?;
     let (shutdown, shutdown_signal) = oneshot::channel::<()>();
-    let mut server = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = shutdown_signal.await;
-            })
-            .await
+    let server = nitro_http::serve(listener, app, MAX_CUSTODY_CONNECTIONS, async {
+        let _ = shutdown_signal.await;
     });
+    tokio::pin!(server);
     let seed = tokio::select! {
         seed = seed => seed.map_err(io::Error::other)?,
-        stopped = &mut server => {
-            stopped.map_err(io::Error::other)??;
+        () = &mut server => {
             return Err(io::Error::other("seed listener stopped"));
         }
         _ = tokio::time::sleep(BOOTSTRAP_TIMEOUT) => {
-            server.abort();
             return Err(io::Error::new(io::ErrorKind::TimedOut, "seed provisioning timed out"));
         }
     };
     let _ = shutdown.send(());
-    match tokio::time::timeout(Duration::from_secs(5), &mut server).await {
-        Ok(result) => result.map_err(io::Error::other)??,
-        Err(_) => server.abort(),
-    }
+    server.await;
     Ok(seed)
 }
 
-async fn kms_attestation(State(state): State<Arc<Bootstrap>>) -> Reply<Vec<u8>> {
+async fn kms_attestation(
+    State(state): State<Arc<Bootstrap>>,
+    Extension(worker): Extension<Arc<Semaphore>>,
+) -> Reply<Vec<u8>> {
     let public = state
         .recipient
         .lock()
@@ -280,7 +287,7 @@ async fn kms_attestation(State(state): State<Arc<Bootstrap>>) -> Reply<Vec<u8>> 
         .private
         .public_key_to_der()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    attest(Some(public), None, None)
+    issue_attestation(worker, move || attest(Some(public), None, None)).await
 }
 
 async fn accept_shares(
@@ -364,26 +371,36 @@ async fn publish_custody(
     let app = Router::new()
         .route("/custody", post(custody_attestation))
         .layer(DefaultBodyLimit::max(32))
+        .layer(Extension(Arc::new(Semaphore::new(1))))
         .with_state(result);
-    match tokio::time::timeout(
+    let _ = tokio::time::timeout(
         Duration::from_secs(300),
-        axum::serve(ParentListener::bind(44031)?, app),
+        nitro_http::serve(
+            ParentListener::bind(44031)?,
+            app,
+            MAX_CUSTODY_CONNECTIONS,
+            pending(),
+        ),
     )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => Ok(()),
-    }
+    .await;
+    Ok(())
 }
 
-async fn custody_attestation(State(result): State<Arc<String>>, nonce: Bytes) -> Reply<String> {
-    attested_json(
-        "SPR/native-nitro/custody/v1",
-        "result",
-        &result,
-        None,
-        nonce,
-    )
+async fn custody_attestation(
+    State(result): State<Arc<String>>,
+    Extension(worker): Extension<Arc<Semaphore>>,
+    nonce: Bytes,
+) -> Reply<String> {
+    issue_attestation(worker, move || {
+        attested_json(
+            "SPR/native-nitro/custody/v1",
+            "result",
+            &result,
+            None,
+            nonce,
+        )
+    })
+    .await
 }
 
 type Reply<T> = Result<([(axum::http::HeaderName, &'static str); 1], T), StatusCode>;
@@ -398,7 +415,7 @@ async fn client_attestation(
     }
     let discovery = jcs_serialize(&service.info).map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let public = service.ephemeral.public_bytes();
-    issue_serving_attestation(worker, move || {
+    issue_attestation(worker, move || {
         attested_json(
             "SPR/native-nitro/discovery/v1",
             "info",
@@ -410,10 +427,10 @@ async fn client_attestation(
     .await
 }
 
-async fn issue_serving_attestation(
+async fn issue_attestation<T: Send + 'static>(
     worker: Arc<Semaphore>,
-    generate: impl FnOnce() -> Reply<String> + Send + 'static,
-) -> Reply<String> {
+    generate: impl FnOnce() -> Reply<T> + Send + 'static,
+) -> Reply<T> {
     let permit = worker
         .try_acquire_owned()
         .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;

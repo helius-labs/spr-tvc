@@ -168,6 +168,9 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    ```
 
 4. Keep port 44031 private. Forward port 44030 through TLS without caching.
+   Open one HTTP/1 request per upstream vsock connection. The enclave closes
+   the connection after its response and caps concurrent serving connections
+   at 64. Headers have a 16 KiB limit and three-second read deadline.
    Bound request sizes and ingress concurrency, keep each HTTPS slot tied to
    one boot at a time, and qualify it with wallet attestation and an
    owner-signed canary.

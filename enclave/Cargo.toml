@@ -11,7 +11,7 @@ autobins = false
 [features]
 default = ["qos-runtime"]
 qos-runtime = ["dep:qos_core", "dep:qos_p256"]
-native-nitro = ["dep:aws-nitro-enclaves-nsm-api", "dep:openssl", "dep:serde", "dep:tokio-vsock", "dep:getrandom", "dep:rand_core", "dep:vsss-rs", "dep:tower-http"]
+native-nitro = ["dep:aws-nitro-enclaves-nsm-api", "dep:openssl", "dep:serde", "dep:tokio-vsock", "dep:getrandom", "dep:rand_core", "dep:vsss-rs", "dep:tower-http", "dep:hyper", "dep:hyper-util"]
 # The unattested local testkit; the enclave binary never enables it.
 local-dev = ["dep:serde", "dep:qos_p256"]
 
@@ -20,6 +20,8 @@ axum = { version = "=0.8.8", default-features = false, features = ["http1", "tok
 clap = { version = "=4.5.53", features = ["derive"] }
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "zeroize"] }
 hkdf = "=0.12.4"
+hyper = { version = "1.11.1", default-features = false, features = ["http1", "server"], optional = true }
+hyper-util = { version = "0.1.20", default-features = false, features = ["service", "tokio"], optional = true }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
 qos_core = { version = "=0.16.3", default-features = false, optional = true }
 qos_p256 = { workspace = true, optional = true }
@@ -46,6 +48,7 @@ tower-http = { version = "=0.7.1", default-features = false, features = ["cors"]
 qos_p256.workspace = true
 hex = "=0.4.3"
 http-body-util = "=0.1.3"
+tokio = { version = "1.48.0", default-features = false, features = ["io-util", "test-util"] }
 tower = { version = "=0.5.3", features = ["util"] }
 
 [[bin]]

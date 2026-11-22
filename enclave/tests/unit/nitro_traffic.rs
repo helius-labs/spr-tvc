@@ -59,7 +59,7 @@ async fn cancelled_attestation_cannot_admit_another_kernel_call() {
     let worker = Arc::new(Semaphore::new(1));
     let (started, wait_for_worker) = oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
-    let request = tokio::spawn(issue_serving_attestation(worker.clone(), move || {
+    let request = tokio::spawn(issue_attestation(worker.clone(), move || {
         started.send(()).unwrap();
         blocked.recv_timeout(Duration::from_secs(2)).unwrap();
         Ok(([(CONTENT_TYPE, "application/json")], String::new()))
@@ -67,7 +67,7 @@ async fn cancelled_attestation_cannot_admit_another_kernel_call() {
     wait_for_worker.await.unwrap();
     request.abort();
     assert_eq!(
-        issue_serving_attestation(worker.clone(), || panic!("worker was full"))
+        issue_attestation::<String>(worker.clone(), || panic!("worker was full"))
             .await
             .unwrap_err(),
         StatusCode::TOO_MANY_REQUESTS

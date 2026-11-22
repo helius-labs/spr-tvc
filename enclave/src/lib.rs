@@ -21,6 +21,8 @@ mod local;
 mod native_crypto;
 #[cfg(all(feature = "native-nitro", target_os = "linux"))]
 pub mod nitro;
+#[cfg(all(feature = "native-nitro", any(target_os = "linux", test)))]
+mod nitro_http;
 mod operations;
 mod owner;
 mod release;

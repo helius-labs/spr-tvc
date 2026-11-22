@@ -58,7 +58,7 @@ def recipient_for(cid):
                     "KeyEncryptionAlgorithm": "RSAES_OAEP_SHA_256",
                     "AttestationDocument": base64.b64encode(evidence).decode("ascii"),
                 })
-            if status != 503:
+            if status not in {429, 503}:
                 raise ValueError(f"invalid recipient evidence from HTTP {status}")
         remaining = deadline - monotonic()
         if remaining <= 0:

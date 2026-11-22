@@ -135,12 +135,16 @@ lifetime and local checkpoint bound acceptance.
 
 The parent may replay a previously encrypted request to the same boot. Any result is still encrypted to the original signed response key. The service performs no chain writes and needs no replay database. The viewing and nullifier public keys are public lookup results. TLS protects ingress traffic in transit, while enclave-level encryption protects plaintext from ingress and the parent. See [AWS's attestation format and chain validation](https://docs.aws.amazon.com/enclaves/latest/user/verify-root.html).
 
-Each serving replica admits two HTTP attestation requests and 32 requests to
-other routes. Request middleware sets a five-second deadline before reading
-the body. The Nitro Security Module call runs on a separate blocking worker
-with one call in flight. The worker retains its permit until the kernel call
-returns, including after the client disconnects. Ingress also limits open
-connections and applies admission control before forwarding to vsock.
+The enclave accepts connections from the EC2 parent. It caps active vsock
+connections at 64 for serving and four for provisioning or custody. Each
+connection carries one HTTP/1 request. Headers have a 16 KiB buffer limit and
+a three-second read deadline. The connection has a ten-second deadline that
+covers writes to a slow parent. Successful provisioning drains its reply
+for up to five seconds before closing the listener's remaining connections.
+The serving router admits two attestation requests and 32 other requests
+with a five-second request deadline. Each listener runs at most one Nitro
+Security Module call on a blocking worker. The worker retains its permit
+until the kernel call returns, including after a client disconnects.
 
 ## QuorumOS decision
 

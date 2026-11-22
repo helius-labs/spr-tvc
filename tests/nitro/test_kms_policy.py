@@ -148,12 +148,12 @@ class KeyPolicyTests(unittest.TestCase):
                 read_target(path, pin)
 
     @patch("provision.sleep")
-    @patch("provision.request", side_effect=[ConnectionRefusedError(), (503, b""), (200, b"evidence")])
+    @patch("provision.request", side_effect=[ConnectionRefusedError(), (503, b""), (429, b""), (200, b"evidence")])
     def test_waits_for_recipient_readiness(self, request, sleep):
         recipient = json.loads(recipient_for(16))
         self.assertEqual(recipient["AttestationDocument"], base64.b64encode(b"evidence").decode())
-        self.assertEqual(request.call_count, 3)
-        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(request.call_count, 4)
+        self.assertEqual(sleep.call_count, 3)
 
     @patch("provision.monotonic", side_effect=[0, 21])
     @patch("provision.request", side_effect=ConnectionRefusedError)
