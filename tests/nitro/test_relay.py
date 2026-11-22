@@ -37,6 +37,7 @@ class RelayTests(unittest.TestCase):
         (build / "tvc_app").write_bytes(b"executable")
         (build / "enclave.eif").write_bytes(b"EIF")
         (build / "measurements.json").write_bytes(canonical({"Measurements": SCOPE["pcrs"]}))
+        (build / "provenance.intoto.jsonl").write_bytes(b'{"bundle":"signed"}\n')
 
         def write_config(candidate):
             (build / "configuration.json").write_bytes(canonical(candidate))
