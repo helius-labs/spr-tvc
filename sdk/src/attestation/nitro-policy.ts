@@ -82,6 +82,7 @@ export type NitroPolicyStore = {
 
 const MAX_TARGETS = 8;
 const MAX_AUTHORITIES = 8;
+const MIN_RELEASE_QUORUM = 2;
 const CUSTODY_QUORUM = 2;
 const CUSTODY_KEY_COUNT = 3;
 const TRUST_KEYS = [
@@ -165,7 +166,7 @@ export function validateNitroTrust(trust: NitroTrust): void {
   if (first.bucket === second.bucket || first.account === second.account) invalid();
   if (decodeDecimalU64(trust.minimumSequence) < 1n || decodeDecimalU64(trust.minimumCustodyEpoch) < 1n ||
       !Array.isArray(trust.keys) || trust.keys.length > MAX_AUTHORITIES ||
-      !Number.isSafeInteger(trust.threshold) || trust.threshold < 2 ||
+      !Number.isSafeInteger(trust.threshold) || trust.threshold < MIN_RELEASE_QUORUM ||
       trust.threshold > trust.keys.length) invalid();
   if (!Array.isArray(trust.custodyKeys) || trust.custodyKeys.length !== CUSTODY_KEY_COUNT) invalid();
   const keys = [...trust.keys, ...trust.custodyKeys];
@@ -176,10 +177,11 @@ export function validateNitroTrust(trust: NitroTrust): void {
 type PolicySignature = { key: string; signature: string };
 
 function verifyQuorum(
-  signatures: readonly PolicySignature[], pins: readonly string[], threshold: number,
-  digest: Uint8Array, seen: Set<string>,
+  signatures: readonly PolicySignature[], threshold: number, digest: Uint8Array, seen: Set<string>,
+  countsTowardQuorum: (key: string) => boolean,
 ): void {
-  if (!Array.isArray(signatures) || signatures.length < threshold || signatures.length > MAX_AUTHORITIES) invalid();
+  if (!Number.isSafeInteger(threshold) || threshold < MIN_RELEASE_QUORUM ||
+      !Array.isArray(signatures) || signatures.length < threshold || signatures.length > MAX_AUTHORITIES) invalid();
   let approvals = 0;
   for (const signature of signatures) {
     assertExactObjectKeys(signature, ["key", "signature"], "ReleasePolicyInvalid");
@@ -187,13 +189,14 @@ function verifyQuorum(
     if (seen.has(key)) invalid();
     verifyP256Prehash(requireHex(key, 65), digest, requireHex(signature.signature, 64));
     seen.add(key);
-    if (pins.includes(key)) approvals++;
+    if (countsTowardQuorum(key)) approvals++;
   }
   if (approvals < threshold) invalid();
 }
 
-/** Verify the policy's domain and both signature quorums against pinned keys. */
-export function authenticateNitroPolicy(text: string, trust: NitroTrust) {
+function inspectSignedPolicy(
+  text: string, trust: NitroTrust, pins: Pick<NitroTrust, "keys" | "threshold" | "custodyKeys"> | undefined,
+) {
   const { policy, signatures, custodySignatures } = parseStrictJson<{
     policy: NitroPolicy;
     signatures: readonly PolicySignature[];
@@ -235,8 +238,10 @@ export function authenticateNitroPolicy(text: string, trust: NitroTrust) {
   }
   const digest = nitroPolicySigningDigest(policy);
   const seen = new Set<string>();
-  verifyQuorum(signatures, trust.keys, trust.threshold, digest, seen);
-  verifyQuorum(custodySignatures, trust.custodyKeys, CUSTODY_QUORUM, nitroCustodySigningDigest(policy), seen);
+  const threshold = pins === undefined ? MIN_RELEASE_QUORUM : pins.threshold;
+  verifyQuorum(signatures, threshold, digest, seen, key => pins === undefined || pins.keys.includes(key));
+  verifyQuorum(custodySignatures, CUSTODY_QUORUM, nitroCustodySigningDigest(policy), seen,
+    key => pins === undefined || pins.custodyKeys.includes(key));
   const digestHex = encodeLowerHex(digest);
   return {
     policy, signatures, custodySignatures, validFrom, expiresAt,
@@ -245,6 +250,22 @@ export function authenticateNitroPolicy(text: string, trust: NitroTrust) {
       minimumCustodyEpoch: policy.minimumCustodyEpoch, recoveryOnly: policy.recoveryOnly,
     }),
   };
+}
+
+/** Verify the policy's domain and both signature quorums against pinned keys. */
+export function authenticateNitroPolicy(text: string, trust: NitroTrust) {
+  return inspectSignedPolicy(text, trust, trust);
+}
+
+/** Detect a policy that might have been signed by another roster. Use only to block restoration. */
+export function hasCompleteNitroPolicySignatures(text: string, trust: NitroTrust): boolean {
+  try {
+    inspectSignedPolicy(text, trust, undefined);
+    return true;
+  } catch (error) {
+    if (error instanceof DecryptionServiceError) return false;
+    throw error;
+  }
 }
 
 type VerifiedPolicy = ReturnType<typeof authenticateNitroPolicy>;

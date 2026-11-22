@@ -6,7 +6,8 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
 import {
-  authenticateNitroPolicy, nextNitroPublication, nitroPublication, requireNitroTrustTransition, validateNitroTrust,
+  authenticateNitroPolicy, hasCompleteNitroPolicySignatures, nextNitroPublication, nitroPublication,
+  requireNitroTrustTransition, validateNitroTrust,
   verifyNitroMirrorPolicy, verifyNitroPolicy, verifyStoredNitroPolicy,
   type NitroPolicy, type NitroPolicyCheckpoint, type NitroTarget, type NitroTrust,
 } from "../sdk/src/attestation/nitro-policy.js";
@@ -474,24 +475,19 @@ export async function restorePublication(trust: NitroTrust, name: string, retain
     for (const version of later) {
       const observed = await readVersion(version);
       if (observed === text && version.VersionId === damaged.VersionId) alreadyRestored = true;
-      if (observed === undefined || observed === text) continue;
-      try {
-        authenticateNitroPolicy(observed, trust);
-      } catch (error) {
-        if (error instanceof DecryptionServiceError) continue;
-        throw error;
+      if (observed !== undefined && observed !== text && hasCompleteNitroPolicySignatures(observed, trust)) {
+        throw new Error("a later S3 version contains a different signed policy");
       }
-      throw new Error("a later S3 version contains a different authenticated policy");
     }
-    const witness = await readNitroPolicy(peer.url, AbortSignal.timeout(5_000), peer.account);
-    const primaryText = isPrimary ? text : witness;
-    const primaryPolicy = verifyStoredNitroPolicy(primaryText, trust, BigInt(Date.now()));
-    nextNitroPublication(primaryPolicy, isPrimary ? witness : text, trust);
     if (!alreadyRestored) await writeFile(path, text, { mode: 0o600 });
     const confirmed = await head();
     if (confirmed.VersionId !== damaged.VersionId || confirmed.etag !== damaged.etag) {
       throw new Error("policy head changed during restoration");
     }
+    const witness = await readNitroPolicy(peer.url, AbortSignal.timeout(5_000), peer.account);
+    const primaryText = isPrimary ? text : witness;
+    const primaryPolicy = verifyStoredNitroPolicy(primaryText, trust, BigInt(Date.now()));
+    nextNitroPublication(primaryPolicy, isPrimary ? witness : text, trust);
     if (alreadyRestored) return;
     try {
       await call("put-object", ["--key", key, "--if-match", damaged.etag, "--content-type", "application/json",

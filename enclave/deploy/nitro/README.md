@@ -847,11 +847,11 @@ bucket. Use its publisher role and the independently retained version ID.
 Grant the role `s3:ListBucketVersions` scoped to the policy key prefix and
 `s3:GetObjectVersion` on that key. The command checks both signature quorums,
 checks the intact peer agrees or forms the supported primary and predecessor
-pair, and refuses to replace a later version carrying a different
-authenticated policy. It restores the retained bytes against the damaged
-head's ETag. An expired head can be restored so that a new revision or
-emergency revocation can follow it. The restoration leaves the old expiry in
-force. [S3 version listing](https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectVersions.html)
+pair, and refuses to replace a different later policy with two valid
+signatures in each role, including policies signed by another roster.
+It checks the peer after rechecking the damaged head version, then restores
+the retained bytes against that head's ETag. Restoring an expired head keeps
+its expiry and lets the operator publish a successor. [S3 version listing](https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectVersions.html)
 
 ```sh
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" --restore-from "$retained_version_id"

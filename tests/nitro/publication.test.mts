@@ -78,7 +78,7 @@ function freshProbe(remaining = () => 60_000) {
 test("restores an exact signed historical policy without replacing a different authenticated head", async context => {
   const previous = { ...first, expiresAtMs: String(now - 1) };
   const next = { ...first, sequence: "2", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(previous)) };
-  const backup = signed(previous);
+  const backup = signed(previous, [0, 1, 2, 3], [0, 1, 3, 4]);
   const [primary, mirror] = trust.publications;
   const restorePins = pins(previous);
   let selected = primary;
@@ -93,11 +93,13 @@ test("restores an exact signed historical policy without replacing a different a
   const held = new Map<string, string>([["damaged", "{}"], ["invalid", ""], ["backup", backup]]);
   let failedResponse = false;
   let race = false;
+  let changeWitnessDuringHeadCheck = false;
   let reads = 0;
   let writes = 0;
   const options = awsOnly(async args => {
     assert.equal(args[args.indexOf("--expected-bucket-owner") + 1], selected.account);
     if (args.includes("head-object")) {
+      if (changeWitnessDuringHeadCheck && ++reads === 2) peer = signed(next);
       return { stdout: JSON.stringify({ VersionId: head, ContentLength: held.get(head)!.length,
         ETag: race && ++reads > 1 ? '"different-etag"' : '"current-etag"' }) };
     }
@@ -128,10 +130,17 @@ test("restores an exact signed historical policy without replacing a different a
   });
   await assert.rejects(restorePublication(restorePins, primary.bucket, "missing", options), /retained.*missing/);
   held.set("invalid", signed(next));
-  await assert.rejects(restorePublication(restorePins, primary.bucket, "backup", options), /different authenticated policy/);
+  await assert.rejects(restorePublication(restorePins, primary.bucket, "backup", options), /different signed policy/);
   held.set("invalid", signed({ ...previous, recoveryOnly: true }));
-  await assert.rejects(restorePublication(restorePins, primary.bucket, "backup", options), /different authenticated policy/);
-  held.set("invalid", "");
+  await assert.rejects(restorePublication(restorePins, primary.bucket, "backup", options), /different signed policy/);
+  const outgoingPolicy = { ...next, recoveryOnly: true };
+  const outgoing = signed(outgoingPolicy, [2, 3], [3, 4]);
+  const outgoingPins = { ...restorePins, keys: keys.slice(2), custodyKeys: custodyKeys.slice(3) };
+  assert.deepEqual(verifyPublishedNitroPolicy([outgoing, outgoing], outgoingPins, BigInt(now)).policy, outgoingPolicy);
+  held.set("invalid", outgoing);
+  await assert.rejects(restorePublication(restorePins, primary.bucket, "backup", options), /different signed policy/);
+  await assert.rejects(restorePublication(restorePins, primary.bucket, "invalid", options), /ReleasePolicyInvalid/);
+  held.set("invalid", outgoing.replace(/"signature":"[0-9a-f]+"/, `"signature":"${"00".repeat(64)}"`));
   peer = signed(next);
   await assert.rejects(restorePublication(restorePins, primary.bucket, "backup", options), /ReleasePolicyInvalid/);
   peer = "";
@@ -140,6 +149,11 @@ test("restores an exact signed historical policy without replacing a different a
   race = true;
   await assert.rejects(restorePublication(restorePins, primary.bucket, "backup", options), /head changed/);
   race = false;
+  reads = 0;
+  changeWitnessDuringHeadCheck = true;
+  await assert.rejects(restorePublication(restorePins, primary.bucket, "backup", options), /ReleasePolicyInvalid/);
+  changeWitnessDuringHeadCheck = false;
+  peer = backup;
   assert.equal(writes, 0);
   await restorePublication(restorePins, primary.bucket, "backup", options);
   await restorePublication(restorePins, primary.bucket, "backup", options);

@@ -374,9 +374,12 @@ connections. For retirement, custodians verify the exact wallet trust file
 against its pinned hash and their own publication pins. Both buckets must
 agree before the verifier qualifies a replacement and again after attestation.
 An operator can restore the exact bytes of an independently recorded S3
-version when one head is damaged. Restoration requires the intact peer and
-checks every intervening version for a different authenticated policy.
-Wallet expiry and checkpoint checks still apply to the restored bytes.
+version when one head is damaged. Both pinned quorums must authenticate the
+retained policy. Any different intervening policy with two valid release
+signatures and two valid custody signatures blocks restoration, even if the
+signers are from a different roster. The tool checks the intact peer after
+rechecking the damaged head. Wallet expiry and checkpoint checks still
+apply to the restored bytes.
 Mainnet payment publication and wallet pin verification inspect both
 publication buckets with read-only identities in the owning accounts.
 They require the generated policies, versioning, enforced bucket ownership

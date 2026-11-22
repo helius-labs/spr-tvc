@@ -201,6 +201,7 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-193 | A service-backed payment could broadcast to stale keys when the recipient or service policy changed during the blockhash RPC. | Refresh the recipient again after the blockhash check. Preserve the existing expiry and reservation checks. [Wallet tests](https://github.com/helius-labs/privacy-rings/pull/652) · SPR-NITRO-94 |
 | N-194 | The canary's retirement report read could block on a named pipe or outgrow its size check. | Open without blocking, require a regular file and cap the bytes read before decoding. [Canary tests](../example/tests/nitro.test.ts) · SPR-NITRO-82 |
 | N-195 | The primary could write an activation after the mirror revoked it or went offline during the final AWS checks. | Recheck the mirror after the custody and bucket inspections, before the conditional primary write. [Publication tests](nitro/publication.test.mts) · SPR-NITRO-54 |
+| N-196 | Repair could overwrite a later policy signed by another roster or act on a peer read before the last local head check. | Block repair on different intervening policies with valid release and custody signatures, regardless of roster. Authenticate the retained policy against the pinned quorums and check the peer after the local head recheck. [Publication tests](nitro/publication.test.mts) · SPR-NITRO-79 |
 
 ## Remaining qualification and review
 
