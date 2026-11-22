@@ -16,7 +16,9 @@ from unittest.mock import ANY, call, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import approval_keys, approval_roster, canonical, sha256
-from custody_archive import MAX_ARCHIVE_ENTRY_BYTES, archive, ledger_checkpoint, verify_archive
+from custody_archive import (
+    MAX_ARCHIVE_ENTRY_BYTES, archive, ledger_checkpoint, verify_archive, verify_ledger_records, verify_promotion,
+)
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
     check_custody_roster, check_installed_ledger, check_release_policy, draft, ledger_policy, ledger_reader_policy,
@@ -479,6 +481,47 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertEqual(ledger_checkpoint(replica, pinned), pinned)
             with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
                 require_active_epoch(replica, "1")
+
+        original = {**self.trust, "ledgerReplica": {
+            **replica["ledger"], "role": "arn:aws:iam::000000000008:role/replication",
+        }}
+
+        def read_both(region, service, operation, args, *, profile, **options):
+            self.assertEqual(profile, "source-read" if region == "eu-north-1" else "recovery-read")
+            if operation == "get-bucket-replication":
+                self.assertEqual(region, "eu-west-1")
+                return None
+            read = self.aws if region == "eu-north-1" else replica_aws
+            return read(region, service, operation, args, **options)
+
+        with (patch("custody_ledger.aws", side_effect=read_both),
+              patch("custody_archive.require_profile_account")):
+            def promote(digest):
+                return verify_promotion(original, replica, digest, "source-read", "recovery-read")
+
+            self.assertEqual(promote(pinned), pinned)
+            genesis = prefix + "1.json"
+            for name in (genesis, target, retired):
+                document = json.loads(self.objects[name])
+                document["acknowledgements" if name == genesis else "signatures"] = []
+                with self.subTest(name=name), patch.dict(self.objects, {name: canonical(document)}):
+                    corrupt_pin = ledger_checkpoint(self.trust, profile="source-read")
+                    with self.assertRaisesRegex(ValueError, "signing quorum"):
+                        promote(corrupt_pin)
+
+            def change_after_checkpoint(*args, **options):
+                with patch.dict(self.objects, {genesis: self.objects[genesis] + b" "}):
+                    return verify_ledger_records(*args, **options)
+
+            with patch("custody_archive.verify_ledger_records", side_effect=change_after_checkpoint):
+                with self.assertRaisesRegex(ValueError, "changed after checkpoint"):
+                    promote(pinned)
+            with patch.dict(self.objects, {prefix + "unexpected/key.json": b"{}"}):
+                with self.assertRaisesRegex(ValueError, "unexpected custody ledger record"):
+                    promote(ledger_checkpoint(self.trust, profile="source-read"))
+            with patch.dict(self.objects, {prefix + "4.json": self.objects[prefix + "2.json"]}):
+                with self.assertRaisesRegex(ValueError, "receipts must be consecutive"):
+                    promote(ledger_checkpoint(self.trust, profile="source-read"))
 
         for objects in (
             {name: body for name, body in self.objects.items() if name != retired},

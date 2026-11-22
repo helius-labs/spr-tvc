@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import pathlib
 import sys
@@ -259,6 +260,7 @@ class LedgerReplicationTests(unittest.TestCase):
               patch("custody_archive.list_objects", side_effect=list_names),
               patch("custody_archive.read_stored_payload", side_effect=read),
               patch("custody_ledger.read_stored_payload", side_effect=read),
+              patch("custody_archive.verify_ledger_records") as verify_records,
               patch("custody_archive.require_profile_account") as account,
               patch("custody_ledger.require_profile_account", account)):
             pin = ledger_checkpoint(source_scope, profile="source-read")
@@ -267,6 +269,13 @@ class LedgerReplicationTests(unittest.TestCase):
                 return verify_promotion(trust, candidate, pin, "source-read", "recovery-read", replica_profile="new-replica-read")
 
             self.assertEqual(verify(), pin)
+            verify_records.assert_called_once_with(
+                promoted, tuple(names[DESTINATION_BUCKET]), profile="recovery-read",
+                checkpoint_records={
+                    name: (f"version-{name}", "2026-11-01T00:00:00+00:00", hashlib.sha256(name.encode()).hexdigest())
+                    for name in names[DESTINATION_BUCKET]
+                },
+            )
             self.assertEqual([call.args for call in account.call_args_list], [
                 ("source-read", TRUST["ledger"]["region"], SOURCE_ACCOUNT),
                 ("recovery-read", REPLICA["region"], DESTINATION_ACCOUNT),

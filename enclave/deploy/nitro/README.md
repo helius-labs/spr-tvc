@@ -266,9 +266,10 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    ```
 
    The verifier matches both frozen buckets against the independently retained
-   checkpoint. It checks the new destination's records, replication rule
-   and installed bucket protections. After it succeeds, install and verify
-   the writable policy on the recovered bucket
+   checkpoint. It verifies the receipt chain, target registrations and
+   retirement proofs using the exact checkpointed records. It checks the new
+   destination's records, replication rule and bucket protections. After it
+   succeeds, install and verify the writable policy on the recovered bucket
    and distribute the recovered trust file. While the original bucket is
    unreachable or its write deny is unverified, keep custody changes suspended.
 

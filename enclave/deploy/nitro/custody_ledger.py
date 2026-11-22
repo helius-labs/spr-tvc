@@ -138,22 +138,25 @@ def storage(trust, operation, args=(), **options):
     ], **options)
 
 
-def read_object(trust, name):
-    return read_stored_object(trust, name)[0]
+def read_object(trust, name, **options):
+    return read_stored_object(trust, name, **options)[0]
 
 
-def read_stored_object(trust, name):
-    payload, metadata = read_stored_payload(trust, name)
+def read_stored_object(trust, name, **options):
+    payload, metadata = read_stored_payload(trust, name, **options)
     return parse_json(payload), metadata
 
 
-def read_stored_payload(trust, name, **options):
+def read_stored_payload(trust, name, *, checkpoint_records=None, **options):
     _, prefix = ledger_prefix(trust)
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "record.json"
         metadata = storage(trust, "get-object",
                            ["--key", prefix + name, "--range", f"bytes=0-{MAX_DOCUMENT_BYTES}", str(path)], **options)
-        return read_document(path), metadata
+        payload = read_document(path)
+        if checkpoint_records is not None and checkpoint_records.get(name) != ledger_record_fingerprint(name, payload, metadata):
+            raise ValueError(f"custody ledger record {name} changed after checkpoint")
+        return payload, metadata
 
 
 def publication_datetime(metadata):
@@ -484,8 +487,8 @@ def check_recovery_bucket(trust, replica, profile):
         raise ValueError("custody recovery bucket is missing the pinned replica write and delete protections")
 
 
-def read_epoch_record(trust, epoch):
-    document = read_object(trust, ledger_object(trust, epoch))
+def read_epoch_record(trust, epoch, **options):
+    document = read_object(trust, ledger_object(trust, epoch), **options)
     receipt, custodians = record(trust, document)
     if receipt["custody"]["epoch"] != epoch:
         raise ValueError("canonical custody receipt belongs to another epoch")
@@ -493,9 +496,9 @@ def read_epoch_record(trust, epoch):
     return document, receipt, custodians
 
 
-def load_epoch(trust, epoch):
-    document, receipt, custodians = read_epoch_record(trust, epoch)
-    check_previous(trust, document, receipt)
+def load_epoch(trust, epoch, **options):
+    document, receipt, custodians = read_epoch_record(trust, epoch, **options)
+    check_previous(trust, document, receipt, **options)
     return document, receipt, custodians
 
 
@@ -559,8 +562,8 @@ def verify_target_approval(trust, document, *, at=None):
     return manifest
 
 
-def read_registered_target(trust, name, epoch, receipt_digest):
-    document, metadata = read_stored_object(trust, name)
+def read_registered_target(trust, name, epoch, receipt_digest, **options):
+    document, metadata = read_stored_object(trust, name, **options)
     return check_registered_target(trust, name, epoch, receipt_digest, document, publication_time(metadata))
 
 
@@ -630,28 +633,28 @@ def verify_retirement(trust, document, epoch, published_at):
     return manifest
 
 
-def retirement_target(trust, marker):
+def retirement_target(trust, marker, **options):
     replacement = marker["replacementEpoch"]
     name = target_path(replacement, marker["replacementTargetIdentity"])
-    target = read_registered_target(trust, name, replacement, marker["replacementReceiptSha256"])
+    target = read_registered_target(trust, name, replacement, marker["replacementReceiptSha256"], **options)
     if target["mode"] != "serve" or sha256(target) != marker["replacementTargetSha256"]:
         raise ValueError("replacement target does not match the registered serving enclave")
     return target
 
 
-def load_retirement(trust, epoch):
-    document, metadata = read_stored_object(trust, retirement_object_name(epoch))
+def load_retirement(trust, epoch, **options):
+    document, metadata = read_stored_object(trust, retirement_object_name(epoch), **options)
     published_at = publication_time(metadata)
     marker = verify_retirement(trust, document, epoch, published_at)
-    _, previous, custodians = load_epoch(trust, epoch)
+    _, previous, custodians = load_epoch(trust, epoch, **options)
     replacement_epoch = marker["replacementEpoch"]
-    _, replacement, replacement_custodians = load_epoch(trust, replacement_epoch)
+    _, replacement, replacement_custodians = load_epoch(trust, replacement_epoch, **options)
     if (marker["receiptSha256"] != sha256(previous) or marker["replacementReceiptSha256"] != sha256(replacement) or
             marker["replacementCustodyDigest"] != sha256(replacement["custody"]) or
             previous["custody"]["noteSeedCommitment"] != replacement["custody"]["noteSeedCommitment"]):
         raise ValueError("retirement receipts do not match the ledger")
     retirement_recovery(document, replacement_custodians)
-    retirement_target(trust, marker)
+    retirement_target(trust, marker, **options)
     return document, custodians, published_at
 
 
@@ -772,9 +775,9 @@ def rotation_target_name(manifest, previous_epoch):
     return target_path(previous_epoch, sha256(identity))
 
 
-def rotation_target(trust, manifest, previous_epoch):
+def rotation_target(trust, manifest, previous_epoch, **options):
     target = read_registered_target(trust, rotation_target_name(manifest, previous_epoch), previous_epoch,
-                                    manifest["previousReceiptSha256"])
+                                    manifest["previousReceiptSha256"], **options)
     check_rotation_target(manifest, target)
     return target
 
@@ -798,15 +801,15 @@ def check_predecessor(document, receipt, predecessor, previous_roster):
         raise ValueError("custody rotation requires fresh recovery keys")
 
 
-def check_previous(trust, document, receipt):
+def check_previous(trust, document, receipt, **options):
     epoch = int(receipt["custody"]["epoch"])
     if epoch == 1:
         return
     previous_epoch = str(epoch - 1)
-    _, predecessor, previous_roster = read_epoch_record(trust, previous_epoch)
+    _, predecessor, previous_roster = read_epoch_record(trust, previous_epoch, **options)
     check_predecessor(document, receipt, predecessor, previous_roster)
     manifest = document["authorization"]["manifest"]
-    target = rotation_target(trust, manifest, previous_epoch)
+    target = rotation_target(trust, manifest, previous_epoch, **options)
     if manifest["rotationTargetSha256"] != sha256(target):
         raise ValueError("custody record does not pin the registered rotation target")
     return target

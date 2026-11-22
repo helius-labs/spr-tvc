@@ -3,33 +3,41 @@
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
-from approval import MAX_DOCUMENT_BYTES, canonical, epoch_number, hex_digest, read_json, require_profile_account, unique_object
+from approval import (
+    MAX_DOCUMENT_BYTES, canonical, epoch_number, hex_digest, read_json, require_profile_account, sha256, unique_object,
+)
 from custody_ledger import (
-    check_custody_history_entry, check_recovery_bucket,
-    ledger_object, ledger_prefix, ledger_record_fingerprint, ledger_replica,
-    list_objects, read_object, read_replicated_record, read_stored_object, read_stored_payload,
-    replica_trust, require_frozen_ledger, require_pinned_replication, rotation_target_name, verify_ceremony_capture,
+    check_custody_history_entry, check_recovery_bucket, ledger_object, ledger_prefix, ledger_record_fingerprint,
+    ledger_replica, list_objects, load_retirement, read_object, read_registered_target, read_replicated_record,
+    read_stored_object, read_stored_payload, replica_trust, require_frozen_ledger, require_pinned_replication,
+    rotation_target_name, verify_ceremony_capture,
 )
 
 MAX_ARCHIVE_ENTRY_BYTES = 2 * MAX_DOCUMENT_BYTES + 256
 
 
-def archive(trust, epoch, output):
+def custody_history(trust, epoch, **options):
     previous = None
     for index in range(1, epoch_number(epoch) + 1):
         current = str(index)
-        document = read_object(trust, ledger_object(trust, current))
+        document = read_object(trust, ledger_object(trust, current), **options)
         rotation = None
         if previous is not None:
             manifest = document["authorization"]["manifest"]
-            approval, metadata = read_stored_object(trust, rotation_target_name(manifest, str(index - 1)))
+            approval, metadata = read_stored_object(trust, rotation_target_name(manifest, str(index - 1)), **options)
             rotation = {"approval": approval, "publishedAt": metadata["LastModified"]}
         entry = {"document": document, "rotation": rotation}
         previous = check_custody_history_entry(trust, current, entry, previous)
+        yield current, entry, previous[0]
+
+
+def archive(trust, epoch, output):
+    for _, entry, _ in custody_history(trust, epoch):
         output.write(canonical(entry) + b"\n")
 
 
@@ -51,7 +59,26 @@ def verify_archive(trust, epoch, source, expected_digest):
     return previous[0]
 
 
-def ledger_checkpoint(trust, expected=None, **options):
+def verify_ledger_records(trust, names, **options):
+    receipts = {name for name in names if "/" not in name}
+    if receipts != {f"{epoch}.json" for epoch in range(1, len(receipts) + 1)}:
+        raise ValueError("custody ledger receipts must be consecutive from genesis")
+    digests = {epoch: sha256(receipt) for epoch, _, receipt in custody_history(trust, str(len(receipts)), **options)}
+    for name in names:
+        if name in receipts:
+            continue
+        if target := re.fullmatch(r"targets/([^/]+)/[0-9a-f]{64}\.json", name):
+            epoch = target[1]
+            if epoch not in digests:
+                raise ValueError("registered target is missing its custody receipt")
+            read_registered_target(trust, name, epoch, digests[epoch], **options)
+        elif retirement := re.fullmatch(r"retired/([^/]+)\.json", name):
+            load_retirement(trust, retirement[1], **options)
+        else:
+            raise ValueError(f"unexpected custody ledger record {name}")
+
+
+def ledger_checkpoint(trust, expected=None, *, authenticate=False, **options):
     if expected is not None:
         hex_digest(expected)
     require_frozen_ledger(trust, **options)
@@ -62,6 +89,7 @@ def ledger_checkpoint(trust, expected=None, **options):
     names = tuple(list_objects(trust, "", **options))
     if "1.json" not in names:
         raise ValueError("custody ledger checkpoint requires a committed genesis")
+    checkpoint_records = {} if authenticate else None
     for name in names:
         if destination is None:
             payload, metadata = read_stored_payload(trust, name, **options)
@@ -69,14 +97,18 @@ def ledger_checkpoint(trust, expected=None, **options):
         else:
             _, fingerprint = read_replicated_record(trust, destination, name, **options)
         checksum.update(canonical([name, *fingerprint]) + b"\n")
+        if checkpoint_records is not None:
+            checkpoint_records[name] = fingerprint
+    actual = checksum.hexdigest()
+    if expected is not None and actual != expected:
+        raise ValueError("custody ledger differs from the independently pinned checkpoint")
+    if checkpoint_records is not None:
+        verify_ledger_records(trust, names, checkpoint_records=checkpoint_records, **options)
     if names != tuple(list_objects(trust, "", **options)):
         raise ValueError("custody ledger changed during checkpoint")
     if destination is not None and names != tuple(list_objects(destination, "", **options)):
         raise ValueError("pinned replica namespace differs from the custody ledger")
     require_frozen_ledger(trust, **options)
-    actual = checksum.hexdigest()
-    if expected is not None and actual != expected:
-        raise ValueError("custody ledger differs from the independently pinned checkpoint")
     return actual
 
 
@@ -103,7 +135,7 @@ def verify_promotion(trust, promoted, expected, source_profile, recovery_profile
     require_profile_account(source_profile, source["region"], source["account"])
     require_profile_account(recovery_profile, recovery["region"], recovery["account"])
     require_frozen_ledger(original, profile=source_profile)
-    ledger_checkpoint(promoted, expected, profile=recovery_profile)
+    ledger_checkpoint(promoted, expected, authenticate=True, profile=recovery_profile)
     require_pinned_replication(promoted, profile=recovery_profile)
     # Re-read the original history after checking the recovered copy.
     ledger_checkpoint(original, expected, profile=source_profile)

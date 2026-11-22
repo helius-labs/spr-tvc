@@ -118,6 +118,8 @@ be reachable for verification and stays frozen after promotion. Before
 resuming mainnet writes, backfill the inherited versions to a new replica and
 verify its contents, its bucket protections under the new owner's account
 and the recovered bucket's live replication rule.
+Promotion verifies the receipt chain, target registrations and retirement
+proofs against the exact records in the pinned checkpoint.
 
 The custody ledger registers one wrapping-key set per epoch, release ID and
 PCR0–PCR4. Before signing, each approver checks that all six RSA wrapping
