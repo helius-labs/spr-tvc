@@ -7,9 +7,9 @@ import { MAX_CLOCK_SKEW_MS } from "../sdk/src/protocol/constants.js";
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
 
 async function main() {
-  const [network, domain, seed, epoch, custodyDigest, ...extra] = process.argv.slice(2);
-  if (!network || !domain || !seed || !epoch || !custodyDigest || extra.length) {
-    throw new Error("usage: nitro-retirement.ts <network> <domain> <seed> <replacement-epoch> <custody-digest> < wallet-trust.json");
+  const [network, domain, seed, canaryKeyDigest, epoch, custodyDigest, ...extra] = process.argv.slice(2);
+  if (!network || !domain || !seed || !canaryKeyDigest || !epoch || !custodyDigest || extra.length) {
+    throw new Error("usage: nitro-retirement.ts <network> <domain> <seed> <canary-key-digest> <replacement-epoch> <custody-digest> < wallet-trust.json");
   }
   const trust = parseStrictJson<NitroTrust>(readFileSync(0, "utf8"));
   validateNitroTrust(trust);
@@ -21,7 +21,7 @@ async function main() {
   const before = await readPublishedNitroPolicy(trust, signal);
   requireRetirementPolicy(before, epoch, custodyDigest);
   const candidates = before.policy.targets.filter(target => target.custodyEpoch === epoch && target.custodyDigest === custodyDigest);
-  const canary = createDecryptionCanary();
+  const canary = createDecryptionCanary({ ...trust, canaryKeyDigest });
   const targets = await Promise.allSettled(candidates.map(async target => {
     const { info, bootstrapSlots, bootedAtMs, window } = await probeNitroTarget(target, trust, { signal, canary });
     return {

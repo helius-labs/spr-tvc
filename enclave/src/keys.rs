@@ -26,6 +26,38 @@ impl NoteSeed {
     pub(crate) fn for_address(&self, address: &[u8; ADDRESS_LEN]) -> ServiceKeys {
         derive(&self.0, address)
     }
+
+    #[cfg(any(test, all(feature = "native-nitro", target_os = "linux")))]
+    pub(crate) fn canary_key_digest(
+        &self,
+        domain: &[u8; 32],
+        note_seed_commitment: &[u8; 32],
+    ) -> std::io::Result<[u8; 32]> {
+        use spr_tvc_protocol::digest::sha256;
+
+        let public_signer_seed = sha256(
+            &[
+                b"SPR/native-nitro/canary-owner/v1".as_slice(),
+                domain,
+                note_seed_commitment,
+            ]
+            .concat(),
+        );
+        let owner = ed25519_dalek::SigningKey::from_bytes(&public_signer_seed).verifying_key();
+        let keys = self.for_address(owner.as_bytes());
+        let nullifier = keys
+            .nullifier
+            .pubkey()
+            .map_err(|_| std::io::Error::other("derive canary public key"))?;
+        Ok(sha256(
+            &[
+                b"SPR/native-nitro/canary-keys/v1".as_slice(),
+                keys.viewing.pubkey().as_bytes(),
+                &nullifier,
+            ]
+            .concat(),
+        ))
+    }
 }
 
 #[cfg(any(feature = "local-dev", feature = "qos-runtime", test))]

@@ -1,9 +1,11 @@
 import { p256 } from "@noble/curves/p256";
 import { ed25519 } from "@noble/curves/ed25519";
+import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha256";
+import { concatBytes } from "@noble/hashes/utils";
 import { address, getAddressEncoder, signatureBytes, type MessagePartialSigner } from "@solana/kit";
 import { NullifierKey, ViewingKey, initializePoseidon, type ProofService } from "@heliuslabs/spr";
-import { X25519PublicKey, type Bytes16, type Bytes31 } from "@heliuslabs/spr/keypair";
+import { X25519PublicKey, type Bytes16, type Bytes31, type Bytes32 } from "@heliuslabs/spr/keypair";
 import { BN254_MODULUS_DEC } from "@heliuslabs/spr/transaction";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -312,6 +314,50 @@ describe("operator replica probe", () => {
       }
     },
   );
+
+  it.each([false, true])("checks a cold replacement against the Rust custody vector (changed keys %s)", async changed => {
+    await initializePoseidon();
+    const { policy } = JSON.parse(signedPolicy()) as { policy: NitroPolicy };
+    const owner = address("HipQetrvjSHETfCDtgUcdVaP4n3UdYcfhhqxCfscvz8C");
+    const ownerBytes = new Uint8Array(getAddressEncoder().encode(owner));
+    const viewing = ViewingKey.fromBytes(hkdf(sha256, new Uint8Array(32).fill(0x88), undefined,
+      concatBytes(new TextEncoder().encode("TSPP/decryption-service/view_key/x25519/v1"), ownerBytes), 32) as Bytes32);
+    const secret = requireHex("70ad8470a7e869d8996911862ea64081249839c0384eac02e59dcad1487763", 31) as Bytes31;
+    const nullifier = NullifierKey.fromSecret(secret);
+    const canary = createDecryptionCanary({
+      ...trust, canaryKeyDigest: "3330b4eb540f903309ea229bb8ef75872c94f487b96ef864c8265142326f3c1c",
+    });
+    const fetch = vi.fn(async (url: URL, init: RequestInit) => {
+      if (url.pathname === "/v1/nitro/attestation") return attestedDiscovery();
+      const request = openRequest(init, secrets);
+      const { operation } = request;
+      if (operation.type === "PublicKeys") {
+        expect(operation.address).toBe(owner);
+        return signedReply(request, secrets, {
+          type: "PublicKeys", viewing_public_key: encodeLowerHex(viewing.publicKey().toBytes()),
+          nullifier_public_key: changed ? "01".repeat(32) : encodeLowerHex(nullifier.publicKey()),
+        });
+      }
+      expect(operation.signer).toBe(owner);
+      expect(ed25519.verify(requireHex(operation.signature, 64),
+        decryptMessage(ownerBytes, trust.network, serviceRequestDigest(request)), ownerBytes)).toBe(true);
+      return signedReply(request, secrets, {
+        type: "Decrypt", nullifier_secret: encodeLowerHex(secret),
+        plaintexts: operation.items.map(item => encodeLowerHex(openCanaryItem(viewing, item))),
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+    try {
+      const probe = probeNitroTarget(policy.targets[0]!, trust, { canary });
+      if (changed) await expect(probe).rejects.toThrow("canary recipient keys differ from the custody receipt");
+      else await expect(probe).resolves.toBeDefined();
+      expect(fetch).toHaveBeenCalledTimes(changed ? 2 : 3);
+    } finally {
+      viewing.destroy();
+      nullifier.destroy();
+      secret.fill(0);
+    }
+  });
 
   it.each(["PublicKeys", "Decrypt"])("honors the operator deadline during %s", async stalled => {
     const { policy } = JSON.parse(signedPolicy()) as { policy: NitroPolicy };

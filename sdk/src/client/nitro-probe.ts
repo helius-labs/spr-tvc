@@ -1,6 +1,8 @@
 import { initializePoseidon, NullifierKey, ViewingKey } from "@heliuslabs/spr";
 import { randomSalt, type Bytes31 } from "@heliuslabs/spr/keypair";
-import { generateKeyPairSigner } from "@solana/kit";
+import { sha256 } from "@noble/hashes/sha256";
+import { concatBytes } from "@noble/hashes/utils";
+import { createKeyPairSignerFromPrivateKeyBytes, generateKeyPairSigner } from "@solana/kit";
 
 import { connectNitroTarget, nitroOperationBinding } from "../attestation/nitro-connection.js";
 import type { NitroTarget, NitroTrust } from "../attestation/nitro-policy.js";
@@ -15,6 +17,12 @@ import { decodePublicKeys, executeServiceCall } from "./exchange.js";
 import { checkPlaintexts, decryptItem } from "./items.js";
 
 const nowMs = () => BigInt(Date.now());
+const encoder = new TextEncoder();
+const OWNER_DOMAIN = encoder.encode("SPR/native-nitro/canary-owner/v1");
+const KEYS_DOMAIN = encoder.encode("SPR/native-nitro/canary-keys/v1");
+type CanaryAnchor = Pick<NitroTrust, "securityDomainId" | "noteSeedCommitment"> & {
+  readonly canaryKeyDigest: string;
+};
 
 export async function probeNitroTarget(
   target: NitroTarget,
@@ -61,8 +69,8 @@ function makeCanaryNote(keys: ReturnType<typeof decodePublicKeys>) {
 export type DecryptionCanary = ReturnType<typeof createDecryptionCanary>;
 
 export class CanaryRecipientMismatch extends DecryptionServiceError {
-  constructor() {
-    super("ReleaseBindingMismatch", "canary recipient keys differ between replicas");
+  constructor(detail = "canary recipient keys differ between replicas") {
+    super("ReleaseBindingMismatch", detail);
   }
 }
 
@@ -74,19 +82,27 @@ export function requireCanaryAgreement(results: readonly PromiseSettledResult<un
 }
 
 /** Check the same owner and encrypted note across all replicas in a qualification. */
-export function createDecryptionCanary() {
+export function createDecryptionCanary(anchor?: CanaryAnchor) {
   let signer: ReturnType<typeof generateKeyPairSigner> | undefined;
   let referenceKeys: ReturnType<typeof decodePublicKeys> | undefined;
   let note: ReturnType<typeof makeCanaryNote> | undefined;
+  const digest = anchor && requireHex(anchor.canaryKeyDigest, 32);
 
   return {
     async check(runtime: ConnectedTvcRuntime, signal: AbortSignal): Promise<void> {
-      signer ??= generateKeyPairSigner();
+      signer ??= anchor
+        ? createKeyPairSignerFromPrivateKeyBytes(sha256(concatBytes(OWNER_DOMAIN,
+          requireHex(anchor.securityDomainId, 32), requireHex(anchor.noteSeedCommitment, 32))))
+        : generateKeyPairSigner();
       const owner = await awaitWithSignal(signer, signal);
       const keys = decodePublicKeys(
         await executeServiceCall(runtime, { type: "PublicKeys", address: owner.address }, signal),
       );
       signal.throwIfAborted();
+      if (digest && !bytesEqual(digest, sha256(concatBytes(KEYS_DOMAIN,
+        keys.viewingPublicKey.toBytes(), keys.nullifierPublicKey)))) {
+        throw new CanaryRecipientMismatch("canary recipient keys differ from the custody receipt");
+      }
       const expected = referenceKeys ??= keys;
       if (!bytesEqual(keys.viewingPublicKey.toBytes(), expected.viewingPublicKey.toBytes()) ||
           !bytesEqual(keys.nullifierPublicKey, expected.nullifierPublicKey)) {

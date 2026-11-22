@@ -28,6 +28,10 @@ RECOVERY_WINDOW_SECONDS = 24 * 60 * 60
 LEDGER_WRITE_MARGIN_SECONDS = 30
 
 
+def note_key_identity(custody):
+    return hex_digest(custody["noteSeedCommitment"]), hex_digest(custody["canaryKeyDigest"])
+
+
 def record(trust, document):
     fields(document, "authorization", "acknowledgements")
     authorization = document["authorization"]
@@ -44,7 +48,9 @@ def record(trust, document):
     if (network, domain) != (trust["network"], trust["securityDomainId"]):
         raise ValueError("custody receipt is outside the pinned security domain")
     custody = receipt["custody"]
-    fields(custody, "epoch", "noteSeedCommitment", "shareCommitments")
+    fields(custody, "epoch", "noteSeedCommitment", "canaryKeyDigest", "shareCommitments")
+    if "00" * 32 in note_key_identity(custody):
+        raise ValueError("custody requires nonzero note key commitments")
     epoch = custody["epoch"]
     validate_scope(network, domain, release, epoch)
     if manifest["relay"] != relay_pins(trust, epoch):
@@ -772,7 +778,7 @@ def load_retirement(trust, epoch, **options):
         raise ValueError("retirement precedes a custody receipt it depends on")
     if (marker["receiptSha256"] != sha256(previous) or marker["replacementReceiptSha256"] != sha256(replacement) or
             marker["replacementCustodyDigest"] != sha256(replacement["custody"]) or
-            previous["custody"]["noteSeedCommitment"] != replacement["custody"]["noteSeedCommitment"]):
+            note_key_identity(previous["custody"]) != note_key_identity(replacement["custody"])):
         raise ValueError("retirement receipts do not match the ledger")
     retirement_recovery(document, replacement_custodians)
     retirement_target(trust, marker, receipt_at=replacement_at, retired_at=published_at, **options)
@@ -917,15 +923,18 @@ def check_release_policy(trust, document, custody_signer=None, *, source_profile
             registrations.add(name)
             pairs = wrapping_pairs(registered, custodians)
             target_slots.append((epoch, registered["releaseId"], pairs, slots))
-        return registrations, target_slots
+        return registrations, target_slots, custody["canaryKeyDigest"]
 
     with ThreadPoolExecutor(max_workers=len(by_epoch)) as workers:
         readiness = list(workers.map(check_epoch, by_epoch.items()))
-        registrations = set().union(*(names for names, _ in readiness))
+        canary_digests = {digest for _, _, digest in readiness}
+        if len(canary_digests) != 1:
+            raise ValueError("serving targets must preserve the same canary keys")
+        registrations = set().union(*(names for names, _, _ in readiness))
         if ledger_backup is not None:
             require_replicated_custody(trust, ledger_backup, max(by_epoch, key=epoch_number), registrations)
         if verify_payment_recovery:
-            require_payment_recovery_quorums([target for _, targets in readiness for target in targets])
+            require_payment_recovery_quorums([target for _, targets, _ in readiness for target in targets])
             check_source_ledger(trust, source_profile)
             check_recovery_bucket(trust, ledger_backup, replica_profile)
         # Check retirement after reading receipts, targets and key state.
@@ -936,7 +945,8 @@ def check_release_policy(trust, document, custody_signer=None, *, source_profile
     if custody_signer is not None and tuple(custody_signer) not in keys:
         raise ValueError("custody policy signer must match a key in the active custody approval roster")
     next_cutover = next((str(entry["activeFrom"]) for entry in trust["approvalKeys"] if entry["activeFrom"] > now), None)
-    return {"custodyKeys": [public for _, public in keys], "nextCutover": next_cutover}
+    return {"custodyKeys": [public for _, public in keys], "nextCutover": next_cutover,
+            "canaryKeyDigest": canary_digests.pop()}
 
 
 def draft(trust, capture, build, host, roster):
@@ -983,7 +993,7 @@ def check_rotation_target(manifest, target):
 def check_predecessor(document, receipt, predecessor, previous_roster):
     manifest = document["authorization"]["manifest"]
     if (sha256(predecessor) != manifest["previousReceiptSha256"] or
-            predecessor["custody"]["noteSeedCommitment"] != receipt["custody"]["noteSeedCommitment"] or
+            note_key_identity(predecessor["custody"]) != note_key_identity(receipt["custody"]) or
             predecessor["custody"] != manifest["capture"]["configuration"]["deployment"]["previous"]):
         raise ValueError("custody rotation does not descend from the canonical previous receipt")
     previous_keys = {custodian["recoveryKeyArn"] for custodian in previous_roster}

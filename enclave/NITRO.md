@@ -89,11 +89,18 @@ The seed identity is SHA-256 over `SPR/native-nitro/note-seed/v1`, the domain
 and the seed. Each share commitment hashes
 `SPR/native-nitro/custody-share/v1`, the domain and that share's encoded bytes.
 
+The receipt also pins `canaryKeyDigest`. The public test owner's Ed25519 seed is
+`SHA256("SPR/native-nitro/canary-owner/v1" || domain || noteSeedCommitment)`.
+The enclave derives that owner's keys with the same code it uses for wallets.
+It records `SHA256("SPR/native-nitro/canary-keys/v1" || viewingPublicKey || nullifierPublicKey)`
+over the 33-byte viewing key and 32-byte nullifier key. This public test identity
+is for synthetic notes and carries no funds.
+
 A custody rotation EIF measures the previous custody record and the six keys
 authorized for the next epoch. It reconstructs the existing seed from three
 valid previous shares and issues six fresh shares at the next epoch. It
-publishes the same seed commitment, six share commitments and one RSA-OAEP
-SHA-256 ciphertext per recipient. It erases the seed and serves the result
+publishes the same seed commitment and canary key digest, six share commitments,
+and one RSA-OAEP SHA-256 ciphertext per recipient. It erases the seed and serves the result
 for up to five minutes. Each receipt binds a verifier nonce and
 `SHA256("SPR/native-nitro/custody/v1" || canonical result)` in Nitro evidence.
 The ceremony serves only the custody port. Its measured recipient list controls
@@ -247,7 +254,8 @@ custody record. Both serving and rotation use the same bootstrap:
    The decrypted share is exactly 41 bytes. It contributes only
    if its slot matches the frame and its epoch and commitment match the
    measured configuration. The enclave restores
-   the seed from three distinct slots and verifies the seed commitment. It
+   the seed from three distinct slots and verifies the seed commitment and
+   canary key digest. It
    replies with HTTP 200 and the three slot numbers as raw bytes. A serving
    enclave keeps those same slot numbers for wallet attestation. The HTTP
    acknowledgement is local status. Use wallet attestation or the signed
@@ -294,17 +302,17 @@ followed by the same canonical JSON. The SDK verifies both quorums before
 contacting a replica. Separate key pins prevent the release quorum from
 substituting its own recipient keys through an unapproved image. The primary publisher
 checks the predecessor and matches the activation's wallet custody pins to
-the active operator roster. It uses one fresh synthetic owner and one encrypted
-note per qualification. Each target must attest, return the same viewing and
-nullifier keys, and open that exact note with an owner-signed request to its
+the active operator roster. It encrypts a fresh note for the receipt's public
+canary owner. Each target must attest, return viewing and nullifier keys that
+match the receipt's digest, and open that exact note with an owner-signed request to its
 boot. The operator authenticates both replies, checks the plaintext and
 derives the advertised nullifier key from the returned secret. Wallet trust
 distribution and retirement use the same probe. Retirement can qualify a
 healthy replacement while another endpoint is unavailable. Authenticated
 key disagreement blocks qualification. Before publishing an activation, the
 primary also checks outgoing targets from the authenticated predecessor with
-the same note. A predecessor outage permits recovery. Its authenticated key
-disagreement blocks publication. A planned transition matches the incoming
+the same note. During a predecessor outage, the committed receipts still
+require the incoming replicas to match the original canary keys. A planned transition matches the incoming
 pins. The publisher
 rechecks the peer's signed file, the registered targets, epoch closure and
 the active custody roster after probing. For mainnet payments, the publisher

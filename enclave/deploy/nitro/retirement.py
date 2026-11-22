@@ -20,7 +20,7 @@ from approval import (
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
     check_recovery_bucket, check_registered_target, find_retirement, ledger_replica, list_objects, load_epoch,
-    load_epoch_with_time, load_retirement, publication_time, read_registered_target, read_replicated_record,
+    load_epoch_with_time, load_retirement, note_key_identity, publication_time, read_registered_target, read_replicated_record,
     recovery_deadline, replica_trust,
     require_active_epoch, require_pinned_publications,
     require_publication_roster, require_replicated_custody, retirement_approval, retirement_bootstrap,
@@ -39,8 +39,8 @@ def retirement_scope(trust, epoch, replacement):
     _, new, custodians, new_at = load_epoch_with_time(trust, replacement)
     if time.time() < max(old_at, new_at):
         raise ValueError("retirement cannot precede a committed custody receipt")
-    if old["custody"]["noteSeedCommitment"] != new["custody"]["noteSeedCommitment"]:
-        raise ValueError("replacement epoch must preserve the note seed")
+    if note_key_identity(old["custody"]) != note_key_identity(new["custody"]):
+        raise ValueError("replacement epoch must preserve the note seed and canary keys")
     return {
         "network": trust["network"], "securityDomainId": trust["securityDomainId"],
         "epoch": epoch, "receiptSha256": sha256(old), "replacementEpoch": replacement,
@@ -111,14 +111,15 @@ def replacement_targets(trust, scope):
     return candidates
 
 
-def attested_boots(pinned_trust, candidates, scope, seed, *, after_ms=0, deadline=None, expected=None, required_slots=None):
+def attested_boots(pinned_trust, candidates, scope, custody, *, after_ms=0, deadline=None, expected=None, required_slots=None):
     timeout = 25 if deadline is None else min(25, deadline - time.monotonic())
     if timeout <= 0:
         raise ReplacementNotReady("replacement boot wait expired")
     root = Path(__file__).resolve().parents[3]
+    seed, canary_digest = note_key_identity(custody)
     reply = run_command([
         "pnpm", "--dir", str(root / "example"), "exec", "tsx", str(root / "xtask/nitro-retirement.ts"),
-        scope["network"], scope["securityDomainId"], seed, scope["replacementEpoch"], scope["replacementCustodyDigest"],
+        scope["network"], scope["securityDomainId"], seed, canary_digest, scope["replacementEpoch"], scope["replacementCustodyDigest"],
     ], input=pinned_trust, stdout=subprocess.PIPE, check=True, timeout=timeout)
     evidence = parse_json(reply.stdout)
     fields(evidence, "policyDigest", "targets")
@@ -149,10 +150,10 @@ def attested_boots(pinned_trust, candidates, scope, seed, *, after_ms=0, deadlin
     return matches
 
 
-def qualified_policy(trust, wallet_trust, scope, seed, *, after_ms=0, expected=None, custodians=None):
+def qualified_policy(trust, wallet_trust, scope, custody, *, after_ms=0, expected=None, custodians=None):
     pinned_trust = pinned_wallet_trust(trust, wallet_trust)
     candidates = replacement_targets(trust, scope)
-    boots = attested_boots(pinned_trust, candidates, scope, seed, after_ms=after_ms, expected=expected)
+    boots = attested_boots(pinned_trust, candidates, scope, custody, after_ms=after_ms, expected=expected)
     if custodians is not None:
         return ready_boot(trust, scope, boots, custodians)
     return boots[0]
@@ -176,15 +177,15 @@ def check_requalification_anchor(closure, published_at, manifest):
 
 def qualified_manifest(trust, wallet_trust, epoch, replacement, *, requalify=False):
     scope, receipt, custodians, _ = retirement_scope(trust, epoch, replacement)
-    seed = receipt["custody"]["noteSeedCommitment"]
+    custody = receipt["custody"]
     if requalify:
         closure, _, published_at = load_retirement(trust, epoch)
         scope["priorRetirementSha256"] = sha256(closure)
-        boot = qualified_policy(trust, wallet_trust, scope, seed,
+        boot = qualified_policy(trust, wallet_trust, scope, custody,
                                 after_ms=after_write_ms(published_at), custodians=custodians)
         check_requalification_anchor(closure, published_at, {**scope, **boot.evidence})
     else:
-        boot = qualified_policy(trust, wallet_trust, scope, seed, custodians=custodians)
+        boot = qualified_policy(trust, wallet_trust, scope, custody, custodians=custodians)
     policy = boot.evidence
     booted_at = epoch_number(policy["replacementBootstrap"]["bootedAtMs"]) // 1000
     manifest = {**scope, **policy, "recoveryDeadline": booted_at + RECOVERY_WINDOW_SECONDS}
@@ -247,7 +248,7 @@ def verify_qualification(trust, wallet_trust, document):
     manifest = document["manifest"]
     scope, receipt, custodians, receipt_at = checked_scope(trust, manifest)
     proven = retirement_recovery(document, custodians)
-    boot = qualified_policy(trust, wallet_trust, scope, receipt["custody"]["noteSeedCommitment"], expected=manifest)
+    boot = qualified_policy(trust, wallet_trust, scope, receipt["custody"], expected=manifest)
     policy = boot.evidence
     if manifest != {**scope, **policy, "recoveryDeadline": manifest["recoveryDeadline"]}:
         raise ValueError("retirement no longer matches the qualified replacement and wallet policy")
@@ -373,14 +374,14 @@ def qualify_key_retirement(trust, wallet_trust, qualification, published_at):
     replacement = qualification["replacementEpoch"]
     _, receipt, custodians = load_epoch(trust, replacement)
     candidates = replacement_targets(trust, qualification)
-    seed = receipt["custody"]["noteSeedCommitment"]
+    custody = receipt["custody"]
     bootstrap = qualification["replacementBootstrap"]
     slots = retirement_bootstrap(bootstrap)
     after_ms = max(after_write_ms(published_at), epoch_number(bootstrap["bootedAtMs"]) - 1)
-    boots = attested_boots(pinned_trust, candidates, qualification, seed, after_ms=after_ms, required_slots=slots)
+    boots = attested_boots(pinned_trust, candidates, qualification, custody, after_ms=after_ms, required_slots=slots)
 
     def confirm(boot):
-        return attested_boots(pinned_trust, candidates, qualification, seed, after_ms=after_ms, expected=boot)[0]
+        return attested_boots(pinned_trust, candidates, qualification, custody, after_ms=after_ms, expected=boot)[0]
 
     return ready_boot(trust, qualification, boots, custodians, confirm=confirm)
 
@@ -555,13 +556,13 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
     candidates = replacement_targets(trust, qualification)
     after_ms = int(time.time() * 1000)
     deadline = time.monotonic() + wait_seconds
-    seed = replacement["custody"]["noteSeedCommitment"]
+    custody = replacement["custody"]
     proven_slots = retirement_bootstrap(qualification["replacementBootstrap"])
     print("All old keys are inactive and registered parents terminated. Waiting for a newer replacement boot.", file=sys.stderr, flush=True)
     while True:
         try:
             require_current_requalification(trust, qualification)
-            boots = attested_boots(pinned_trust, candidates, qualification, seed, after_ms=after_ms,
+            boots = attested_boots(pinned_trust, candidates, qualification, custody, after_ms=after_ms,
                                    deadline=deadline, required_slots=proven_slots)
             break
         except (ReplacementNotReady, subprocess.SubprocessError) as error:
@@ -574,7 +575,7 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
     candidates = replacement_targets(trust, qualification)
 
     def confirm(boot):
-        return attested_boots(pinned_trust, candidates, qualification, seed, after_ms=after_ms, expected=boot)[0]
+        return attested_boots(pinned_trust, candidates, qualification, custody, after_ms=after_ms, expected=boot)[0]
 
     boot = ready_boot(trust, qualification, boots, replacement_custodians, confirm=confirm)
     if replica is not None:

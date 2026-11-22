@@ -17,6 +17,7 @@ fn custody() -> Value {
     json!({
         "epoch": "1",
         "noteSeedCommitment": "34".repeat(32),
+        "canaryKeyDigest": "35".repeat(32),
         "shareCommitments": (1..=6).map(|index| format!("{index:02x}").repeat(32)).collect::<Vec<_>>(),
     })
 }

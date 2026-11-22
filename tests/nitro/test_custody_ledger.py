@@ -96,7 +96,8 @@ class CustodyLedgerTests(unittest.TestCase):
             "custodianRole": f"arn:aws:iam::{index:012}:role/custodian",
             "retirementRole": f"arn:aws:iam::{index:012}:role/retirement",
         } for index in range(1, 7)]
-        custody = {"epoch": str(epoch), "noteSeedCommitment": "34" * 32, "shareCommitments": [variant * 32] * 6}
+        custody = {"epoch": str(epoch), "noteSeedCommitment": "34" * 32, "canaryKeyDigest": "35" * 32,
+                   "shareCommitments": [variant * 32] * 6}
         receipt = {
             "network": self.trust["network"], "securityDomainId": DOMAIN, "releaseId": f"custody-{epoch}",
             "custody": custody, "packages": [{}] * 6,
@@ -414,11 +415,27 @@ class CustodyLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "canonical previous receipt"):
             publish(self.trust, self.sign(bad))
         bad = copy.deepcopy(new)
+        bad["authorization"]["manifest"]["capture"]["receipt"]["custody"]["canaryKeyDigest"] = "12" * 32
+        with self.assertRaisesRegex(ValueError, "canonical previous receipt"):
+            publish(self.trust, self.sign(bad))
+        bad = copy.deepcopy(new)
         bad["authorization"]["manifest"]["custodians"] = roster
         with self.assertRaisesRegex(ValueError, "fresh recovery keys"):
             publish(self.trust, self.sign(bad))
         publish(self.trust, self.sign(new))
         self.assertEqual(load_epoch(self.trust, "2")[1]["custody"]["noteSeedCommitment"], previous["custody"]["noteSeedCommitment"])
+        self.assertEqual(load_epoch(self.trust, "2")[1]["custody"]["canaryKeyDigest"], previous["custody"]["canaryKeyDigest"])
+
+    def test_receipt_requires_a_nonzero_canonical_canary_digest(self):
+        for value in (None, "00" * 32, "ff", "AA" * 32):
+            document = self.document(1)
+            custody = document["authorization"]["manifest"]["capture"]["receipt"]["custody"]
+            if value is None:
+                del custody["canaryKeyDigest"]
+            else:
+                custody["canaryKeyDigest"] = value
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                record(self.trust, document)
 
     def test_signs_only_a_ceremony_bound_to_verified_provenance(self):
         publish(self.trust, self.sign(self.document(1)))
@@ -1391,14 +1408,14 @@ class CustodyLedgerTests(unittest.TestCase):
         self.trust["approvalKeys"].append(incoming)
         self.assertEqual(check(), {"custodyKeys": [base64.b64decode(pin["publicKey"])[-65:].hex()
                                                    for pin in self.trust["approvalKeys"][0]["keys"]],
-                                   "nextCutover": str(incoming["activeFrom"])})
+                                   "nextCutover": str(incoming["activeFrom"]), "canaryKeyDigest": "35" * 32})
         self.now = incoming["activeFrom"]
         with self.assertRaisesRegex(ValueError, "active custody approval roster"):
             check(custody_signer=signer)
         next_pin = approval_roster(self.trust)["keys"][0]
         self.assertEqual(check(custody_signer=(next_pin["keyArn"], base64.b64decode(next_pin["publicKey"])[-65:].hex())),
                          {"custodyKeys": [base64.b64decode(pin["publicKey"])[-65:].hex() for pin in incoming["keys"]],
-                          "nextCutover": None})
+                          "nextCutover": None, "canaryKeyDigest": "35" * 32})
         def close_during_target_read(*args, **options):
             subject = read_registered_target(*args, **options)
             if subject["mode"] == "serve":
@@ -1851,7 +1868,7 @@ class CustodyLedgerTests(unittest.TestCase):
         rotated, _ = self.rotation_document(old)
         publish(self.trust, self.sign(rotated))
         scope, receipt, _, _ = retirement_scope(self.trust, "1", "2")
-        seed = receipt["custody"]["noteSeedCommitment"]
+        custody = receipt["custody"]
         registered = self.replacement_target()
         pins = target_attestation(registered)["pcrs"]
         observed = {"releaseId": registered["releaseId"], "pcrs": pins,
@@ -1866,7 +1883,7 @@ class CustodyLedgerTests(unittest.TestCase):
             with patch("retirement.run_command") as query:
                 query.return_value.stdout = self.attestation_reply(evidence)
                 with self.assertRaisesRegex(ValueError, "no registered serving target"):
-                    qualified_policy(self.trust, wallet_trust, scope, seed)
+                    qualified_policy(self.trust, wallet_trust, scope, custody)
 
                 rotation = {**registered, "mode": "rotate", "pcrs": {**registered["pcrs"], "PCR2": "ef" * 48},
                             "nextCustodians": rotated["authorization"]["manifest"]["custodians"],
@@ -1875,7 +1892,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 same_parent = {**registered, "instanceId": INSTANCE, "wrappingKeys": [key(i, 23) for i in range(1, 7)]}
                 register_target(self.trust, self.signed_subject(TARGET_APPROVAL, same_parent))
                 with self.assertRaisesRegex(ValueError, "no registered serving target on a separate replacement instance"):
-                    qualified_policy(self.trust, wallet_trust, scope, seed)
+                    qualified_policy(self.trust, wallet_trust, scope, custody)
                 query.assert_not_called()
 
                 register_target(self.trust, self.signed_subject(TARGET_APPROVAL, registered))
@@ -1883,45 +1900,46 @@ class CustodyLedgerTests(unittest.TestCase):
                 early = datetime.fromtimestamp(self.now - 1, timezone.utc).isoformat()
                 with patch.dict(self.timestamps, {name: early}):
                     with self.assertRaisesRegex(ValueError, "target registration precedes its custody receipt"):
-                        qualified_policy(self.trust, wallet_trust, scope, seed)
+                        qualified_policy(self.trust, wallet_trust, scope, custody)
                     query.assert_not_called()
                 for pcr in ("3", "4"):
                     query.return_value.stdout = self.attestation_reply({**evidence, "targets": [
                         {**observed, "pcrs": {**pins, pcr: "ab" * 48}},
                     ]})
                     with self.subTest(pcr=pcr), self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
-                        qualified_policy(self.trust, wallet_trust, scope, seed)
+                        qualified_policy(self.trust, wallet_trust, scope, custody)
 
                 for slots in ([1, 2], [1, 1, 2], [1, 2, 7], [True, 2, 3], [3, 2, 1]):
                     bootstrap = {**observed["bootstrap"], "slots": slots}
                     query.return_value.stdout = self.attestation_reply({**evidence, "targets": [{**observed, "bootstrap": bootstrap}]})
                     with self.assertRaisesRegex(ValueError, "three distinct attested bootstrap slots"):
-                        qualified_policy(self.trust, wallet_trust, scope, seed)
+                        qualified_policy(self.trust, wallet_trust, scope, custody)
                 query.return_value.stdout = self.attestation_reply(evidence)
-                self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, seed).evidence, self.qualification(registered))
+                self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, custody).evidence, self.qualification(registered))
                 with self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
-                    qualified_policy(self.trust, wallet_trust, scope, seed, after_ms=self.booted_at_ms)
+                    qualified_policy(self.trust, wallet_trust, scope, custody, after_ms=self.booted_at_ms)
                 with patch("retirement.time.time", return_value=self.now + RECOVERY_WINDOW_SECONDS):
                     with self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
-                        qualified_policy(self.trust, wallet_trust, scope, seed)
+                        qualified_policy(self.trust, wallet_trust, scope, custody)
                 sibling = {**registered, "instanceId": "i-1234567890abcdef4", "wrappingKeys": [key(i, 24) for i in range(1, 7)]}
                 register_target(self.trust, self.signed_subject(TARGET_APPROVAL, sibling))
                 other = {**target_attestation(sibling), "bootstrap": observed["bootstrap"]}
                 query.return_value.stdout = self.attestation_reply({**evidence, "targets": [other, observed]})
-                self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, seed).evidence, self.qualification(sibling))
-                self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, seed, expected=self.qualification(registered)).evidence,
+                self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, custody).evidence, self.qualification(sibling))
+                self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, custody, expected=self.qualification(registered)).evidence,
                                  self.qualification(registered))
                 self.assertEqual(query.call_args.kwargs["input"], body)
+                self.assertIn(custody["canaryKeyDigest"], query.call_args.args[0])
                 self.assertNotIn(str(wallet_trust), query.call_args.args[0])
                 query.reset_mock()
                 wallet_trust.write_bytes(b"{}")
                 with self.assertRaisesRegex(ValueError, "does not match the pinned digest"):
-                    qualified_policy(self.trust, wallet_trust, scope, seed)
+                    qualified_policy(self.trust, wallet_trust, scope, custody)
                 wrong_pair = canonical({"publications": self.trust["publications"][::-1]})
                 wallet_trust.write_bytes(wrong_pair)
                 self.trust["walletTrustSha256"] = hashlib.sha256(wrong_pair).hexdigest()
                 with self.assertRaisesRegex(ValueError, "pinned primary and mirror"):
-                    qualified_policy(self.trust, wallet_trust, scope, seed)
+                    qualified_policy(self.trust, wallet_trust, scope, custody)
                 query.assert_not_called()
 
     def test_retirement_selects_a_standby_when_an_attested_replica_cannot_qualify(self):

@@ -16,6 +16,7 @@ import { createDecryptionCanary, probeNitroTarget, requireCanaryAgreement, type 
 import { remainingReleasePolicyMs } from "../sdk/src/connection/operations.js";
 import { decodeDecimalU64 } from "../sdk/src/protocol/decimal.js";
 import { DecryptionServiceError } from "../sdk/src/protocol/error.js";
+import { requireHex } from "../sdk/src/protocol/hex.js";
 import { canonicalizeJsonValue } from "../sdk/src/protocol/jcs.js";
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
 
@@ -48,9 +49,9 @@ type ReplicaProbe = {
 
 async function probeActivationTargets(
   targets: readonly NitroTarget[], trust: NitroTrust, probe: NonNullable<PublicationOptions["probe"]>,
-  previous: readonly NitroTarget[] = [],
+  canaryKeyDigest: string, previous: readonly NitroTarget[] = [],
 ): Promise<ReplicaProbe[]> {
-  const canary = createDecryptionCanary();
+  const canary = createDecryptionCanary({ ...trust, canaryKeyDigest });
   const current = new Set(targets.map(target => canonicalizeJsonValue(target)));
   const outgoing = previous.filter(target => !current.has(canonicalizeJsonValue(target)));
   const [probes, predecessor] = await Promise.all([
@@ -114,6 +115,7 @@ async function checkActivationRoster(
   candidate: string, custodyTrust: string, trust: NitroTrust, run: Run,
   { sourceProfile, replicaProfile }: Pick<PublicationOptions, "sourceProfile" | "replicaProfile">,
   paymentProbes?: readonly ReplicaProbe[],
+  expectedCanaryKeyDigest?: string,
 ) {
   const args = ["-B", custodyLedger, custodyTrust, "check-release-policy", candidate];
   if (sourceProfile !== undefined) args.push("--source-profile", sourceProfile);
@@ -122,13 +124,20 @@ async function checkActivationRoster(
     args.push("--bootstrap-slots", JSON.stringify(paymentProbes.map(probe => probe.bootstrapSlots)));
   }
   const { stdout } = await run("python3", args, 60_000);
-  const roster = parseStrictJson<{ custodyKeys: string[]; nextCutover: string | null }>(stdout, ["custodyKeys", "nextCutover"]);
+  const roster = parseStrictJson<{ custodyKeys: string[]; nextCutover: string | null; canaryKeyDigest: string }>(
+    stdout, ["custodyKeys", "nextCutover", "canaryKeyDigest"],
+  );
   const expected = trust.custodyKeys;
   if (!Array.isArray(roster.custodyKeys) || roster.custodyKeys.length !== expected.length ||
       !expected.every(key => roster.custodyKeys.includes(key))) {
     throw new Error("activation requires the active custody approval roster");
   }
-  return roster.nextCutover === null ? undefined : decodeDecimalU64(roster.nextCutover) * 1_000n;
+  const { canaryKeyDigest } = roster;
+  if (!requireHex(canaryKeyDigest, 32).some(byte => byte !== 0) ||
+      (expectedCanaryKeyDigest !== undefined && canaryKeyDigest !== expectedCanaryKeyDigest)) {
+    throw new Error("activation requires an unchanged custody canary key digest");
+  }
+  return { canaryKeyDigest, cutover: roster.nextCutover === null ? undefined : decodeDecimalU64(roster.nextCutover) * 1_000n };
 }
 
 export function bucketPolicy(trust: NitroTrust, name: string, administrator: string, publisher: string) {
@@ -322,16 +331,18 @@ export async function publish(
     if (activatesPrimary && custodyTrust) {
       const custodyPins = nextTrust ?? trust;
       const inspection = { sourceProfile, replicaProfile };
-      const cutover = await checkActivationRoster(candidate, custodyTrust, custodyPins, run, inspection);
+      const { cutover, canaryKeyDigest } = await checkActivationRoster(candidate, custodyTrust, custodyPins, run, inspection);
       requireCustodyWriteWindow(cutover, BigInt(Date.now()));
       // nextNitroPublication authenticated the exact predecessor above.
       const previous = head && parseStrictJson<{ policy: NitroPolicy }>(head.text).policy;
-      probes = await probeActivationTargets(policy.targets, trust, probe, previous?.targets);
+      probes = await probeActivationTargets(policy.targets, trust, probe, canaryKeyDigest, previous?.targets);
       await checkMirror();
-      [confirmedCutover] = await Promise.all([
-        checkActivationRoster(candidate, custodyTrust, custodyPins, run, inspection, policy.recoveryOnly ? undefined : probes),
+      const [confirmed] = await Promise.all([
+        checkActivationRoster(candidate, custodyTrust, custodyPins, run, inspection,
+          policy.recoveryOnly ? undefined : probes, canaryKeyDigest),
         checkPublicationBuckets(bucketChecks, run),
       ]);
+      confirmedCutover = confirmed.cutover;
     }
     const latestPrimary = isSecond ? await readPeer() : undefined;
     const beforeWrite = BigInt(Date.now());
@@ -511,10 +522,11 @@ export async function verifyDistributionPins(
     const candidate = join(directory, "published.json");
     await writeFile(candidate, published.text, { mode: 0o600, flag: "wx" });
     const inspection = { sourceProfile, replicaProfile };
-    await checkActivationRoster(candidate, custodyTrust, trust, run, inspection);
-    const probes = await probeActivationTargets(published.policy.targets, trust, probe);
-    const [nextCutover] = await Promise.all([
-      checkActivationRoster(candidate, custodyTrust, trust, run, inspection, published.policy.recoveryOnly ? undefined : probes),
+    const { canaryKeyDigest } = await checkActivationRoster(candidate, custodyTrust, trust, run, inspection);
+    const probes = await probeActivationTargets(published.policy.targets, trust, probe, canaryKeyDigest);
+    const [{ cutover: nextCutover }] = await Promise.all([
+      checkActivationRoster(candidate, custodyTrust, trust, run, inspection,
+        published.policy.recoveryOnly ? undefined : probes, canaryKeyDigest),
       checkPublicationBuckets(bucketChecks, run),
     ]);
     const confirmed = await pinnedPublication(trust);

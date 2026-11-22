@@ -32,6 +32,7 @@ const trustBase = {
   keys: keys.slice(0, 2),
   custodyKeys: custodyKeys.slice(0, 3),
 } satisfies Omit<NitroTrust, "minimumPolicyDigest">;
+const canaryKeyDigest = "35".repeat(32);
 const now = Date.now();
 const first: NitroPolicy = {
   version: 1, action: "revoke", recoveryOnly: false, network: trustBase.network, securityDomainId: trustBase.securityDomainId,
@@ -238,7 +239,7 @@ test("the primary leaves time for the conditional write before policy expiry", a
   await assert.rejects(publish(trust, primary.bucket, activation, {
     custodyTrust: "custody.json",
     async run(command, args) {
-      if (command === "python3") return { stdout: JSON.stringify({ custodyKeys: trust.custodyKeys, nextCutover: null }) };
+      if (command === "python3") return { stdout: JSON.stringify({ custodyKeys: trust.custodyKeys, nextCutover: null, canaryKeyDigest }) };
       return read.run(command, args);
     },
     async probe() { current = now + 30_000; return freshProbe(); },
@@ -255,8 +256,8 @@ test("requires custody registration, the active roster and live attestation befo
   const custodyTrust = "/pinned/custody.json";
   let checked = 0;
   let approved = false;
-  let roster: { custodyKeys: readonly string[]; nextCutover: string | null } = {
-    custodyKeys: custodyKeys.slice(3), nextCutover: null,
+  let roster: { custodyKeys: readonly string[]; nextCutover: string | null; canaryKeyDigest: string } = {
+    custodyKeys: custodyKeys.slice(3), nextCutover: null, canaryKeyDigest,
   };
   const run = async (command: string, args: string[]) => {
     assert.equal(command, "python3");
@@ -272,7 +273,7 @@ test("requires custody registration, the active roster and live attestation befo
   assert.equal(fetch.mock.callCount(), 0);
   approved = true;
   await assert.rejects(publish(pins(activate), bucket, text, { custodyTrust, run }), /active custody approval roster/);
-  roster = { custodyKeys: trust.custodyKeys, nextCutover: String(Math.floor(Date.now() / 1_000) + 10) };
+  roster = { custodyKeys: trust.custodyKeys, nextCutover: String(Math.floor(Date.now() / 1_000) + 10), canaryKeyDigest };
   await assert.rejects(publish(pins(activate), bucket, text, { custodyTrust, run }), /cutover is too close/);
   roster.nextCutover = null;
   await assert.rejects(publish(pins(activate), bucket, text, { custodyTrust, run }), /BootProofUnverified/);
@@ -296,7 +297,7 @@ test("qualifies a planned custody transition only after the incoming roster acti
   });
   let activeKeys = trust.custodyKeys;
   const run = async (command: string, args: string[]) => {
-    if (command === "python3") return { stdout: JSON.stringify({ custodyKeys: activeKeys, nextCutover: null }) };
+    if (command === "python3") return { stdout: JSON.stringify({ custodyKeys: activeKeys, nextCutover: null, canaryKeyDigest }) };
     assert.equal(command, "aws");
     assert.ok(args.includes("get-object"));
     await writeFile(args.at(-1)!, signed(first));
@@ -327,7 +328,7 @@ test("requires a successful operation probe on every target before writing an ac
     return freshProbe();
   };
   const run = async (command: string, args: string[]) => {
-    if (command === "python3") return { stdout: JSON.stringify({ custodyKeys: trust.custodyKeys, nextCutover: null }) };
+    if (command === "python3") return { stdout: JSON.stringify({ custodyKeys: trust.custodyKeys, nextCutover: null, canaryKeyDigest }) };
     assert.equal(command, "aws");
     assert.ok(args.includes("put-object"));
     assert.equal(await readFile(args.at(-1)!, "utf8"), text);
@@ -362,7 +363,7 @@ test("checks the outgoing boot during fleet replacement and can recover from its
     custodyTrust: "/pinned/custody.json",
     async run(command: string, args: string[]) {
       if (command === "python3") {
-        return { stdout: JSON.stringify({ custodyKeys: pinned.custodyKeys, nextCutover: null }) };
+        return { stdout: JSON.stringify({ custodyKeys: pinned.custodyKeys, nextCutover: null, canaryKeyDigest }) };
       }
       assert.equal(command, "aws");
       if (args.includes("get-object")) {
@@ -405,6 +406,7 @@ test("activation rejects an incompatible peer or invalid custody state observed 
   const predecessor = signed(first);
   let peer = predecessor;
   let retired = false;
+  let digest = canaryKeyDigest;
   let activeKeys = trust.custodyKeys;
   let cutover: string | null = null;
   context.mock.method(globalThis, "fetch", async () => new Response(peer));
@@ -413,7 +415,7 @@ test("activation rejects an incompatible peer or invalid custody state observed 
     if (command === "python3") {
       assert.equal(await readFile(args.at(-1)!, "utf8"), text);
       if (retired) throw new Error("custody epoch is retired");
-      return { stdout: JSON.stringify({ custodyKeys: activeKeys, nextCutover: cutover }) };
+      return { stdout: JSON.stringify({ custodyKeys: activeKeys, nextCutover: cutover, canaryKeyDigest: digest }) };
     }
     assert.equal(command, "aws");
     if (args.includes("get-object")) {
@@ -437,6 +439,10 @@ test("activation rejects an incompatible peer or invalid custody state observed 
     ...options, async probe() { cutover = String(Math.floor(Date.now() / 1_000) + 10); return freshProbe(); },
   }), /cutover is too close/);
   cutover = null;
+  await assert.rejects(publish(trust, bucket, text, {
+    ...options, async probe() { digest = "71".repeat(32); return freshProbe(); },
+  }), /unchanged custody canary key digest/);
+  digest = canaryKeyDigest;
   await assert.rejects(publish(trust, bucket, text, {
     ...options, async probe() { peer = signed(first, [1, 0]); return freshProbe(); },
   }), /same signed predecessor/);
@@ -469,7 +475,7 @@ test("rechecks live replica evidence after the final custody read", async contex
           assert.deepEqual(args.slice(5), profiles);
         }
         remaining = remainingAfterCustody;
-        return { stdout: JSON.stringify({ custodyKeys: trust.custodyKeys, nextCutover: null }) };
+        return { stdout: JSON.stringify({ custodyKeys: trust.custodyKeys, nextCutover: null, canaryKeyDigest }) };
       }
       assert.ok(args.includes("get-object"));
       await writeFile(args.at(-1)!, predecessor);
@@ -797,7 +803,7 @@ test("mainnet checks both installed publication buckets before enabling payments
     publicationProfiles: ["primary-read", "mirror-read"],
     async run(command: string, args: string[]) {
       if (command === "python3") {
-        return { stdout: JSON.stringify({ custodyKeys: mainnet.custodyKeys, nextCutover: null }) };
+        return { stdout: JSON.stringify({ custodyKeys: mainnet.custodyKeys, nextCutover: null, canaryKeyDigest }) };
       }
       assert.equal(command, "aws");
       if (args.includes("put-object")) {
@@ -945,7 +951,7 @@ test("wallet activation pins require the active custody roster and a stable publ
     assert.equal(await readFile(args.at(-1)!, "utf8"), text);
     if (retired) throw new Error("custody epoch is retired");
     if (changedEnvelope) head = changedEnvelope;
-    return { stdout: JSON.stringify({ custodyKeys: incoming.custodyKeys, nextCutover }) };
+    return { stdout: JSON.stringify({ custodyKeys: incoming.custodyKeys, nextCutover, canaryKeyDigest }) };
   };
   let failing = false;
   const probe = async (replica: typeof target) => {

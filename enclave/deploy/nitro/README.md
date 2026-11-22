@@ -764,13 +764,12 @@ sequence, policy digest, custody floor and recovery mode atomically once
 it verifies both signed heads, before contacting a replica. An activation
 still requires fresh replica attestation before use. A revocation has an
 empty target list. The primary publisher checks the predecessor and attests
-each activation target. It uses `/v1/operations` to look up the same fresh
-synthetic owner on each target and sends an owner-signed `Decrypt` request
-for the same encrypted note. Each boot must return the same recipient keys
-and open that note. The probe checks the recovered plaintext and nullifier key
-without using a funded wallet. The publisher includes outgoing targets from
-the signed predecessor in the comparison. An unreachable predecessor permits
-recovery. Authenticated disagreement stops activation. The publisher
+each activation target. It uses `/v1/operations` to look up the receipt's
+public canary owner and sends an owner-signed `Decrypt` request for the same
+freshly encrypted note to each target. Each boot must return the recipient
+keys pinned by the receipt and open that note. The publisher includes outgoing
+targets from the signed predecessor in the comparison. The receipt still
+anchors the comparison when every predecessor endpoint is offline. The publisher
 rereads the peer and custody ledger after the probes, checks the active
 roster and cutover window, and writes against its original ETag. New primary
 policies need more than 30 seconds before expiry to submit the write.
