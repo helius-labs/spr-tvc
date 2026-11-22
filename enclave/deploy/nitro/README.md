@@ -350,8 +350,9 @@ check and sign that mapping. The plan must fit the 64 KiB custody document
 limit. Every retained version must match the pinned checkpoint. Repair
 preserves a receipt with its approval quorum and all six valid custodian
 acknowledgements, a target approved at its publication time, and a retirement
-with its approval quorum and three valid replacement proofs. If the tool
-cannot read a replacement receipt needed to verify a retirement, repair stops.
+with its approval quorum and three valid replacement proofs. Repair also
+stops if a replacement receipt cannot be read or the signature verifier
+returns an error instead of a definite result.
 
 ```sh
 python3 "$nitro/custody_archive.py" trust.json draft-repair recovered-trust.json excluded-records.json \

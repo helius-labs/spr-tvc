@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import ANY, call, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
-from approval import MAX_DOCUMENT_BYTES, approval_keys, approval_roster, canonical, sha256
+from approval import MAX_DOCUMENT_BYTES, ApprovalVerificationUnavailable, approval_keys, approval_roster, canonical, sha256
 from custody_archive import (
     MAX_ARCHIVE_ENTRY_BYTES, archive, draft_repair, ledger_checkpoint, repair_transfer,
     require_uncommitted_record, sign_repair, verify_archive, verify_ledger_records, verify_promotion,
@@ -813,12 +813,25 @@ class CustodyLedgerTests(unittest.TestCase):
         retired_version = hashlib.sha256(retired_key.encode()).hexdigest()
         with self.assertRaisesRegex(ValueError, "complete custody approval"):
             require_uncommitted_record(self.trust, retired_name, retired_version)
+        for name in ("1.json", target_object_name(target), retired_name):
+            version = hashlib.sha256((prefix + name).encode()).hexdigest()
+            for status in (0, 1, -9):
+                unavailable = SimpleNamespace(returncode=status, stdout=b"", stderr=b"OpenSSL unavailable")
+                with (self.subTest(name=name, status=status), patch("approval.subprocess.run", return_value=unavailable),
+                      self.assertRaisesRegex(ValueError, "could not verify custody approval signature")):
+                    require_uncommitted_record(self.trust, name, version)
         with patch("custody_archive.load_epoch", side_effect=ValueError("replacement read unavailable")):
             with self.assertRaisesRegex(ValueError, "replacement read unavailable"):
+                require_uncommitted_record(self.trust, retired_name, retired_version)
+        with patch("custody_archive.retirement_recovery",
+                   side_effect=ApprovalVerificationUnavailable("could not verify custody approval signature")):
+            with self.assertRaisesRegex(ValueError, "could not verify custody approval signature"):
                 require_uncommitted_record(self.trust, retired_name, retired_version)
         invalid_proofs = copy.deepcopy(retired)
         invalid_proofs["recoveryProofs"][0]["signature"] = retired["signatures"][0]["signature"]
         with patch.dict(self.objects, {retired_key: canonical(invalid_proofs)}):
+            require_uncommitted_record(self.trust, retired_name, retired_version)
+        with patch.dict(self.objects, {retired_key: b"[" * 2048 + b"]" * 2048}):
             require_uncommitted_record(self.trust, retired_name, retired_version)
 
         bad = "retired/2.json"

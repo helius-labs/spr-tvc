@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from unittest.mock import call, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
-from approval import sha256
+from approval import P256_ORDER, is_p256_der_signature, sha256
 from custody_ledger import TARGET_APPROVAL, target_object_name
 from deployment import HostUnobserved, file_digest, main, require_host_state, target
 from kms_policy import RSA_OAEP, recovery_policy
@@ -28,6 +28,19 @@ BOOT = "ab" * 32
 
 
 class TargetApprovalTests(unittest.TestCase):
+    def test_p256_signatures_require_two_canonical_in_range_der_integers(self):
+        def encode(first, second):
+            content = bytes((2, len(first))) + first + bytes((2, len(second))) + second
+            return bytes((0x30, len(content))) + content
+
+        one = b"\x01"
+        self.assertTrue(is_p256_der_signature(encode(one, b"\x00\x80")))
+        for scalar in (b"", b"\x00", b"\x00\x01", b"\x80", b"\x00" + P256_ORDER.to_bytes(32, "big"), b"x" * 34):
+            with self.subTest(scalar=scalar):
+                self.assertFalse(is_p256_der_signature(encode(one, scalar)))
+        self.assertFalse(is_p256_der_signature(encode(one, one) + b"\x00"))
+        self.assertFalse(is_p256_der_signature(encode(one, one)[:-1]))
+
     def setUp(self):
         self.build = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.trust = {"network": "devnet", "securityDomainId": DOMAIN, "approvalKeys": [schedule()],

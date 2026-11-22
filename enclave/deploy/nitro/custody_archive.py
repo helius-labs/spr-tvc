@@ -12,7 +12,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 from approval import (
-    MAX_DOCUMENT_BYTES, add_approval, approval_keys, approval_roster, canonical, check_approvals, epoch_number,
+    MAX_DOCUMENT_BYTES, ApprovalVerificationUnavailable, add_approval, approval_keys, approval_roster,
+    canonical, check_approvals, epoch_number,
     fields, hex_digest, open_regular, parse_json, read_json, require_profile_account, sha256, unique_object,
 )
 from custody_ledger import (
@@ -198,7 +199,7 @@ def require_uncommitted_record(trust, name, version, **options):
         raise ValueError("excluded ledger record changed during verification")
     try:
         document = parse_json(payload)
-    except ValueError:
+    except (ValueError, RecursionError):
         return
     if not matches_slot(trust, name, label, document):
         return
@@ -213,6 +214,8 @@ def require_uncommitted_record(trust, name, version, **options):
             proofs = document["recoveryProofs"]
             if not isinstance(proofs, list) or len(proofs) != 3:
                 return
+    except ApprovalVerificationUnavailable:
+        raise
     except (ValueError, TypeError, KeyError):
         return
 
@@ -223,6 +226,8 @@ def require_uncommitted_record(trust, name, version, **options):
             raise ValueError("cannot authenticate the replacement receipt for retirement repair")
         try:
             retirement_recovery(document, custodians)
+        except ApprovalVerificationUnavailable:
+            raise
         except (ValueError, TypeError, KeyError):
             return
     raise ValueError(f"cannot exclude {name} with a complete custody approval for that slot")

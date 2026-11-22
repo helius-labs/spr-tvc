@@ -18,6 +18,7 @@ ROLE_ARN = re.compile(r"arn:aws:iam::([0-9]{12}):role/[A-Za-z0-9+=,.@_/-]+")
 SIGNING_ALGORITHM = "ECDSA_SHA_256"
 MAX_DOCUMENT_BYTES = 64 * 1024
 P256_SPKI_PREFIX = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d03010703420004")
+P256_ORDER = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551
 
 
 def fields(value, *expected):
@@ -217,6 +218,28 @@ def signature_args(label, manifest):
             "--message", base64.b64encode(digest).decode()]
 
 
+class ApprovalVerificationUnavailable(ValueError):
+    """The verifier could not determine whether the signature is valid."""
+
+
+def is_p256_der_signature(signature):
+    if not 8 <= len(signature) <= 72 or signature[:2] != bytes((0x30, len(signature) - 2)):
+        return False
+    offset = 2
+    for _ in range(2):
+        if offset + 2 >= len(signature) or signature[offset] != 0x02:
+            return False
+        size = signature[offset + 1]
+        start, offset = offset + 2, offset + 2 + size
+        if not 1 <= size <= 33 or offset > len(signature):
+            return False
+        scalar = signature[start:offset]
+        if (scalar[0] >= 0x80 or (size > 1 and scalar[0] == 0 and scalar[1] < 0x80) or
+                not 0 < int.from_bytes(scalar, "big") < P256_ORDER):
+            return False
+    return offset == len(signature)
+
+
 def check_approvals(keys, label, document, minimum=2):
     fields(document, "manifest", "signatures")
     signatures = document["signatures"]
@@ -235,7 +258,7 @@ def check_approvals(keys, label, document, minimum=2):
             if key not in pins or key in seen or not isinstance(encoded, str) or len(encoded) > 96:
                 raise ValueError("invalid or duplicate approval")
             signature = base64.b64decode(encoded, validate=True)
-            if not 8 <= len(signature) <= 72 or base64.b64encode(signature).decode() != encoded:
+            if not is_p256_der_signature(signature) or base64.b64encode(signature).decode() != encoded:
                 raise ValueError("invalid custody approval signature encoding")
             public = pins[key]
             public_path.write_text(f"-----BEGIN PUBLIC KEY-----\n{public[:64]}\n{public[64:]}\n-----END PUBLIC KEY-----\n")
@@ -243,8 +266,11 @@ def check_approvals(keys, label, document, minimum=2):
             result = subprocess.run([
                 "openssl", "dgst", "-sha256", "-verify", str(public_path), "-signature", str(signature_path),
             ], input=message, capture_output=True, timeout=10, check=False)
-            if result.returncode:
+            # dgst uses exit 1 for both a mismatch and verifier errors.
+            if result.returncode == 1 and result.stdout == b"Verification failure\n":
                 raise ValueError("invalid custody approval signature")
+            if result.returncode != 0 or result.stdout != b"Verified OK\n":
+                raise ApprovalVerificationUnavailable("could not verify custody approval signature")
             seen.add(key)
 
 
