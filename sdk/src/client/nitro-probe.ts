@@ -10,7 +10,7 @@ import type { ConnectedTvcRuntime } from "../connection/connect.js";
 import { requireCurrentReleasePolicy } from "../connection/operations.js";
 import { awaitWithSignal } from "../connection/request.js";
 import { MAX_CLOCK_SKEW_MS } from "../protocol/constants.js";
-import { DecryptionServiceError } from "../protocol/error.js";
+import { AuthenticatedOperationError } from "../protocol/error.js";
 import { bytesEqual, encodeLowerHex, requireHex } from "../protocol/hex.js";
 import type { DecryptItem } from "../protocol/types.js";
 import { decodePublicKeys, executeServiceCall } from "./exchange.js";
@@ -86,16 +86,16 @@ function makeCanaryNote(
 
 export type DecryptionCanary = ReturnType<typeof createDecryptionCanary>;
 
-export class CanaryMismatch extends DecryptionServiceError {
+export class CanaryMismatch extends AuthenticatedOperationError {
   constructor(detail = "canary recipient keys differ between replicas") {
     super("ReleaseBindingMismatch", detail);
   }
 }
 
-/** A missing replica supplies no comparison. A verified disagreement blocks the group. */
+/** Block on an invalid result authenticated to a measured boot. */
 export function requireCanaryAgreement(results: readonly PromiseSettledResult<unknown>[]): void {
   for (const result of results) {
-    if (result.status === "rejected" && result.reason instanceof CanaryMismatch) throw result.reason;
+    if (result.status === "rejected" && result.reason instanceof AuthenticatedOperationError) throw result.reason;
   }
 }
 

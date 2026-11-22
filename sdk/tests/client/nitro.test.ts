@@ -127,7 +127,9 @@ function lookupReply(init: RequestInit, boot: readonly Uint8Array[], owner: stri
   } finally { viewing.destroy(); }
 }
 
-function signedReply(request: ServiceRequest, boot: readonly Uint8Array[], result: ServiceResult) {
+function signedReply(request: ServiceRequest, boot: readonly Uint8Array[],
+  result: Partial<ServiceResult> & Pick<ServiceResult, "type">,
+) {
   const text = new TextEncoder();
   const reply = qosEncrypt(requireHex(request.client_response_public_key), text.encode(canonicalizeJsonValue(result)));
   const proof = canonicalizeJsonValue({
@@ -321,7 +323,10 @@ describe("operator replica probe", () => {
     },
   );
 
-  it.each(["match", "changed keys", "changed ciphertext", "wrong ring plaintext", "missing ring plaintext", "invalid nullifier secret"])(
+  it.each([
+    "match", "changed keys", "changed ciphertext", "wrong ring plaintext",
+    "missing ring plaintext", "invalid nullifier secret", "missing result field", "unsigned reply",
+  ])(
     "checks a cold replacement against both original ciphertexts (%s)", async fault => {
     await initializePoseidon();
     const { policy } = JSON.parse(signedPolicy()) as { policy: NitroPolicy };
@@ -356,8 +361,10 @@ describe("operator replica probe", () => {
       const plaintexts = operation.items.map(item => encodeLowerHex(openCanaryItem(viewing, item)));
       if (fault === "wrong ring plaintext") plaintexts[1] = "00".repeat(32);
       if (fault === "missing ring plaintext") plaintexts.pop();
+      if (fault === "unsigned reply") return Response.json({});
       return signedReply(request, secrets, {
-        type: "Decrypt", nullifier_secret: fault === "invalid nullifier secret" ? "00" : encodeLowerHex(secret), plaintexts,
+        type: "Decrypt", nullifier_secret: fault === "invalid nullifier secret" ? "00" : encodeLowerHex(secret),
+        ...(fault === "missing result field" ? {} : { plaintexts }),
       });
     });
     vi.stubGlobal("fetch", fetch);
@@ -368,9 +375,13 @@ describe("operator replica probe", () => {
       else if (fault === "wrong ring plaintext" || fault === "missing ring plaintext") {
         await expect(probe).rejects.toThrow("canary plaintext");
       } else if (fault === "invalid nullifier secret") await expect(probe).rejects.toThrow("invalid canary nullifier secret");
+      else if (fault === "missing result field" || fault === "unsigned reply") {
+        await expect(probe).rejects.toThrow("InvalidCanonicalJson");
+      }
       else await expect(probe).resolves.toBeDefined();
       const results = await Promise.allSettled([probe]);
-      if (fault !== "match") expect(() => requireCanaryAgreement(results)).toThrow();
+      if (fault === "match" || fault === "unsigned reply") expect(() => requireCanaryAgreement(results)).not.toThrow();
+      else expect(() => requireCanaryAgreement(results)).toThrow();
       expect(fetch).toHaveBeenCalledTimes(differentDigest ? 2 : 3);
     } finally {
       viewing.destroy();

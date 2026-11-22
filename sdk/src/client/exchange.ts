@@ -13,7 +13,7 @@ import {
 } from "../connection/operations.js";
 import { awaitWithSignal } from "../connection/request.js";
 import { API_VERSION } from "../protocol/constants.js";
-import { DecryptionServiceError } from "../protocol/error.js";
+import { AuthenticatedOperationError, DecryptionServiceError } from "../protocol/error.js";
 import { encodeLowerHex, requireHex } from "../protocol/hex.js";
 import { parseStrictJson } from "../protocol/json.js";
 import type { DecryptItem } from "../protocol/types.js";
@@ -152,8 +152,14 @@ export async function executeServiceCall<T extends ServiceCall>(
       responseSecret,
       operation: OPERATION_KINDS[call.type],
     }, signal);
-    const result = parseStrictJson<ServiceResult>(plaintext, RESULT_KEYS[call.type]);
-    if (result.type !== call.type) throw new DecryptionServiceError("ReleaseBindingMismatch");
+    let result: ServiceResult;
+    try {
+      result = parseStrictJson<ServiceResult>(plaintext, RESULT_KEYS[call.type]);
+    } catch (error) {
+      if (error instanceof DecryptionServiceError) throw new AuthenticatedOperationError(error.code);
+      throw error;
+    }
+    if (result.type !== call.type) throw new AuthenticatedOperationError("ReleaseBindingMismatch");
     return result as ServiceCallResult<T>;
   } finally {
     responseSecret.fill(0);

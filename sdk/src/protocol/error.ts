@@ -13,6 +13,9 @@ export class DecryptionServiceError extends Error {
   }
 }
 
+/** The reply was authenticated for this request and then failed validation. */
+export class AuthenticatedOperationError extends DecryptionServiceError {}
+
 /** HTTP failures retain rate-limit information without returning an untrusted response body. */
 export class DecryptionServiceHttpError extends DecryptionServiceError {
   readonly status: number;

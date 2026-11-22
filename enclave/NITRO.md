@@ -317,9 +317,10 @@ the committed recipient keys, and open both ciphertexts with an owner-signed
 request bound to its boot. The operator authenticates both replies, checks the
 plaintexts and derives the advertised nullifier key from the returned secret. Wallet trust
 distribution and retirement use the same probe. Retirement can qualify a
-healthy replacement while another endpoint is unavailable. A signed reply with
-invalid keys or incorrect plaintexts blocks qualification. Before publishing an
-activation, the primary also checks outgoing targets from the authenticated predecessor with
+healthy replacement while another endpoint is unavailable. A reply authenticated
+to the tested boot blocks qualification if its payload is invalid or fails the
+canary checks. Before publishing an activation, the primary also checks
+outgoing targets from the authenticated predecessor with
 the same ciphertexts. During a predecessor outage, the committed receipts still
 require the incoming replicas to match the original keys and ciphertexts.
 A planned transition matches the incoming

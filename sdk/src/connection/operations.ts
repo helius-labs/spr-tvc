@@ -2,7 +2,7 @@ import { parseQosP256Public, qosDecrypt, qosEncrypt } from "../crypto/qos.js";
 import { verifyP256Message } from "../crypto/p256.js";
 import { SERVICE_PROOF_TYPE } from "../protocol/decryption.js";
 import { resultDigest } from "../protocol/digest.js";
-import { DecryptionServiceError } from "../protocol/error.js";
+import { AuthenticatedOperationError, DecryptionServiceError } from "../protocol/error.js";
 import { bytesEqual, encodeLowerHex, requireHex } from "../protocol/hex.js";
 import { canonicalizeJsonValue, isRfc8785 } from "../protocol/jcs.js";
 import { assertExactObjectKeys, parseStrictJson } from "../protocol/json.js";
@@ -214,8 +214,8 @@ export async function sealedExchange(
   try {
     plaintext = td.decode(qosDecrypt(exchange.responseSecret, encryptedResult));
   } catch {
-    throw new DecryptionServiceError("InvalidEncryptedEnvelope");
+    throw new AuthenticatedOperationError("InvalidEncryptedEnvelope");
   }
-  if (!isRfc8785(plaintext)) throw new DecryptionServiceError("InvalidCanonicalJson");
+  if (!isRfc8785(plaintext)) throw new AuthenticatedOperationError("InvalidCanonicalJson");
   return plaintext;
 }
