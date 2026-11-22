@@ -9,7 +9,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from custody_archive import ledger_checkpoint, verify_promotion
 from custody_ledger import (
-    check_installed_ledger, check_recovery_bucket, custody_history_statement, ledger_administration_statement,
+    check_recovery_bucket, check_source_ledger, custody_history_statement, ledger_administration_statement,
     ledger_policy, ledger_replica_plan,
     list_ledger_versions, replica_trust, replication_configuration, require_frozen_ledger, write_once,
 )
@@ -23,13 +23,13 @@ ROLE = f"arn:aws:iam::{SOURCE_ACCOUNT}:role/replication"
 PREFIX = f"spr-custody/devnet/{DOMAIN}/"
 SOURCE_ADMIN = f"arn:aws:iam::{SOURCE_ACCOUNT}:role/admin"
 DESTINATION_ADMIN = f"arn:aws:iam::{DESTINATION_ACCOUNT}:role/admin"
-SOURCE_ROLES = (f"arn:aws:iam::{SOURCE_ACCOUNT}:role/publisher", [])
-DESTINATION_ROLES = (f"arn:aws:iam::{DESTINATION_ACCOUNT}:role/publisher", [])
+SOURCE_PUBLISHER = f"arn:aws:iam::{SOURCE_ACCOUNT}:role/publisher"
+DESTINATION_PUBLISHER = f"arn:aws:iam::{DESTINATION_ACCOUNT}:role/publisher"
 REPLICA = {"bucket": DESTINATION_BUCKET, "region": "eu-west-1", "account": DESTINATION_ACCOUNT,
-           "administratorRole": DESTINATION_ADMIN, "role": ROLE}
+           "administratorRole": DESTINATION_ADMIN, "publisherRole": DESTINATION_PUBLISHER, "readerRoles": [], "role": ROLE}
 TRUST = {"network": "devnet", "securityDomainId": DOMAIN, "ledgerReplica": REPLICA,
          "ledger": {"bucket": SOURCE_BUCKET, "region": "eu-north-1", "account": SOURCE_ACCOUNT,
-                    "administratorRole": SOURCE_ADMIN}}
+                    "administratorRole": SOURCE_ADMIN, "publisherRole": SOURCE_PUBLISHER, "readerRoles": []}}
 BUCKET_CONTROLS = {
     "get-bucket-versioning": {"Status": "Enabled"},
     "get-bucket-ownership-controls": {"OwnershipControls": {"Rules": [{"ObjectOwnership": "BucketOwnerEnforced"}]}},
@@ -42,7 +42,7 @@ BUCKET_CONTROLS = {
 
 class LedgerReplicationTests(unittest.TestCase):
     def test_replica_can_receive_only_the_pinned_source_role_and_prefix(self):
-        plan = ledger_replica_plan(TRUST, *DESTINATION_ROLES)
+        plan = ledger_replica_plan(TRUST)
         replication = plan["replication"]
         self.assertEqual(replication["Role"], ROLE)
         rule, = replication["Rules"]
@@ -67,7 +67,7 @@ class LedgerReplicationTests(unittest.TestCase):
             "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:ReplicateDelete", "s3:PutObject",
         ])
 
-        source_policy = {rule["Sid"]: rule for rule in ledger_policy(TRUST, *SOURCE_ROLES)["Statement"]}
+        source_policy = {rule["Sid"]: rule for rule in ledger_policy(TRUST)["Statement"]}
         self.assertIn(ROLE, source_policy["RestrictRecordReads"]["Condition"]["StringNotEquals"]["aws:PrincipalArn"])
         self.assertNotIn(ROLE, source_policy["ReadCustodyRecords"]["Principal"]["AWS"])
         self.assertIn("s3:ListBucketVersions", source_policy["ListCustodyRecords"]["Action"])
@@ -90,31 +90,49 @@ class LedgerReplicationTests(unittest.TestCase):
         for field in ("bucket", "account", "region"):
             replica = {**REPLICA, field: TRUST["ledger"][field]}
             if field == "account":
-                replica["administratorRole"] = SOURCE_ADMIN
+                replica.update(administratorRole=SOURCE_ADMIN, publisherRole=SOURCE_PUBLISHER)
             invalid = {**TRUST, "ledgerReplica": replica}
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, "separate bucket, account and region"):
-                ledger_policy(invalid, *SOURCE_ROLES)
-        for role in (SOURCE_ADMIN, SOURCE_ROLES[0]):
+                ledger_policy(invalid)
+        for role in (SOURCE_ADMIN, SOURCE_PUBLISHER):
             invalid = {**TRUST, "ledgerReplica": {**REPLICA, "role": role}}
             with self.subTest(role=role), self.assertRaisesRegex(ValueError, "requires its own role"):
-                ledger_policy(invalid, *SOURCE_ROLES)
+                ledger_policy(invalid)
         invalid = {**TRUST, "ledgerReplica": {**REPLICA, "role": DESTINATION_ADMIN}}
         with self.assertRaisesRegex(ValueError, "requires a source role"):
-            ledger_replica_plan(invalid, *DESTINATION_ROLES)
+            ledger_replica_plan(invalid)
 
-    def test_installed_replication_must_match_the_pinned_rule(self):
-        expected = ledger_policy(TRUST, *SOURCE_ROLES)
-        replication = ledger_replica_plan(TRUST, *DESTINATION_ROLES)["replication"]
+    def test_active_source_uses_the_pinned_policy_roles_and_replication(self):
+        expected = ledger_policy(TRUST)
+        replication = ledger_replica_plan(TRUST)["replication"]
         responses = {
             **BUCKET_CONTROLS,
             "get-bucket-policy": {"Policy": json.dumps(expected)},
             "get-bucket-replication": {"ReplicationConfiguration": replication},
         }
-        with patch("custody_ledger.storage", side_effect=lambda _trust, operation, **_options: responses[operation]):
-            check_installed_ledger(TRUST, expected)
+        def storage(trust, operation, *, profile, **_options):
+            self.assertEqual(trust, TRUST)
+            self.assertEqual(profile, "source-read")
+            return responses[operation]
+
+        with (patch("custody_ledger.storage", side_effect=storage) as inspect,
+              patch("custody_ledger.require_profile_account") as account):
+            check_source_ledger(TRUST, "source-read")
+            account.assert_called_once_with("source-read", "eu-north-1", SOURCE_ACCOUNT)
+            without_write_once = {**expected, "Statement": [rule for rule in expected["Statement"]
+                                                              if rule["Sid"] != "RequireWriteOnce"]}
+            for bad in (
+                without_write_once,
+                ledger_policy(TRUST, frozen=True),
+                ledger_policy({**TRUST, "ledger": {**TRUST["ledger"], "publisherRole": SOURCE_PUBLISHER + "-other"}}),
+                ledger_policy({**TRUST, "ledger": {**TRUST["ledger"], "readerRoles": [SOURCE_PUBLISHER + "-reader"]}}),
+            ):
+                with patch.dict(responses, {"get-bucket-policy": {"Policy": json.dumps(bad)}}):
+                    with self.assertRaisesRegex(ValueError, "custody ledger bucket policy differs from the pinned policy"):
+                        check_source_ledger(TRUST, "source-read")
             with patch.dict(responses, {"get-bucket-replication": None}):
                 with self.assertRaisesRegex(ValueError, "does not match the pinned ledger replica"):
-                    check_installed_ledger(TRUST, expected)
+                    check_source_ledger(TRUST, "source-read")
             for field, value in (
                 ("Filter", {"Prefix": ""}), ("DeleteMarkerReplication", {"Status": "Enabled"}),
                 ("Destination", {"Bucket": "arn:aws:s3:::unrelated-bucket"}),
@@ -123,10 +141,15 @@ class LedgerReplicationTests(unittest.TestCase):
                 wrong["Rules"][0][field] = value
                 with self.subTest(field=field), patch.dict(responses, {"get-bucket-replication": {"ReplicationConfiguration": wrong}}):
                     with self.assertRaisesRegex(ValueError, "does not match the pinned ledger replica"):
-                        check_installed_ledger(TRUST, expected)
+                        check_source_ledger(TRUST, "source-read")
+            inspect.reset_mock()
+            account.side_effect = ValueError("wrong AWS account")
+            with self.assertRaisesRegex(ValueError, "wrong AWS account"):
+                check_source_ledger(TRUST, "source-read")
+            inspect.assert_not_called()
 
     def test_recovery_bucket_must_preserve_replicated_versions(self):
-        policy = ledger_replica_plan(TRUST, *DESTINATION_ROLES)["destinationPolicy"]
+        policy = ledger_replica_plan(TRUST)["destinationPolicy"]
         responses = {**BUCKET_CONTROLS, "get-bucket-policy": {"Policy": json.dumps(policy)}}
 
         def aws(region, service, operation, args, **options):
@@ -151,15 +174,15 @@ class LedgerReplicationTests(unittest.TestCase):
             for sid in ("PreserveCustodyHistory", "RestrictReplication"):
                 changed = {**policy, "Statement": [rule for rule in policy["Statement"] if rule["Sid"] != sid]}
                 with self.subTest(sid=sid), patch.dict(responses, {"get-bucket-policy": {"Policy": json.dumps(changed)}}):
-                    with self.assertRaisesRegex(ValueError, "pinned replica write and delete protections"):
+                    with self.assertRaisesRegex(ValueError, "custody recovery bucket policy differs from the pinned policy"):
                         check_recovery_bucket(TRUST, REPLICA, "recovery-read")
             without_admin = {**policy, "Statement": [rule for rule in policy["Statement"]
                                                        if rule["Sid"] != "RestrictBucketAdministration"]}
             wrong_admin = copy.deepcopy(policy)
-            wrong_admin["Statement"][0]["Condition"]["StringNotEquals"]["aws:PrincipalArn"] = DESTINATION_ROLES[0]
+            wrong_admin["Statement"][0]["Condition"]["StringNotEquals"]["aws:PrincipalArn"] = DESTINATION_PUBLISHER
             for changed in (without_admin, wrong_admin):
                 with patch.dict(responses, {"get-bucket-policy": {"Policy": json.dumps(changed)}}):
-                    with self.assertRaisesRegex(ValueError, "pinned bucket administration policy"):
+                    with self.assertRaisesRegex(ValueError, "custody recovery bucket policy differs from the pinned policy"):
                         check_recovery_bucket(TRUST, REPLICA, "recovery-read")
             inspect.reset_mock()
             account.side_effect = ValueError("wrong AWS account")
@@ -210,6 +233,7 @@ class LedgerReplicationTests(unittest.TestCase):
         names = ["1.json", "retired/1.json"]
         new_replica = {"bucket": "custody-replacement", "account": "000000000011", "region": "eu-west-2",
                        "administratorRole": "arn:aws:iam::000000000011:role/admin",
+                       "publisherRole": "arn:aws:iam::000000000011:role/publisher", "readerRoles": [],
                        "role": f"arn:aws:iam::{DESTINATION_ACCOUNT}:role/replication"}
         promoted = {key: TRUST[key] for key in ("network", "securityDomainId")}
         promoted["ledger"] = {key: REPLICA[key] for key in TRUST["ledger"]}
@@ -268,6 +292,7 @@ class LedgerReplicationTests(unittest.TestCase):
         trust = {**TRUST, "network": "mainnet", "walletTrustSha256": "a1" * 32}
         new_replica = {"bucket": "custody-replacement", "account": "000000000011", "region": "eu-west-2",
                        "administratorRole": "arn:aws:iam::000000000011:role/admin",
+                       "publisherRole": "arn:aws:iam::000000000011:role/publisher", "readerRoles": [],
                        "role": f"arn:aws:iam::{DESTINATION_ACCOUNT}:role/replication"}
         promoted = {**trust, "ledger": replica_trust(trust, REPLICA)["ledger"], "ledgerReplica": new_replica}
         source_scope = {name: value for name, value in trust.items() if name != "ledgerReplica"}
@@ -280,9 +305,7 @@ class LedgerReplicationTests(unittest.TestCase):
         names = {bucket: ["1.json", "retired/1.json"] for bucket in (SOURCE_BUCKET, DESTINATION_BUCKET, new_replica["bucket"])}
         profiles = {SOURCE_BUCKET: "source-read", DESTINATION_BUCKET: "recovery-read", new_replica["bucket"]: "recovery-read"}
         replication = replication_configuration(promoted, new_replica)
-        replica_policy = ledger_replica_plan(
-            promoted, f"arn:aws:iam::{new_replica['account']}:role/publisher", [],
-        )["destinationPolicy"]
+        replica_policy = ledger_replica_plan(promoted)["destinationPolicy"]
         replica_controls = BUCKET_CONTROLS.copy()
         freeze_controls = {bucket: BUCKET_CONTROLS.copy() for bucket in policies}
 
@@ -350,7 +373,7 @@ class LedgerReplicationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "no lifecycle"):
                     verify()
             with patch.dict(replica_policy, {"Statement": []}):
-                with self.assertRaisesRegex(ValueError, "pinned replica write and delete protections"):
+                with self.assertRaisesRegex(ValueError, "custody recovery bucket policy differs from the pinned policy"):
                     verify()
             for ledger in (trust, promoted):
                 bucket = ledger["ledger"]["bucket"]
@@ -411,7 +434,8 @@ class LedgerReplicationTests(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, "original bucket unreachable"):
                     verify()
             for changes in (
-                {"account": "000000000012", "administratorRole": "arn:aws:iam::000000000012:role/admin"},
+                {"account": "000000000012", "administratorRole": "arn:aws:iam::000000000012:role/admin",
+                 "publisherRole": "arn:aws:iam::000000000012:role/publisher"},
                 {"administratorRole": DESTINATION_ADMIN + "-other"},
             ):
                 with self.assertRaisesRegex(ValueError, "original ledger's pinned replica"):

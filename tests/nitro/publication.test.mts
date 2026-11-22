@@ -400,10 +400,11 @@ test("rechecks live replica evidence after the final custody read", async contex
   let unavailableBootstrap = false;
   const options = {
     custodyTrust: "custody.json",
+    sourceProfile: "source-read",
     replicaProfile: "replica-read",
     async run(command: string, args: string[]) {
       if (command === "python3") {
-        const profiles = ["--replica-profile", "replica-read"];
+        const profiles = ["--source-profile", "source-read", "--replica-profile", "replica-read"];
         if (args.includes("--bootstrap-slots")) {
           assert.deepEqual(args.slice(5), [...profiles, "--bootstrap-slots", "[[1,2,3]]"]);
           if (unavailableBootstrap) throw new Error("unavailable attested bootstrap slot");
@@ -735,6 +736,7 @@ test("mainnet checks both installed publication buckets before enabling payments
   let writes = 0;
   const options = {
     custodyTrust,
+    sourceProfile: "source-read", replicaProfile: "replica-read",
     publicationProfiles: ["primary-read", "mirror-read"],
     async run(command: string, args: string[]) {
       if (command === "python3") {

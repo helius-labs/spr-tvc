@@ -39,9 +39,16 @@ from retirement import (LiveBoot, commit_retirement, inspect_keys, prove_recover
 READ_ROLE = "arn:aws:iam::000000000001:role/custodian"
 PUBLISHER = "arn:aws:iam::000000000008:role/publisher"
 ADMIN = "arn:aws:iam::000000000008:role/ledger-admin"
-RECOVERY_ADMIN = "arn:aws:iam::000000000010:role/ledger-admin"
-NEXT_ADMIN = "arn:aws:iam::000000000011:role/ledger-admin"
+RECOVERY_ROLES = {
+    "administratorRole": "arn:aws:iam::000000000010:role/ledger-admin",
+    "publisherRole": "arn:aws:iam::000000000010:role/publisher", "readerRoles": [READ_ROLE],
+}
+NEXT_ROLES = {
+    "administratorRole": "arn:aws:iam::000000000011:role/ledger-admin",
+    "publisherRole": "arn:aws:iam::000000000011:role/publisher", "readerRoles": [READ_ROLE],
+}
 PINS = {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)}
+PAYMENT_PROFILES = {"source_profile": "source-read", "replica_profile": "replica-read"}
 
 
 def listing(prefix, keys=(), **metadata):
@@ -60,14 +67,14 @@ class CustodyLedgerTests(unittest.TestCase):
                 {"bucket": "release-mirror", "region": "eu-west-1", "account": "000000000012"},
             ],
             "ledger": {"bucket": "custody-journal", "account": "000000000008", "region": "eu-north-1",
-                       "administratorRole": ADMIN},
+                       "administratorRole": ADMIN, "publisherRole": PUBLISHER, "readerRoles": [READ_ROLE]},
             "recoveryRelays": {str(epoch): {"hostRole": HOST, "pcrs": PINS} for epoch in range(1, 4)},
         }
         self.wallet_pins = canonical({"publications": self.trust["publications"]})
         self.objects = {}
         self.timestamps = {}
         self.versions = {}
-        self.bucket_policy = ledger_policy(self.trust, PUBLISHER, [READ_ROLE])
+        self.bucket_policy = ledger_policy(self.trust)
         self.lifecycle = None
         self.lock = Lock()
         self.now = int(time.time())
@@ -534,7 +541,7 @@ class CustodyLedgerTests(unittest.TestCase):
             marker = qualified_manifest(self.trust, None, "1", "2")
             commit_retirement(self.trust, None, self.signed_retirement(marker))
 
-        self.bucket_policy = ledger_policy(self.trust, PUBLISHER, [READ_ROLE], frozen=True)
+        self.bucket_policy = ledger_policy(self.trust, frozen=True)
         pinned = ledger_checkpoint(self.trust)
         self.assertEqual(self.archive_capture_verifier.call_count, 2)
         self.archive_capture_verifier.side_effect = ValueError("invalid historical Nitro evidence")
@@ -555,8 +562,8 @@ class CustodyLedgerTests(unittest.TestCase):
                 ledger_checkpoint(self.trust)
         changed_time = datetime.fromtimestamp(self.now, timezone.utc).isoformat()
         replica = {**self.trust, "ledger": {"bucket": "custody-recovery", "account": "000000000010",
-                                           "region": "eu-west-1", "administratorRole": RECOVERY_ADMIN}}
-        replica_policy = ledger_policy(replica, PUBLISHER.replace("000000000008", "000000000010"), [READ_ROLE], frozen=True)
+                                           "region": "eu-west-1", **RECOVERY_ROLES}}
+        replica_policy = ledger_policy(replica, frozen=True)
 
         def replica_aws(region, service, operation, args, **options):
             self.assertEqual(region, "eu-west-1")
@@ -645,7 +652,7 @@ class CustodyLedgerTests(unittest.TestCase):
     def test_ledger_checkpoint_requires_the_frozen_policy_before_and_after_reading(self):
         publish(self.trust, self.sign(self.document(1)))
         live = self.bucket_policy
-        frozen = ledger_policy(self.trust, PUBLISHER, [READ_ROLE], frozen=True)
+        frozen = ledger_policy(self.trust, frozen=True)
         guarded, = [rule for rule in frozen["Statement"] if rule["Sid"] == "PreserveCustodyHistory"]
         self.assertEqual(guarded["Principal"], "*")
         self.assertEqual(guarded["Effect"], "Deny")
@@ -680,13 +687,13 @@ class CustodyLedgerTests(unittest.TestCase):
             retired = self.signed_retirement(qualified_manifest(self.trust, None, "1", "2"))
             commit_retirement(self.trust, None, retired)
 
-        self.bucket_policy = ledger_policy(self.trust, PUBLISHER, [READ_ROLE], frozen=True)
+        self.bucket_policy = ledger_policy(self.trust, frozen=True)
         pin = ledger_checkpoint(self.trust)
         original = {**self.trust, "ledgerReplica": {"bucket": "old-replica", "region": "eu-west-1",
-                    "account": "000000000010", "administratorRole": RECOVERY_ADMIN,
+                    "account": "000000000010", **RECOVERY_ROLES,
                     "role": "arn:aws:iam::000000000008:role/replication"}}
         recovered = {**self.trust, "ledger": {"bucket": "clean-recovery", "region": "eu-west-2",
-                                               "account": "000000000011", "administratorRole": NEXT_ADMIN}}
+                                               "account": "000000000011", **NEXT_ROLES}}
         prefix = f"spr-custody/devnet/{DOMAIN}/"
         retired_name = "retired/1.json"
         retired_key = prefix + retired_name
@@ -709,11 +716,10 @@ class CustodyLedgerTests(unittest.TestCase):
         good = dict(self.objects)
         copied = canonical(retired)
         self.objects.update({bad_key: copied, other_key: b"{}"})
-        publisher = PUBLISHER.replace("000000000008", "000000000011")
-        recovered_policy = ledger_policy(recovered, publisher, [READ_ROLE], frozen=True)
+        recovered_policy = ledger_policy(recovered, frozen=True)
         transfer = {**recovered["ledger"], "role": original["ledgerReplica"]["role"]}
         transfer_rule = replication_configuration(original, transfer)
-        receiving = ledger_replica_plan({**original, "ledgerReplica": transfer}, publisher, [READ_ROLE])["destinationPolicy"]
+        receiving = ledger_replica_plan({**original, "ledgerReplica": transfer})["destinationPolicy"]
         recovery_policy = recovered_policy
 
         def aws(region, service, operation, args, *, profile, **options):
@@ -752,7 +758,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 plan = sign_repair(original, recovered, pin, plan, "source-read", signer["keyArn"])
             self.assertEqual(len(plan["signatures"]), 2)
             csv = StringIO()
-            with self.assertRaisesRegex(ValueError, "pinned replica write and delete protections"):
+            with self.assertRaisesRegex(ValueError, "custody recovery bucket policy differs from the pinned policy"):
                 repair_transfer(original, recovered, pin, plan, "source-read", "recovery-read", csv)
             self.assertEqual(csv.getvalue(), "")
             recovery_policy = receiving
@@ -860,7 +866,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 commit_retirement(self.trust, None, retirement)
 
         self.trust["ledgerReplica"] = {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1",
-                                      "administratorRole": RECOVERY_ADMIN,
+                                      **RECOVERY_ROLES,
                                       "role": "arn:aws:iam::000000000008:role/replication"}
         prefix = f"spr-custody/mainnet/{DOMAIN}/"
         source_status = {}
@@ -1080,7 +1086,7 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in kms.call_args_list], list(acknowledgements))
 
     def test_bucket_policy_enforces_single_publisher_and_conditional_creation(self):
-        statements = {item["Sid"]: item for item in ledger_policy(self.trust, PUBLISHER, [READ_ROLE])["Statement"]}
+        statements = {item["Sid"]: item for item in ledger_policy(self.trust)["Statement"]}
         self.assertEqual(statements["RequireWriteOnce"]["Condition"], {"StringNotEquals": {"s3:if-none-match": "*"}})
         self.assertEqual(statements["RequireWriteOnce"]["Principal"], "*")
         self.assertEqual(statements["RestrictPublisher"]["Condition"], {"StringNotEquals": {"aws:PrincipalArn": PUBLISHER}})
@@ -1110,12 +1116,12 @@ class CustodyLedgerTests(unittest.TestCase):
             (READ_ROLE, [READ_ROLE], "administrator must be in the custody ledger account"),
             (ADMIN, [ADMIN], "administrator must be a separate role"),
         ):
-            with patch.dict(self.trust["ledger"], administratorRole=administrator):
+            with patch.dict(self.trust["ledger"], administratorRole=administrator, readerRoles=readers):
                 with self.assertRaisesRegex(ValueError, message):
-                    ledger_policy(self.trust, PUBLISHER, readers)
+                    ledger_policy(self.trust)
 
     def test_installed_ledger_requires_each_control_on_the_pinned_bucket(self):
-        expected = ledger_policy(self.trust, PUBLISHER, [READ_ROLE])
+        expected = ledger_policy(self.trust)
         responses = {
             "get-bucket-policy": {"Policy": json.dumps(expected)},
             "get-bucket-versioning": {"Status": "Enabled"},
@@ -1198,9 +1204,10 @@ class CustodyLedgerTests(unittest.TestCase):
                   "noteSeedCommitment": replacement["custody"]["noteSeedCommitment"], "minimumCustodyEpoch": "2",
                   "publications": self.trust["publications"], "targets": [replica]}
 
-        def check(custody_signer=None, *, replica_profile=None, **overrides):
-            return check_release_policy(self.trust, {"policy": {**policy, **overrides}, "signatures": [],
-                                                    "custodySignatures": []}, custody_signer, replica_profile=replica_profile)
+        def check(custody_signer=None, *, source_profile=None, replica_profile=None, **overrides):
+            document = {"policy": {**policy, **overrides}, "signatures": [], "custodySignatures": []}
+            return check_release_policy(self.trust, document, custody_signer,
+                                        source_profile=source_profile, replica_profile=replica_profile)
 
         with self.assertRaisesRegex(ValueError, "object missing"):
             check()
@@ -1219,16 +1226,20 @@ class CustodyLedgerTests(unittest.TestCase):
             check()
         del self.objects[name]
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, registered))
-        with self.assertRaisesRegex(ValueError, "payment recovery verification requires a pinned custody ledger replica"):
+        with self.assertRaisesRegex(ValueError, "requires both --source-profile and --replica-profile"):
             check(replica_profile="replica-read")
+        with self.assertRaisesRegex(ValueError, "payment recovery verification requires a pinned custody ledger replica"):
+            check(**PAYMENT_PROFILES)
         backup = {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1",
-                  "administratorRole": RECOVERY_ADMIN,
+                  **RECOVERY_ROLES,
                   "role": "arn:aws:iam::000000000008:role/replication"}
         with (patch.dict(self.trust, {"ledgerReplica": backup}), patch("custody_ledger.require_replicated_custody"),
               patch("custody_ledger.require_payment_recovery_quorums") as recovery,
+              patch("custody_ledger.check_source_ledger") as inspect_source,
               patch("custody_ledger.check_recovery_bucket") as inspect_replica):
-            check(replica_profile="replica-read")
+            check(**PAYMENT_PROFILES)
             recovery.assert_called_once()
+            inspect_source.assert_called_once_with(self.trust, "source-read")
             inspect_replica.assert_called_once_with(self.trust, backup, "replica-read")
         key_pin = approval_roster(self.trust)["keys"][0]
         signer = (key_pin["keyArn"], base64.b64decode(key_pin["publicKey"])[-65:].hex())
@@ -1303,7 +1314,7 @@ class CustodyLedgerTests(unittest.TestCase):
             check_release_policy(self.trust, document)
 
         replica = {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1",
-                   "administratorRole": RECOVERY_ADMIN,
+                   **RECOVERY_ROLES,
                    "role": "arn:aws:iam::000000000008:role/replication"}
         self.trust["ledgerReplica"] = replica
         expected = {"1.json", "2.json", "3.json", target_object_name(rotation_approval["manifest"]),
@@ -1322,55 +1333,59 @@ class CustodyLedgerTests(unittest.TestCase):
                 raise ValueError("object missing")
             return payload, {**metadata, "ReplicationStatus": "REPLICA", **changes.get(name, {})}
 
-        with self.assertRaisesRegex(ValueError, "mainnet payment activation requires --replica-profile"):
-            check_release_policy(self.trust, document)
+        for inspection in ({}, {"source_profile": "source-read"}, {"replica_profile": "replica-read"}):
+            with self.subTest(inspection=inspection):
+                with self.assertRaisesRegex(ValueError, "requires both --source-profile and --replica-profile"):
+                    check_release_policy(self.trust, document, **inspection)
 
         with (patch("custody_ledger.read_stored_payload", side_effect=read),
               patch("custody_ledger.require_payment_recovery_quorums"),
+              patch("custody_ledger.check_source_ledger") as inspect_source,
               patch("custody_ledger.check_recovery_bucket") as inspect_replica):
-            check_release_policy(self.trust, document, replica_profile="replica-read")
+            check_release_policy(self.trust, document, **PAYMENT_PROFILES)
             self.assertEqual(copied, expected)
+            inspect_source.assert_called_once_with(self.trust, "source-read")
             inspect_replica.assert_called_once_with(self.trust, replica, "replica-read")
             prefix = f"spr-custody/mainnet/{DOMAIN}/"
             receipt_at = datetime.fromisoformat(self.timestamps[prefix + "3.json"]).timestamp()
             before_receipt = datetime.fromtimestamp(receipt_at - 1, timezone.utc).isoformat()
             with patch.dict(self.timestamps, {prefix + target_object_name(registered): before_receipt}):
                 with self.assertRaisesRegex(ValueError, "target registration precedes its custody receipt"):
-                    check_release_policy(self.trust, document, replica_profile="replica-read")
+                    check_release_policy(self.trust, document, **PAYMENT_PROFILES)
             genesis_path = prefix + "1.json"
             genesis = json.loads(self.objects[genesis_path])
             with patch.dict(self.objects, {genesis_path: canonical({**genesis, "acknowledgements": []})}):
                 with self.assertRaisesRegex(ValueError, "signing quorum"):
-                    check_release_policy(self.trust, document, replica_profile="replica-read")
+                    check_release_policy(self.trust, document, **PAYMENT_PROFILES)
             unrelated_genesis = self.sign(self.document(1, variant="cd"))
             with patch.dict(self.objects, {genesis_path: canonical(unrelated_genesis)}):
                 with self.assertRaisesRegex(ValueError, "canonical previous receipt"):
-                    check_release_policy(self.trust, document, replica_profile="replica-read")
+                    check_release_policy(self.trust, document, **PAYMENT_PROFILES)
             first_rotation = rotation_approval["manifest"]
             registered_at = datetime.fromisoformat(self.timestamps[prefix + target_object_name(first_rotation)]).timestamp()
             early_successor = datetime.fromtimestamp(registered_at - 1, timezone.utc).isoformat()
             with patch.dict(self.timestamps, {prefix + "2.json": early_successor}):
                 with self.assertRaisesRegex(ValueError, "rotation registration must be recorded between"):
-                    check_release_policy(self.trust, document, replica_profile="replica-read")
+                    check_release_policy(self.trust, document, **PAYMENT_PROFILES)
             late_write = datetime.fromtimestamp(first_rotation["expiresAt"], timezone.utc).isoformat()
             with patch.dict(self.timestamps, {prefix + target_object_name(first_rotation): late_write}):
                 with self.assertRaisesRegex(ValueError, "target approval has expired"):
-                    check_release_policy(self.trust, document, replica_profile="replica-read")
+                    check_release_policy(self.trust, document, **PAYMENT_PROFILES)
             for name in sorted(expected):
                 missing.add(name)
                 with self.subTest(missing=name), self.assertRaisesRegex(ValueError, "from the pinned replica"):
-                    check_release_policy(self.trust, document, replica_profile="replica-read")
+                    check_release_policy(self.trust, document, **PAYMENT_PROFILES)
                 missing.clear()
             changes[target_object_name(registered)] = {"VersionId": "a-different-version"}
             with self.assertRaisesRegex(ValueError, "differs from the pinned replica"):
-                check_release_policy(self.trust, document, replica_profile="replica-read")
+                check_release_policy(self.trust, document, **PAYMENT_PROFILES)
 
     def test_mainnet_payments_require_three_enabled_pairs_on_every_registered_target(self):
         self.trust["network"] = "mainnet"
         publish(self.trust, self.sign(self.document(1)))
         _, receipt, custodians = load_epoch(self.trust, "1")
         self.trust["ledgerReplica"] = {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1",
-                                       "administratorRole": RECOVERY_ADMIN,
+                                       **RECOVERY_ROLES,
                                        "role": "arn:aws:iam::000000000008:role/replication"}
         primary = self.replacement_target(epoch="1", releaseId="primary")
         standby = self.replacement_target(epoch="1", releaseId="standby", wrappingKeys=[key(i, 55) for i in range(1, 7)])
@@ -1397,36 +1412,44 @@ class CustodyLedgerTests(unittest.TestCase):
 
         with (patch("custody_ledger.require_replicated_custody"),
               patch("custody_ledger.kms", side_effect=describe) as kms,
+              patch("custody_ledger.check_source_ledger") as inspect_source,
               patch("custody_ledger.check_recovery_bucket") as inspect_replica):
-            check_release_policy(self.trust, document, replica_profile="replica-read")
+            check_release_policy(self.trust, document, **PAYMENT_PROFILES)
             self.assertCountEqual([call.args[0] for call in kms.call_args_list],
                                   [*recovery, *primary["wrappingKeys"], *standby["wrappingKeys"]])
             bad_metadata.add(standby["wrappingKeys"][-1])
-            check_release_policy(self.trust, document, replica_profile="replica-read",
+            check_release_policy(self.trust, document, **PAYMENT_PROFILES,
                                  bootstrap_slots=[[3, 4, 6], [3, 4, 5]])
             with self.assertRaisesRegex(ValueError, "target standby has an unavailable attested bootstrap slot"):
-                check_release_policy(self.trust, document, replica_profile="replica-read",
+                check_release_policy(self.trust, document, **PAYMENT_PROFILES,
                                      bootstrap_slots=[[3, 4, 5], [3, 4, 6]])
             for invalid in ([[3, 4, 5]], [[3, 3, 4], [3, 4, 5]], [[3, 4, 7], [3, 4, 5]]):
                 with self.subTest(slots=invalid), self.assertRaisesRegex(ValueError, "three distinct attested bootstrap slots"):
-                    check_release_policy(self.trust, document, replica_profile="replica-read", bootstrap_slots=invalid)
+                    check_release_policy(self.trust, document, **PAYMENT_PROFILES, bootstrap_slots=invalid)
             # Each set has four keys, but only two slots have both keys.
             bad_metadata.update(standby["wrappingKeys"][-2:])
             with self.assertRaisesRegex(ValueError, "target standby requires three enabled recovery and wrapping pairs"):
-                check_release_policy(self.trust, document, replica_profile="replica-read")
+                check_release_policy(self.trust, document, **PAYMENT_PROFILES)
             check_release_policy(self.trust, {**document, "policy": {**policy, "targets": targets[:1]}},
-                                 replica_profile="replica-read")
+                                 **PAYMENT_PROFILES)
 
             kms.reset_mock()
             inspect_replica.reset_mock()
+            inspect_source.side_effect = ValueError("unsafe source bucket")
+            with self.assertRaisesRegex(ValueError, "unsafe source bucket"):
+                check_release_policy(self.trust, {**document, "policy": {**policy, "targets": targets[:1]}},
+                                     **PAYMENT_PROFILES)
+            inspect_source.side_effect = None
             with patch("custody_ledger.check_recovery_bucket", side_effect=ValueError("unsafe replica bucket")):
                 with self.assertRaisesRegex(ValueError, "unsafe replica bucket"):
                     check_release_policy(self.trust, {**document, "policy": {**policy, "targets": targets[:1]}},
-                                         replica_profile="replica-read")
+                                         **PAYMENT_PROFILES)
             kms.reset_mock()
+            inspect_source.reset_mock()
             inspect_replica.reset_mock()
             check_release_policy(self.trust, {**document, "policy": {**policy, "recoveryOnly": True}})
             kms.assert_not_called()
+            inspect_source.assert_not_called()
             inspect_replica.assert_not_called()
 
             prefix = f"spr-custody/mainnet/{DOMAIN}/"
@@ -1434,7 +1457,7 @@ class CustodyLedgerTests(unittest.TestCase):
             other_slots = {**standby, "wrappingKeys": standby["wrappingKeys"][::-1]}
             with patch.dict(self.objects, {standby_path: canonical(self.signed_subject(TARGET_APPROVAL, other_slots))}):
                 with self.assertRaisesRegex(ValueError, "six custody slots|separate keys and roles"):
-                    check_release_policy(self.trust, document, replica_profile="replica-read")
+                    check_release_policy(self.trust, document, **PAYMENT_PROFILES)
             kms.assert_not_called()
 
             bad_metadata.clear()
@@ -1444,7 +1467,7 @@ class CustodyLedgerTests(unittest.TestCase):
 
             kms.side_effect = retire_after_key_read
             with self.assertRaisesRegex(ValueError, "cannot verify retirement"):
-                check_release_policy(self.trust, document, replica_profile="replica-read")
+                check_release_policy(self.trust, document, **PAYMENT_PROFILES)
 
     def test_revocation_checks_the_pinned_pair_without_reading_the_ledger(self):
         policy = {"action": "revoke", "recoveryOnly": True, "targets": [], "network": "devnet",
@@ -1685,7 +1708,7 @@ class CustodyLedgerTests(unittest.TestCase):
             query.side_effect = None
 
             replica = {"bucket": "custody-recovery", "account": "000000000011", "region": "eu-west-1",
-                       "administratorRole": NEXT_ADMIN,
+                       **NEXT_ROLES,
                        "role": "arn:aws:iam::000000000008:role/replication"}
             with (patch.dict(self.trust, {"ledgerReplica": replica}), patch("retirement.require_retirement_replication"),
                   patch("retirement.check_recovery_bucket"), patch("retirement.read_replicated_record") as read_replica):
@@ -1963,7 +1986,7 @@ class CustodyLedgerTests(unittest.TestCase):
             requalification = self.signed_retirement(manifest)
 
         replica = {"bucket": "custody-recovery", "account": "000000000011", "region": "eu-west-1",
-                   "administratorRole": NEXT_ADMIN,
+                   **NEXT_ROLES,
                    "role": "arn:aws:iam::000000000008:role/replication"}
         with (patch.dict(self.trust, {"ledgerReplica": replica}),
               patch("retirement.require_replicated_custody") as copies):
@@ -2113,7 +2136,7 @@ class CustodyLedgerTests(unittest.TestCase):
                        "wrappingKeys": [key(slot, 39) for slot in range(1, 7)]}
             register_target(self.trust, self.signed_subject(TARGET_APPROVAL, standby))
             replica = {"bucket": "custody-recovery", "account": "000000000011", "region": "eu-west-1",
-                       "administratorRole": NEXT_ADMIN,
+                       **NEXT_ROLES,
                        "role": "arn:aws:iam::000000000008:role/replication"}
             query.side_effect = None
             query.return_value.stdout = ready

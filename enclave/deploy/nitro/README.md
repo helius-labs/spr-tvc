@@ -20,8 +20,9 @@ Pin `trust.json` outside the host and artifact distributor. It contains
 `network`, `securityDomainId` (32 random bytes in lowercase hex), `approvalKeys`,
 `recoveryRelays`, the ordered wallet policy `publications` pair, and `ledger`.
 Each bucket lists `bucket`, `region` and `account` (the 12-digit bucket owner's
-account ID). In `ledger`, also pin `administratorRole` to the IAM role ARN
-allowed to administer the custody bucket. For each wallet policy bucket, pin
+account ID). In `ledger`, pin the IAM ARNs in `administratorRole`,
+`publisherRole` and `readerRoles` (a list). These roles determine the
+installed policy for the custody bucket. For each wallet policy bucket, pin
 its `administratorRole` and `publisherRole` in `publicationRoles`, keyed by
 bucket name. Keep the file under independent custody administration.
 Each `approvalKeys` entry contains `fromEpoch`, `activeFrom`
@@ -33,13 +34,13 @@ owns share 1.
 
 ```sh
 nitro=enclave/deploy/nitro
-python3 "$nitro/custody_ledger.py" trust.json policy "$publisher_role" "$reader_role" > ledger-policy.json
+python3 "$nitro/custody_ledger.py" trust.json policy > ledger-policy.json
 python3 "$nitro/custody_ledger.py" trust.json reader-policy > ledger-reader-policy.json
 python3 "$nitro/custody_ledger.py" trust.json recovery-policy "$custodian_role" "$retirement_role" 1 > recovery-policy.json
 python3 "$nitro/custody_ledger.py" trust.json acknowledgement-policy "$custodian_role" "$retirement_role" > ack-policy.json
 ```
 
-Supply every ledger reader role to `policy`, and attach the generated read
+Include every ledger reader in `readerRoles` and attach the generated read
 policy to each cross-account reader role in its own account. Install the bucket
 policy on a private, versioned general-purpose bucket with bucket-owner-enforced
 ownership, all four bucket public access blocks enabled, and no lifecycle rules.
@@ -50,7 +51,7 @@ The bucket accepts only the replication configuration pinned below. Check the
 installed controls with the same role list before publishing custody records.
 
 ```sh
-python3 "$nitro/custody_ledger.py" trust.json policy "$publisher_role" "$reader_role" --check-installed
+python3 "$nitro/custody_ledger.py" trust.json policy --check-installed
 ```
 
 Run the check with AWS CLI v2 supporting `--cli-error-format json` and with
@@ -100,14 +101,14 @@ inspecting that slot's keys.
 
 Mainnet activation requires S3 replicas that preserve the original version IDs
 and write times used to verify historical approvals. Add `ledgerReplica` to
-custody trust with the destination `bucket`, `account`, `region`, its
-`administratorRole` ARN in the destination account, and the dedicated
-replication `role` ARN in the source account. Use a separate account and region.
+custody trust with the destination bucket, account, region and role pins
+in the same format as `ledger`. Also set `role` to the dedicated replication
+role ARN in the source account. Use a separate account and region.
 Set up both private, versioned, bucket-owner-enforced buckets before genesis.
 The source uses SSE-S3 for custody records. [S3 replication](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication.html)
 
 ```sh
-python3 "$nitro/custody_ledger.py" trust.json replica-plan "$replica_publisher_role" "$replica_reader_role" > replica-plan.json
+python3 "$nitro/custody_ledger.py" trust.json replica-plan > replica-plan.json
 ```
 
 Create the source role with `roleTrust` and `rolePermissions`. Install
@@ -117,8 +118,8 @@ configuration on the source. Run `policy --check-installed` on the source.
 The recovery account administers the destination. Only the pinned S3 role can
 replicate records there, and the destination denies publisher writes and
 replicated deletions. Payment activation, retirement inspection and promotion
-also require the installed policy to deny changes to the bucket controls by
-any role other than the independently pinned administrator.
+compare the installed recovery policy with the policy generated from custody
+trust, including the pinned administrator and replication role.
 [AWS replication permissions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/setting-repl-config-perm-overview.html)
 
 Replication is asynchronous. For a planned cutover, freeze the source and
@@ -259,16 +260,16 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    [S3 version listing](https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectVersions.html)
 
    ```sh
-   python3 "$nitro/custody_ledger.py" trust.json policy "$publisher_role" "$reader_role" --frozen > ledger-frozen-policy.json
+   python3 "$nitro/custody_ledger.py" trust.json policy --frozen > ledger-frozen-policy.json
    AWS_PROFILE="$source_read_profile" python3 "$nitro/custody_archive.py" trust.json ledger-checkpoint
    ```
 
    Suspend registration, share release and key retirement if the canonical
    ledger becomes unavailable or incomplete. Keep the original ledger frozen
    throughout promotion and afterward. In `recovered-trust.json`, copy
-   `bucket`, `account`, `region` and `administratorRole` from the original
-   pinned replica to `ledger`. Set `ledgerReplica` to the new destination
-   and preserve the rest of the trust file.
+   the bucket location and its administrator, publisher and reader pins
+   from the original replica to `ledger`. Set `ledgerReplica` to the new
+   destination and preserve the rest of the trust file.
 
    Mainnet promotion requires a new replica. Install the frozen policy and
    configure outbound replication on the recovered bucket.
@@ -758,12 +759,13 @@ wrapping keys enabled in the slot's account. The publisher and wallet pin
 verifier check the exact three slots in the target's attested boot. If a slot
 is unavailable, qualify a boot using three healthy slots before accepting
 new payments. Give signers, the primary publisher and wallet pin verifiers
-`kms:DescribeKey` on those keys. Add
-`--replica-profile "$replica_read_profile"` to `nitro-sign`, primary publication
-and `--check-wallet-trust` for a mainnet payment policy. The read-only profile
-must be in the custody replica owner's account. It checks versioning, ownership,
-public access blocks, lifecycle rules and the installed replication write policy.
-Use the same flag with a pinned devnet replica to rehearse these checks.
+`kms:DescribeKey` on those keys. For mainnet payment policies, give
+`nitro-sign`, primary publication and `--check-wallet-trust` the read-only
+`--source-profile` and `--replica-profile` for the two ledger accounts.
+Both buckets must have the exact policy generated from custody trust,
+versioning, enforced bucket ownership, public access blocks and no lifecycle
+rules. The source must use the pinned replication rule. Supply both profiles
+on devnet to rehearse the same checks.
 Also pass `--publication-profile "$primary_read_profile" --publication-profile
 "$mirror_read_profile"` to mainnet payment publication and
 `--check-wallet-trust`. Each read-only profile belongs to its bucket owner's
@@ -824,12 +826,12 @@ mainnet payment activation.
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" --bucket-policy "$custody_trust"
 
 cargo xtask nitro-sign policy.json --custody --key "$custody_key_arn" --public-key "$custody_sec1_hex" \
-  --custody-trust "$custody_trust" --replica-profile "$replica_read_profile"
+  --custody-trust "$custody_trust" --source-profile "$source_read_profile" --replica-profile "$replica_read_profile"
 cargo xtask nitro-sign policy.json --key "$signing_key_arn" --public-key "$signer_sec1_hex" \
-  --custody-trust "$custody_trust" --replica-profile "$replica_read_profile"
+  --custody-trust "$custody_trust" --source-profile "$source_read_profile" --replica-profile "$replica_read_profile"
 
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$primary_bucket" "$signed_policy" \
-  --custody-trust "$custody_trust" --replica-profile "$replica_read_profile" \
+  --custody-trust "$custody_trust" --source-profile "$source_read_profile" --replica-profile "$replica_read_profile" \
   --publication-profile "$primary_read_profile" --publication-profile "$mirror_read_profile"
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$mirror_bucket" "$signed_policy"
 ```
@@ -845,7 +847,7 @@ identify the exact file in the wallet release.
 
 ```sh
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" --check-wallet-trust \
-  --custody-trust "$custody_trust" --replica-profile "$replica_read_profile" \
+  --custody-trust "$custody_trust" --source-profile "$source_read_profile" --replica-profile "$replica_read_profile" \
   --publication-profile "$primary_read_profile" --publication-profile "$mirror_read_profile"
 ```
 

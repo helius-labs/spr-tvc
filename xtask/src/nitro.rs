@@ -33,6 +33,9 @@ pub(crate) struct Args {
     /// Custody trust file with the pinned primary and mirror for this domain.
     #[arg(long)]
     custody_trust: PathBuf,
+    /// Read-only AWS profile in the active custody ledger's account.
+    #[arg(long)]
+    source_profile: Option<String>,
     /// Read-only AWS profile in the pinned custody replica's account.
     #[arg(long)]
     replica_profile: Option<String>,
@@ -207,6 +210,9 @@ pub(crate) fn sign(args: Args) -> Result<()> {
         .arg(candidate.path());
     if args.custody {
         check.args(["--custody-signer", &args.key, &args.public_key]);
+    }
+    if let Some(profile) = args.source_profile {
+        check.args(["--source-profile", &profile]);
     }
     if let Some(profile) = args.replica_profile {
         check.args(["--replica-profile", &profile]);

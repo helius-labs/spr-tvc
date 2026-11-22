@@ -35,7 +35,7 @@ fn refuses_to_sign_without_pinned_publications() {
 }
 
 #[test]
-fn accepts_the_read_only_replica_profile_for_payment_activation() {
+fn accepts_read_only_source_and_replica_profiles_for_payment_activation() {
     let parsed = Args::try_parse_from([
         "nitro-sign",
         "policy.json",
@@ -45,10 +45,13 @@ fn accepts_the_read_only_replica_profile_for_payment_activation() {
         "fixture",
         "--custody-trust",
         "trust.json",
+        "--source-profile",
+        "source-read",
         "--replica-profile",
         "replica-read",
     ])
     .unwrap();
+    assert_eq!(parsed.source_profile.as_deref(), Some("source-read"));
     assert_eq!(parsed.replica_profile.as_deref(), Some("replica-read"));
 }
 

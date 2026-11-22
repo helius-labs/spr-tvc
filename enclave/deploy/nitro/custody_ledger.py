@@ -96,14 +96,28 @@ def validate_roster(trust, custodians, host):
         public_keys.add(public)
 
 
+LEDGER_FIELDS = ("bucket", "account", "region", "administratorRole", "publisherRole", "readerRoles")
+
+
 def ledger_prefix(trust):
     ledger = trust["ledger"]
-    fields(ledger, "bucket", "account", "region", "administratorRole")
+    fields(ledger, *LEDGER_FIELDS)
     if not (re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", ledger["bucket"]) and
             re.fullmatch(r"[0-9]{12}", ledger["account"]) and re.fullmatch(r"[a-z0-9-]+", ledger["region"])):
         raise ValueError("expected pinned custody bucket, AWS account and region")
-    if arn(ROLE_ARN, ledger["administratorRole"])[1] != ledger["account"]:
+    administrator, publisher, readers = (ledger[name] for name in ("administratorRole", "publisherRole", "readerRoles"))
+    if arn(ROLE_ARN, administrator)[1] != ledger["account"]:
         raise ValueError("bucket administrator must be in the custody ledger account")
+    if arn(ROLE_ARN, publisher)[1] != ledger["account"]:
+        raise ValueError("publisher must be a dedicated role in the custody ledger account")
+    if not isinstance(readers, list):
+        raise ValueError("expected a list of pinned custody ledger reader roles")
+    for reader in readers:
+        arn(ROLE_ARN, reader)
+    if len(readers) != len(set(readers)) or publisher in readers:
+        raise ValueError("custody ledger reader roles must be distinct from each other and the publisher")
+    if administrator in {publisher, *readers}:
+        raise ValueError("bucket administrator must be a separate role in the custody ledger account")
     network, domain = trust["network"], trust["securityDomainId"]
     validate_scope(network, domain, "custody", "1")
     return ledger, f"spr-custody/{network}/{domain}/"
@@ -363,20 +377,20 @@ def ledger_replica(trust):
     if "ledgerReplica" not in trust:
         return None
     replica = trust["ledgerReplica"]
-    fields(replica, "bucket", "region", "account", "administratorRole", "role")
+    fields(replica, *LEDGER_FIELDS, "role")
     source, _ = ledger_prefix(trust)
     destination, _ = ledger_prefix(replica_trust(trust, replica))
     if (any(source[field] == destination[field] for field in ("bucket", "account", "region")) or
             arn(ROLE_ARN, replica["role"])[1] != source["account"]):
         raise ValueError("ledger replication requires a source role and a separate bucket, account and region")
-    if replica["role"] == source["administratorRole"]:
+    if replica["role"] in {source["administratorRole"], source["publisherRole"], *source["readerRoles"]}:
         raise ValueError("ledger replication requires its own role")
     return replica
 
 
 def replica_trust(trust, replica):
     return {"network": trust["network"], "securityDomainId": trust["securityDomainId"],
-            "ledger": {name: replica[name] for name in ("bucket", "region", "account", "administratorRole")}}
+            "ledger": {name: replica[name] for name in LEDGER_FIELDS}}
 
 
 def replication_configuration(trust, replica):
@@ -401,22 +415,14 @@ def ledger_administration_statement(trust):
     }
 
 
-def ledger_policy(trust, publisher, readers, *, frozen=False):
+def ledger_policy(trust, *, frozen=False):
     read, listing = ledger_reader_policy(trust)["Statement"]
     ledger = trust["ledger"]
-    administrator = ledger["administratorRole"]
-    if arn(ROLE_ARN, publisher)[1] != ledger["account"]:
-        raise ValueError("publisher must be a dedicated role in the custody ledger account")
-    if administrator in {publisher, *readers}:
-        raise ValueError("bucket administrator must be a separate role in the custody ledger account")
-    for reader in readers:
-        arn(ROLE_ARN, reader)
+    administrator, publisher, readers = (ledger[name] for name in ("administratorRole", "publisherRole", "readerRoles"))
     resource = read["Resource"]
     data_roles = {publisher, *readers}
     replica = ledger_replica(trust)
     replica_role = {replica["role"]} if replica is not None else set()
-    if replica_role & {administrator, *data_roles}:
-        raise ValueError("ledger replication requires its own role")
     principals = {"AWS": sorted(data_roles)}
     allowed_to_read = [administrator, *sorted(data_roles | replica_role)]
     policy = {"Version": "2012-10-17", "Statement": [
@@ -443,22 +449,27 @@ def ledger_policy(trust, publisher, readers, *, frozen=False):
     return policy
 
 
-def ledger_replica_plan(trust, publisher, readers):
+def recovery_bucket_policy(trust, replica):
+    destination = replica_trust(trust, replica)
+    policy = ledger_policy(destination, frozen=True)
+    history, restriction = replica_history_statements(destination, replica["role"])
+    policy["Statement"] = [history if rule["Sid"] == history["Sid"] else rule for rule in policy["Statement"]]
+    policy["Statement"].extend([
+        restriction,
+        {"Sid": "AllowReplication", "Effect": "Allow", "Principal": {"AWS": replica["role"]},
+         "Action": "s3:ReplicateObject", "Resource": history["Resource"]},
+    ])
+    return policy
+
+
+def ledger_replica_plan(trust):
     replica = ledger_replica(trust)
     if replica is None:
         raise ValueError("pin ledgerReplica before configuring replication")
     source, prefix = ledger_prefix(trust)
-    destination = replica_trust(trust, replica)
-    destination_policy = ledger_policy(destination, publisher, readers, frozen=True)
-    history, restriction = replica_history_statements(destination, replica["role"])
-    destination_policy["Statement"] = [history if rule["Sid"] == history["Sid"] else rule
-                                       for rule in destination_policy["Statement"]]
-    resource, role = history["Resource"], replica["role"]
-    destination_policy["Statement"].extend([
-        restriction,
-        {"Sid": "AllowReplication", "Effect": "Allow", "Principal": {"AWS": role}, "Action": "s3:ReplicateObject",
-         "Resource": resource},
-    ])
+    role = replica["role"]
+    destination_policy = recovery_bucket_policy(trust, replica)
+    resource = f"arn:aws:s3:::{replica['bucket']}/{prefix}*"
     source_bucket = f"arn:aws:s3:::{source['bucket']}"
     return {
         "replication": replication_configuration(trust, replica),
@@ -513,11 +524,17 @@ def check_ledger_bucket_controls(trust, **options):
     require_no_ledger_lifecycle(trust, **options)
 
 
-def check_installed_ledger(trust, expected_policy):
-    if installed_ledger_policy(trust) != expected_policy:
-        raise ValueError("custody ledger bucket policy differs from the generated policy")
-    check_ledger_bucket_controls(trust)
-    require_pinned_replication(trust)
+def check_installed_ledger(trust, expected_policy, **options):
+    if installed_ledger_policy(trust, **options) != expected_policy:
+        raise ValueError("custody ledger bucket policy differs from the pinned policy")
+    check_ledger_bucket_controls(trust, **options)
+    require_pinned_replication(trust, **options)
+
+
+def check_source_ledger(trust, profile):
+    source, _ = ledger_prefix(trust)
+    require_profile_account(profile, source["region"], source["account"])
+    check_installed_ledger(trust, ledger_policy(trust), profile=profile)
 
 
 def require_pinned_replication(trust, **options):
@@ -534,14 +551,8 @@ def check_recovery_bucket(trust, replica, profile):
     destination = replica_trust(trust, replica)
     require_profile_account(profile, replica["region"], replica["account"])
     check_ledger_bucket_controls(destination, profile=profile)
-    policy = installed_ledger_policy(destination, profile=profile)
-    statements = policy.get("Statement") if isinstance(policy, dict) else None
-    if not isinstance(statements, list) or any(
-        rule not in statements for rule in replica_history_statements(destination, replica["role"])
-    ):
-        raise ValueError("custody recovery bucket is missing the pinned replica write and delete protections")
-    if ledger_administration_statement(destination) not in statements:
-        raise ValueError("custody recovery bucket is missing the pinned bucket administration policy")
+    if installed_ledger_policy(destination, profile=profile) != recovery_bucket_policy(trust, replica):
+        raise ValueError("custody recovery bucket policy differs from the pinned policy")
 
 
 def read_epoch_record(trust, epoch, **options):
@@ -809,7 +820,8 @@ def require_payment_recovery_quorums(target_slots):
             raise ValueError(f"custody epoch {epoch} target {release} has an unavailable attested bootstrap slot")
 
 
-def check_release_policy(trust, document, custody_signer=None, *, replica_profile=None, bootstrap_slots=None):
+def check_release_policy(trust, document, custody_signer=None, *, source_profile=None, replica_profile=None,
+                         bootstrap_slots=None):
     fields(document, "policy", "signatures", "custodySignatures")
     policy = document["policy"]
     targets = policy["targets"]
@@ -826,9 +838,11 @@ def check_release_policy(trust, document, custody_signer=None, *, replica_profil
     mainnet = trust["network"] == "mainnet"
     if ledger_backup is None and mainnet:
         raise ValueError("mainnet activation requires a pinned custody ledger replica")
-    verify_payment_recovery = not policy["recoveryOnly"] and (mainnet or replica_profile is not None)
-    if verify_payment_recovery and not replica_profile:
-        raise ValueError("mainnet payment activation requires --replica-profile")
+    verify_payment_recovery = not policy["recoveryOnly"] and (
+        mainnet or source_profile is not None or replica_profile is not None
+    )
+    if verify_payment_recovery and (not source_profile or not replica_profile):
+        raise ValueError("payment activation requires both --source-profile and --replica-profile")
     if verify_payment_recovery and ledger_backup is None:
         raise ValueError("payment recovery verification requires a pinned custody ledger replica")
     if bootstrap_slots is not None and (
@@ -876,6 +890,7 @@ def check_release_policy(trust, document, custody_signer=None, *, replica_profil
             require_replicated_custody(trust, ledger_backup, max(by_epoch, key=epoch_number), registrations)
         if verify_payment_recovery:
             require_payment_recovery_quorums([target for _, targets in readiness for target in targets])
+            check_source_ledger(trust, source_profile)
             check_recovery_bucket(trust, ledger_backup, replica_profile)
         # Check retirement after reading receipts, targets and key state.
         list(workers.map(lambda epoch: require_active_epoch(trust, epoch), by_epoch))
@@ -1130,6 +1145,7 @@ def main():
     post = commands.add_parser("publish")
     post.add_argument("candidate", type=Path)
     check = commands.add_parser("check-release-policy")
+    check.add_argument("--source-profile")
     check.add_argument("--replica-profile")
     check.add_argument("--bootstrap-slots", help="JSON array of attested slot triples in policy target order")
     check.add_argument("candidate", type=Path)
@@ -1138,13 +1154,9 @@ def main():
     get.add_argument("epoch")
     get.add_argument("--custody-digest", action="store_true")
     policy = commands.add_parser("policy")
-    policy.add_argument("publisher")
-    policy.add_argument("readers", nargs="+")
     policy.add_argument("--check-installed", action="store_true")
     policy.add_argument("--frozen", action="store_true", help="deny all object writes on this custody prefix")
-    replica_plan = commands.add_parser("replica-plan")
-    replica_plan.add_argument("publisher")
-    replica_plan.add_argument("readers", nargs="+")
+    commands.add_parser("replica-plan")
     commands.add_parser("reader-policy")
     recovery = commands.add_parser("recovery-policy")
     recovery.add_argument("custodian_role")
@@ -1157,7 +1169,7 @@ def main():
     try:
         trust = read_json(args.trust)
         if args.command == "policy":
-            expected = ledger_policy(trust, args.publisher, args.readers, frozen=args.frozen)
+            expected = ledger_policy(trust, frozen=args.frozen)
             if args.check_installed:
                 check_installed_ledger(trust, expected)
                 print("Custody ledger bucket controls verified")
@@ -1165,7 +1177,7 @@ def main():
                 print(canonical(expected).decode())
             return
         if args.command == "replica-plan":
-            print(canonical(ledger_replica_plan(trust, args.publisher, args.readers)).decode())
+            print(canonical(ledger_replica_plan(trust)).decode())
             return
         if args.command == "reader-policy":
             print(canonical(ledger_reader_policy(trust)).decode())
@@ -1192,7 +1204,8 @@ def main():
         if args.command == "check-release-policy":
             slots = parse_json(args.bootstrap_slots.encode()) if args.bootstrap_slots is not None else None
             print(canonical(check_release_policy(trust, document, args.custody_signer,
-                                                 replica_profile=args.replica_profile, bootstrap_slots=slots)).decode())
+                                                 source_profile=args.source_profile, replica_profile=args.replica_profile,
+                                                 bootstrap_slots=slots)).decode())
             return
         signed = (sign_epoch(trust, document, args.key, args.build, args.review,
                              args.inspection_profiles, args.relay_build)
