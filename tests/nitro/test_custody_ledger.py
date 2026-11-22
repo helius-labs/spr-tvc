@@ -84,8 +84,20 @@ class CustodyLedgerTests(unittest.TestCase):
         self.enterContext(patch("time.time", side_effect=lambda: self.now))
         self.enterContext(patch("custody_ledger.aws", side_effect=self.aws))
         self.enterContext(patch("approval.kms", side_effect=AssertionError("receipt verification must not call KMS")))
+        self.key_metadata = {}
+        self.key_inspection = self.enterContext(patch("custody_ledger.kms", side_effect=self.describe_custody_key))
         self.capture_verifier = self.enterContext(patch("custody_ledger.verify_ceremony_capture"))
         self.archive_capture_verifier = self.enterContext(patch("custody_archive.verify_ceremony_capture"))
+
+    def describe_custody_key(self, arn, operation):
+        self.assertEqual(operation, "describe-key")
+        acknowledgement = arn in {key(slot, 8) for slot in range(1, 7)}
+        return {"KeyMetadata": {
+            "Arn": arn, "Origin": "AWS_KMS", "MultiRegion": False, "KeyState": "Enabled",
+            "KeySpec": "ECC_NIST_P256" if acknowledgement else "RSA_2048",
+            "KeyUsage": "SIGN_VERIFY" if acknowledgement else "ENCRYPT_DECRYPT",
+            **self.key_metadata.get(arn, {}),
+        }}
 
     def rotate_approvals(self, epoch):
         self.now += 60
@@ -1125,6 +1137,28 @@ class CustodyLedgerTests(unittest.TestCase):
         self.capture_verifier.side_effect = None
         publish(self.trust, document)
         self.assertEqual(load_epoch(self.trust, "1")[0], document)
+
+    def test_first_receipt_write_requires_all_acknowledged_keys_to_still_be_enabled(self):
+        document = self.sign(self.document(1))
+        roster = document["authorization"]["manifest"]["custodians"]
+        recovery = roster[0]["recoveryKeyArn"]
+        acknowledgement = roster[-1]["acknowledgementKey"]["keyArn"]
+        for arn, metadata in ((recovery, {"KeyState": "PendingDeletion"}),
+                              (acknowledgement, {"KeyState": "Disabled"}),
+                              (recovery, {"Arn": acknowledgement})):
+            with self.subTest(arn=arn, metadata=metadata), patch.dict(self.key_metadata, {arn: metadata}):
+                with self.assertRaisesRegex(ValueError, "expected an enabled, single-region key"):
+                    publish(self.trust, document)
+                self.assertEqual(self.objects, {})
+        self.key_inspection.reset_mock()
+        publish(self.trust, document)
+        self.assertCountEqual([request.args[0] for request in self.key_inspection.call_args_list], [
+            arn for member in roster for arn in (member["recoveryKeyArn"], member["acknowledgementKey"]["keyArn"])
+        ])
+        self.key_inspection.reset_mock()
+        self.key_inspection.side_effect = AssertionError("an authenticated receipt retry must not need KMS")
+        publish(self.trust, document)
+        self.key_inspection.assert_not_called()
 
     @patch("custody_ledger.verify_reviewed_ceremony")
     @patch("custody_ledger.prove_share")

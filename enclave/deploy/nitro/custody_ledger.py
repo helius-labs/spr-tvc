@@ -1076,6 +1076,21 @@ def check_acknowledgement_policy(custodian, **options):
         raise ValueError("installed acknowledgement policy does not match the custodian role")
 
 
+def require_receipt_keys(custodians):
+    def check_slot(member):
+        for key, specs, usage in (
+            (member["recoveryKeyArn"], RSA_KEYS, "ENCRYPT_DECRYPT"),
+            (member["acknowledgementKey"]["keyArn"], {"ECC_NIST_P256"}, "SIGN_VERIFY"),
+        ):
+            try:
+                require_kms_key(kms(key, "describe-key")["KeyMetadata"], key, specs, usage)
+            except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+                raise ValueError(f"custody key {key} is unavailable: {error}") from error
+
+    with ThreadPoolExecutor(max_workers=6) as workers:
+        list(workers.map(check_slot, custodians))
+
+
 def verify_ceremony_capture(capture):
     root = Path(__file__).resolve().parents[3]
     subprocess.run(["pnpm", "--dir", str(root / "example"), "exec", "tsx",
@@ -1162,6 +1177,7 @@ def publish(trust, document):
             raise ValueError("a different custody receipt is already committed")
 
     def before_write():
+        require_receipt_keys(custodians)
         require_active_epoch(trust, epoch)
         if epoch != "1":
             require_active_epoch(trust, str(epoch_number(epoch) - 1))

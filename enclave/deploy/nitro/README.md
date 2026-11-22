@@ -225,11 +225,15 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    ```
 
    `publish` verifies the Nitro evidence, two approvals and all six
-   acknowledgements on the same candidate. The first successful conditional write fixes the receipt for that
-   epoch and its recovery relay. A rotated receipt pins the previous receipt
-   and the registered rotation approval. After checking the slot histories,
-   a first write requires the new epoch and any predecessor to remain open. An authenticated retry can confirm an already committed receipt
-   after retirement. Drafting and signing check the measured configuration.
+   acknowledgements on the same candidate. Before the first write, it verifies
+   that all six recovery keys and all six acknowledgement keys are enabled and
+   still match the exact KMS ARNs and key types. Give the publisher
+   `kms:DescribeKey` on those twelve keys. After checking the slot histories
+   and keys, the new epoch and any predecessor must still be open. The
+   conditional write fixes the receipt and its recovery relay. A rotated
+   receipt pins the previous receipt and registered rotation approval. An
+   authenticated retry reads the original record even after retirement.
+   Drafting and signing check the measured configuration.
    Acknowledgement, publication and online reads verify the same image, host
    role and successor roster. The seed commitment stays stable.
 
