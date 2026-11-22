@@ -96,28 +96,78 @@ async fn bootstrap_acknowledges_only_the_slots_used_to_restore_the_seed() {
         recipient: Mutex::new(Some(Recipient { private, sender })),
         domain: DOMAIN,
         custody,
+        deadline: Instant::now() + BOOTSTRAP_TIMEOUT,
     });
+    let worker = Arc::new(Semaphore::new(1));
+    let permit = worker.acquire().await.unwrap();
+    assert_eq!(
+        accept_shares(
+            State(state.clone()),
+            Extension(worker.clone()),
+            Bytes::new()
+        )
+        .await
+        .unwrap_err(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        kms_attestation(State(state.clone()), Extension(worker.clone()))
+            .await
+            .unwrap_err(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    drop(permit);
     let a = (1, envelopes[0].as_slice());
     let b = (3, envelopes[1].as_slice());
     let c = (5, envelopes[2].as_slice());
     let d = (6, envelopes[3].as_slice());
     let invalid = Bytes::from(frame(&[a, b, (6, &envelopes[2])]));
     assert_eq!(
-        accept_shares(State(state.clone()), invalid)
+        accept_shares(State(state.clone()), Extension(worker.clone()), invalid)
             .await
             .unwrap_err(),
         StatusCode::BAD_REQUEST
     );
     let valid = Bytes::from(frame(&[a, b, c, d]));
-    let (_, slots) = accept_shares(State(state.clone()), valid.clone())
-        .await
-        .unwrap();
+    let (_, slots) = accept_shares(
+        State(state.clone()),
+        Extension(worker.clone()),
+        valid.clone(),
+    )
+    .await
+    .unwrap();
     assert_eq!(slots, [1, 3, 5]);
     let (restored, actual_slots) = restored.await.unwrap();
     assert_eq!(*restored.0, *seed.0);
     assert_eq!(actual_slots, [1, 3, 5]);
     assert_eq!(
-        accept_shares(State(state), valid).await.unwrap_err(),
+        accept_shares(State(state), Extension(worker), valid)
+            .await
+            .unwrap_err(),
         StatusCode::GONE
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn bootstrap_refuses_to_commit_a_recovered_seed_at_the_deadline() {
+    let seed = NoteSeed(Zeroizing::new([0x88; 32]));
+    let (custody, _) = fixture(1, &seed);
+    let (sender, mut receiver) = oneshot::channel();
+    let state = Bootstrap {
+        recipient: Mutex::new(Some(Recipient {
+            private: key(),
+            sender,
+        })),
+        domain: DOMAIN,
+        custody,
+        deadline: Instant::now() + BOOTSTRAP_TIMEOUT,
+    };
+    assert!(state.private_key().is_ok());
+    tokio::time::advance(BOOTSTRAP_TIMEOUT).await;
+    assert_eq!(state.private_key().err(), Some(StatusCode::GONE));
+    assert_eq!(state.complete((seed, [1, 2, 3])), Err(StatusCode::GONE));
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
 }

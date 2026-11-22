@@ -4,7 +4,7 @@ use std::{
     future::pending,
     io,
     num::NonZeroU64,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
 
@@ -33,7 +33,10 @@ use spr_tvc_protocol::{
     encoding::{decimal_u64, hex, jcs_serialize, parse_strict_json},
     types::{Network, ServiceInfo},
 };
-use tokio::sync::{oneshot, Semaphore};
+use tokio::{
+    sync::{oneshot, Semaphore},
+    time::Instant,
+};
 use tokio_vsock::{VsockAddr, VsockListener, VsockStream, VMADDR_CID_ANY};
 use tower_http::cors::{Any, CorsLayer};
 use zeroize::Zeroizing;
@@ -208,12 +211,44 @@ struct Bootstrap {
     recipient: Mutex<Option<Recipient>>,
     domain: [u8; 32],
     custody: Custody,
+    deadline: Instant,
+}
+
+impl Bootstrap {
+    fn pending(&self) -> Result<MutexGuard<'_, Option<Recipient>>, StatusCode> {
+        let pending = self
+            .recipient
+            .lock()
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        if Instant::now() >= self.deadline {
+            return Err(StatusCode::GONE);
+        }
+        Ok(pending)
+    }
+
+    fn private_key(&self) -> Result<PKey<Private>, StatusCode> {
+        self.pending()?
+            .as_ref()
+            .map(|recipient| recipient.private.clone())
+            .ok_or(StatusCode::GONE)
+    }
+
+    fn complete(&self, restored: RestoredSeed) -> Result<[u8; THRESHOLD], StatusCode> {
+        let slots = restored.1;
+        let recipient = self.pending()?.take().ok_or(StatusCode::GONE)?;
+        recipient
+            .sender
+            .send(restored)
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        Ok(slots)
+    }
 }
 
 async fn provision(domain: [u8; 32], custody: Custody) -> io::Result<RestoredSeed> {
     let (sender, seed) = oneshot::channel();
     let private =
         PKey::from_rsa(Rsa::generate(2048).map_err(io::Error::other)?).map_err(io::Error::other)?;
+    let deadline = Instant::now() + BOOTSTRAP_TIMEOUT;
     let app = Router::new()
         .route("/recipient", get(kms_attestation))
         .route("/shares", post(accept_shares))
@@ -225,6 +260,7 @@ async fn provision(domain: [u8; 32], custody: Custody) -> io::Result<RestoredSee
             recipient: Mutex::new(Some(Recipient { private, sender })),
             domain,
             custody,
+            deadline,
         }));
     let listener = ParentListener::bind(44031)?;
     let (shutdown, shutdown_signal) = oneshot::channel::<()>();
@@ -233,11 +269,12 @@ async fn provision(domain: [u8; 32], custody: Custody) -> io::Result<RestoredSee
     });
     tokio::pin!(server);
     let seed = tokio::select! {
+        biased;
         seed = seed => seed.map_err(io::Error::other)?,
         () = &mut server => {
             return Err(io::Error::other("seed listener stopped"));
         }
-        _ = tokio::time::sleep(BOOTSTRAP_TIMEOUT) => {
+        _ = tokio::time::sleep_until(deadline) => {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "seed provisioning timed out"));
         }
     };
@@ -254,18 +291,20 @@ async fn run_relay(
     let recipient =
         PKey::from_rsa(Rsa::generate(2048).map_err(io::Error::other)?).map_err(io::Error::other)?;
     let relay = Arc::new(Relay::new(recipient, NETWORK, domain, epoch, authorities)?);
+    let deadline = Instant::now() + RELAY_TIMEOUT;
     let app = Router::new()
         .route("/recipient", post(relay_recipient))
         .route("/rewrap", post(relay_rewrap))
         .route("/prove", post(relay_prove))
         .layer(DefaultBodyLimit::max(16 * 1024))
+        .layer(Extension(deadline))
         .layer(Extension(Arc::new(Semaphore::new(1))))
         .with_state(relay);
     nitro_http::serve(
         ParentListener::bind(44031)?,
         app,
         MAX_CUSTODY_CONNECTIONS,
-        tokio::time::sleep(RELAY_TIMEOUT),
+        tokio::time::sleep_until(deadline),
     )
     .await;
     Ok(())
@@ -274,16 +313,17 @@ async fn run_relay(
 async fn relay_recipient(
     State(relay): State<Arc<Relay>>,
     Extension(worker): Extension<Arc<Semaphore>>,
+    Extension(deadline): Extension<Instant>,
     nonce: Bytes,
 ) -> Reply<Vec<u8>> {
     if nonce.len() != 32 {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let public = relay
-        .public_key()
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    let binding = sha256(b"SPR/native-nitro/relay-recipient/v1");
-    with_nsm(worker, move || {
+    with_worker_before(worker, deadline, move || {
+        let public = relay
+            .public_key()
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        let binding = sha256(b"SPR/native-nitro/relay-recipient/v1");
         attest(Some(public), Some(binding), Some(nonce.to_vec()))
     })
     .await
@@ -292,11 +332,12 @@ async fn relay_recipient(
 async fn relay_rewrap(
     State(relay): State<Arc<Relay>>,
     Extension(worker): Extension<Arc<Semaphore>>,
+    Extension(deadline): Extension<Instant>,
     body: Bytes,
 ) -> Reply<Vec<u8>> {
     let json = std::str::from_utf8(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
     let request: RelayRequest = parse_strict_json(json).map_err(|_| StatusCode::BAD_REQUEST)?;
-    with_nsm(worker, move || {
+    with_worker_before(worker, deadline, move || {
         let ciphertext = relay
             .rewrap(request, nsm_now_ms)
             .ok_or(StatusCode::BAD_REQUEST)?;
@@ -308,12 +349,13 @@ async fn relay_rewrap(
 async fn relay_prove(
     State(relay): State<Arc<Relay>>,
     Extension(worker): Extension<Arc<Semaphore>>,
+    Extension(deadline): Extension<Instant>,
     body: Bytes,
 ) -> Reply<Vec<u8>> {
     let json = std::str::from_utf8(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
     let request: RecoveryProof = parse_strict_json(json).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let binding = relay.prove(&request).ok_or(StatusCode::BAD_REQUEST)?;
-    with_nsm(worker, move || {
+    with_worker_before(worker, deadline, move || {
+        let binding = relay.prove(&request).ok_or(StatusCode::BAD_REQUEST)?;
         attest(None, Some(binding), Some(request.nonce.to_vec()))
     })
     .await
@@ -323,32 +365,28 @@ async fn kms_attestation(
     State(state): State<Arc<Bootstrap>>,
     Extension(worker): Extension<Arc<Semaphore>>,
 ) -> Reply<Vec<u8>> {
-    let public = state
-        .recipient
-        .lock()
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
-        .as_ref()
-        .ok_or(StatusCode::GONE)?
-        .private
-        .public_key_to_der()
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    with_nsm(worker, move || attest(Some(public), None, None)).await
+    with_worker_before(worker, state.deadline, move || {
+        let public = state
+            .private_key()?
+            .public_key_to_der()
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        attest(Some(public), None, None)
+    })
+    .await
 }
 
-async fn accept_shares(State(state): State<Arc<Bootstrap>>, body: Bytes) -> Reply<Vec<u8>> {
-    let mut pending = state
-        .recipient
-        .lock()
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    let recipient = pending.as_ref().ok_or(StatusCode::GONE)?;
-    let restored = open_shares(&recipient.private, &body, &state.domain, &state.custody)
-        .ok_or(StatusCode::BAD_REQUEST)?;
-    let slots = restored.1;
-    let recipient = pending.take().ok_or(StatusCode::GONE)?;
-    recipient
-        .sender
-        .send(restored)
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+async fn accept_shares(
+    State(state): State<Arc<Bootstrap>>,
+    Extension(worker): Extension<Arc<Semaphore>>,
+    body: Bytes,
+) -> Reply<Vec<u8>> {
+    let verify = state.clone();
+    let restored = with_worker(worker, move || {
+        let private = verify.private_key()?;
+        open_shares(&private, &body, &verify.domain, &verify.custody).ok_or(StatusCode::BAD_REQUEST)
+    })
+    .await?;
+    let slots = state.complete(restored)?;
     Ok(([(CONTENT_TYPE, "application/octet-stream")], slots.to_vec()))
 }
 
@@ -437,7 +475,7 @@ async fn custody_attestation(
     Extension(worker): Extension<Arc<Semaphore>>,
     nonce: Bytes,
 ) -> Reply<String> {
-    with_nsm(worker, move || {
+    with_worker(worker, move || {
         attested_json(
             "SPR/native-nitro/custody/v1",
             "result",
@@ -476,7 +514,7 @@ async fn client_attestation(
     })
     .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let public = service.ephemeral.public_bytes();
-    with_nsm(worker, move || {
+    with_worker(worker, move || {
         attested_json(
             "SPR/native-nitro/discovery/v1",
             "boot",
@@ -488,17 +526,35 @@ async fn client_attestation(
     .await
 }
 
-async fn with_nsm<T: Send + 'static>(
+async fn with_worker_before<T: Send + 'static>(
     worker: Arc<Semaphore>,
-    generate: impl FnOnce() -> Reply<T> + Send + 'static,
-) -> Reply<T> {
+    deadline: Instant,
+    work: impl FnOnce() -> Result<T, StatusCode> + Send + 'static,
+) -> Result<T, StatusCode> {
+    let reply = with_worker(worker, move || {
+        if Instant::now() >= deadline {
+            return Err(StatusCode::GONE);
+        }
+        work()
+    })
+    .await;
+    if Instant::now() >= deadline {
+        return Err(StatusCode::GONE);
+    }
+    reply
+}
+
+async fn with_worker<T: Send + 'static>(
+    worker: Arc<Semaphore>,
+    work: impl FnOnce() -> Result<T, StatusCode> + Send + 'static,
+) -> Result<T, StatusCode> {
     let permit = worker
         .try_acquire_owned()
         .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
     tokio::task::spawn_blocking(move || {
-        // Cancellation of the HTTP request must not admit another NSM call.
+        // Keep the slot until the worker exits, even if its caller disconnects.
         let _permit = permit;
-        generate()
+        work()
     })
     .await
     .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?

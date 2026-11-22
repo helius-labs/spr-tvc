@@ -239,9 +239,12 @@ absolute deadline. Provisioning looks for a recipient for up to twenty seconds.
 Successful provisioning drains its reply for up to five seconds before
 closing the listener's remaining connections.
 The serving router admits two attestation requests and 32 other requests
-with a five-second request deadline. Each listener runs at most one Nitro
-Security Module call on a blocking worker. The worker retains its permit
-until the kernel call returns, including after a client disconnects.
+with a five-second request deadline. Each listener admits one blocking NSM or
+custody crypto operation at a time. A worker keeps its permit until it exits,
+including after a client disconnects. A bootstrap recipient can be consumed
+only once, after share verification returns to the live handler and before
+its two-minute deadline. The relay refuses new crypto work and withholds
+late replies after its ten-minute deadline, including while connections drain.
 
 ## QuorumOS decision
 

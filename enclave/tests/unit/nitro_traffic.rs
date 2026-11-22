@@ -77,19 +77,19 @@ async fn wallet_preflight_allows_only_credential_free_json_and_attestation_posts
 }
 
 #[tokio::test]
-async fn cancelled_attestation_cannot_admit_another_kernel_call() {
+async fn cancelled_request_cannot_admit_another_blocking_operation() {
     let worker = Arc::new(Semaphore::new(1));
     let (started, wait_for_worker) = oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
-    let request = tokio::spawn(with_nsm(worker.clone(), move || {
+    let request = tokio::spawn(with_worker(worker.clone(), move || {
         started.send(()).unwrap();
         blocked.recv_timeout(Duration::from_secs(2)).unwrap();
-        Ok(([(CONTENT_TYPE, "application/json")], String::new()))
+        Ok(())
     }));
     wait_for_worker.await.unwrap();
     request.abort();
     assert_eq!(
-        with_nsm::<String>(worker.clone(), || panic!("worker was full"))
+        with_worker::<()>(worker.clone(), || panic!("worker was full"))
             .await
             .unwrap_err(),
         StatusCode::TOO_MANY_REQUESTS
@@ -100,6 +100,27 @@ async fn cancelled_attestation_cannot_admit_another_kernel_call() {
         .unwrap()
         .unwrap();
     drop(permit);
+}
+
+#[tokio::test(start_paused = true)]
+async fn custody_worker_refuses_work_and_replies_past_the_listener_deadline() {
+    let worker = Arc::new(Semaphore::new(1));
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let (started, wait_for_worker) = oneshot::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    let request = tokio::spawn(with_worker_before(worker.clone(), deadline, move || {
+        started.send(()).unwrap();
+        blocked.recv_timeout(Duration::from_secs(2)).unwrap();
+        Ok("late reply")
+    }));
+    wait_for_worker.await.unwrap();
+    tokio::time::advance(Duration::from_secs(1)).await;
+    release.send(()).unwrap();
+    assert_eq!(request.await.unwrap(), Err(StatusCode::GONE));
+    assert_eq!(
+        with_worker_before::<()>(worker, deadline, || panic!("expired worker ran")).await,
+        Err(StatusCode::GONE),
+    );
 }
 
 #[tokio::test]
