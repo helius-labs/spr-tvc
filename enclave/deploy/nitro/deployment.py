@@ -36,11 +36,17 @@ def require_active_epoch(trust, epoch):
         raise ValueError("custody epoch is retired")
 
 
+def target_binding(manifest):
+    """The registered destination remains the same when its approval is renewed."""
+    return {name: value for name, value in manifest.items() if name not in {"expiresAt", "approvalFromEpoch"}}
+
+
 def register_target(trust, document):
     manifest = verify_target_approval(trust, document)
     epoch = manifest["custodyEpoch"]
     require_active_epoch(trust, epoch)
-    write_once(trust, target_object_name(manifest), document, lambda stored: verify_target_approval(trust, stored))
+    write_once(trust, target_object_name(manifest), document,
+               lambda stored: target_binding(verify_target_approval(trust, stored, historical=True)))
     require_active_epoch(trust, epoch)
 
 
@@ -48,7 +54,7 @@ def require_registered_target(trust, manifest):
     # Registration precedes the retirement check. Every wrap admitted before
     # the marker will appear in the subsequent inventory, even if it ends later.
     recorded = read_object(trust, target_object_name(manifest))
-    if verify_target_approval(trust, recorded) != manifest:
+    if target_binding(verify_target_approval(trust, recorded, historical=True)) != target_binding(manifest):
         raise ValueError("target does not match the immutable deployment register")
     require_active_epoch(trust, manifest["custodyEpoch"])
 

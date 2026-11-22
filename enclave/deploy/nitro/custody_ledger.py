@@ -13,7 +13,7 @@ from approval import (
     epoch_number, fields, file_digest, get_signing_key, hex_digest, key_result, kms, parse_json, read_json, require_kms_key,
     sha256, signing_key,
 )
-from kms_policy import acknowledgement_policy, context, recovery_policy, validate_custodian_roles
+from kms_policy import acknowledgement_policy, boot_pins, context, recovery_policy, validate_custodian_roles
 from provenance import MAIN_REF, verify as verify_build
 
 LABEL = "custody-epoch"
@@ -94,13 +94,18 @@ def retirement_object_name(epoch):
     return f"retired/{epoch}.json"
 
 
-def target_path(epoch, digest):
+def target_path(epoch, identity):
     epoch_number(epoch)
-    return f"targets/{epoch}/{hex_digest(digest)}.json"
+    return f"targets/{epoch}/{hex_digest(identity)}.json"
+
+
+def target_attestation(manifest):
+    pins = boot_pins(manifest["hostRole"], manifest["pcrs"])
+    return {"releaseId": manifest["releaseId"], "pcrs": {key.removeprefix("PCR"): value for key, value in pins.items()}}
 
 
 def target_object_name(manifest):
-    return target_path(manifest["custodyEpoch"], sha256(manifest))
+    return target_path(manifest["custodyEpoch"], sha256(target_attestation(manifest)))
 
 
 def storage(trust, operation, args):
@@ -242,14 +247,14 @@ def verify_retirement(trust, document, epoch):
     fields(document, "manifest", "signatures")
     manifest = document["manifest"]
     fields(manifest, "network", "securityDomainId", "epoch", "receiptSha256", "replacementEpoch",
-           "replacementReceiptSha256", "replacementCustodyDigest", "replacementTargetSha256", "approvalFromEpoch",
-           "walletPolicyDigest")
+           "replacementReceiptSha256", "replacementCustodyDigest", "replacementTargetIdentity", "replacementTargetSha256",
+           "approvalFromEpoch", "walletPolicyDigest")
     if ((manifest["network"], manifest["securityDomainId"], manifest["epoch"]) !=
             (trust["network"], trust["securityDomainId"], epoch) or
             epoch_number(manifest["replacementEpoch"]) <= epoch_number(epoch)):
         raise ValueError("retirement record does not match the requested epoch")
-    for field in ("receiptSha256", "replacementReceiptSha256", "replacementCustodyDigest", "replacementTargetSha256",
-                  "walletPolicyDigest"):
+    for field in ("receiptSha256", "replacementReceiptSha256", "replacementCustodyDigest", "replacementTargetIdentity",
+                  "replacementTargetSha256", "walletPolicyDigest"):
         hex_digest(manifest[field])
     start = manifest["approvalFromEpoch"]
     if not any(entry["fromEpoch"] == start for entry in trust["approvalKeys"]):
@@ -267,9 +272,10 @@ def load_retirement(trust, epoch):
             marker["replacementCustodyDigest"] != sha256(replacement["custody"]) or
             previous["custody"]["noteSeedCommitment"] != replacement["custody"]["noteSeedCommitment"]):
         raise ValueError("retirement receipts do not match the ledger")
-    name = target_path(replacement_epoch, marker["replacementTargetSha256"])
-    if read_registered_target(trust, name, replacement_epoch, marker["replacementReceiptSha256"])["mode"] != "serve":
-        raise ValueError("replacement target is not a registered serving enclave")
+    name = target_path(replacement_epoch, marker["replacementTargetIdentity"])
+    target = read_registered_target(trust, name, replacement_epoch, marker["replacementReceiptSha256"])
+    if target["mode"] != "serve" or sha256(target) != marker["replacementTargetSha256"]:
+        raise ValueError("replacement target does not match the registered serving enclave")
     return marker, custodians
 
 

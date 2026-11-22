@@ -138,7 +138,10 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    ```
 
    Register with the dedicated ledger publisher. The ledger keeps the exact
-   signed target and all six wrapping-key ARNs. Before decrypting a share,
+   signed target and all six wrapping-key ARNs. Within an epoch, a release ID
+   and PCR0–PCR3 identify one wrapping-key set. Use a fresh release identity
+   for a different key set. A fresh approval can renew the wrapping deadline
+   without replacing the registered target. Before decrypting a share,
    `wrap_share.py` checks registration, the open epoch, and both installed key
    policies. A trusted custodian workstation sees one plaintext share during
    acknowledgement and wrapping. The tool writes only the wrapped ciphertext.
@@ -188,7 +191,9 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    as `walletTrustSha256` in the custody trust file. Draft, sign twice and
    publish a retirement record. Each step verifies the canonical wallet policy
    and attests its replacement replicas against the exact committed custody
-   record. At least one live replica must match a serving target in the custody
+   record. Each operator needs `kms:DescribeKey` on the replacement receipt's
+   six recovery keys. The command checks that at least three are enabled.
+   At least one live replica must match a serving target in the custody
    ledger by release ID and PCR0–PCR3. Both public buckets must agree before
    and after attestation. The signed retirement record pins the matched target
    and closes the old epoch to new wraps. Each slot's inventory includes its

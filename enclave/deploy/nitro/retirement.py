@@ -3,25 +3,26 @@
 import argparse
 import hashlib
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from approval import (
     MAX_DOCUMENT_BYTES, add_approval, approval_keys, canonical, check_approvals, epoch_number, fields, hex_digest, kms,
-    parse_json, read_json, sha256,
+    parse_json, read_json, require_kms_key, sha256,
 )
 from custody_ledger import (
-    RETIREMENT, list_objects, load_epoch, load_retirement, read_registered_target, retirement_object_name,
-    verify_retirement, write_once,
+    RECOVERY_SPECS, RETIREMENT, list_objects, load_epoch, load_retirement, read_registered_target,
+    retirement_object_name, target_attestation, verify_retirement, write_once,
 )
 from deployment import require_active_epoch
-from kms_policy import boot_pins, key_policy, recovery_policy, target_context
+from kms_policy import key_policy, recovery_policy, target_context
 
 
 def retirement_scope(trust, epoch, replacement):
     if epoch_number(replacement) <= epoch_number(epoch):
         raise ValueError("retirement requires a newer custody epoch")
     _, old, _ = load_epoch(trust, epoch)
-    _, new, _ = load_epoch(trust, replacement)
+    _, new, custodians = load_epoch(trust, replacement)
     if old["custody"]["noteSeedCommitment"] != new["custody"]["noteSeedCommitment"]:
         raise ValueError("replacement epoch must preserve the note seed")
     return {
@@ -29,7 +30,23 @@ def retirement_scope(trust, epoch, replacement):
         "epoch": epoch, "receiptSha256": sha256(old), "replacementEpoch": replacement,
         "replacementReceiptSha256": sha256(new), "replacementCustodyDigest": sha256(new["custody"]),
         "approvalFromEpoch": trust["approvalKeys"][-1]["fromEpoch"],
-    }, new["custody"]["noteSeedCommitment"]
+    }, new["custody"]["noteSeedCommitment"], custodians
+
+
+def require_recovery_quorum(custodians):
+    def enabled(member):
+        key = member["recoveryKeyArn"]
+        try:
+            metadata = kms(key, "describe-key")["KeyMetadata"]
+            require_kms_key(metadata, key, RECOVERY_SPECS, "ENCRYPT_DECRYPT")
+            return True
+        except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired):
+            return False
+
+    with ThreadPoolExecutor(max_workers=6) as workers:
+        count = sum(workers.map(enabled, custodians))
+    if count < 3:
+        raise ValueError(f"replacement epoch has only {count} verified enabled recovery keys. Three are required.")
 
 
 def registered_targets(trust, epoch, receipt_digest):
@@ -57,16 +74,17 @@ def qualified_policy(trust, wallet_trust, scope, seed):
     evidence = parse_json(reply.stdout)
     fields(evidence, "policyDigest", "targets")
     for target in candidates:
-        pcrs = {key.removeprefix("PCR"): value for key, value in boot_pins(target["hostRole"], target["pcrs"]).items()}
-        if {"releaseId": target["releaseId"], "pcrs": pcrs} in evidence["targets"]:
-            return hex_digest(evidence["policyDigest"]), sha256(target)
+        attestation = target_attestation(target)
+        if attestation in evidence["targets"]:
+            return {"walletPolicyDigest": hex_digest(evidence["policyDigest"]),
+                    "replacementTargetIdentity": sha256(attestation), "replacementTargetSha256": sha256(target)}
     raise ValueError("no attested serving target matches the registered replacement")
 
 
 def qualified_manifest(trust, wallet_trust, epoch, replacement):
-    scope, seed = retirement_scope(trust, epoch, replacement)
-    policy_digest, target_digest = qualified_policy(trust, wallet_trust, scope, seed)
-    return {**scope, "walletPolicyDigest": policy_digest, "replacementTargetSha256": target_digest}
+    scope, seed, custodians = retirement_scope(trust, epoch, replacement)
+    require_recovery_quorum(custodians)
+    return {**scope, **qualified_policy(trust, wallet_trust, scope, seed)}
 
 
 def commit_retirement(trust, wallet_trust, document):

@@ -54,12 +54,15 @@ receipts verifiable offline.
 
 Custodians verify the quorum-approved build and registered destination and
 compare its KMS policies to the approved role, context and measurements before
-opening a share. A custodian workstation temporarily sees its one share. KMS
+opening a share. The ledger accepts one wrapping-key set per epoch, release ID
+and PCR0–PCR3. A new quorum approval may renew the deadline for the same
+registered destination. A custodian workstation temporarily sees its one share. KMS
 rewraps it for the target. The host sees ciphertext during this flow.
 
 The wallet publishers raise the custody floor after the replacement attests.
 Custody signers then verify the published floor and the exact replacement
-receipt. They match a live attested replica to a registered serving target by
+receipt. They check that at least three replacement recovery keys are enabled
+and match a live attested replica to a registered serving target by
 release ID and PCR0–PCR3. The retirement record pins that target. Operators
 verify it against both committed receipts and the target registry before
 producing the key inventory. An unverifiable record halts new wraps and requires ledger
