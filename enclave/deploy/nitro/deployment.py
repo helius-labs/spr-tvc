@@ -107,8 +107,7 @@ def register_target(trust, document, *, build=None):
         return
     require_target_approval_window(manifest, time.time(), remaining=LEDGER_WRITE_MARGIN_SECONDS)
     require_publication_roster(trust, manifest["approvalFromEpoch"])
-    write_once(trust, name, document, lambda stored: target_binding(stored["manifest"]))
-    require_registered_target(trust, manifest)
+    write_once(trust, name, document, lambda: require_registered_target(trust, manifest))
 
 
 def require_registered_target(trust, manifest):

@@ -144,6 +144,7 @@ def read_object(trust, name, **options):
 
 def read_stored_object(trust, name, **options):
     payload, metadata = read_stored_payload(trust, name, **options)
+    ledger_record_version(name, metadata)
     return parse_json(payload), metadata
 
 
@@ -170,12 +171,17 @@ def publication_time(metadata):
     return publication_datetime(metadata).timestamp()
 
 
-def ledger_record_fingerprint(name, payload, metadata):
-    if not 0 < len(payload) <= MAX_DOCUMENT_BYTES:
-        raise ValueError(f"invalid custody ledger record size for {name}")
+def ledger_record_version(name, metadata):
     version = metadata.get("VersionId")
     if not isinstance(version, str) or not version or version == "null":
         raise ValueError(f"custody ledger record {name} requires an original S3 version")
+    return version
+
+
+def ledger_record_fingerprint(name, payload, metadata):
+    if not 0 < len(payload) <= MAX_DOCUMENT_BYTES:
+        raise ValueError(f"invalid custody ledger record size for {name}")
+    version = ledger_record_version(name, metadata)
     published_at = publication_datetime(metadata).astimezone(timezone.utc).isoformat()
     return version, published_at, hashlib.sha256(payload).hexdigest()
 
@@ -232,25 +238,26 @@ def require_publication_roster(trust, start):
         raise ValueError("custody approval cutover is too close for a ledger write")
 
 
-def write_once(trust, name, document, subject):
+def write_once(trust, name, document, confirm):
     _, prefix = ledger_prefix(trust)
     payload = canonical(document) + b"\n"
     if len(payload) > MAX_DOCUMENT_BYTES:
         raise ValueError("record exceeds the ledger size limit")
     encryption = ["--server-side-encryption", "AES256"] if ledger_replica(trust) is not None else []
+    write_error = None
     try:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "record.json"
             path.write_bytes(payload)
             storage(trust, "put-object", ["--key", prefix + name, "--if-none-match", "*", "--body", str(path), *encryption])
-    except (ValueError, subprocess.TimeoutExpired) as write_error:
-        # Resolve ambiguous writes by reading the authenticated immutable subject.
-        try:
-            stored = read_object(trust, name)
-        except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as read_error:
-            raise ValueError(f"could not confirm ledger write ({write_error}). Readback failed ({read_error})") from None
-        if subject(stored) != subject(document):
-            raise ValueError("a different record is already committed") from None
+    except (ValueError, subprocess.TimeoutExpired) as error:
+        write_error = error
+    try:
+        confirm()
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as read_error:
+        if write_error is None:
+            raise
+        raise ValueError(f"could not confirm ledger write ({write_error}). Readback failed ({read_error})") from None
 
 
 def list_objects(trust, name, **options):
@@ -937,15 +944,16 @@ def publish(trust, document):
     receipt, custodians = record(trust, document)
     check_commit(trust, document, receipt, custodians)
     check_previous(trust, document, receipt)
-    verify_ceremony_capture(document["authorization"]["manifest"]["capture"])
+    authorization = document["authorization"]["manifest"]
+    verify_ceremony_capture(authorization["capture"])
     epoch = receipt["custody"]["epoch"]
-    def subject(committed):
-        stored_receipt, roster = record(trust, committed)
-        if stored_receipt["custody"]["epoch"] != epoch:
-            raise ValueError("canonical custody receipt belongs to another epoch")
-        check_commit(trust, committed, stored_receipt, roster)
-        return committed["authorization"]["manifest"]
-    write_once(trust, ledger_object(trust, epoch), document, subject)
+
+    def confirm():
+        stored, _, _ = read_epoch_record(trust, epoch)
+        if canonical(stored["authorization"]["manifest"]) != canonical(authorization):
+            raise ValueError("a different custody receipt is already committed")
+
+    write_once(trust, ledger_object(trust, epoch), document, confirm)
 
 
 def main():

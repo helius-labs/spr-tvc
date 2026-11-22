@@ -39,6 +39,9 @@ Supply every ledger reader role to `policy`, and attach the generated read
 policy to each cross-account reader role in its own account. Install the bucket
 policy on a private, versioned general-purpose bucket with bucket-owner-enforced
 ownership, all four bucket public access blocks enabled, and no lifecycle rules.
+Allow 15 minutes for S3 versioning to propagate before the first write. The
+ledger rejects records that lack an original S3 version ID.
+[S3 data consistency model](https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html#ConsistencyModel)
 The bucket accepts only the replication configuration pinned below. Check the
 installed controls with the same role list before publishing custody records.
 
@@ -60,8 +63,10 @@ disallowed so S3's recorded write time can govern custody approvals. Protect
 account root and keep the publisher
 and host unable to assume the administrator role. Readers verify two pinned
 approvals and six custodian acknowledgements even when reading directly from
-S3. If a canonical record fails verification, halt the affected operation and
-compare the record with the current trust schedule and signed archives. The
+S3. Publish commands read back and authenticate the committed record before
+reporting success. If the write and readback both fail, the error reports both
+failures. If a canonical record fails verification, halt the affected
+operation and compare it with the current trust schedule and signed archives. The
 independent bucket administrator investigates and preserves the versions and
 audit logs before any repair. A valid retirement record permanently closes its
 epoch. Custody listings must name the pinned bucket and prefix and account for

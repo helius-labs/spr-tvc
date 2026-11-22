@@ -70,7 +70,7 @@ class LedgerReplicationTests(unittest.TestCase):
             "StringNotEquals": {"s3:x-amz-server-side-encryption": "AES256"},
         })
         with patch("custody_ledger.storage") as storage:
-            write_once(TRUST, "1.json", {"fixture": True}, lambda value: value)
+            write_once(TRUST, "1.json", {"fixture": True}, lambda: None)
             args = storage.call_args.args[2]
             self.assertEqual(args[args.index("--if-none-match") + 1], "*")
             self.assertEqual(args[args.index("--server-side-encryption") + 1], "AES256")

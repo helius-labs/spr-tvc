@@ -191,19 +191,21 @@ def commit_retirement(trust, wallet_trust, document):
     approval = retirement_approval(document)
     manifest = approval["manifest"]
     epoch = manifest["epoch"]
+
+    def require_same_record(stored):
+        if canonical(stored) != canonical(document):
+            raise ValueError("a different retirement record is already committed")
+
     existing = find_retirement(trust, epoch)
     if existing is not None:
-        stored, _, _ = existing
-        if stored != document:
-            raise ValueError("a different retirement record is already committed")
+        require_same_record(existing[0])
         return
     check_approvals(approval_keys(trust), RETIREMENT, approval)
     verify_qualification(trust, wallet_trust, document)
     require_recovery_window(manifest, remaining=LEDGER_WRITE_MARGIN_SECONDS)
     require_publication_roster(trust, manifest["approvalFromEpoch"])
 
-    write_once(trust, retirement_object_name(epoch), document, lambda stored: stored)
-    load_retirement(trust, epoch)
+    write_once(trust, retirement_object_name(epoch), document, lambda: require_same_record(load_retirement(trust, epoch)[0]))
 
 
 def retirement_inventory(trust, epoch, index):

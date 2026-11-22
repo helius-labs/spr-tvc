@@ -22,7 +22,7 @@ from custody_archive import (
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
     check_custody_roster, check_installed_ledger, check_release_policy, draft, ledger_policy, ledger_reader_policy,
-    list_objects, load_epoch, publish, read_registered_target, read_stored_payload,
+    list_objects, load_epoch, publish, read_object, read_registered_target, read_stored_payload,
     record, require_active_epoch,
     sign_epoch, target_attestation,
     target_object_name, write_once,
@@ -178,6 +178,8 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertIn(winner, (left, right))
         self.assertEqual(receipt, record(self.trust, winner)[0])
         publish(self.trust, winner)
+        publish(self.trust, {**winner, "acknowledgements": winner["acknowledgements"][::-1]})
+        self.assertEqual(load_epoch(self.trust, "1")[0], winner)
 
     def test_mainnet_admits_only_the_signed_relay(self):
         self.trust["network"] = "mainnet"
@@ -205,7 +207,40 @@ class CustodyLedgerTests(unittest.TestCase):
     def test_reports_both_failures_when_a_ledger_write_cannot_be_confirmed(self):
         with patch("custody_ledger.storage", side_effect=[ValueError("write timed out"), ValueError("read denied")]):
             with self.assertRaisesRegex(ValueError, r"could not confirm ledger write \(write timed out\).*\(read denied\)"):
-                write_once(self.trust, "1.json", {}, lambda document: document)
+                write_once(self.trust, "1.json", {}, lambda: read_object(self.trust, "1.json"))
+
+    def test_custody_publish_requires_an_authenticated_readback(self):
+        document = self.sign(self.document(1))
+        name = f"spr-custody/devnet/{DOMAIN}/1.json"
+
+        def lost_response(region, service, operation, args, **options):
+            reply = self.aws(region, service, operation, args, **options)
+            if operation == "put-object":
+                raise ValueError("write acknowledgement lost")
+            return reply
+
+        with patch("custody_ledger.aws", side_effect=lost_response):
+            publish(self.trust, document)
+        self.assertEqual(load_epoch(self.trust, "1")[0], document)
+
+        with patch.dict(self.objects, {name: canonical({**document, "acknowledgements": []})}):
+            with patch("custody_ledger.aws", side_effect=lost_response):
+                with self.assertRaisesRegex(ValueError, r"could not confirm ledger write .*precondition failed.*signing quorum"):
+                    publish(self.trust, document)
+        for version in (None, "", "null"):
+            with self.subTest(version=version), patch.dict(self.versions, {name: version}):
+                with self.assertRaisesRegex(ValueError, "requires an original S3 version"):
+                    publish(self.trust, document)
+
+    def test_custody_publish_requires_the_record_after_a_successful_response(self):
+        def unconfirmed_write(region, service, operation, args, **options):
+            if operation == "put-object":
+                return {}
+            return self.aws(region, service, operation, args, **options)
+
+        with patch("custody_ledger.aws", side_effect=unconfirmed_write):
+            with self.assertRaisesRegex(ValueError, "object missing"):
+                publish(self.trust, self.sign(self.document(1)))
 
     def test_retirement_requires_an_explicit_complete_listing_from_the_pinned_bucket(self):
         prefix = f"spr-custody/devnet/{DOMAIN}/retired/1.json"
@@ -1076,11 +1111,13 @@ class CustodyLedgerTests(unittest.TestCase):
         qualification.return_value = self.qualification(replacement)
         concurrent = {**target, "releaseId": "other-slot", "wrappingKeys": [key(account, 12) for account in range(1, 7)]}
 
-        def register_during_retirement(*args):
-            write_once(*args)
-            commit_retirement(self.trust, None, retired)
+        def register_during_retirement(region, service, operation, args, **options):
+            reply = self.aws(region, service, operation, args, **options)
+            if operation == "put-object" and args[args.index("--key") + 1].endswith("/" + target_object_name(concurrent)):
+                commit_retirement(self.trust, None, retired)
+            return reply
 
-        with patch("deployment.write_once", side_effect=register_during_retirement):
+        with patch("custody_ledger.aws", side_effect=register_during_retirement):
             with self.assertRaisesRegex(ValueError, "retired"):
                 register_target(self.trust, self.signed_subject(TARGET_APPROVAL, concurrent))
         with self.assertRaisesRegex(ValueError, "retired"):
