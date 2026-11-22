@@ -270,16 +270,21 @@ def qualify_key_retirement(trust, wallet_trust, marker, published_at):
     return evidence
 
 
+def retirement_replica(trust, profile):
+    replica = ledger_replica(trust)
+    if replica is None and trust["network"] == "mainnet":
+        raise ValueError("mainnet key retirement requires a pinned custody ledger replica")
+    if replica is not None and not profile:
+        raise ValueError("provide --replica-profile to verify the custody ledger replica")
+    return replica
+
+
 def inspect_keys(trust, epoch, index, check_inactive, *, wallet_trust=None, replica_profile=None):
     if not check_inactive:
         if wallet_trust is None:
             raise ValueError("provide --wallet-trust before scheduling key deletion")
-        replica = ledger_replica(trust)
-        if replica is None and trust["network"] == "mainnet":
-            raise ValueError("mainnet key retirement requires a pinned custody ledger replica")
+        replica = retirement_replica(trust, replica_profile)
         if replica is not None:
-            if replica_profile is None:
-                raise ValueError("provide --replica-profile before scheduling key deletion")
             check_recovery_bucket(trust, replica, replica_profile)
     marker, role, keys, published_at = retirement_inventory(trust, epoch, index)
     result = inspect_inventory((role, keys), check_inactive)
@@ -375,10 +380,11 @@ def require_terminated_parent(target, profile):
             "source": "aws-config", "capturedAt": capture_time}
 
 
-def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_seconds):
+def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_seconds, *, replica_profile=None):
     require_inspection_profiles(profiles)
     if wait_seconds <= 0:
         raise ValueError("provide a positive replacement boot wait time")
+    replica = retirement_replica(trust, replica_profile)
     document, custodians, _ = load_retirement(trust, epoch)
     marker = document["manifest"]
     _, replacement, replacement_custodians = load_epoch(trust, marker["replacementEpoch"])
@@ -423,6 +429,8 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
             time.sleep(min(2, remaining))
 
     slots, parents = inspect_all()
+    if replica is not None:
+        check_recovery_bucket(trust, replica, replica_profile)
     recovered = retirement_bootstrap(evidence["replacementBootstrap"])
     require_recovery_quorum(trust, {**marker, **evidence}, [replacement_custodians[slot - 1] for slot in recovered])
     qualified_policy(trust, wallet_trust, marker, seed, after_ms=after_ms, expected=evidence)
@@ -468,6 +476,7 @@ def main():
     verify.add_argument("epoch")
     verify.add_argument("--inspection-profiles", nargs=6, required=True)
     verify.add_argument("--host-inspection-profile", metavar="ACCOUNT=PROFILE", action="append", default=[])
+    verify.add_argument("--replica-profile", help="inspect the custody recovery bucket in its owner's AWS account")
     verify.add_argument("--wait-seconds", type=int, default=300)
     verify.add_argument("--output", type=Path, help="publish the report atomically at a new path")
     args = parser.parse_args()
@@ -485,7 +494,8 @@ def main():
                 if not re.fullmatch(r"[0-9]{12}", account) or not profile or account in profiles:
                     raise ValueError("provide distinct host inspection profiles as ACCOUNT=PROFILE")
                 profiles[account] = profile
-            result = verify_retired(trust, args.wallet_trust, args.epoch, args.inspection_profiles, profiles, args.wait_seconds)
+            result = verify_retired(trust, args.wallet_trust, args.epoch, args.inspection_profiles, profiles,
+                                    args.wait_seconds, replica_profile=args.replica_profile)
             if args.output is not None:
                 write_report(args.output, result)
                 return

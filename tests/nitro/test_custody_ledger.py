@@ -607,7 +607,8 @@ class CustodyLedgerTests(unittest.TestCase):
                 check_bucket.assert_called_with(self.trust, self.trust["ledgerReplica"], "recovery-read")
             source_status[marker_key] = "PENDING"
             with self.assertRaisesRegex(ValueError, "has not completed S3 replication"):
-                verify_retired(self.trust, None, "1", [f"slot-{n}" for n in range(1, 7)], {}, 1)
+                verify_retired(self.trust, None, "1", [f"slot-{n}" for n in range(1, 7)], {}, 1,
+                               replica_profile="recovery-read")
             with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
                 require_active_epoch(self.trust, "1")
 
@@ -1285,6 +1286,30 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertEqual(report["replacement"]["replacementBootstrap"], fresh)
             self.assertEqual({row["keyArn"] for slot in report["slots"] for row in slot["keys"]}, set(inventory))
             quorum.assert_called_once()
+            with self.assertRaisesRegex(ValueError, "mainnet key retirement requires a pinned custody ledger replica"):
+                verify_retired({**self.trust, "network": "mainnet"}, wallet, "1", profiles, host_profiles, 5)
+            replica = {"bucket": "custody-recovery", "account": "000000000011", "region": "eu-west-1",
+                       "role": "arn:aws:iam::000000000008:role/replication"}
+            query.side_effect = None
+            query.return_value.stdout = ready
+            with (patch.dict(self.trust, {"ledgerReplica": replica}), patch("retirement.require_retirement_replication"),
+                  patch("retirement.check_recovery_bucket") as check_bucket):
+                query.reset_mock()
+                with self.assertRaisesRegex(ValueError, "provide --replica-profile"):
+                    verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
+                query.assert_not_called()
+
+                def check_replica(*_args):
+                    query.assert_called_once()
+                    raise ValueError("custody ledger bucket must have no lifecycle configuration")
+
+                check_bucket.side_effect = check_replica
+                with self.assertRaisesRegex(ValueError, "must have no lifecycle"):
+                    verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5, replica_profile="recovery-read")
+                check_bucket.assert_called_once_with(self.trust, replica, "recovery-read")
+                check_bucket.side_effect = None
+                verified = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5, replica_profile="recovery-read")
+                self.assertEqual(verified, report)
 
     def test_retirement_cli_publishes_the_completed_report_without_overwriting(self):
         directory = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -1292,16 +1317,16 @@ class CustodyLedgerTests(unittest.TestCase):
         trust.write_bytes(canonical(self.trust))
         profiles = [f"slot-{index}" for index in range(1, 7)]
         argv = ["retirement.py", str(trust), "verify-retired", str(wallet), "1",
-                "--inspection-profiles", *profiles, "--output", str(report)]
+                "--inspection-profiles", *profiles, "--replica-profile", "recovery-read", "--output", str(report)]
         result = {"retirementObservedAtMs": "100"}
 
-        def verify(*_args):
+        def verify(*_args, **_options):
             self.assertFalse(report.exists())
             return result
 
         with patch("sys.argv", argv), patch("retirement.verify_retired", side_effect=verify) as verify_retired:
             retirement_main()
-            verify_retired.assert_called_once_with(self.trust, wallet, "1", profiles, {}, 300)
+            verify_retired.assert_called_once_with(self.trust, wallet, "1", profiles, {}, 300, replica_profile="recovery-read")
             self.assertEqual(report.read_bytes(), canonical(result) + b"\n")
             with self.assertRaisesRegex(SystemExit, "retirement report already exists"):
                 retirement_main()
@@ -1311,7 +1336,7 @@ class CustodyLedgerTests(unittest.TestCase):
             concurrent = report.with_name("concurrent.json")
             argv[-1] = str(concurrent)
 
-            def concurrent_writer(*_args):
+            def concurrent_writer(*_args, **_options):
                 concurrent.write_bytes(b"another operator's report")
                 return result
 

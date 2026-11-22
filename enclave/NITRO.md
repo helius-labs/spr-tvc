@@ -148,10 +148,10 @@ inventory. An unverifiable record halts new wraps and requires ledger recovery.
 When a replica is configured, the inventory tool also checks that the receipt
 chain, target registrations it depends on and retirement marker have identical
 content, version IDs and write times on the pinned replica.
-Mainnet pre-deletion inspection requires a ledger replica. An identity in
-the recovery bucket owner's account verifies the installed write and delete
-denials, versioning, bucket ownership, public access blocks and absence of
-lifecycle rules. Pre-deletion inspection verifies current wallet policy and
+Mainnet pre-deletion inspection and final verification require a ledger replica.
+An identity in the recovery bucket owner's account verifies the write and
+delete denials, versioning, bucket ownership, public access blocks and
+absence of lifecycle rules. Pre-deletion inspection verifies current wallet policy and
 attests the original registered replacement using the three proven slots.
 Its bootstrap must be later than the S3 second that recorded retirement.
 All six recovery and wrapping keys for those slots must still be enabled.
@@ -160,9 +160,10 @@ Use replacement parents separate from those registered for the old epoch.
 The read-only retirement verifier checks the old key inventory in all six
 accounts and requires each registered old serving or rotation parent to be
 terminated. It then checks for a later attested replacement boot and repeats
-the old key and parent checks. When EC2 no longer lists a parent, the
-verifier requires its AWS Config deletion record for the exact managed EC2
-resource. When KMS no longer returns a key's policy or state, the verifier
+the old key, parent and replica record checks. It verifies the replica's
+installed protections before issuing the report. When EC2 no longer lists a
+parent, the verifier requires its AWS Config deletion record for the exact
+managed EC2 resource. When KMS no longer returns a key's policy or state, the verifier
 requires a successful KMS `DeleteKey` service event in CloudTrail for the exact
 key ARN. Record the on-chain canary with the report.
 The report concerns the registered targets and their sealed policies. A

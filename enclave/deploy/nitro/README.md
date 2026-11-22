@@ -419,9 +419,10 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
      --wallet-trust wallet-trust.json --replica-profile "$recovery_bucket_read_profile"
    ```
 
-   Mainnet key retirement requires a pinned ledger replica. Devnet without a
-   replica omits `--replica-profile`. Use a read-only profile in the recovery
-   bucket owner's account with the S3 inspection permissions listed under
+   Mainnet pre-deletion inspection and final retirement verification require
+   a pinned ledger replica. Devnet without a replica omits `--replica-profile`.
+   Use a read-only profile in the recovery bucket owner's account with the
+   S3 inspection permissions listed under
    the ledger installation check, excluding `s3:GetReplicationConfiguration`.
    Inspection checks the profile's account through STS, then checks versioning,
    bucket ownership, public access blocks, the write and deletion policy,
@@ -462,15 +463,17 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    python3 "$nitro/retirement.py" trust.json verify-retired wallet-trust.json 1 \
      --inspection-profiles "${old_inspection_profiles[@]}" \
      --host-inspection-profile "$old_host_account=$old_host_read_profile" \
+     --replica-profile "$recovery_bucket_read_profile" \
      --output "$retirement_report"
    ```
 
    When the verifier reports it is waiting, cold-boot a registered replacement
    with exactly three slots. The verifier reads the candidate registrations
    before starting the `--wait-seconds` timer and polls for a later attested
-   boot. Before writing the report it checks the old keys and parents again,
-   checks the six keys used by the new boot, and verifies the same registered
-   boot and wallet policy. Pass a new report path. The complete file appears
+   boot. Before writing the report it checks the old keys, parents and replica
+   records again. It verifies the replica's installed protections, the six
+   keys used by the new boot, and the same registered boot and wallet policy.
+   Pass a new report path. The complete file appears
    only after verification succeeds. AWS usually lists terminated instances
    for less than an hour. When EC2 cannot report a parent, the verifier
    requires that the latest AWS Config record
