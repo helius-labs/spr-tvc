@@ -40,6 +40,7 @@ from protected `main` and an `image-publish` approval from a GitHub user other
 than the dispatcher. The build shows the immutable artifact and its hashes
 before review. The artifact packager runs the release binary against the exact
 configuration bytes it will measure, using the same checks as enclave startup.
+The written EIF must pass Nitro CLI's checksum check and match the build PCRs.
 The workflow attests the executable, configuration, EIF and
 PCR0–PCR2 hashes after verifying the approval. Signers verify a private copy of
 the exact provenance bytes and match their proposed target or ceremony against

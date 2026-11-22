@@ -41,6 +41,7 @@ class ProvenanceTests(unittest.TestCase):
         for file in ("tvc_app", "configuration.json", "enclave.eif"):
             (self.build / file).write_text(file)
         (self.build / "measurements.json").write_bytes(canonical({
+            "CheckCRC": True,
             "Measurements": {f"PCR{index}": f"{index + 7:02x}" * 48 for index in range(3)},
         }))
         self.manifest = self.build / "provenance.json"
@@ -100,7 +101,7 @@ class ProvenanceTests(unittest.TestCase):
                 verify(self.build, network, commit)
         run.assert_not_called()
 
-    def test_packaging_requires_the_written_eif_to_match_build_measurements(self):
+    def test_packaging_requires_valid_checksum_and_matching_build_measurements(self):
         command_dir = self.build / "bin"
         command_dir.mkdir()
         binary = self.build / "tvc_app"
@@ -122,8 +123,7 @@ class ProvenanceTests(unittest.TestCase):
         )
         docker.chmod(0o700)
         cli.chmod(0o700)
-        mismatched = self.build / "mismatched.json"
-        mismatched.write_bytes((self.build / "measurements.json").read_bytes().replace(b"07", b"ef"))
+        measurements = (self.build / "measurements.json").read_bytes()
         script = pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro/build-eif.sh"
         command = ["bash", str(script), str(self.build / "tvc_app"), str(self.build / "configuration.json")]
         docker_called = self.build / "docker-called"
@@ -136,7 +136,17 @@ class ProvenanceTests(unittest.TestCase):
         good = subprocess.run([*command, str(self.build / "good")], cwd=self.build,
                               env={**env, "EIF_PINS": env["BUILD_PINS"]}, capture_output=True, timeout=10)
         self.assertEqual(good.returncode, 0, good.stderr.decode())
-        rejected = subprocess.run([*command, str(self.build / "rejected")], cwd=self.build,
-                                  env={**env, "EIF_PINS": str(mismatched)}, capture_output=True, timeout=10)
-        self.assertNotEqual(rejected.returncode, 0)
-        self.assertFalse((self.build / "rejected/SHA256SUMS").exists())
+        for case, observed, failure in (
+            ("wrong-pcr", measurements.replace(b"07", b"ef"), b"EIF PCR verification failed"),
+            ("bad-checksum", measurements.replace(b'"CheckCRC":true', b'"CheckCRC":false'), b"EIF checksum verification failed"),
+            ("missing-checksum", measurements.replace(b'"CheckCRC":true,', b''), b"EIF checksum verification failed"),
+        ):
+            with self.subTest(case=case):
+                evidence = self.build / f"{case}.json"
+                evidence.write_bytes(observed)
+                output = self.build / case
+                rejected = subprocess.run([*command, str(output)], cwd=self.build,
+                                          env={**env, "EIF_PINS": str(evidence)}, capture_output=True, timeout=10)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn(failure, rejected.stderr)
+                self.assertFalse((output / "SHA256SUMS").exists())

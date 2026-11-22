@@ -27,8 +27,12 @@ nitro-cli build-enclave --docker-uri "$image" --output-file "$output/enclave.eif
 nitro-cli describe-eif --eif-path "$output/enclave.eif" > "$output/measurements.json"
 jq -e -s '
   def pcrs: .Measurements | [.PCR0, .PCR1, .PCR2];
-  (.[0] | pcrs) == (.[1] | pcrs) and
-  (.[1] | pcrs | all(.[]; type == "string" and test("^[0-9a-f]{96}$") and test("[1-9a-f]")))
+  if .[1].CheckCRC != true then error("EIF checksum verification failed")
+  elif (.[0] | pcrs) == (.[1] | pcrs) and
+       (.[1] | pcrs | all(.[]; type == "string" and test("^[0-9a-f]{96}$") and test("[1-9a-f]")))
+  then true
+  else error("EIF PCR verification failed")
+  end
 ' "$output/build-measurements.json" "$output/measurements.json" >/dev/null
 rm "$output/build-measurements.json"
 (
