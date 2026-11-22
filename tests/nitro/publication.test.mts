@@ -89,7 +89,7 @@ test("does not publish an activation with an unavailable replica", async context
 
 test("mirrors the first publisher's policy into only the selected pinned bucket", async context => {
   const [primary, peer] = trust.publications;
-  context.mock.method(globalThis, "fetch", async (url, options) => {
+  context.mock.method(globalThis, "fetch", async (url: URL, options: RequestInit) => {
     assert.equal(url.hostname, `${primary.bucket}.s3.${primary.region}.amazonaws.com`);
     assert.equal(new Headers(options.headers).get("x-amz-expected-bucket-owner"), primary.account);
     return new Response(signed(first));

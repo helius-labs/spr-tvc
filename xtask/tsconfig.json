@@ -3,9 +3,10 @@
   "compilerOptions": {
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "noEmit": true,
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["*.ts"]
+  "include": ["*.ts", "../tests/nitro/publication.test.mts"]
 }
