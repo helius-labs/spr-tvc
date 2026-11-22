@@ -18,8 +18,9 @@ from approval import (
 )
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
-    find_retirement, ledger_object, ledger_record_fingerprint, ledger_replica, list_objects, load_epoch, load_retirement,
-    read_registered_target, read_stored_payload, recovery_deadline, replica_trust, require_active_epoch, require_publication_roster,
+    check_recovery_bucket, find_retirement, ledger_object, ledger_record_fingerprint, ledger_replica, list_objects, load_epoch,
+    load_retirement, read_registered_target, read_stored_payload, recovery_deadline, replica_trust,
+    require_active_epoch, require_publication_roster,
     require_record_replication, retirement_approval, retirement_bootstrap, retirement_object_name, retirement_recovery,
     retirement_target, rotation_target_name, sign_share_recovery, target_attestation, target_object_name,
     target_path, write_once,
@@ -277,9 +278,17 @@ def qualify_key_retirement(trust, wallet_trust, marker):
     return evidence
 
 
-def inspect_keys(trust, epoch, index, check_inactive, *, wallet_trust=None):
-    if not check_inactive and wallet_trust is None:
-        raise ValueError("provide --wallet-trust before scheduling key deletion")
+def inspect_keys(trust, epoch, index, check_inactive, *, wallet_trust=None, replica_profile=None):
+    if not check_inactive:
+        if wallet_trust is None:
+            raise ValueError("provide --wallet-trust before scheduling key deletion")
+        replica = ledger_replica(trust)
+        if replica is None and trust["network"] == "mainnet":
+            raise ValueError("mainnet key retirement requires a pinned custody ledger replica")
+        if replica is not None:
+            if replica_profile is None:
+                raise ValueError("provide --replica-profile before scheduling key deletion")
+            check_recovery_bucket(trust, replica, replica_profile)
     marker, role, keys = retirement_inventory(trust, epoch, index)
     result = inspect_inventory((role, keys), check_inactive)
     if not check_inactive:
@@ -461,6 +470,7 @@ def main():
     inspect.add_argument("share", type=int, choices=range(1, 7))
     inspect.add_argument("--check-inactive", action="store_true")
     inspect.add_argument("--wallet-trust", type=Path, help="verify the live replacement before scheduling deletion")
+    inspect.add_argument("--replica-profile", help="inspect the custody recovery bucket in its owner's AWS account")
     verify = commands.add_parser("verify-retired")
     verify.add_argument("wallet_trust", type=Path)
     verify.add_argument("epoch")
@@ -472,7 +482,8 @@ def main():
     try:
         trust = read_json(args.trust)
         if args.command == "inspect":
-            result = inspect_keys(trust, args.epoch, args.share, args.check_inactive, wallet_trust=args.wallet_trust)
+            result = inspect_keys(trust, args.epoch, args.share, args.check_inactive, wallet_trust=args.wallet_trust,
+                                  replica_profile=args.replica_profile)
         elif args.command == "verify-retired":
             if args.output is not None and args.output.exists():
                 raise ValueError("retirement report already exists")

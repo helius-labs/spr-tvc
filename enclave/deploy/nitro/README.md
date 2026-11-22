@@ -369,16 +369,23 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-proof-3.json "$first_approval_key" > retire-signed-1.json
    python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-signed-1.json "$second_approval_key" > retire-signed-2.json
    python3 "$nitro/retirement.py" trust.json publish wallet-trust.json retire-signed-2.json
-   python3 "$nitro/retirement.py" trust.json inspect 1 "$share_index" --wallet-trust wallet-trust.json
+   python3 "$nitro/retirement.py" trust.json inspect 1 "$share_index" \
+     --wallet-trust wallet-trust.json --replica-profile "$recovery_bucket_read_profile"
    ```
 
-   With a ledger replica configured, give the retirement inspection roles
-   `s3:GetObject` on the custody prefix in both buckets and include them in the
-   reader lists. The inventory checks
-   the pinned replica for the retirement marker, receipt chain and required
-   target registrations. It requires matching record bytes, original version
-   IDs and write times. The retirement marker closes the old epoch as soon as
-   it commits on the source.
+   Mainnet key retirement requires a pinned ledger replica. Devnet without a
+   replica omits `--replica-profile`. Use a read-only profile in the recovery
+   bucket owner's account with the S3 inspection permissions listed under
+   the ledger installation check, excluding `s3:GetReplicationConfiguration`.
+   Inspection checks the profile's account through STS, then checks versioning,
+   bucket ownership, public access blocks, the write and deletion policy,
+   and absence of lifecycle rules. [S3 bucket policy permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketPolicy.html)
+
+   Give retirement inspection roles `s3:GetObject` on the custody prefix in
+   both buckets and include them in the reader lists. The inventory requires
+   matching bytes, original version IDs and write times for the retirement
+   marker, receipt chain and required target registrations. The retirement
+   marker closes the old epoch as soon as it commits on the source.
 
    Before scheduling any deletion, cold-boot the pinned replacement with the
    three slots proved in the retirement marker and open a note from before

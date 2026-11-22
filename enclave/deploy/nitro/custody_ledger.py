@@ -266,6 +266,14 @@ def custody_history_statement(trust, *, frozen=False):
             "Resource": f"arn:aws:s3:::{ledger['bucket']}/{prefix}*", "Action": actions}
 
 
+def replica_history_statements(destination, role):
+    history = custody_history_statement(destination, frozen=True)
+    history["Action"].remove("s3:ReplicateObject")
+    restriction = {"Sid": "RestrictReplication", "Effect": "Deny", "Principal": "*", "Action": "s3:ReplicateObject",
+                   "Resource": history["Resource"], "Condition": {"StringNotEquals": {"aws:PrincipalArn": role}}}
+    return history, restriction
+
+
 def ledger_replica(trust):
     if "ledgerReplica" not in trust:
         return None
@@ -344,13 +352,14 @@ def ledger_replica_plan(trust, administrator, publisher, readers):
     if replica is None:
         raise ValueError("pin ledgerReplica before configuring replication")
     source, prefix = ledger_prefix(trust)
-    destination_policy = ledger_policy(replica_trust(trust, replica), administrator, publisher, readers, frozen=True)
-    history = next(rule for rule in destination_policy["Statement"] if rule["Sid"] == "PreserveCustodyHistory")
-    history["Action"].remove("s3:ReplicateObject")
+    destination = replica_trust(trust, replica)
+    destination_policy = ledger_policy(destination, administrator, publisher, readers, frozen=True)
+    history, restriction = replica_history_statements(destination, replica["role"])
+    destination_policy["Statement"] = [history if rule["Sid"] == history["Sid"] else rule
+                                       for rule in destination_policy["Statement"]]
     resource, role = history["Resource"], replica["role"]
     destination_policy["Statement"].extend([
-        {"Sid": "RestrictReplication", "Effect": "Deny", "Principal": "*", "Action": "s3:ReplicateObject",
-         "Resource": resource, "Condition": {"StringNotEquals": {"aws:PrincipalArn": role}}},
+        restriction,
         {"Sid": "AllowReplication", "Effect": "Allow", "Principal": {"AWS": role}, "Action": "s3:ReplicateObject",
          "Resource": resource},
     ])
@@ -372,15 +381,15 @@ def ledger_replica_plan(trust, administrator, publisher, readers):
     }
 
 
-def installed_ledger_policy(trust):
-    policy = storage(trust, "get-bucket-policy").get("Policy")
+def installed_ledger_policy(trust, **options):
+    policy = storage(trust, "get-bucket-policy", **options).get("Policy")
     if not isinstance(policy, str):
         raise ValueError("custody ledger bucket did not return a policy")
     return parse_json(policy)
 
 
-def require_no_ledger_lifecycle(trust):
-    if storage(trust, "get-bucket-lifecycle-configuration", absent="NoSuchLifecycleConfiguration") is not None:
+def require_no_ledger_lifecycle(trust, **options):
+    if storage(trust, "get-bucket-lifecycle-configuration", absent="NoSuchLifecycleConfiguration", **options) is not None:
         raise ValueError("custody ledger bucket must have no lifecycle configuration")
 
 
@@ -392,20 +401,24 @@ def require_frozen_ledger(trust):
     require_no_ledger_lifecycle(trust)
 
 
-def check_installed_ledger(trust, expected_policy):
-    if installed_ledger_policy(trust) != expected_policy:
-        raise ValueError("custody ledger bucket policy differs from the generated policy")
-    if storage(trust, "get-bucket-versioning").get("Status") != "Enabled":
+def check_ledger_bucket_controls(trust, **options):
+    if storage(trust, "get-bucket-versioning", **options).get("Status") != "Enabled":
         raise ValueError("custody ledger bucket requires versioning")
-    ownership = storage(trust, "get-bucket-ownership-controls").get("OwnershipControls")
+    ownership = storage(trust, "get-bucket-ownership-controls", **options).get("OwnershipControls")
     if ownership != {"Rules": [{"ObjectOwnership": "BucketOwnerEnforced"}]}:
         raise ValueError("custody ledger bucket requires bucket-owner-enforced ownership")
-    public_access = storage(trust, "get-public-access-block").get("PublicAccessBlockConfiguration")
+    public_access = storage(trust, "get-public-access-block", **options).get("PublicAccessBlockConfiguration")
     if not isinstance(public_access, dict) or any(public_access.get(flag) is not True for flag in (
         "BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets",
     )):
         raise ValueError("custody ledger bucket requires all four public access blocks")
-    require_no_ledger_lifecycle(trust)
+    require_no_ledger_lifecycle(trust, **options)
+
+
+def check_installed_ledger(trust, expected_policy):
+    if installed_ledger_policy(trust) != expected_policy:
+        raise ValueError("custody ledger bucket policy differs from the generated policy")
+    check_ledger_bucket_controls(trust)
     replication = storage(trust, "get-bucket-replication", absent="ReplicationConfigurationNotFoundError")
     replica = ledger_replica(trust)
     if replica is None:
@@ -413,6 +426,18 @@ def check_installed_ledger(trust, expected_policy):
             raise ValueError("custody ledger bucket must have no replication configuration")
     elif replication is None or replication.get("ReplicationConfiguration") != replication_configuration(trust, replica):
         raise ValueError("installed S3 replication does not match the pinned ledger replica")
+
+
+def check_recovery_bucket(trust, replica, profile):
+    destination = replica_trust(trust, replica)
+    require_profile_account(profile, replica["region"], replica["account"])
+    check_ledger_bucket_controls(destination, profile=profile)
+    policy = installed_ledger_policy(destination, profile=profile)
+    statements = policy.get("Statement") if isinstance(policy, dict) else None
+    if not isinstance(statements, list) or any(
+        rule not in statements for rule in replica_history_statements(destination, replica["role"])
+    ):
+        raise ValueError("custody recovery bucket is missing the pinned replica write and delete protections")
 
 
 def read_epoch_record(trust, epoch):

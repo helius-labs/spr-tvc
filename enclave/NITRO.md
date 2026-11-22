@@ -133,9 +133,12 @@ inventory. An unverifiable record halts new wraps and requires ledger recovery.
 When a replica is configured, the inventory tool also checks that the receipt
 chain, target registrations it depends on and retirement marker have identical
 content, version IDs and write times on the pinned replica.
-The pre-deletion inventory also verifies current wallet policy, fresh
-attestation from the original registered replacement using the three proven
-slots, and that their recovery and wrapping keys remain enabled.
+Mainnet pre-deletion inspection requires a ledger replica. An identity in
+the recovery bucket owner's account verifies the installed write and delete
+denials, versioning, bucket ownership, public access blocks and absence of
+lifecycle rules. Pre-deletion inspection also verifies current wallet policy,
+fresh attestation from the original registered replacement using the three
+proven slots, and that their recovery and wrapping keys remain enabled.
 A reconstructed seed remains in enclave memory until the enclave stops.
 Use replacement parents separate from those registered for the old epoch.
 The read-only retirement verifier checks the old key inventory in all six

@@ -583,6 +583,20 @@ class CustodyLedgerTests(unittest.TestCase):
             with patch.dict(replica_change, {"missing": True}):
                 with self.assertRaisesRegex(ValueError, "could not read.*retired/1.json from the pinned replica"):
                     retirement_inventory(self.trust, "1", 1)
+            with (patch("retirement.check_recovery_bucket") as check_bucket,
+                  patch("retirement.inspect_inventory", return_value={"keys": []}) as inspect,
+                  patch("retirement.qualify_key_retirement", return_value={"boot": "replacement"})):
+                wallet = pathlib.Path("wallet-trust.json")
+                with self.assertRaisesRegex(ValueError, "provide --replica-profile"):
+                    inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)
+                check_bucket.side_effect = ValueError("custody ledger bucket must have no lifecycle configuration")
+                with self.assertRaisesRegex(ValueError, "must have no lifecycle"):
+                    inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet, replica_profile="recovery-read")
+                inspect.assert_not_called()
+                check_bucket.side_effect = None
+                result = inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet, replica_profile="recovery-read")
+                self.assertEqual(result, {"keys": [], "replacement": {"boot": "replacement"}})
+                check_bucket.assert_called_with(self.trust, self.trust["ledgerReplica"], "recovery-read")
             pending.add(marker_key)
             with self.assertRaisesRegex(ValueError, "has not completed S3 replication"):
                 verify_retired(self.trust, None, "1", [f"slot-{n}" for n in range(1, 7)], {}, 1)
@@ -1021,6 +1035,8 @@ class CustodyLedgerTests(unittest.TestCase):
               patch("retirement.require_recovery_quorum") as quorum, patch("retirement.run_command") as query):
             with self.assertRaisesRegex(ValueError, "provide --wallet-trust"):
                 inspect_keys(self.trust, "1", 1, False)
+            with self.assertRaisesRegex(ValueError, "mainnet key retirement requires a pinned custody ledger replica"):
+                inspect_keys({**self.trust, "network": "mainnet"}, "1", 1, False, wallet_trust=wallet)
             inspect.assert_not_called()
 
             query.return_value.stdout = evidence(observed)

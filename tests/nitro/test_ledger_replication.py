@@ -7,7 +7,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from custody_archive import ledger_checkpoint
-from custody_ledger import check_installed_ledger, ledger_policy, ledger_replica_plan, require_frozen_ledger, write_once
+from custody_ledger import (
+    check_installed_ledger, check_recovery_bucket, ledger_policy, ledger_replica_plan, require_frozen_ledger, write_once,
+)
 from nitro_fixtures import DOMAIN
 
 SOURCE_ACCOUNT = "000000000008"
@@ -22,6 +24,14 @@ DESTINATION_ROLES = (f"arn:aws:iam::{DESTINATION_ACCOUNT}:role/admin",
 REPLICA = {"bucket": DESTINATION_BUCKET, "region": "eu-west-1", "account": DESTINATION_ACCOUNT, "role": ROLE}
 TRUST = {"network": "devnet", "securityDomainId": DOMAIN, "ledgerReplica": REPLICA,
          "ledger": {"bucket": SOURCE_BUCKET, "region": "eu-north-1", "account": SOURCE_ACCOUNT}}
+BUCKET_CONTROLS = {
+    "get-bucket-versioning": {"Status": "Enabled"},
+    "get-bucket-ownership-controls": {"OwnershipControls": {"Rules": [{"ObjectOwnership": "BucketOwnerEnforced"}]}},
+    "get-public-access-block": {"PublicAccessBlockConfiguration": {
+        flag: True for flag in ("BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets")
+    }},
+    "get-bucket-lifecycle-configuration": None,
+}
 
 
 class LedgerReplicationTests(unittest.TestCase):
@@ -86,13 +96,8 @@ class LedgerReplicationTests(unittest.TestCase):
         expected = ledger_policy(TRUST, *SOURCE_ROLES)
         replication = ledger_replica_plan(TRUST, *DESTINATION_ROLES)["replication"]
         responses = {
+            **BUCKET_CONTROLS,
             "get-bucket-policy": {"Policy": json.dumps(expected)},
-            "get-bucket-versioning": {"Status": "Enabled"},
-            "get-bucket-ownership-controls": {"OwnershipControls": {"Rules": [{"ObjectOwnership": "BucketOwnerEnforced"}]}},
-            "get-public-access-block": {"PublicAccessBlockConfiguration": {
-                flag: True for flag in ("BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets")
-            }},
-            "get-bucket-lifecycle-configuration": None,
             "get-bucket-replication": {"ReplicationConfiguration": replication},
         }
         with patch("custody_ledger.storage", side_effect=lambda _trust, operation, **_options: responses[operation]):
@@ -109,6 +114,40 @@ class LedgerReplicationTests(unittest.TestCase):
                 with self.subTest(field=field), patch.dict(responses, {"get-bucket-replication": {"ReplicationConfiguration": wrong}}):
                     with self.assertRaisesRegex(ValueError, "does not match the pinned ledger replica"):
                         check_installed_ledger(TRUST, expected)
+
+    def test_recovery_bucket_must_preserve_replicated_versions(self):
+        policy = ledger_replica_plan(TRUST, *DESTINATION_ROLES)["destinationPolicy"]
+        responses = {**BUCKET_CONTROLS, "get-bucket-policy": {"Policy": json.dumps(policy)}}
+
+        def aws(region, service, operation, args, **options):
+            self.assertEqual((region, service, options["profile"]), (REPLICA["region"], "s3api", "recovery-read"))
+            self.assertEqual(args, ["--bucket", DESTINATION_BUCKET, "--expected-bucket-owner", DESTINATION_ACCOUNT])
+            return responses[operation]
+
+        with (patch("custody_ledger.require_profile_account") as account,
+              patch("custody_ledger.aws", side_effect=aws) as inspect):
+            check_recovery_bucket(TRUST, REPLICA, "recovery-read")
+            account.assert_called_once_with("recovery-read", REPLICA["region"], DESTINATION_ACCOUNT)
+            self.assertEqual(inspect.call_count, len(responses))
+            for operation, value, message in (
+                ("get-bucket-lifecycle-configuration", {"Rules": [{"Expiration": {"Days": 1}}]}, "no lifecycle"),
+                ("get-bucket-versioning", {"Status": "Suspended"}, "requires versioning"),
+                ("get-bucket-ownership-controls", {}, "bucket-owner-enforced"),
+                ("get-public-access-block", {}, "public access blocks"),
+            ):
+                with self.subTest(operation=operation), patch.dict(responses, {operation: value}):
+                    with self.assertRaisesRegex(ValueError, message):
+                        check_recovery_bucket(TRUST, REPLICA, "recovery-read")
+            for sid in ("PreserveCustodyHistory", "RestrictReplication"):
+                changed = {**policy, "Statement": [rule for rule in policy["Statement"] if rule["Sid"] != sid]}
+                with self.subTest(sid=sid), patch.dict(responses, {"get-bucket-policy": {"Policy": json.dumps(changed)}}):
+                    with self.assertRaisesRegex(ValueError, "pinned replica write and delete protections"):
+                        check_recovery_bucket(TRUST, REPLICA, "recovery-read")
+            inspect.reset_mock()
+            account.side_effect = ValueError("wrong AWS account")
+            with self.assertRaisesRegex(ValueError, "wrong AWS account"):
+                check_recovery_bucket(TRUST, REPLICA, "recovery-read")
+            inspect.assert_not_called()
 
     def test_source_checkpoint_requires_replication_of_each_record(self):
         metadata = {"LastModified": "2026-11-01T00:00:00Z", "VersionId": "original-version",
