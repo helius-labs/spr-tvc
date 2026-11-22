@@ -1,4 +1,4 @@
-import { address, signatureBytes, type Address } from "@solana/kit";
+import { address, signatureBytes, type Address, type MessagePartialSigner } from "@solana/kit";
 import { p256 } from "@noble/curves/p256";
 import { NullifierKey, ViewingKey, initializePoseidon } from "@heliuslabs/spr";
 import type { Bytes16, Bytes31 } from "@heliuslabs/spr/keypair";
@@ -104,13 +104,48 @@ it("stops awaiting a cancelled owner approval and wipes the response key", async
   try {
     const pending = exchange.executeServiceCall(context, { type: "Decrypt", owner, items: [] }, scope.signal);
     const rejected = expect(pending).rejects.toThrow("owner cancelled");
-    expect(owner.signMessages).toHaveBeenCalledWith(expect.any(Array), { abortSignal: scope.signal });
+    expect(owner.signMessages).toHaveBeenCalledWith(expect.any(Array), { abortSignal: expect.any(AbortSignal) });
     scope.abort(new Error("owner cancelled"));
     await rejected;
     expect(fetch).not.toHaveBeenCalled();
     expect(responseSecret).toEqual(new Uint8Array(32));
   } finally {
     random.mockRestore();
+  }
+});
+
+it("aborts a stalled owner approval at the end of the release window", async () => {
+  vi.useFakeTimers();
+  try {
+    const { context, fetch } = fixture();
+    let approvalSignal: AbortSignal | undefined;
+    let returnSignature!: () => void;
+    const owner = {
+      address: ownerAddress,
+      signMessages: vi.fn<MessagePartialSigner["signMessages"]>((_messages, options) => {
+        approvalSignal = options?.abortSignal;
+        return new Promise(resolve => {
+          returnSignature = () => resolve([{ [ownerAddress]: signatureBytes(new Uint8Array(64).fill(1)) }]);
+        });
+      }),
+    };
+    const caller = new AbortController();
+    const pending = exchange.executeServiceCall({ ...context, releasePolicyExpiresAtMs: 1009n },
+      { type: "Decrypt", owner, items: [] }, caller.signal);
+    const rejected = expect(pending).rejects.toMatchObject({ code: "ExpiredRequest" });
+    expect(approvalSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(9);
+    expect(approvalSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(approvalSignal?.aborted).toBe(true);
+    await rejected;
+    returnSignature();
+    await Promise.resolve();
+    expect(caller.signal.aborted).toBe(false);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
   }
 });
 

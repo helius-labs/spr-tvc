@@ -26,8 +26,10 @@ either read takes precedence. Run this when building a payment. The transfer
 publishes the recipient's Solana address as its owner tag. `open` signs an
 empty batch to obtain the nullifier secret and returns SPR `WalletKeys`. Sync with those keys
 to sign and decrypt note batches for that owner, including notes received
-through the service before registration. Call `keys.destroy()` when finished
-to wipe local keys and cancel pending or future decryption.
+through the service before registration. The SDK stops waiting for approval
+and signals cancellation when the verified session expires or the caller
+cancels. Call `keys.destroy()` when finished to wipe local keys and cancel
+pending or future decryption.
 
 A relay can forward ciphertexts and return Boot Proofs. The SDK verifies the
 release and signing replica itself. The supplied prover receives the spend

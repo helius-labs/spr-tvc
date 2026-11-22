@@ -40,6 +40,30 @@ type DecryptCall = {
 export type ServiceCall = Extract<ServiceOperation, { type: "PublicKeys" }> | DecryptCall;
 export type ServiceCallResult<T extends ServiceCall> = Extract<ServiceResult, { type: T["type"] }>;
 
+async function signBeforeReleaseExpires(
+  owner: MessagePartialSigner,
+  message: Uint8Array,
+  context: ConnectedTvcRuntime,
+  signal: AbortSignal,
+) {
+  const now = context.nowMs();
+  requireCurrentReleasePolicy(context, now);
+  signal.throwIfAborted();
+  const controller = new AbortController();
+  const approvalSignal = AbortSignal.any([signal, controller.signal]);
+  const remaining = Number(context.releasePolicyExpiresAtMs - now + 1n);
+  const timer = setTimeout(() => controller.abort(new DecryptionServiceError("ExpiredRequest")),
+    Math.min(remaining, 2_147_483_647));
+  try {
+    return await awaitWithSignal(
+      owner.signMessages([createSignableMessage(message)], { abortSignal: approvalSignal }),
+      approvalSignal,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Bind the release and response key before asking the owner to authorize a batch. */
 export async function executeServiceCall<T extends ServiceCall>(
   context: ConnectedTvcRuntime,
@@ -83,11 +107,7 @@ export async function executeServiceCall<T extends ServiceCall>(
         info.network,
         requestDigest,
       );
-      signal.throwIfAborted();
-      const [signatures] = await awaitWithSignal(
-        owner.signMessages([createSignableMessage(message)], { abortSignal: signal }),
-        signal,
-      );
+      const [signatures] = await signBeforeReleaseExpires(owner, message, context, signal);
       const signature = signatures?.[address];
       if (signature?.length !== ED25519_SIGNATURE_BYTES) {
         throw new DecryptionServiceError("InvalidSignature");
