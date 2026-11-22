@@ -57,11 +57,13 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
     const freshnessDeadline = performance.now() + CONNECTION_TTL_MS;
     const policyFreshnessRemainingMs = () => freshnessDeadline - performance.now();
     const { policy, checkpoint, validFrom, expiresAt, update } = await readPublishedNitroPolicy(trust, signal);
+    function matchesCheckpoint(current: NitroPolicyCheckpoint | undefined): boolean {
+      return current?.digest === checkpoint.digest && current.sequence === checkpoint.sequence &&
+        current.minimumCustodyEpoch === checkpoint.minimumCustodyEpoch && current.recoveryOnly === checkpoint.recoveryOnly;
+    }
     async function requireCurrentCheckpoint(signal?: AbortSignal): Promise<void> {
       const current = await awaitWithSignal(store.current(), signal);
-      if (current?.digest !== checkpoint.digest || current.sequence !== checkpoint.sequence ||
-          current.minimumCustodyEpoch !== checkpoint.minimumCustodyEpoch ||
-          current.recoveryOnly !== checkpoint.recoveryOnly) {
+      if (!matchesCheckpoint(current) || !matchesCheckpoint(latest)) {
         throw new DecryptionServiceError("ReleasePolicySuperseded");
       }
     }

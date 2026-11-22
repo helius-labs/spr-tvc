@@ -87,12 +87,23 @@ describe("operation replies", () => {
 
   it("refuses an authenticated reply if a newer checkpoint supersedes its session", async () => {
     const f = fixture();
-    const requireCurrentCheckpoint = vi.fn(async () => {
-      throw new DecryptionServiceError("ReleasePolicySuperseded");
-    });
+    const requireCurrentCheckpoint = vi.fn<() => Promise<void>>()
+      .mockResolvedValueOnce(undefined).mockRejectedValueOnce(new DecryptionServiceError("ReleasePolicySuperseded"));
     await expect(sealedExchange({ ...f.context, requireCurrentCheckpoint }, f.exchange))
       .rejects.toMatchObject({ code: "ReleasePolicySuperseded" });
-    expect(f.verifyOperationAppProof).toHaveBeenCalledBefore(requireCurrentCheckpoint);
+    expect(requireCurrentCheckpoint).toHaveBeenCalledTimes(2);
+    expect(f.verifyOperationAppProof.mock.invocationCallOrder[0])
+      .toBeLessThan(requireCurrentCheckpoint.mock.invocationCallOrder[1]!);
+  });
+
+  it("rechecks the checkpoint immediately before sending the sealed request", async () => {
+    const f = fixture();
+    const fetch = vi.fn();
+    const requireCurrentCheckpoint = vi.fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new DecryptionServiceError("ReleasePolicySuperseded"));
+    await expect(sealedExchange({ ...f.context, transport: { fetch }, requireCurrentCheckpoint }, f.exchange))
+      .rejects.toMatchObject({ code: "ReleasePolicySuperseded" });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each(["hosted", "native"])("rejects a %s reply if proof verification crosses expiry", async backend => {

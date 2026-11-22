@@ -727,6 +727,32 @@ describe("native client trust gate", () => {
     expect(signMessages).toHaveBeenCalledOnce();
   });
 
+  it("discards an old approval when storage is restored after the same client accepted revocation", async () => {
+    const old = signedPolicy();
+    const { policy } = JSON.parse(old) as { policy: NitroPolicy };
+    const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(policy));
+    const revoked = signedPolicy({ sequence: "3", previousPolicyDigest, action: "revoke", targets: [] });
+    const fetch = policyHeads(vi.fn(), old).mockResolvedValueOnce(attestedDiscovery())
+      .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    fetch.mockResolvedValueOnce(new Response(null, { status: 503 }));
+    policyHeads(fetch, revoked);
+    vi.stubGlobal("fetch", fetch);
+    let stored: NitroPolicyCheckpoint | undefined;
+    const client = createNitroDecryptionService({ trust, policyStore: {
+      async current() { return stored; },
+      async accept(update) { stored = update[0].checkpoint; return true; },
+    } });
+    signMessages.mockImplementationOnce(async () => {
+      const older = stored;
+      await expect(client.address(signer.address)).rejects.toMatchObject({ code: "ReleasePolicyRevoked" });
+      expect(stored?.sequence).toBe("3");
+      stored = older;
+      return [{ [signer.address]: signatureBytes(new Uint8Array(64).fill(1)) }];
+    });
+    await expect(client.open(signer, proofs)).rejects.toMatchObject({ code: "ReleasePolicySuperseded" });
+    expect(fetch.mock.calls.filter(([url]) => url.pathname === "/v1/operations")).toHaveLength(2);
+  });
+
   it.each(["fails", "succeeds"] as const)("observes a revocation during attestation when the first probe %s", async outcome => {
     const { policy } = JSON.parse(twoReplicas()) as { policy: NitroPolicy };
     const recoveryOnly = outcome === "succeeds";

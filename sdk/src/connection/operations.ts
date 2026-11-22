@@ -187,6 +187,7 @@ export async function sealedExchange(
   // The ciphertext is hex, so it cannot exceed twice the byte ceiling;
   // RESPONSE_ENVELOPE_SLACK covers the surrounding JSON and App Proof.
   const maxResponseBytes = BigInt(context.info.max_encrypted_response_bytes);
+  if (context.requireCurrentCheckpoint) await context.requireCurrentCheckpoint(signal);
   requireCurrentReleasePolicy(context, context.nowMs());
   const responseText = await sendToEnclave(
     context.backend.endpoint, encrypted, context.transport,
