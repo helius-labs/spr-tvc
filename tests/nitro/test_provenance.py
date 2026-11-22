@@ -80,6 +80,22 @@ class ProvenanceTests(unittest.TestCase):
         self.review.write_bytes(canonical({"sourceCommit": COMMIT, "sourceRef": ref,
                                            "provenanceSha256": hashlib.sha256(self.manifest.read_bytes()).hexdigest()}))
 
+    def test_release_tool_rejects_named_pipes_before_reading_or_hashing(self):
+        tool = pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro/provenance.py"
+        for name in ("measurements.json", "tvc_app"):
+            path = self.build / name
+            original = path.read_bytes()
+            path.unlink()
+            os.mkfifo(path)
+            try:
+                result = subprocess.run([sys.executable, "-B", str(tool), "describe", str(self.build), "mainnet", COMMIT],
+                                        capture_output=True, text=True, timeout=3, check=False)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"expected a regular file: {path}", result.stderr)
+            finally:
+                path.unlink()
+                path.write_bytes(original)
+
     @patch("provenance.subprocess.run")
     def test_matches_the_exact_source_network_and_artifacts_before_github_verification(self, run):
         contents = self.manifest.read_bytes() + b"\n"

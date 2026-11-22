@@ -719,15 +719,17 @@ Each target needs three slots with both keys enabled in the same account.
 A warm enclave still needs that quorum to accept new payments. Recovery-only
 policy publication can proceed during a key outage. [Cross-account KMS permissions](https://docs.aws.amazon.com/kms/latest/developerguide/key-policy-modifying-external-accounts.html)
 Publish from the first listed bucket's AWS account, then mirror the exact signed
-file from the second account. The tool checks the full signed file at both
-buckets before advancing past it. Sign a new revision to change the primary's
+file from the second account. A new activation requires the same signed
+predecessor file at both buckets. Sign a new revision to change the primary's
 signatures. The mirror can repair its copy at the same revision if the
 primary's file retains every release and custody signer already on the mirror.
 If the mirror is behind during an outage, rerun the mirror command with the
 exact signed primary file and wallet trust pins. The mirror authenticates
 both quorums and checks continuity and the ETag in its own bucket. It can do
 this during a custody outage, a replica outage, or after primary policy
-expiry. Once both heads agree, publish the successor or emergency revocation.
+expiry. If the mirror holds the same policy with additional valid signers,
+an emergency revocation can advance once both quorums authenticate each
+predecessor file. Mirror the new revocation to restore exact agreement.
 Wallets use the primary's signed policy when the mirror serves the same
 policy or its exact predecessor. A mirror ahead of the primary blocks new
 connections. Retirement requires agreement. Set alerts for mismatched heads

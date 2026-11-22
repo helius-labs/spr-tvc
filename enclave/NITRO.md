@@ -291,12 +291,13 @@ S3 applies the predecessor's ETag condition to the bucket being written.
 Each publisher writes to its own bucket. The mirror verifies both quorums
 and copies the primary's exact signed file against its own predecessor's ETag.
 This copy can proceed during custody or replica outages, including after
-the primary file expires. The primary waits for the mirror to hold the same
-file before advancing again. The mirror can repair its copy of the same
-revision if the primary's file retains every release and custody signer
-already on the mirror. Changing signatures on the primary requires a new
-revision. Wallets require a current primary policy. The
-enclave and ingress have no publication permission.
+the primary file expires. A new activation requires the same signed file
+in both buckets. A revocation can advance from different signature files
+when both quorums authenticate the same predecessor policy in each bucket.
+The mirror can repair its copy of the same revision if the primary's file
+retains every release and custody signer already on the mirror. Changing
+signatures on the primary requires a new revision. Wallets require a current
+primary policy. The enclave and ingress have no publication permission.
 
 Both quorums sign the ordered `publications` pair, including the bucket, region
 and AWS owner of each entry. Custody signers check the pair against their

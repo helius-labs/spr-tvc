@@ -294,7 +294,7 @@ test("mirrors the first publisher's policy into only the selected pinned bucket"
   assert.equal(writes, 1);
 });
 
-test("checks the second bucket holds the predecessor before advancing the first bucket", async context => {
+test("revocation refuses a mirror behind the immediate predecessor", async context => {
   const [primary] = trust.publications;
   const second = { ...first, sequence: "2", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(first)) };
   const third = { ...second, sequence: "3", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(second)) };
@@ -303,7 +303,7 @@ test("checks the second bucket holds the predecessor before advancing the first 
     assert.ok(args.includes("get-object"));
     await writeFile(args.at(-1)!, signed(second));
     return { stdout: JSON.stringify({ ETag: '"second"' }) };
-  })), /same signed predecessor/);
+  })), /ReleasePolicyInvalid/);
 });
 
 test("an expired primary can catch up the mirror before an emergency revocation", async context => {
@@ -371,7 +371,7 @@ test("copies the live primary during a custody or replica outage so emergency re
     }),
     probe: async () => assert.fail("mirror and revocation must stay available when probes fail"),
   };
-  await assert.rejects(publish(trust, primary.bucket, revoked, runner), /same signed predecessor/);
+  await assert.rejects(publish(trust, primary.bucket, revoked, runner), /ReleasePolicyInvalid/);
   const differentPrimary = signed({ ...active, targets: [{ ...target, releaseId: "different" }] });
   await assert.rejects(publish(trust, mirror.bucket, differentPrimary, runner), /exact signed policy/);
   heads.set(mirror.bucket, signed({ ...first, minimumCustodyEpoch: "2" }));
@@ -430,7 +430,6 @@ test("publishes a rollover revision with both quorums and mirrors its exact sign
   assert.equal(heads.get(mirror.bucket), heads.get(primary.bucket));
 
   heads.set(mirror.bucket, partial);
-  await assert.rejects(publish(trust, primary.bucket, signed(successor), runner), /same signed predecessor/);
   await publish(trust, mirror.bucket, dual, transition);
   assert.equal(heads.get(mirror.bucket), dual);
   heads.set(primary.bucket, partial);
@@ -464,6 +463,44 @@ test("repairs a mirrored genesis against its ETag while preserving both signer s
   primary = signed(first);
   await assert.rejects(publish(trust, mirror.bucket, primary, runner), /preserve the existing signers/);
   assert.equal(head, repaired);
+});
+
+test("revokes from the same authenticated predecessor when the mirror has extra signers", async context => {
+  const [primary, mirror] = trust.publications;
+  const active: NitroPolicy = {
+    ...first, action: "activate", targets: [target], sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest,
+  };
+  const prior = signed(active);
+  const alternate = signed(active, [0, 1], [0, 1, 2]);
+  const next = { ...first, sequence: "3", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(active)) };
+  const revoked = signed(next);
+  const activation = signed({ ...next, action: "activate", targets: [target] });
+  const heads = new Map([[primary.bucket, prior], [mirror.bucket, alternate]]);
+  context.mock.method(globalThis, "fetch", async (url: URL) => new Response(heads.get(url.hostname.split(".")[0]!)));
+  const runner = awsOnly(async args => {
+    const bucket = args[args.indexOf("--bucket") + 1]!;
+    if (args.includes("get-object")) {
+      await writeFile(args.at(-1)!, heads.get(bucket)!);
+      return { stdout: JSON.stringify({ ETag: '"prior"' }) };
+    }
+    assert.ok(args.includes("put-object"));
+    assert.equal(args[args.indexOf("--if-match") + 1], '"prior"');
+    heads.set(bucket, await readFile(args.at(-1)!, "utf8"));
+    return { stdout: "{}" };
+  });
+  await assert.rejects(publish(trust, mirror.bucket, prior, runner), /preserve the existing signers/);
+  await assert.rejects(publish(trust, primary.bucket, activation, { ...runner, custodyTrust: "custody.json" }), /same signed predecessor/);
+  const fork = signed({ ...active, targets: [{ ...target, releaseId: "fork" }] });
+  for (const invalid of [signed(active, [0]), fork]) {
+    heads.set(mirror.bucket, invalid);
+    await assert.rejects(publish(trust, primary.bucket, revoked, runner), /ReleasePolicyInvalid/);
+  }
+  assert.equal(heads.get(primary.bucket), prior);
+  heads.set(mirror.bucket, alternate);
+  await publish(trust, primary.bucket, revoked, runner);
+  assert.equal(verifyPublishedNitroPolicy([revoked, alternate], trust, BigInt(now)).policy.action, "revoke");
+  await publish(trust, mirror.bucket, revoked, runner);
+  assert.equal(heads.get(mirror.bucket), revoked);
 });
 
 test("an emergency transition authenticates the predecessor without requiring its signers", async context => {

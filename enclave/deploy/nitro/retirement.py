@@ -14,7 +14,7 @@ from tempfile import TemporaryDirectory
 from approval import (
     KEY_ARN, MAX_DOCUMENT_BYTES, ROLE_ARN, add_approval, approval_keys, approval_roster, arn, aws, canonical, check_approvals,
     epoch_number, fields, hex_digest, kms,
-    parse_json, read_json, require_inspection_profiles, require_kms_key, require_profile_account, sha256,
+    parse_json, read_document, read_json, require_inspection_profiles, require_kms_key, require_profile_account, sha256,
 )
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
@@ -71,8 +71,7 @@ class ReplacementNotReady(ValueError):
 
 
 def pinned_wallet_trust(trust, wallet_trust):
-    with wallet_trust.open("rb") as source:
-        pinned_trust = source.read(MAX_DOCUMENT_BYTES + 1)
+    pinned_trust = read_document(wallet_trust)
     if (len(pinned_trust) > MAX_DOCUMENT_BYTES or
             hashlib.sha256(pinned_trust).hexdigest() != hex_digest(trust["walletTrustSha256"])):
         raise ValueError("wallet trust file does not match the pinned digest")

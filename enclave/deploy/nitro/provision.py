@@ -5,16 +5,14 @@ import base64
 import errno
 import hashlib
 import http.client
-import os
 import socket
-import stat
 import struct
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import monotonic, sleep
 
-from approval import KEY_ARN, ROLE_ARN, InvalidAwsResponse, arn, aws, fields, hex_digest, parse_json, read_document
+from approval import KEY_ARN, ROLE_ARN, InvalidAwsResponse, arn, aws, fields, hex_digest, open_regular, parse_json, read_document
 from custody_ledger import target_fields
 from kms_policy import RSA_CIPHERTEXT_BYTES
 from operator_http import HTTP_TIMEOUT, request_bytes
@@ -102,9 +100,7 @@ def provision(cid, manifest, directory, slots=None):
     def unwrap(entry):
         slot, key, blob = entry
         try:
-            with open(blob, "rb", opener=lambda path, flags: os.open(path, flags | os.O_NONBLOCK)) as source:
-                if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
-                    return None
+            with open_regular(blob) as source:
                 ciphertext = source.read(max(RSA_CIPHERTEXT_BYTES) + 1)
             if len(ciphertext) not in RSA_CIPHERTEXT_BYTES:
                 return None

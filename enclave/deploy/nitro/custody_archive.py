@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 from approval import (
     MAX_DOCUMENT_BYTES, add_approval, approval_keys, approval_roster, canonical, check_approvals, epoch_number,
-    fields, hex_digest, parse_json, read_json, require_profile_account, sha256, unique_object,
+    fields, hex_digest, open_regular, parse_json, read_json, require_profile_account, sha256, unique_object,
 )
 from custody_ledger import (
     LABEL, RETIREMENT, TARGET_APPROVAL, check_custody_history_entry, check_recovery_bucket, ledger_object, ledger_prefix,
@@ -386,7 +386,7 @@ def main():
             repair_transfer(trust, read_json(args.recovered_trust), args.expect, read_json(args.plan),
                             args.source_profile, args.recovery_profile, sys.stdout)
         else:
-            with args.archive.open("rb") as source:
+            with open_regular(args.archive) as source:
                 receipt = verify_archive(trust, args.epoch, source, args.sha256)
             print(canonical(receipt).decode())
     except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError) as error:

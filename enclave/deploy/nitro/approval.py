@@ -6,9 +6,11 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 KEY_ARN = re.compile(r"arn:aws:kms:([a-z0-9-]+):([0-9]{12}):key/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
@@ -36,8 +38,16 @@ def parse_json(data):
     return json.loads(data, object_pairs_hook=unique_object)
 
 
+@contextmanager
+def open_regular(path):
+    with open(path, "rb", opener=lambda name, flags: os.open(name, flags | os.O_NONBLOCK)) as source:
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise ValueError(f"expected a regular file: {path}")
+        yield source
+
+
 def read_document(path):
-    with path.open("rb") as source:
+    with open_regular(path) as source:
         return source.read(MAX_DOCUMENT_BYTES + 1)
 
 
@@ -55,7 +65,7 @@ def sha256(value):
 
 
 def file_digest(path):
-    with path.open("rb") as source:
+    with open_regular(path) as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 

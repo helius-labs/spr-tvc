@@ -149,6 +149,8 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-141 | If a publication write and its readback both failed, the command lost the original write error. | Report both failures and confirm ambiguous writes only when readback matches the exact signed envelope. [Publication tests](nitro/publication.test.mts) |
 | N-142 | Distinct valid signature files for the same revision prevented the primary and mirror from converging. | The mirror can conditionally copy the exact witnessed primary at the same revision when both signer sets retain every signer already on the mirror. [Publication tests](nitro/publication.test.mts) |
 | N-143 | Opening a named pipe as a policy or trust file could block before validation. | Open without blocking and require a regular file. Verified by passing a named pipe to the publication CLI. |
+| N-144 | An extra valid signer in the mirror's predecessor file blocked both mirror repair and emergency revocation. | A revocation can advance if both heads independently authenticate the same immediate predecessor with both quorums. Activation still requires matching signed files. [Publication tests](nitro/publication.test.mts) |
+| N-145 | A nonregular file could stall the Rust wallet's checkpoint worker or a Python operator command before validation. | The wallet rejects nonregular files and symbolic links at checkpoint and lock paths. Python reads and hashes only regular files. [Rust checkpoint tests](https://github.com/helius-labs/privacy-rings/pull/652) · [Provenance tests](nitro/test_provenance.py) |
 
 ## Remaining qualification and review
 

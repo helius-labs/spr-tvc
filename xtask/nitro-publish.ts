@@ -174,9 +174,9 @@ export async function publish(
     async function checkMirror() {
       if (isSecond || !head) return;
       const peer = await readPeer();
-      if (peer !== head.text && peer !== text) {
-        throw new Error("the mirror must hold the same signed predecessor before the primary advances");
-      }
+      if (peer === head.text || peer === text) return;
+      if (policy.action === "revoke" && nextNitroPublication(verified, peer, trust, emergencyFrom)) return;
+      throw new Error("the mirror must hold the same signed predecessor before the primary advances");
     }
     await checkMirror();
     let confirmedCutover: bigint | undefined;
