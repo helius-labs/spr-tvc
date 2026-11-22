@@ -12,9 +12,13 @@ curl --fail --silent --show-error --location --retry 2 --max-time 120 \
     "https://codeload.github.com/openssl/openssl/tar.gz/$revision" --output "$work/openssl.tar.gz"
 printf '%s  %s\n' "$checksum" "$work/openssl.tar.gz" | sha256sum --check
 tar -xzf "$work/openssl.tar.gz" -C "$work"
+# Expose kernel headers to musl without adding the system's glibc headers.
+mkdir "$work/uapi"
+ln -s /usr/include/linux /usr/include/asm-generic /usr/include/x86_64-linux-gnu/asm "$work/uapi/"
 (
     cd "$work/openssl-$revision"
-    CC=musl-gcc ./Configure linux-x86_64 no-shared no-module no-tests no-apps -fPIC \
+    CC=musl-gcc CPPFLAGS="-I$work/uapi" ./Configure linux-x86_64 \
+        no-shared no-module no-tests no-apps no-async no-engine -fPIC \
         --prefix="$work/install" --libdir=lib --openssldir=/etc/ssl
     make -s -j "$(nproc)" install_dev
 )
@@ -27,4 +31,4 @@ RUSTFLAGS='-C target-feature=+crt-static' \
 
 version=$(enclave/native/target/x86_64-unknown-linux-musl/release/spr-nitro-decryption-service --version)
 printf '%s\n' "$version"
-[[ "$version" == *" OpenSSL 3.5.10-dev "* ]]
+[[ "$version " == *" OpenSSL 3.5.10-dev "* ]]

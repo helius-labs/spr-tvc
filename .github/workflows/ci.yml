@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: "24"
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
-      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libssl-dev musl-tools
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libssl-dev linux-libc-dev musl-tools
       - run: just ci
       - name: Pack standalone TypeScript SDK
         run: |
