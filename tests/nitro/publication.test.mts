@@ -405,16 +405,19 @@ test("activation rejects an incompatible peer or invalid custody state observed 
   const text = signed(activate);
   const predecessor = signed(first);
   let peer = predecessor;
+  let peerStatus = 200;
+  let afterCustody: (() => void) | undefined;
   let retired = false;
   let digest = canaryDigest;
   let activeKeys = trust.custodyKeys;
   let cutover: string | null = null;
-  context.mock.method(globalThis, "fetch", async () => new Response(peer));
+  context.mock.method(globalThis, "fetch", async () => new Response(peer, { status: peerStatus }));
   let writes = 0;
   const run = async (command: string, args: string[]) => {
     if (command === "python3") {
       assert.equal(await readFile(args.at(-1)!, "utf8"), text);
       if (retired) throw new Error("custody epoch is retired");
+      afterCustody?.();
       return { stdout: JSON.stringify({ custodyKeys: activeKeys, nextCutover: cutover, canaryDigest: digest }) };
     }
     assert.equal(command, "aws");
@@ -447,6 +450,22 @@ test("activation rejects an incompatible peer or invalid custody state observed 
     ...options, async probe() { peer = signed(first, [1, 0]); return freshProbe(); },
   }), /same signed predecessor/);
   assert.equal(writes, 0);
+
+  const revocation = signed({ ...first, sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest });
+  for (const lateChange of [() => { peer = revocation; }, () => { peerStatus = 503; }]) {
+    peer = predecessor;
+    peerStatus = 200;
+    afterCustody = undefined;
+    await assert.rejects(publish(trust, bucket, text, {
+      ...options, async probe() { afterCustody = lateChange; return freshProbe(); },
+    }), /same signed predecessor|HTTP 503/);
+    assert.equal(writes, 0);
+  }
+  peer = predecessor;
+  peerStatus = 200;
+  afterCustody = undefined;
+  await publish(trust, bucket, text, { ...options, async probe() { return freshProbe(); } });
+  assert.equal(writes, 1);
 });
 
 test("rechecks live replica evidence after the final custody read", async context => {

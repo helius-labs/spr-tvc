@@ -200,6 +200,7 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-192 | Pre-deletion inspection and the retirement report could use a policy superseded during the final AWS checks. | Read both signed heads after the AWS checks. Require the same policy digest and fresh boot evidence. [Retirement tests](nitro/test_custody_ledger.py) · SPR-NITRO-41 |
 | N-193 | A service-backed payment could broadcast to stale keys when the recipient or service policy changed during the blockhash RPC. | Refresh the recipient again after the blockhash check. Preserve the existing expiry and reservation checks. [Wallet tests](https://github.com/helius-labs/privacy-rings/pull/652) · SPR-NITRO-94 |
 | N-194 | The canary's retirement report read could block on a named pipe or outgrow its size check. | Open without blocking, require a regular file and cap the bytes read before decoding. [Canary tests](../example/tests/nitro.test.ts) · SPR-NITRO-82 |
+| N-195 | The primary could write an activation after the mirror revoked it or went offline during the final AWS checks. | Recheck the mirror after the custody and bucket inspections, before the conditional primary write. [Publication tests](nitro/publication.test.mts) · SPR-NITRO-54 |
 
 ## Remaining qualification and review
 

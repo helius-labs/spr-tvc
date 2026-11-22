@@ -742,6 +742,9 @@ Resolve missing or failed replication before retrying activation.
 The primary publisher requires the activation's wallet custody pins to match
 the active roster in its independently distributed custody trust file. It
 leaves at least 30 seconds before a scheduled roster cutover to submit the S3 write.
+When advancing an existing policy to an activation, the primary reads the
+mirror after inspecting custody and publication buckets. The mirror must
+serve the exact predecessor or the same signed candidate.
 Give release signers, custody signers and the primary publisher scoped ledger read
 access using `reader-policy` in the source and replica. Distribute the custody
 trust file independently.

@@ -335,13 +335,13 @@ export async function publish(
       // nextNitroPublication authenticated the exact predecessor above.
       const previous = head && parseStrictJson<{ policy: NitroPolicy }>(head.text).policy;
       probes = await probeActivationTargets(policy.targets, trust, probe, canaryDigest, previous?.targets);
-      await checkMirror();
       const [confirmed] = await Promise.all([
         checkActivationRoster(candidate, custodyTrust, custodyPins, run, inspection,
           policy.recoveryOnly ? undefined : probes, canaryDigest),
         checkPublicationBuckets(bucketChecks, run),
       ]);
       confirmedCutover = confirmed.cutover;
+      await checkMirror();
     }
     const latestPrimary = isSecond ? await readPeer(mirrorDuringOutage) : undefined;
     const beforeWrite = BigInt(Date.now());
