@@ -13,10 +13,9 @@ from approval import (
 )
 from custody_ledger import (
     RECOVERY_SPECS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, list_objects, load_epoch, load_retirement,
-    read_registered_target, read_retirement, recovery_deadline, retirement_approval, retirement_object_name,
+    read_registered_target, read_retirement, recovery_deadline, require_active_epoch, retirement_approval, retirement_object_name,
     retirement_recovery, sign_share_recovery, target_attestation, verify_retirement, write_once,
 )
-from deployment import require_active_epoch
 from kms_policy import key_policy, recovery_policy, target_context
 
 

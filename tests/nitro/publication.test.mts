@@ -35,6 +35,13 @@ function signed(policy: NitroPolicy) {
   })) });
 }
 
+function awsOnly(aws: (args: string[]) => Promise<{ stdout: string }>) {
+  return { run: (command: string, args: string[]) => {
+    assert.equal(command, "aws");
+    return aws(args);
+  } };
+}
+
 test("one conditional publisher wins and replaying the exact policy is idempotent", async context => {
   let head = signed(first);
   context.mock.method(globalThis, "fetch", async () => new Response(signed(first)));
@@ -64,27 +71,43 @@ test("one conditional publisher wins and replaying the exact policy is idempoten
   }
   const next = { ...first, sequence: "2", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(first)) };
   const candidates = [signed(next), signed({ ...next, minimumCustodyEpoch: "2" })];
-  const results = await Promise.allSettled(candidates.map(policy => publish(trust, trust.publications[0].bucket, policy, aws)));
+  const results = await Promise.allSettled(candidates.map(policy => publish(trust, trust.publications[0].bucket, policy, awsOnly(aws))));
   assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
   assert.equal(committed, 1);
   assert.ok(candidates.includes(head));
-  await publish(trust, trust.publications[0].bucket, head, aws);
+  await publish(trust, trust.publications[0].bucket, head, awsOnly(aws));
   assert.equal(committed, 1);
 });
 
-test("does not publish an activation with an unavailable replica", async context => {
-  context.mock.method(globalThis, "fetch", async () => new Response(null, { status: 503 }));
+test("requires custody registration and live attestation before publishing any activation", async context => {
+  const fetch = context.mock.method(globalThis, "fetch", async () => new Response(null, { status: 503 }));
   const activate: NitroPolicy = { ...first, action: "activate", targets: [{
     endpoint: "https://replica.example.com/", releaseId: "candidate", custodyEpoch: "1", executableSha256: "11".repeat(32),
     custodyDigest: "22".repeat(32),
     pcrs: { 0: "12".repeat(48), 1: "23".repeat(48), 2: "34".repeat(48), 3: "45".repeat(48) },
   }] };
-  let awsCalls = 0;
-  await assert.rejects(publish(trust, trust.publications[0].bucket, signed(activate), async () => {
-    awsCalls += 1;
-    return { stdout: "{}" };
-  }), /BootProofUnverified/);
-  assert.equal(awsCalls, 0);
+  const text = signed(activate);
+  const bucket = trust.publications[0].bucket;
+  await assert.rejects(publish(trust, bucket, text), /requires --custody-trust/);
+  const custodyTrust = "/pinned/custody.json";
+  let checked = 0;
+  let approved = false;
+  const run = async (command: string, args: string[]) => {
+    assert.equal(command, "python3");
+    assert.ok(args[1]?.endsWith("/custody_ledger.py"));
+    assert.deepEqual(args.slice(2, 4), [custodyTrust, "check-serving-policy"]);
+    assert.equal(await readFile(args.at(-1)!, "utf8"), text);
+    assert.equal(fetch.mock.callCount(), 0);
+    checked += 1;
+    if (!approved) throw new Error("target is absent from the custody ledger");
+    return { stdout: "" };
+  };
+  await assert.rejects(publish(trust, bucket, text, { custodyTrust, run }), /absent from the custody ledger/);
+  assert.equal(fetch.mock.callCount(), 0);
+  approved = true;
+  await assert.rejects(publish(trust, bucket, text, { custodyTrust, run }), /BootProofUnverified/);
+  assert.equal(fetch.mock.callCount(), 1);
+  assert.equal(checked, 2);
 });
 
 test("mirrors the first publisher's policy into only the selected pinned bucket", async context => {
@@ -103,9 +126,9 @@ test("mirrors the first publisher's policy into only the selected pinned bucket"
     writes += 1;
     return { stdout: "{}" };
   }
-  await publish(trust, peer.bucket, signed(first), aws);
-  await assert.rejects(publish(trust, "unexpected-bucket", signed(first), aws), /pinned publication buckets/);
-  await assert.rejects(publish(trust, peer.bucket, signed({ ...first, minimumCustodyEpoch: "2" }), aws), /ReleasePolicyInvalid/);
+  await publish(trust, peer.bucket, signed(first), awsOnly(aws));
+  await assert.rejects(publish(trust, "unexpected-bucket", signed(first), awsOnly(aws)), /pinned publication buckets/);
+  await assert.rejects(publish(trust, peer.bucket, signed({ ...first, minimumCustodyEpoch: "2" }), awsOnly(aws)), /ReleasePolicyInvalid/);
   assert.equal(writes, 1);
 });
 
@@ -114,11 +137,11 @@ test("checks the second bucket holds the predecessor before advancing the first 
   const second = { ...first, sequence: "2", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(first)) };
   const third = { ...second, sequence: "3", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(second)) };
   context.mock.method(globalThis, "fetch", async () => new Response(signed(first)));
-  await assert.rejects(publish(trust, primary.bucket, signed(third), async args => {
+  await assert.rejects(publish(trust, primary.bucket, signed(third), awsOnly(async args => {
     assert.ok(args.includes("get-object"));
     await writeFile(args.at(-1)!, signed(second));
     return { stdout: JSON.stringify({ ETag: '"second"' }) };
-  }), /ReleasePolicyInvalid/);
+  })), /ReleasePolicyInvalid/);
 });
 
 test("each wallet policy bucket separates control-plane administration from publishing", () => {

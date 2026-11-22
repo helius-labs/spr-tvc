@@ -15,10 +15,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/de
 from approval import approval_keys, canonical, sha256
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
-    draft, ledger_policy, ledger_reader_policy, load_epoch, publish, record, sign_epoch, target_attestation,
+    check_serving_policy, draft, ledger_policy, ledger_reader_policy, load_epoch, publish, record, require_active_epoch,
+    sign_epoch, target_attestation,
     target_object_name, verify_archive, write_once,
 )
-from deployment import register_target, require_active_epoch, require_registered_target
+from deployment import register_target, require_registered_target
 from kms_policy import acknowledgement_policy, boot_pins
 from nitro_fixtures import DOMAIN, HOST, key, pin, schedule, sign
 from retirement import (commit_retirement, inspect_keys, key_inventory, prove_recovery, qualified_manifest, qualified_policy,
@@ -306,7 +307,54 @@ class CustodyLedgerTests(unittest.TestCase):
         return {"network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "2",
                 "receiptSha256": sha256(receipt), "approvalFromEpoch": self.trust["approvalKeys"][-1]["fromEpoch"],
                 "releaseId": "new-slot", "mode": "serve", "hostRole": HOST,
+                "executableSha256": "ab" * 32,
                 "pcrs": {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)}, **overrides}
+
+    def test_wallet_activation_requires_each_target_registered_for_the_current_receipt(self):
+        publish(self.trust, self.sign(self.document(1)))
+        _, previous, _ = load_epoch(self.trust, "1")
+        rotated, _ = self.rotation_document(previous)
+        publish(self.trust, self.sign(rotated))
+        _, replacement, _ = load_epoch(self.trust, "2")
+        registered = self.replacement_target(expiresAt=1)
+        replica = {**target_attestation(registered), "custodyEpoch": "2",
+                   "executableSha256": registered["executableSha256"], "custodyDigest": sha256(replacement["custody"])}
+        policy = {"action": "activate", "network": "devnet", "securityDomainId": DOMAIN,
+                  "noteSeedCommitment": replacement["custody"]["noteSeedCommitment"], "minimumCustodyEpoch": "2",
+                  "targets": [replica]}
+
+        def check(**overrides):
+            check_serving_policy(self.trust, {"policy": {**policy, **overrides}, "signatures": []})
+
+        with self.assertRaisesRegex(ValueError, "object missing"):
+            check()
+        name = f"spr-custody/devnet/{DOMAIN}/{target_object_name(registered)}"
+        for subject, message in (({**registered, "mode": "rotate"}, "custody-approved target"),
+                                 ({**registered, "receiptSha256": "aa" * 32}, "committed custody receipt")):
+            self.objects[name] = canonical(self.signed_subject(TARGET_APPROVAL, subject))
+            with self.assertRaisesRegex(ValueError, message):
+                check()
+        self.objects[name] = canonical({"manifest": registered, "signatures": []})
+        with self.assertRaisesRegex(ValueError, "signing quorum"):
+            check()
+        del self.objects[name]
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, registered))
+        check()
+        with self.assertRaisesRegex(ValueError, "committed note seed"):
+            check(noteSeedCommitment="aa" * 32)
+        for changes, message in (({"custodyDigest": "aa" * 32}, "committed custody record"),
+                                 ({"executableSha256": "aa" * 32}, "custody-approved target"),
+                                 ({"pcrs": {**replica["pcrs"], "3": "aa" * 48}}, "object missing"),
+                                 ({"custodyEpoch": "1"}, "below the wallet custody floor")):
+            with self.assertRaisesRegex(ValueError, message):
+                check(targets=[replica, {**replica, **changes}])
+        old = {**registered, "custodyEpoch": "1", "receiptSha256": sha256(previous), "releaseId": "old-slot"}
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, old))
+        check(minimumCustodyEpoch="1", targets=[replica, {**replica, **target_attestation(old), "custodyEpoch": "1",
+                                                          "custodyDigest": sha256(previous["custody"])}])
+        self.objects[f"spr-custody/devnet/{DOMAIN}/retired/2.json"] = b"{}"
+        with self.assertRaisesRegex(ValueError, "cannot verify retirement"):
+            check()
 
     @patch("retirement.require_recovery_quorum")
     @patch("retirement.qualified_policy")

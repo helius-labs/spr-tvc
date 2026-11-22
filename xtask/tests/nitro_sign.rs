@@ -18,6 +18,23 @@ fn signing_distinguishes_activation_and_explicit_revocation() {
 }
 
 #[test]
+fn refuses_to_sign_an_activation_without_pinned_custody_trust() {
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(br#"{"policy":{"action":"activate","targets":[{}]},"signatures":[]}"#)
+        .unwrap();
+    let signer = SigningKey::from_bytes(&[1; 32].into()).unwrap();
+    let error = sign(Args {
+        policy: file.path().to_owned(),
+        key: "arn:aws:kms:eu-north-1:000000000001:key/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+            .to_owned(),
+        public_key: encode_lower_hex(signer.verifying_key().to_sec1_point(false).as_bytes()),
+        custody_trust: None,
+    })
+    .unwrap_err();
+    assert_eq!(error.to_string(), "activation requires --custody-trust");
+}
+
+#[test]
 fn kms_signatures_are_pinned_to_the_key_algorithm_and_exact_manifest() {
     let policy = serde_json::json!({"network":"devnet","sequence":"1"});
     let secret = SigningKey::from_bytes(&[1; 32].into()).unwrap();

@@ -250,7 +250,12 @@ digest specified in [the Nitro security spec](../../NITRO.md#proposal-and-public
 Each target contains `endpoint`, `releaseId`, `executableSha256`,
 `custodyEpoch`, `custodyDigest` and `pcrs`. Obtain `custodyDigest` with
 `python3 "$nitro/custody_ledger.py" trust.json read "$epoch" --custody-digest`.
-All targets for that epoch must use the same digest. Pin network, domain, seed
+Register each serving target before signing an activation. The signing and
+publication tools match its executable, release ID and PCR0–PCR3 to the
+registered serving image and verify its committed, active custody epoch.
+Give release signers and both publishers scoped ledger read access using
+`reader-policy` and distribute the custody trust file independently. A revoke
+policy needs only the wallet signing and publication flow. Pin network, domain, seed
 commitment, minimum sequence, minimum custody epoch, signer keys, threshold and
 `publications` with two `{bucket, region, account}` entries in `wallet-trust.json`.
 List the primary first and the mirror second.
@@ -270,9 +275,9 @@ connections. Retirement requires agreement. Set alerts for mismatched heads
 and approaching expiration.
 
 ```sh
-cargo xtask nitro-sign policy.json --key "$signing_key_arn" --public-key "$signer_sec1_hex"
+cargo xtask nitro-sign policy.json --key "$signing_key_arn" --public-key "$signer_sec1_hex" --custody-trust "$custody_trust"
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" --bucket-policy "$bucket_admin_role" "$publisher_role"
-pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" "$signed_policy"
+pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" "$signed_policy" --custody-trust "$custody_trust"
 ```
 
 Wrap-key replacements for a new EIF use the existing receipt and new sealed key

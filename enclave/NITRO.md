@@ -103,12 +103,15 @@ and [attestation conditions](https://docs.aws.amazon.com/kms/latest/developergui
 The policy digest is SHA-256 of the UTF-8 string
 `SPR/native-nitro/release-policy/v1` followed by RFC 8785 canonical policy JSON.
 Release signers sign this digest. Every policy after sequence 1 includes the
-previous published digest. Each publisher checks its predecessor and attests
-all activation targets. S3 accepts the conditional change only if the ETag
-still matches the checked predecessor. Each publisher's credentials authorize
-writes to its own bucket. The second publisher mirrors the first bucket's exact
-signed revision. The first publisher checks the second before advancing again.
-The encrypted note service and ingress have no publication permission.
+previous published digest. Signers and publishers independently verify that
+each activation target matches an active epoch, the committed custody receipt,
+and a custody-approved serving executable, release ID and PCR0–PCR3. Each
+publisher also checks the predecessor and attests every activation target.
+Revocation has no targets and can proceed during a custody ledger outage.
+S3 accepts a write against the checked predecessor's ETag. Each publisher
+writes to its own bucket. The mirror copies the primary's signed revision.
+The primary checks the mirror before advancing again. The enclave and
+ingress have no publication permission.
 
 Wallets pin both buckets, regions and AWS owners. They read directly from both
 without caching or redirects and authenticate both policies. Equal digests

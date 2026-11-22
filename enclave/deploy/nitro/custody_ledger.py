@@ -6,6 +6,7 @@ import hashlib
 import re
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -330,6 +331,53 @@ def load_retirement(trust, epoch):
     return marker, custodians
 
 
+def require_active_epoch(trust, epoch):
+    name = retirement_object_name(epoch)
+    if name in list_objects(trust, name):
+        try:
+            load_retirement(trust, epoch)
+        except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError) as error:
+            raise ValueError(f"cannot verify retirement record for epoch {epoch}: {error}") from error
+        raise ValueError("custody epoch is retired")
+
+
+def check_serving_policy(trust, document):
+    fields(document, "policy", "signatures")
+    policy = document["policy"]
+    targets = policy["targets"]
+    if policy["action"] != "activate" or not isinstance(targets, list) or not 1 <= len(targets) <= 8:
+        raise ValueError("expected an activation with one to eight serving targets")
+    if (policy["network"], policy["securityDomainId"]) != (trust["network"], trust["securityDomainId"]):
+        raise ValueError("wallet policy does not match the pinned custody domain")
+    by_epoch = {}
+    floor = epoch_number(policy["minimumCustodyEpoch"])
+    for target in targets:
+        epoch = target["custodyEpoch"]
+        if epoch_number(epoch) < floor:
+            raise ValueError("serving target is below the wallet custody floor")
+        by_epoch.setdefault(epoch, []).append(target)
+
+    def check_epoch(item):
+        epoch, replicas = item
+        require_active_epoch(trust, epoch)
+        _, receipt, _ = load_epoch(trust, epoch)
+        custody = receipt["custody"]
+        if policy["noteSeedCommitment"] != custody["noteSeedCommitment"]:
+            raise ValueError("wallet policy does not match the committed note seed")
+        custody_digest, receipt_digest = sha256(custody), sha256(receipt)
+        for replica in replicas:
+            if replica["custodyDigest"] != custody_digest:
+                raise ValueError("serving target does not match the committed custody record")
+            identity = {"releaseId": replica["releaseId"], "pcrs": replica["pcrs"]}
+            registered = read_registered_target(trust, target_path(epoch, sha256(identity)), epoch, receipt_digest)
+            if (registered["mode"] != "serve" or
+                    hex_digest(registered["executableSha256"]) != replica["executableSha256"]):
+                raise ValueError("serving executable does not match the custody-approved target")
+
+    with ThreadPoolExecutor(max_workers=len(by_epoch)) as workers:
+        list(workers.map(check_epoch, by_epoch.items()))
+
+
 def verify_archive(trust, document, expected_digest):
     if sha256(document) != hex_digest(expected_digest):
         raise ValueError("archive does not match the pinned custody document digest")
@@ -512,6 +560,8 @@ def main():
     ack.add_argument("output", type=Path)
     post = commands.add_parser("publish")
     post.add_argument("candidate", type=Path)
+    check = commands.add_parser("check-serving-policy")
+    check.add_argument("candidate", type=Path)
     get = commands.add_parser("read")
     get.add_argument("epoch")
     get.add_argument("--custody-digest", action="store_true")
@@ -564,6 +614,9 @@ def main():
         document = read_json(args.candidate)
         if args.command == "publish":
             publish(trust, document)
+            return
+        if args.command == "check-serving-policy":
+            check_serving_policy(trust, document)
             return
         signed = (sign_epoch(trust, document, args.key, args.build, args.source_commit, args.source_ref) if args.command == "sign"
                   else acknowledge(trust, document, args.share))

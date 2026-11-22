@@ -37,6 +37,7 @@ class TargetApprovalTests(unittest.TestCase):
         }))
         (self.build / "measurements.json").write_text(json.dumps({"Measurements": PINS}))
         (self.build / "enclave.eif").write_bytes(b"EIF fixture")
+        (self.build / "tvc_app").write_bytes(b"executable fixture")
         self.custodians = [{
             "recoveryKeyArn": key(i), "acknowledgementKey": pin(key(i, 3)),
             "custodianRole": f"arn:aws:iam::{i:012}:role/custodian",
@@ -47,6 +48,7 @@ class TargetApprovalTests(unittest.TestCase):
             "custodyEpoch": "5", "approvalFromEpoch": "1",
             "releaseId": "release-a", "mode": "serve", "expiresAt": int(time.time()) + 3600,
             "eifSha256": file_digest(self.build / "enclave.eif"),
+            "executableSha256": file_digest(self.build / "tvc_app"),
             "configurationSha256": file_digest(self.build / "configuration.json"),
             "pcrs": PINS, "hostRole": HOST, "wrappingKeys": [key(i, 2) for i in range(1, 7)], "nextCustodians": None,
         }
@@ -111,6 +113,12 @@ class TargetApprovalTests(unittest.TestCase):
     def test_replacement_wrapping_key_invalidates_approvals(self):
         self.manifest["wrappingKeys"][0] = key(1, 4)
         with self.assertRaisesRegex(ValueError, "signature"):
+            self.wrap()
+        self.assertEqual(self.calls, [])
+
+    def test_changed_executable_fails_before_opening_a_share(self):
+        (self.build / "tvc_app").write_bytes(b"different executable")
+        with self.assertRaisesRegex(ValueError, "target artifacts do not match"):
             self.wrap()
         self.assertEqual(self.calls, [])
 

@@ -1,4 +1,8 @@
-use std::{io::Write, path::PathBuf, process::Command};
+use std::{
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::{ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -10,17 +14,22 @@ use spr_tvc_protocol::{
     encoding::{decode_lower_hex, encode_lower_hex, is_rfc8785, jcs_serialize},
 };
 
+const MAX_POLICY_BYTES: usize = 32_768;
+
 #[derive(Parser)]
 #[command(bin_name = "cargo xtask nitro-sign")]
 pub(crate) struct Args {
     /// Canonical JSON manifest with a policy and a signatures array.
     policy: PathBuf,
-    /// Immutable ARN of the custodian's ECC_NIST_P256 signing key.
+    /// Immutable ARN of the release signer's ECC_NIST_P256 key.
     #[arg(long)]
     key: String,
     /// Independently pinned uncompressed SEC1 public key in lowercase hex.
     #[arg(long)]
     public_key: String,
+    /// Pinned custody trust file for an activation.
+    #[arg(long)]
+    custody_trust: Option<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -88,9 +97,12 @@ fn decode_signature(
 
 pub(crate) fn sign(args: Args) -> Result<()> {
     let path = std::path::absolute(args.policy)?;
-    let text = std::fs::read_to_string(&path)?;
+    let mut text = String::new();
+    std::fs::File::open(&path)?
+        .take(MAX_POLICY_BYTES as u64 + 1)
+        .read_to_string(&mut text)?;
     ensure!(
-        text.len() <= 32_768 && is_rfc8785(&text),
+        text.len() <= MAX_POLICY_BYTES && is_rfc8785(&text),
         "use canonical policy JSON up to 32 KiB"
     );
     let mut manifest: SignedPolicy = serde_json::from_str(&text)?;
@@ -122,6 +134,24 @@ pub(crate) fn sign(args: Args) -> Result<()> {
         "expected an immutable KMS key ARN"
     );
 
+    if manifest.policy["action"] == "activate" {
+        let trust = args
+            .custody_trust
+            .context("activation requires --custody-trust")?;
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../enclave/deploy/nitro/custody_ledger.py");
+        let mut candidate = tempfile::NamedTempFile::new()?;
+        candidate.write_all(text.as_bytes())?;
+        crate::tools::capture_check(
+            Command::new("python3")
+                .arg("-B")
+                .arg(script)
+                .arg(trust)
+                .arg("check-serving-policy")
+                .arg(candidate.path()),
+        )?;
+    }
+
     let digest = digest(&manifest.policy)?;
     let mut command = Command::new("aws");
     command.args([
@@ -150,7 +180,10 @@ pub(crate) fn sign(args: Args) -> Result<()> {
         signature: encode_lower_hex(&signature.to_bytes()),
     });
     let canonical = jcs_serialize(&manifest)?;
-    ensure!(canonical.len() <= 32_768, "signed policy exceeds 32 KiB");
+    ensure!(
+        canonical.len() <= MAX_POLICY_BYTES,
+        "signed policy exceeds 32 KiB"
+    );
     let mut output =
         tempfile::NamedTempFile::new_in(path.parent().context("missing policy parent")?)?;
     output.write_all(canonical.as_bytes())?;

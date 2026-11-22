@@ -11,8 +11,8 @@ from approval import (
     KEY_ARN, ROLE_ARN, add_approval, approval_keys, arn, canonical, fields, file_digest, hex_digest, read_json, sha256,
 )
 from custody_ledger import (
-    TARGET_APPROVAL, check_acknowledgement_key, check_recovery_key, list_objects, load_epoch, load_retirement,
-    read_object, retirement_object_name, target_object_name, validate_roster, verify_target_approval, write_once,
+    TARGET_APPROVAL, check_acknowledgement_key, check_recovery_key, load_epoch, read_object, require_active_epoch,
+    target_object_name, validate_roster, verify_target_approval, write_once,
 )
 from kms_policy import boot_pins, decrypt_conditions, key_policy, target_context
 from provenance import MAIN_REF, verify as verify_build
@@ -24,16 +24,6 @@ def host_policy(manifest):
          "Condition": decrypt_conditions(pins, target_context(manifest, index))}
         for index, key in enumerate(manifest["wrappingKeys"], start=1)
     ]}
-
-
-def require_active_epoch(trust, epoch):
-    name = retirement_object_name(epoch)
-    if name in list_objects(trust, name):
-        try:
-            load_retirement(trust, epoch)
-        except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError) as error:
-            raise ValueError(f"cannot verify retirement record for epoch {epoch}: {error}") from error
-        raise ValueError("custody epoch is retired")
 
 
 def target_binding(manifest):
@@ -64,7 +54,8 @@ def target(trust, document, receipt, custodians, build):
     fields(document, "manifest", "signatures")
     manifest = document["manifest"]
     fields(manifest, "network", "securityDomainId", "custodyEpoch", "receiptSha256", "releaseId", "mode", "expiresAt",
-           "eifSha256", "configurationSha256", "pcrs", "hostRole", "wrappingKeys", "nextCustodians", "approvalFromEpoch")
+           "eifSha256", "configurationSha256", "executableSha256", "pcrs", "hostRole", "wrappingKeys",
+           "nextCustodians", "approvalFromEpoch")
     if manifest["approvalFromEpoch"] != trust["approvalKeys"][-1]["fromEpoch"]:
         raise ValueError("target requires the current approval roster")
     network, domain, release = manifest["network"], manifest["securityDomainId"], manifest["releaseId"]
@@ -80,7 +71,8 @@ def target(trust, document, receipt, custodians, build):
 
     config_path = build / "configuration.json"
     if (hex_digest(manifest["configurationSha256"]) != file_digest(config_path) or
-            hex_digest(manifest["eifSha256"]) != file_digest(build / "enclave.eif")):
+            hex_digest(manifest["eifSha256"]) != file_digest(build / "enclave.eif") or
+            hex_digest(manifest["executableSha256"]) != file_digest(build / "tvc_app")):
         raise ValueError("target artifacts do not match the approved hashes")
     config = read_json(config_path)
     fields(config, "releaseId", "securityDomainId", "deployment")
@@ -172,6 +164,7 @@ def main():
                 "network": trust["network"], "securityDomainId": config["securityDomainId"], "custodyEpoch": epoch,
                 "receiptSha256": sha256(receipt), "releaseId": config["releaseId"], "mode": mode,
                 "expiresAt": args.expires_at, "eifSha256": file_digest(args.build / "enclave.eif"),
+                "executableSha256": file_digest(args.build / "tvc_app"),
                 "configurationSha256": file_digest(config_path), "pcrs": {pcr: measured[pcr] for pcr in ("PCR0", "PCR1", "PCR2")},
                 "hostRole": args.host_role, "wrappingKeys": read_json(args.wrapping_keys),
                 "nextCustodians": read_json(args.next_roster) if args.next_roster else None,
