@@ -9,7 +9,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from threading import Lock
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import approval_keys, approval_roster, canonical, sha256
@@ -87,7 +87,7 @@ class CustodyLedgerTests(unittest.TestCase):
         document = self.document(2, predecessor, variant)
         manifest = document["authorization"]["manifest"]
         target = {"network": "devnet", "securityDomainId": DOMAIN, "receiptSha256": sha256(predecessor),
-                  "custodyEpoch": "1", "approvalFromEpoch": approval_roster(self.trust)["fromEpoch"],
+                  "custodyEpoch": "1", "approvalFromEpoch": approval_roster(self.trust)["fromEpoch"], "expiresAt": self.now + 3600,
                   "releaseId": manifest["capture"]["receipt"]["releaseId"], "mode": "rotate", "hostRole": HOST,
                   "pcrs": PINS, "eifSha256": manifest["ceremonyEifSha256"],
                   "executableSha256": hashlib.sha256(b"rotation executable fixture").hexdigest(),
@@ -390,7 +390,7 @@ class CustodyLedgerTests(unittest.TestCase):
         _, receipt, _ = load_epoch(self.trust, "2")
         return {"network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "2",
                 "receiptSha256": sha256(receipt), "approvalFromEpoch": approval_roster(self.trust)["fromEpoch"],
-                "releaseId": "new-slot", "mode": "serve", "hostRole": HOST,
+                "releaseId": "new-slot", "mode": "serve", "hostRole": HOST, "expiresAt": self.now + 3600,
                 "executableSha256": "ab" * 32,
                 "pcrs": {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)}, **overrides}
 
@@ -400,7 +400,7 @@ class CustodyLedgerTests(unittest.TestCase):
         rotated, _ = self.rotation_document(previous)
         publish(self.trust, self.sign(rotated))
         _, replacement, _ = load_epoch(self.trust, "2")
-        registered = self.replacement_target(expiresAt=1)
+        registered = self.replacement_target(expiresAt=self.now + 60)
         replica = {**target_attestation(registered), "custodyEpoch": "2",
                    "executableSha256": registered["executableSha256"], "custodyDigest": sha256(replacement["custody"])}
         policy = {"action": "activate", "network": "devnet", "securityDomainId": DOMAIN,
@@ -423,7 +423,14 @@ class CustodyLedgerTests(unittest.TestCase):
             check()
         del self.objects[name]
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, registered))
+        # The wrap deadline can pass after a valid registration.
+        self.now = registered["expiresAt"]
         check()
+        published_at = self.timestamps[name]
+        self.timestamps[name] = datetime.fromtimestamp(self.now, timezone.utc).isoformat()
+        with self.assertRaisesRegex(ValueError, "target approval has expired"):
+            check()
+        self.timestamps[name] = published_at
         with self.assertRaisesRegex(ValueError, "committed note seed"):
             check(noteSeedCommitment="aa" * 32)
         for changes, message in (({"custodyDigest": "aa" * 32}, "committed custody record"),
@@ -432,7 +439,8 @@ class CustodyLedgerTests(unittest.TestCase):
                                  ({"custodyEpoch": "1"}, "below the wallet custody floor")):
             with self.assertRaisesRegex(ValueError, message):
                 check(targets=[replica, {**replica, **changes}])
-        old = {**registered, "custodyEpoch": "1", "receiptSha256": sha256(previous), "releaseId": "old-slot"}
+        old = {**registered, "custodyEpoch": "1", "receiptSha256": sha256(previous), "releaseId": "old-slot",
+               "expiresAt": self.now + 3600}
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, old))
         check(minimumCustodyEpoch="1", targets=[replica, {**replica, **target_attestation(old), "custodyEpoch": "1",
                                                           "custodyDigest": sha256(previous["custody"])}])
@@ -450,7 +458,7 @@ class CustodyLedgerTests(unittest.TestCase):
         publish(self.trust, self.sign(rotated))
         target = {
             "network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "1", "receiptSha256": sha256(old),
-            "approvalFromEpoch": "1", "releaseId": "old-slot", "hostRole": HOST,
+            "approvalFromEpoch": "1", "releaseId": "old-slot", "hostRole": HOST, "expiresAt": self.now + 3600,
             "wrappingKeys": [key(account, 11) for account in range(1, 7)],
             "pcrs": {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)},
         }
@@ -483,6 +491,10 @@ class CustodyLedgerTests(unittest.TestCase):
             require_registered_target(self.trust, target)
         with self.assertRaisesRegex(ValueError, "retired"):
             register_target(self.trust, target_doc)
+        with patch("custody_ledger.kms") as kms:
+            with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
+                acknowledge(self.trust, first, 1)
+            kms.assert_not_called()
 
         self.rotate_approvals("3")
         role, inventory = key_inventory(self.trust, "1", 1)
@@ -590,7 +602,7 @@ class CustodyLedgerTests(unittest.TestCase):
         _, old, _ = load_epoch(self.trust, "1")
         rotated, _ = self.rotation_document(old)
         publish(self.trust, self.sign(rotated))
-        original = self.replacement_target(expiresAt=1, wrappingKeys=[key(i, 3) for i in range(1, 7)])
+        original = self.replacement_target(expiresAt=self.now + 60, wrappingKeys=[key(i, 3) for i in range(1, 7)])
         changed = {**original, "wrappingKeys": [key(i, 4) for i in range(1, 7)]}
         self.assertEqual(target_object_name(original), target_object_name(changed))
         with ThreadPoolExecutor(max_workers=2) as workers:
@@ -603,10 +615,21 @@ class CustodyLedgerTests(unittest.TestCase):
             require_registered_target(self.trust, loser)
 
         self.rotate_approvals("3")
-        renewed = {**winner, "expiresAt": 2, "approvalFromEpoch": "3"}
+        renewed = {**winner, "expiresAt": self.now + 60, "approvalFromEpoch": "3"}
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, renewed))
         require_registered_target(self.trust, renewed)
         self.assertEqual(len([name for name in self.objects if "/targets/2/" in name]), 1)
+
+    def test_target_registration_refuses_a_deadline_inside_the_write_budget(self):
+        publish(self.trust, self.sign(self.document(1)))
+        draft, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
+        publish(self.trust, self.sign(draft))
+        candidate = self.replacement_target(expiresAt=self.now + 30)
+        approval = self.signed_subject(TARGET_APPROVAL, candidate)
+        with patch("deployment.write_once") as write:
+            with self.assertRaisesRegex(ValueError, "target approval deadline is too close"):
+                register_target(self.trust, approval)
+            write.assert_not_called()
 
     def test_target_registration_uses_the_roster_active_at_s3_publication(self):
         publish(self.trust, self.sign(self.document(1)))
@@ -773,7 +796,7 @@ class CustodyLedgerTests(unittest.TestCase):
             kms.assert_not_called()
             with self.assertRaisesRegex(ValueError, "recovery failed"):
                 prove_recovery(self.trust, candidate, 2)
-            open_share.assert_called_once_with(member, receipt, 2)
+            open_share.assert_called_once_with(member, receipt, 2, before_decrypt=ANY)
             approval.assert_not_called()
             open_share.side_effect = None
             approval.return_value = {"signatures": [sign(RETIREMENT_RECOVERY, marker, key_arn)]}

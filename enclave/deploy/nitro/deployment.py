@@ -12,8 +12,9 @@ from approval import (
     parse_json, read_document, read_json, sha256,
 )
 from custody_ledger import (
-    TARGET_APPROVAL, check_acknowledgement_key, check_recovery_key, load_epoch, read_registered_target, require_active_epoch,
-    require_publication_roster, target_object_name, validate_roster, verify_target_approval, write_once,
+    LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_acknowledgement_key, check_recovery_key, load_epoch,
+    read_registered_target, require_active_epoch, require_publication_roster, require_target_approval_window,
+    target_object_name, validate_roster, verify_target_approval, write_once,
 )
 from kms_policy import boot_pins, decrypt_conditions, key_policy, target_context
 from provenance import MAIN_REF, verify as verify_build
@@ -36,6 +37,7 @@ def register_target(trust, document):
     manifest = verify_target_approval(trust, document)
     epoch = manifest["custodyEpoch"]
     require_active_epoch(trust, epoch)
+    require_target_approval_window(manifest, time.time(), remaining=LEDGER_WRITE_MARGIN_SECONDS)
     require_publication_roster(trust, manifest["approvalFromEpoch"])
     write_once(trust, target_object_name(manifest), document,
                lambda stored: target_binding(stored["manifest"]))
@@ -52,7 +54,8 @@ def require_registered_target(trust, manifest):
 
 
 def target(trust, document, receipt, custodians, build):
-    roster = approval_roster(trust)
+    now = time.time()
+    roster = approval_roster(trust, at=now)
     fields(document, "manifest", "signatures")
     manifest = document["manifest"]
     fields(manifest, "network", "securityDomainId", "custodyEpoch", "receiptSha256", "releaseId", "mode", "expiresAt",
@@ -67,9 +70,7 @@ def target(trust, document, receipt, custodians, build):
         receipt["custody"]["epoch"], sha256(receipt)
     ):
         raise ValueError("target does not authorize this custody receipt and domain")
-    expires = manifest["expiresAt"]
-    if type(expires) is not int or not time.time() < expires <= 2**53 - 1:
-        raise ValueError("target approval has expired or has an invalid deadline")
+    require_target_approval_window(manifest, now)
 
     configuration = read_document(build / "configuration.json")
     config = parse_json(configuration)

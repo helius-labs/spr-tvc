@@ -281,8 +281,20 @@ def check_commit(trust, document, receipt, custodians):
                     ACKNOWLEDGEMENT, acknowledgements(document), minimum=6)
 
 
+def require_target_approval_window(manifest, at, *, remaining=0):
+    expires = manifest["expiresAt"]
+    if type(expires) is not int or not 0 < expires < 2**53:
+        raise ValueError("invalid target approval deadline")
+    if at >= expires:
+        raise ValueError("target approval has expired")
+    if expires - at <= remaining:
+        raise ValueError("target approval deadline is too close for a ledger write")
+
+
 def verify_target_approval(trust, document, *, at=None):
     manifest = document["manifest"]
+    at = time.time() if at is None else at
+    require_target_approval_window(manifest, at)
     roster = approval_roster(trust, at=at)
     if roster["fromEpoch"] != manifest["approvalFromEpoch"]:
         raise ValueError("target approval roster does not match its publication time")
@@ -489,7 +501,7 @@ def check_acknowledgement_key(custodian):
         raise ValueError("acknowledgement public key does not match the custodian KMS key")
 
 
-def open_share(custodian, receipt, index):
+def open_share(custodian, receipt, index, *, before_decrypt=None):
     key = custodian["recoveryKeyArn"]
     package = receipt["packages"][index - 1]
     custody = receipt["custody"]
@@ -499,6 +511,8 @@ def open_share(custodian, receipt, index):
         raise ValueError("installed recovery key policy does not match the custodian role")
     check_recovery_key(key, package["recipientSha256"])
     capsule = base64.b64encode(bytes.fromhex(package["ciphertext"])).decode()
+    if before_decrypt is not None:
+        before_decrypt()
     share = base64.b64decode(key_result(key, "decrypt", [
         "--encryption-algorithm", "RSAES_OAEP_SHA_256", "--ciphertext-blob", capsule,
     ])["Plaintext"], validate=True)
@@ -540,15 +554,22 @@ def sign_epoch(trust, document, key, build, source_commit, source_ref):
     return {**document, "authorization": add_approval(keys, LABEL, authorization, key)}
 
 
-def sign_share_recovery(custodians, receipt, index, label, approval):
+def sign_share_recovery(trust, custodians, receipt, index, label, approval):
     if index not in range(1, 7):
         raise ValueError("invalid custody slot")
+    epoch = receipt["custody"]["epoch"]
+
+    def require_open_epoch():
+        require_active_epoch(trust, epoch)
+
+    require_open_epoch()
     custodian = custodians[index - 1]
     key = custodian["acknowledgementKey"]["keyArn"]
     expected = acknowledgement_policy(custodian["custodianRole"], custodian["retirementRole"])
     if parse_json(kms(key, "get-key-policy", ["--policy-name", "default"])["Policy"]) != expected:
         raise ValueError("installed acknowledgement policy does not match the custodian role")
-    open_share(custodian, receipt, index)
+    open_share(custodian, receipt, index, before_decrypt=require_open_epoch)
+    require_open_epoch()
     keys = [member["acknowledgementKey"] for member in custodians]
     return add_approval(keys, label, approval, key)["signatures"]
 
@@ -557,7 +578,7 @@ def acknowledge(trust, document, index):
     receipt, custodians = record(trust, document)
     check_approvals(approval_keys(trust, receipt["custody"]["epoch"]), LABEL, document["authorization"])
     check_previous(trust, document, receipt)
-    signatures = sign_share_recovery(custodians, receipt, index, ACKNOWLEDGEMENT, acknowledgements(document))
+    signatures = sign_share_recovery(trust, custodians, receipt, index, ACKNOWLEDGEMENT, acknowledgements(document))
     return {**document, "acknowledgements": signatures}
 
 

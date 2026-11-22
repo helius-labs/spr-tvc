@@ -152,14 +152,18 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    python3 "$nitro/wrap_share.py" trust.json target-signed.json "$build_dir" "$share_index" "$share_index.kms"
    ```
 
-   Register with the dedicated ledger publisher. The ledger keeps the exact
-   signed target and all six wrapping-key ARNs. Within an epoch, a release ID
+   Register with the dedicated ledger publisher more than 30 seconds before
+   the approval deadline. The ledger verifies that S3 recorded the first
+   registration before expiry. It keeps the signed target and all six
+   wrapping-key ARNs. Within an epoch, a release ID
    and PCR0–PCR3 identify one wrapping-key set. Use a fresh release identity
    for a different key set. A fresh approval can renew the wrapping deadline
-   without replacing the registered target. Before decrypting a share,
-   `wrap_share.py` checks registration, the open epoch, and both installed key
-   policies. A trusted custodian workstation sees one plaintext share during
-   acknowledgement and wrapping. The tool writes only the wrapped ciphertext.
+   without replacing the registered target. `wrap_share.py` checks registration
+   and both installed key policies. It checks the epoch, roster, and deadline
+   immediately before decrypting, before wrapping, and before returning the
+   ciphertext. Recovery acknowledgements also require an open epoch. A
+   trusted custodian workstation sees one plaintext share during acknowledgement
+   and wrapping. The tool writes only the wrapped ciphertext.
    Obtain more than three ciphertexts so a boot can tolerate unavailable keys.
 3. Use a host role dedicated to the measured target. Install
    `host-kms-policy.json` as an inline IAM policy on that role. Cross-account
@@ -169,8 +173,9 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    Record the SHA-256 of `target-signed.json` in the reviewed host deployment
    configuration. Copy it verbatim and place each wrapped share at
    `shares/<slot>.kms` next to it. Omit the file for an unavailable slot.
-   The approval deadline gates new share wraps. Cold boots can use existing
-   wrapped shares from the pinned target until the keys are retired.
+   The approval deadline gates first registration and new share wraps. Cold
+   boots can use existing wrapped shares from the pinned target until the keys
+   are retired.
 
    ```sh
    python3 "$nitro/provision.py" 16 "$approved_target" --target-sha256 "$target_sha256"

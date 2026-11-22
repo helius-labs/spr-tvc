@@ -7,8 +7,8 @@ import subprocess
 from pathlib import Path
 from time import time
 
-from approval import check_approvals, key_result, kms, parse_json, read_json, require_kms_key
-from custody_ledger import TARGET_APPROVAL, load_epoch, open_share
+from approval import approval_roster, check_approvals, key_result, kms, parse_json, read_json, require_kms_key
+from custody_ledger import TARGET_APPROVAL, load_epoch, open_share, require_active_epoch, require_target_approval_window
 from deployment import require_registered_target, target
 from kms_policy import target_context
 
@@ -32,12 +32,21 @@ def wrap(trust, approval, build, index):
     sealed_policy(wrapping_key, policies[index - 1])
     ctx = target_context(manifest, index)
     require_registered_target(trust, manifest)
-    if time() >= manifest["expiresAt"]:
-        raise ValueError("target approval expired before share release")
-    plaintext = open_share(custodians[index - 1], receipt, index)
-    return base64.b64decode(key_result(wrapping_key, "encrypt", [
+
+    def require_release():
+        require_active_epoch(trust, manifest["custodyEpoch"])
+        now = time()
+        require_target_approval_window(manifest, now)
+        if approval_roster(trust, at=now)["fromEpoch"] != manifest["approvalFromEpoch"]:
+            raise ValueError("target requires the current approval roster")
+
+    plaintext = open_share(custodians[index - 1], receipt, index, before_decrypt=require_release)
+    require_release()
+    ciphertext = base64.b64decode(key_result(wrapping_key, "encrypt", [
         "--plaintext", "fileb:///dev/stdin", "--encryption-context", json.dumps(ctx),
     ], plaintext)["CiphertextBlob"], validate=True)
+    require_release()
+    return ciphertext
 
 
 def main():

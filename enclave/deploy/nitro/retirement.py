@@ -107,9 +107,8 @@ def checked_scope(trust, manifest):
 def prove_recovery(trust, document, index):
     manifest = retirement_approval(document)["manifest"]
     _, receipt, custodians = checked_scope(trust, manifest)
-    require_active_epoch(trust, manifest["replacementEpoch"])
     proof = {"manifest": manifest, "signatures": document["recoveryProofs"]}
-    signatures = sign_share_recovery(custodians, receipt, index, RETIREMENT_RECOVERY, proof)
+    signatures = sign_share_recovery(trust, custodians, receipt, index, RETIREMENT_RECOVERY, proof)
     require_recovery_window(manifest)
     return {**document, "recoveryProofs": signatures}
 

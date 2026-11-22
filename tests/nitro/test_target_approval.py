@@ -69,6 +69,7 @@ class TargetApprovalTests(unittest.TestCase):
         self.enterContext(patch("wrap_share.kms", side_effect=self.kms))
         self.ledger = self.enterContext(patch("wrap_share.load_epoch", side_effect=self.load_epoch))
         self.registry = self.enterContext(patch("wrap_share.require_registered_target"))
+        self.active = self.enterContext(patch("wrap_share.require_active_epoch"))
 
     def load_epoch(self, trust, epoch):
         self.assertEqual(trust, self.trust)
@@ -99,6 +100,7 @@ class TargetApprovalTests(unittest.TestCase):
     def test_quorum_and_installed_policy_checked_before_opening_one_share(self):
         self.assertEqual(self.wrap(), b"wrapped")
         self.registry.assert_called_once_with(self.trust, self.manifest)
+        self.assertEqual(self.active.call_count, 3)
         self.assertEqual(self.calls, ["describe-key", "get-key-policy", "get-key-policy", "describe-key",
                                       "get-public-key", "decrypt", "encrypt"])
 
@@ -204,12 +206,32 @@ class TargetApprovalTests(unittest.TestCase):
                 self.wrap()
             self.assertNotIn("decrypt", self.calls)
 
-    def test_rechecks_expiration_after_the_destination_policy_is_verified(self):
-        with patch("wrap_share.time", return_value=self.manifest["expiresAt"]):
-            with self.assertRaisesRegex(ValueError, "expired before share release"):
+    def test_rechecks_expiration_across_kms_calls(self):
+        deadline = self.manifest["expiresAt"]
+        for times, last_call in (
+            ([deadline], "get-public-key"),
+            ([deadline - 1, deadline], "decrypt"),
+            ([deadline - 1, deadline - 1, deadline], "encrypt"),
+        ):
+            with self.subTest(stage=last_call), patch("wrap_share.time", side_effect=times):
+                self.calls.clear()
+                with self.assertRaisesRegex(ValueError, "target approval has expired"):
+                    self.wrap()
+                self.assertEqual(self.calls[-1], last_call)
+
+    def test_checks_roster_cutover_before_recovery_key_use(self):
+        cutover = int(time.time()) + 100
+        self.trust["approvalKeys"].append(schedule("6", 9, cutover))
+        with patch("wrap_share.time", return_value=cutover):
+            with self.assertRaisesRegex(ValueError, "current approval roster"):
                 self.wrap()
-        self.assertEqual(self.calls[-1], "get-key-policy")
         self.assertNotIn("decrypt", self.calls)
+
+    def test_stops_when_retirement_races_share_recovery(self):
+        self.active.side_effect = [None, ValueError("custody epoch is retired")]
+        with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
+            self.wrap()
+        self.assertEqual(self.calls[-1], "decrypt")
 
     def test_rejects_corrupt_share_before_wrapping(self):
         original = self.share

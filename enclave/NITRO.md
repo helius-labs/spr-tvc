@@ -67,9 +67,11 @@ signing key leaves custody receipts verifiable offline.
 Custodians verify the quorum-approved build and registered destination and
 compare its KMS policies to the approved role, context and measurements before
 opening a share. The ledger accepts one wrapping-key set per epoch, release ID
-and PCR0–PCR3. A new quorum approval may renew the deadline for the same
-registered destination. A custodian workstation temporarily sees its one share. KMS
-rewraps it for the target. The host sees ciphertext during this flow.
+and PCR0–PCR3. The first registration must occur before the approval deadline.
+A new quorum approval may renew the wrapping deadline for the same set. The
+tool checks the open epoch, active quorum and deadline at the KMS operation
+boundaries. A custodian workstation temporarily sees one share. KMS rewraps
+it for the target. The host sees ciphertext during this flow.
 
 The wallet publishers raise the custody floor after the replacement attests.
 Three replacement custodians reopen their committed recovery packages and
