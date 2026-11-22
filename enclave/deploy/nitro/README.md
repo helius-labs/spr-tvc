@@ -256,6 +256,37 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    fleet and the on-chain canary separately. Retain the old signed receipt
    and public trust pins. [AWS key deletion](https://docs.aws.amazon.com/kms/latest/APIReference/API_ScheduleKeyDeletion.html) · [AWS cancellation behavior](https://docs.aws.amazon.com/kms/latest/APIReference/API_CancelKeyDeletion.html)
 
+## Attested recovery relay trial
+
+Use newly created devnet keys and synthetic shares for this trial. The relay
+configuration uses the trial network, release ID and security domain, with
+`deployment` set to `{"mode":"relay","custodyEpoch":"1","approvalKeys":[...]}`.
+Supply the three ordered custody approval public keys as uncompressed SEC1 hex.
+Build the measured image with the native workflow before creating its recovery
+keys. Render each policy with `relay-recovery-policy` and the exact relay host
+role and measurements. The role making the KMS request is still the custodian.
+
+The relay serves only port 44031 for ten minutes. `GET /recipient` returns Nitro
+attestation for its ephemeral RSA key. KMS `Decrypt` with that document as
+`Recipient` must return `CiphertextForRecipient` and an empty `Plaintext`.
+Submit the ciphertext as lowercase hex in `envelope` to `POST /rewrap`, along
+with `statement` and `approvals`. Each of two independently reviewed approvals
+has a one-based `authority` index and a 64-byte low-S P-256 `signature` in hex.
+Sign SHA-256 of `SPR/native-nitro/relay-release/v1` followed by RFC 8785 JSON of
+the statement. It contains `network`, `securityDomainId`, `custodyEpoch`,
+`slot`, `shareCommitment`, `relayKeyId`, `targetDigest` and `destinationPublicKey`.
+`relayKeyId` hashes the attested RSA SPKI. `targetDigest` identifies the
+operator's reviewed target registration. `destinationPublicKey` is the RSA DER
+SPKI sealed for that target, encoded in lowercase hex. The approvers must
+check its KMS key and effective policy independently before signing.
+
+The relay verifies the approvals and share commitment in enclave memory and
+emits an RSA-OAEP-SHA-256 ciphertext. The trial uses a static approval roster
+for the measured relay. Production hookup still needs signed authorization
+from the actual registry, attested acknowledgements and retirement proofs,
+RSA destination provisioning, and a tested approval-roster cutover. Keep
+existing custody keys outside the trial. [KMS attested decrypt](https://docs.aws.amazon.com/kms/latest/APIReference/API_Decrypt.html)
+
 ## Replace a compromised seed
 
 1. Freeze new sends that resolve through the old service. Initialize a fresh

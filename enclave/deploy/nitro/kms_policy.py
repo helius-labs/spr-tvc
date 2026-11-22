@@ -95,7 +95,38 @@ def encryption_conditions(ctx):
 
 def decrypt_conditions(pins, ctx):
     return {**encryption_conditions(ctx),
-            "StringEqualsIgnoreCase": {"kms:RecipientAttestation:" + key: pin for key, pin in pins.items()}}
+            "StringEqualsIgnoreCase": attestation_fields(pins)}
+
+
+def attestation_fields(pins):
+    return {"kms:RecipientAttestation:" + pcr: pin for pcr, pin in pins.items()}
+
+
+def deny_wrong_pcrs(pins):
+    return [deny(f"DenyWrong{pcr}", "kms:Decrypt", Condition={
+        "StringNotEqualsIgnoreCase": {"kms:RecipientAttestation:" + pcr: pin},
+    }) for pcr, pin in pins.items()]
+
+
+def relay_recovery_policy(custodian, key_admin, relay_host, measurements, epoch):
+    validate_custodian_roles(custodian, key_admin)
+    epoch_number(epoch)
+    if arn(ROLE_ARN, relay_host)[1] == arn(ROLE_ARN, custodian)[1]:
+        raise ValueError("relay host must be in a separate account from the custodian")
+    pins = boot_pins(relay_host, measurements)
+    algorithm = {"kms:EncryptionAlgorithm": "RSAES_OAEP_SHA_256"}
+    return {"Version": "2012-10-17", "Statement": [
+        seal(),
+        deny("DenyOtherCustodian", "kms:Decrypt", Condition={"StringNotEquals": {"aws:PrincipalArn": custodian}}),
+        *deny_wrong_pcrs(pins),
+        deny("DenyOtherAlgorithm", "kms:Decrypt", Condition={"StringNotEquals": algorithm}),
+        retirement(key_admin),
+        statement("ReadRecoveryPublicKey", "Allow", "*", ["kms:DescribeKey", "kms:GetPublicKey"]),
+        allow("InspectRecoveryPolicy", custodian, "kms:GetKeyPolicy"),
+        allow(f"RelayRecoveryShareEpoch{epoch}", custodian, "kms:Decrypt", Condition={
+            "StringEquals": algorithm, "StringEqualsIgnoreCase": attestation_fields(pins),
+        }),
+    ]}
 
 
 def key_policy(host, custodian, key_admin, measurements, ctx):
@@ -110,9 +141,7 @@ def key_policy(host, custodian, key_admin, measurements, ctx):
             seal(),
             # Explicit denials also apply if a key had a grant before its policy was sealed.
             deny("DenyOtherHost", "kms:Decrypt", Condition={"StringNotEquals": {"aws:PrincipalArn": host}}),
-            *[deny(f"DenyWrong{pcr}", "kms:Decrypt", Condition={
-                "StringNotEqualsIgnoreCase": {"kms:RecipientAttestation:" + pcr: pin},
-            }) for pcr, pin in pins.items()],
+            *deny_wrong_pcrs(pins),
             *[deny(f"DenyWrongContext{index}", "kms:Decrypt", Condition={"StringNotEquals": {field: value}})
               for index, (field, value) in enumerate(conditions["StringEquals"].items())],
             deny("DenyExtraContext", "kms:Decrypt", Condition={

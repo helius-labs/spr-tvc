@@ -32,8 +32,8 @@ use openssl::{
 use serde::{Deserialize, Serialize};
 use spr_tvc_protocol::{
     digest::sha256,
-    encoding::{hex, jcs_serialize, parse_strict_json},
-    types::ServiceInfo,
+    encoding::{decimal_u64, hex, jcs_serialize, parse_strict_json},
+    types::{Network, ServiceInfo},
 };
 use tokio::sync::{oneshot, Semaphore};
 use tokio_vsock::{VsockAddr, VsockListener, VsockStream, VMADDR_CID_ANY};
@@ -42,6 +42,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     custody::{CustodianPackage, Custody, Recipients, SHARE_COUNT, THRESHOLD},
+    custody_relay::{Relay, Request as RelayRequest, MAX_CMS_BYTES},
     keys::NoteSeed,
     native_crypto::NativePair,
     nitro_http,
@@ -51,9 +52,9 @@ use crate::{
     Release, Service,
 };
 
-const MAX_CMS_BYTES: usize = 6144;
 const SHARE_FRAME_HEADER: usize = 3;
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(120);
+const RELAY_TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_SERVING_REQUESTS: usize = 32;
 const MAX_ATTESTATION_REQUESTS: usize = 2;
 const MAX_SERVING_CONNECTIONS: usize = 64;
@@ -85,6 +86,12 @@ struct Configuration {
 enum Deployment {
     Serve {
         custody: Custody,
+    },
+    Relay {
+        #[serde(with = "decimal_u64")]
+        custody_epoch: u64,
+        #[serde(with = "hex")]
+        approval_keys: Vec<[u8; 65]>,
     },
     Initialize {
         #[serde(with = "hex")]
@@ -124,6 +131,19 @@ pub async fn run(config: Config) -> io::Result<()> {
             custody.validate()?;
             let (note_seed, slots) = provision(domain, custody.clone()).await?;
             serve(domain, release_id, custody, note_seed, slots).await
+        }
+        Deployment::Relay {
+            custody_epoch,
+            approval_keys,
+        } => {
+            run_relay(
+                domain,
+                custody_epoch,
+                approval_keys
+                    .try_into()
+                    .map_err(|_| io::Error::other("expected three recovery relay authorities"))?,
+            )
+            .await
         }
         Deployment::Initialize {
             recipient_public_keys,
@@ -283,6 +303,46 @@ async fn provision(domain: [u8; 32], custody: Custody) -> io::Result<RestoredSee
     let _ = shutdown.send(());
     server.await;
     Ok(seed)
+}
+
+async fn run_relay(domain: [u8; 32], epoch: u64, pins: [[u8; 65]; 3]) -> io::Result<()> {
+    if NETWORK != Network::Devnet {
+        return Err(io::Error::other("the recovery relay trial requires devnet"));
+    }
+    let recipient =
+        PKey::from_rsa(Rsa::generate(2048).map_err(io::Error::other)?).map_err(io::Error::other)?;
+    let relay = Arc::new(Relay::new(recipient, NETWORK, domain, epoch, pins)?);
+    let app = Router::new()
+        .route("/recipient", get(relay_recipient))
+        .route("/rewrap", post(relay_rewrap))
+        .layer(DefaultBodyLimit::max(16 * 1024))
+        .layer(Extension(Arc::new(Semaphore::new(1))))
+        .with_state(relay);
+    nitro_http::serve(
+        ParentListener::bind(44031)?,
+        app,
+        MAX_CUSTODY_CONNECTIONS,
+        tokio::time::sleep(RELAY_TIMEOUT),
+    )
+    .await;
+    Ok(())
+}
+
+async fn relay_recipient(
+    State(relay): State<Arc<Relay>>,
+    Extension(worker): Extension<Arc<Semaphore>>,
+) -> Reply<Vec<u8>> {
+    let public = relay
+        .public_key()
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    issue_attestation(worker, move || attest(Some(public), None, None)).await
+}
+
+async fn relay_rewrap(State(relay): State<Arc<Relay>>, body: Bytes) -> Reply<Vec<u8>> {
+    let json = std::str::from_utf8(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let request: RelayRequest = parse_strict_json(json).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let ciphertext = relay.rewrap(request).ok_or(StatusCode::BAD_REQUEST)?;
+    Ok(([(CONTENT_TYPE, "application/octet-stream")], ciphertext))
 }
 
 async fn kms_attestation(
@@ -546,7 +606,7 @@ impl axum::serve::Listener for ParentListener {
 
 #[cfg(test)]
 #[path = "../tests/unit/nitro_bootstrap.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 #[path = "../tests/unit/nitro_traffic.rs"]

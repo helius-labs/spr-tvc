@@ -15,7 +15,7 @@ fn key() -> PKey<Private> {
     PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap()
 }
 
-fn envelope(key: &PKey<Private>, share: &[u8]) -> Vec<u8> {
+pub(crate) fn envelope(key: &PKey<Private>, share: &[u8]) -> Vec<u8> {
     let mut cert = X509::builder().unwrap();
     let name = X509Name::builder().unwrap().build();
     cert.set_subject_name(&name).unwrap();

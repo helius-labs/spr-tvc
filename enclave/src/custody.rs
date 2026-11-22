@@ -61,20 +61,13 @@ impl Custody {
         let mut verified = Zeroizing::new(Vec::with_capacity(THRESHOLD));
         let mut slots = [0; THRESHOLD];
         for (slot, share) in shares {
-            if share.len() != SHARE_BYTES
-                || share[..EPOCH_BYTES] != self.epoch.to_be_bytes()
-                || share[EPOCH_BYTES] != slot
-                || slots.contains(&slot)
-            {
-                continue;
-            }
             let Some(commitment) = usize::from(slot)
                 .checked_sub(1)
                 .and_then(|index| self.share_commitments.get(index))
             else {
                 continue;
             };
-            if openssl::memcmp::eq(&share_commitment(domain, share), commitment) {
+            if !slots.contains(&slot) && valid_share(domain, self.epoch, slot, share, commitment) {
                 slots[verified.len()] = slot;
                 verified.push(share[EPOCH_BYTES..].to_vec());
             }
@@ -116,6 +109,46 @@ fn share_commitment(domain: &[u8; 32], share: &[u8]) -> [u8; 32] {
     ))
 }
 
+pub(crate) fn valid_share(
+    domain: &[u8; 32],
+    epoch: u64,
+    slot: u8,
+    share: &[u8],
+    commitment: &[u8; 32],
+) -> bool {
+    share.len() == SHARE_BYTES
+        && share[..EPOCH_BYTES] == epoch.to_be_bytes()
+        && share[EPOCH_BYTES] == slot
+        && openssl::memcmp::eq(&share_commitment(domain, share), commitment)
+}
+
+pub(crate) fn parse_recipient(spki: &[u8]) -> io::Result<PKey<Public>> {
+    let key = PKey::public_key_from_der(spki).map_err(io::Error::other)?;
+    if key.id() != Id::RSA
+        || ![2048, 3072, 4096].contains(&key.bits())
+        || key.public_key_to_der().map_err(io::Error::other)? != spki
+    {
+        return Err(io::Error::other(
+            "expected canonical RSA-2048, RSA-3072 or RSA-4096 recipient",
+        ));
+    }
+    Ok(key)
+}
+
+pub(crate) fn encrypt_share(
+    key: &PKey<Public>,
+    share: &[u8],
+) -> Result<Vec<u8>, openssl::error::ErrorStack> {
+    let mut wrapper = Encrypter::new(key)?;
+    wrapper.set_rsa_padding(Padding::PKCS1_OAEP)?;
+    wrapper.set_rsa_oaep_md(MessageDigest::sha256())?;
+    wrapper.set_rsa_mgf1_md(MessageDigest::sha256())?;
+    let mut ciphertext = vec![0; wrapper.encrypt_len(share)?];
+    let len = wrapper.encrypt(share, &mut ciphertext)?;
+    ciphertext.truncate(len);
+    Ok(ciphertext)
+}
+
 fn split(epoch: u64, seed: &NoteSeed) -> io::Result<Zeroizing<Vec<Vec<u8>>>> {
     let mut shares = Zeroizing::new(
         Gf256::split_bytes(
@@ -147,19 +180,10 @@ impl Recipients {
         let keys = spkis
             .iter()
             .map(|spki| {
-                let key = PKey::public_key_from_der(spki).map_err(io::Error::other)?;
-                if key.id() != Id::RSA || ![2048, 3072, 4096].contains(&key.bits()) {
-                    return Err(io::Error::other(
-                        "expected an RSA-2048, RSA-3072 or RSA-4096 recipient",
-                    ));
-                }
+                let key = parse_recipient(spki)?;
                 let rsa = key.rsa().map_err(io::Error::other)?;
-                if !moduli.insert(rsa.n().to_vec())
-                    || key.public_key_to_der().map_err(io::Error::other)? != *spki
-                {
-                    return Err(io::Error::other(
-                        "expected distinct canonical recipient keys",
-                    ));
+                if !moduli.insert(rsa.n().to_vec()) {
+                    return Err(io::Error::other("expected distinct recipient keys"));
                 }
                 Ok(key)
             })
@@ -188,13 +212,7 @@ impl Recipients {
             .iter()
             .zip(shares.iter())
             .map(|(key, share)| {
-                let mut wrapper = Encrypter::new(key)?;
-                wrapper.set_rsa_padding(Padding::PKCS1_OAEP)?;
-                wrapper.set_rsa_oaep_md(MessageDigest::sha256())?;
-                wrapper.set_rsa_mgf1_md(MessageDigest::sha256())?;
-                let mut ciphertext = vec![0; wrapper.encrypt_len(share)?];
-                let len = wrapper.encrypt(share, &mut ciphertext)?;
-                ciphertext.truncate(len);
+                let ciphertext = encrypt_share(key, share)?;
                 Ok::<_, openssl::error::ErrorStack>(CustodianPackage {
                     recipient_sha256: sha256(&key.public_key_to_der()?),
                     ciphertext,

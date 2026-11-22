@@ -13,7 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import aws
 from deployment import host_policy
-from kms_policy import context, key_policy
+from kms_policy import context, key_policy, relay_recovery_policy
 from provision import decrypt_share, provision, read_target, recipient_for
 
 HOST = "arn:aws:iam::111111111111:role/host"
@@ -29,6 +29,27 @@ SHARES = pathlib.Path("shares")
 
 
 class KeyPolicyTests(unittest.TestCase):
+    def test_relay_key_requires_custodian_and_all_pcrs_and_bars_unattested_access(self):
+        statements = relay_recovery_policy(CUSTODIAN, RETIREMENT, HOST, PINS, "5")["Statement"]
+        grants = [rule for rule in statements if rule["Effect"] == "Allow" and rule["Action"] == "kms:Decrypt"]
+        grant, = grants
+        self.assertEqual(grant["Principal"], {"AWS": CUSTODIAN})
+        expected = {**PINS, "PCR3": hashlib.sha384(bytes(48) + HOST.encode()).hexdigest()}
+        self.assertEqual(grant["Condition"], {
+            "StringEqualsIgnoreCase": {f"kms:RecipientAttestation:{pcr}": pin for pcr, pin in expected.items()},
+            "StringEquals": {"kms:EncryptionAlgorithm": "RSAES_OAEP_SHA_256"},
+        })
+        denied = {rule["Sid"]: rule for rule in statements if rule["Effect"] == "Deny"}
+        for pcr, pin in expected.items():
+            self.assertEqual(denied[f"DenyWrong{pcr}"]["Condition"], {
+                "StringNotEqualsIgnoreCase": {f"kms:RecipientAttestation:{pcr}": pin},
+            })
+            self.assertEqual(denied[f"DenyWrong{pcr}"]["Principal"], "*")
+        self.assertTrue({"kms:CreateGrant", "kms:PutKeyPolicy", "kms:ReEncryptFrom"} <= set(denied["SealKey"]["Action"]))
+        for host, measurements in [(CUSTODIAN, PINS), (HOST, {**PINS, "PCR1": "00" * 48})]:
+            with self.assertRaises(ValueError):
+                relay_recovery_policy(CUSTODIAN, RETIREMENT, host, measurements, "5")
+
     def test_only_host_role_with_recipient_pcrs_and_exact_context_can_unwrap(self):
         ctx = context("mainnet", DOMAIN, "release-a", "5", 1)
         statements = key_policy(HOST, CUSTODIAN, RETIREMENT, PINS, ctx)["Statement"]

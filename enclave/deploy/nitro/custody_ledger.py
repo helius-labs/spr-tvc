@@ -16,7 +16,7 @@ from approval import (
     epoch_number, fields, file_digest, get_signing_key, hex_digest, key_result, kms, parse_json, read_document,
     read_json, require_kms_key, sha256, signing_key, signing_sec1,
 )
-from kms_policy import acknowledgement_policy, boot_pins, context, recovery_policy, validate_custodian_roles
+from kms_policy import acknowledgement_policy, boot_pins, context, recovery_policy, relay_recovery_policy, validate_custodian_roles
 from provenance import MAIN_REF, verify as verify_build
 
 LABEL = "custody-epoch"
@@ -655,6 +655,12 @@ def main():
     recovery.add_argument("custodian_role")
     recovery.add_argument("retirement_role")
     recovery.add_argument("epoch")
+    relay = commands.add_parser("relay-recovery-policy", help="render a recovery key policy for the devnet relay trial")
+    relay.add_argument("custodian_role")
+    relay.add_argument("retirement_role")
+    relay.add_argument("relay_host_role")
+    relay.add_argument("measurements", type=Path)
+    relay.add_argument("epoch")
     acknowledgement = commands.add_parser("acknowledgement-policy")
     acknowledgement.add_argument("custodian_role")
     acknowledgement.add_argument("retirement_role")
@@ -669,6 +675,13 @@ def main():
             return
         if args.command == "recovery-policy":
             print(canonical(recovery_policy(args.custodian_role, args.retirement_role, args.epoch)).decode())
+            return
+        if args.command == "relay-recovery-policy":
+            if trust["network"] != "devnet":
+                raise ValueError("the recovery relay trial requires devnet")
+            pins = read_json(args.measurements)["Measurements"]
+            print(canonical(relay_recovery_policy(args.custodian_role, args.retirement_role, args.relay_host_role,
+                                                  pins, args.epoch)).decode())
             return
         if args.command == "acknowledgement-policy":
             print(canonical(acknowledgement_policy(args.custodian_role, args.retirement_role)).decode())

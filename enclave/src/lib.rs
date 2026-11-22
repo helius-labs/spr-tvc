@@ -13,6 +13,8 @@ compile_error!("select a supported enclave runtime");
 mod cipher;
 #[cfg(all(feature = "native-nitro", target_os = "linux"))]
 mod custody;
+#[cfg(all(feature = "native-nitro", target_os = "linux"))]
+mod custody_relay;
 mod http;
 mod keys;
 #[cfg(feature = "local-dev")]
