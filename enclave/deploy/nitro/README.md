@@ -210,10 +210,11 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    SHA-256 of the complete file in an independently retained audit record.
    Keep the pinned custody trust schedule and the reviewed build artifacts
    with the archive. The verifier opens no AWS connection. It checks the
-   genesis receipt, each rotation link, original target approval and
-   recorded S3 publication time, custodian signatures and Nitro evidence at
-   its recorded verification time. The independent archive pin authenticates
-   the exported S3 timestamps.
+   genesis receipt, each rotation link, custodian signatures and Nitro evidence
+   at its recorded verification time. It checks that each rotation registration
+   was published between the two receipts it connects. The independent archive
+   pin authenticates the original S3 write time exported as `publishedAt` for
+   each receipt and rotation approval.
 
    ```sh
    python3 "$nitro/custody_archive.py" trust.json export "$epoch" > custody.jsonl
@@ -731,10 +732,11 @@ policies need more than 30 seconds before expiry to submit the write.
 For activation, each replica probe must also retain that margin after the
 final custody check. Wallet trust verification requires each probe to remain
 current through the last read of both policy buckets.
-For mainnet payment activation, give signers, the primary publisher, and wallet pin
-verifiers `kms:DescribeKey` on the registered recovery and wrapping keys.
-Each target needs three slots with both keys enabled in the same account.
-A warm enclave still needs that quorum to accept new payments. Add
+An activation with `recoveryOnly: false` lets wallets use the listed targets to
+resolve new payment destinations. On mainnet, even a running enclave must
+retain three recoverable slots per target. Each slot needs its recovery and
+wrapping keys enabled in the slot's account. Give signers, the primary publisher
+and wallet pin verifiers `kms:DescribeKey` on those keys. Add
 `--replica-profile "$replica_read_profile"` to `nitro-sign`, primary publication
 and `--check-wallet-trust` for a mainnet payment policy. The read-only profile
 must be in the custody replica owner's account. It checks versioning, ownership,

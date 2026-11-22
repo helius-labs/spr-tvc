@@ -77,7 +77,7 @@ class RelayTests(unittest.TestCase):
     @patch("relay_wrap.sealed_rsa_key", return_value=PUBLIC)
     @patch("relay_wrap.require_registered_target")
     @patch("relay_wrap.target", return_value=(KEYS, [{}], None))
-    @patch("relay_wrap.load_epoch", return_value=(None, RECEIPT, [CUSTODIAN]))
+    @patch("relay_wrap.load_epoch_with_time", return_value=(None, RECEIPT, [CUSTODIAN], 1))
     @patch("relay_wrap.relay_pins")
     @patch("relay_wrap.verify_target_approval")
     def test_successor_can_wrap_before_cutover_and_old_roster_cannot_wrap_after(

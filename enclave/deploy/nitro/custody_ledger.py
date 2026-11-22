@@ -138,10 +138,6 @@ def storage(trust, operation, args=(), **options):
     ], **options)
 
 
-def read_object(trust, name, **options):
-    return read_stored_object(trust, name, **options)[0]
-
-
 def read_stored_object(trust, name, **options):
     payload, metadata = read_stored_payload(trust, name, **options)
     ledger_record_version(name, metadata)
@@ -210,13 +206,13 @@ def require_replicated_custody(trust, replica, epoch, registrations):
         return parse_json(payload), published_at
 
     def read_entry(number):
-        document, _ = read(ledger_object(trust, str(number)))
+        document, receipt_time = read(ledger_object(trust, str(number)))
         rotation = None
         if number > 1:
             manifest = document["authorization"]["manifest"]
             approval, published_at = read(rotation_target_name(manifest, str(number - 1)))
             rotation = {"approval": approval, "publishedAt": published_at}
-        return {"document": document, "rotation": rotation}
+        return {"document": document, "publishedAt": receipt_time, "rotation": rotation}
 
     # Schedule bounded batches even when a signed epoch number is very large.
     last = epoch_number(epoch)
@@ -532,17 +528,22 @@ def check_recovery_bucket(trust, replica, profile):
 
 
 def read_epoch_record(trust, epoch, **options):
-    document = read_object(trust, ledger_object(trust, epoch), **options)
+    document, metadata = read_stored_object(trust, ledger_object(trust, epoch), **options)
     receipt, custodians = record(trust, document)
     if receipt["custody"]["epoch"] != epoch:
         raise ValueError("canonical custody receipt belongs to another epoch")
     check_commit(trust, document, receipt, custodians)
-    return document, receipt, custodians
+    return document, receipt, custodians, publication_time(metadata)
+
+
+def load_epoch_with_time(trust, epoch, **options):
+    document, receipt, custodians, published_at = read_epoch_record(trust, epoch, **options)
+    check_previous(trust, document, receipt, published_at=published_at, **options)
+    return document, receipt, custodians, published_at
 
 
 def load_epoch(trust, epoch, **options):
-    document, receipt, custodians = read_epoch_record(trust, epoch, **options)
-    check_previous(trust, document, receipt, **options)
+    document, receipt, custodians, _ = load_epoch_with_time(trust, epoch, **options)
     return document, receipt, custodians
 
 
@@ -606,9 +607,18 @@ def verify_target_approval(trust, document, *, at=None):
     return manifest
 
 
-def read_registered_target(trust, name, epoch, receipt_digest, **options):
+def read_registered_target_record(trust, name, epoch, receipt_digest, *, receipt_at=None, **options):
     document, metadata = read_stored_object(trust, name, **options)
-    return check_registered_target(trust, name, epoch, receipt_digest, document, publication_time(metadata))
+    published_at = publication_time(metadata)
+    target = check_registered_target(trust, name, epoch, receipt_digest, document, published_at)
+    if receipt_at is not None and published_at < receipt_at:
+        raise ValueError("target registration precedes its custody receipt")
+    return target, published_at
+
+
+def read_registered_target(trust, name, epoch, receipt_digest, **options):
+    target, _ = read_registered_target_record(trust, name, epoch, receipt_digest, **options)
+    return target
 
 
 def check_registered_target(trust, name, epoch, receipt_digest, document, published_at):
@@ -679,10 +689,13 @@ def verify_retirement(trust, document, epoch, verified_at, *, requalification=Fa
     return manifest
 
 
-def retirement_target(trust, marker, **options):
+def retirement_target(trust, marker, *, receipt_at=None, retired_at=None, **options):
     replacement = marker["replacementEpoch"]
     name = target_path(replacement, marker["replacementTargetIdentity"])
-    target = read_registered_target(trust, name, replacement, marker["replacementReceiptSha256"], **options)
+    target, registered_at = read_registered_target_record(trust, name, replacement, marker["replacementReceiptSha256"],
+                                                          receipt_at=receipt_at, **options)
+    if retired_at is not None and retired_at < registered_at:
+        raise ValueError("retirement precedes its replacement target registration")
     if target["mode"] != "serve" or sha256(target) != marker["replacementTargetSha256"]:
         raise ValueError("replacement target does not match the registered serving enclave")
     return target
@@ -692,15 +705,17 @@ def load_retirement(trust, epoch, **options):
     document, metadata = read_stored_object(trust, retirement_object_name(epoch), **options)
     published_at = publication_time(metadata)
     marker = verify_retirement(trust, document, epoch, published_at)
-    _, previous, custodians = load_epoch(trust, epoch, **options)
+    _, previous, custodians, previous_at = load_epoch_with_time(trust, epoch, **options)
     replacement_epoch = marker["replacementEpoch"]
-    _, replacement, replacement_custodians = load_epoch(trust, replacement_epoch, **options)
+    _, replacement, replacement_custodians, replacement_at = load_epoch_with_time(trust, replacement_epoch, **options)
+    if published_at < max(previous_at, replacement_at):
+        raise ValueError("retirement precedes a custody receipt it depends on")
     if (marker["receiptSha256"] != sha256(previous) or marker["replacementReceiptSha256"] != sha256(replacement) or
             marker["replacementCustodyDigest"] != sha256(replacement["custody"]) or
             previous["custody"]["noteSeedCommitment"] != replacement["custody"]["noteSeedCommitment"]):
         raise ValueError("retirement receipts do not match the ledger")
     retirement_recovery(document, replacement_custodians)
-    retirement_target(trust, marker, **options)
+    retirement_target(trust, marker, receipt_at=replacement_at, retired_at=published_at, **options)
     return document, custodians, published_at
 
 
@@ -805,7 +820,7 @@ def check_release_policy(trust, document, custody_signer=None, *, replica_profil
 
     def check_epoch(item):
         epoch, replicas = item
-        _, receipt, custodians = load_epoch(trust, epoch)
+        _, receipt, custodians, receipt_at = load_epoch_with_time(trust, epoch)
         custody = receipt["custody"]
         if policy["noteSeedCommitment"] != custody["noteSeedCommitment"]:
             raise ValueError("wallet policy does not match the committed note seed")
@@ -817,7 +832,7 @@ def check_release_policy(trust, document, custody_signer=None, *, replica_profil
                 raise ValueError("serving target does not match the committed custody record")
             identity = {"releaseId": replica["releaseId"], "pcrs": replica["pcrs"]}
             name = target_path(epoch, sha256(identity))
-            registered = read_registered_target(trust, name, epoch, receipt_digest)
+            registered = read_registered_target(trust, name, epoch, receipt_digest, receipt_at=receipt_at)
             if (registered["mode"] != "serve" or
                     hex_digest(registered["executableSha256"]) != replica["executableSha256"]):
                 raise ValueError("serving executable does not match the custody-approved target")
@@ -854,7 +869,7 @@ def draft(trust, capture, build, host, roster):
         "previousReceiptSha256": previous, "rotationTargetSha256": None,
     }
     if epoch != 1:
-        target = rotation_target(trust, manifest, str(epoch - 1))
+        target, _ = read_rotation_target(trust, manifest, str(epoch - 1))
         if target["configurationSha256"] != file_digest(build / "configuration.json"):
             raise ValueError("ceremony build configuration does not match the registered rotation target")
         manifest["rotationTargetSha256"] = sha256(target)
@@ -871,11 +886,11 @@ def rotation_target_name(manifest, previous_epoch):
     return target_path(previous_epoch, sha256(identity))
 
 
-def rotation_target(trust, manifest, previous_epoch, **options):
-    target = read_registered_target(trust, rotation_target_name(manifest, previous_epoch), previous_epoch,
-                                    manifest["previousReceiptSha256"], **options)
+def read_rotation_target(trust, manifest, previous_epoch, **options):
+    name = rotation_target_name(manifest, previous_epoch)
+    target, published_at = read_registered_target_record(trust, name, previous_epoch, manifest["previousReceiptSha256"], **options)
     check_rotation_target(manifest, target)
-    return target
+    return target, published_at
 
 
 def check_rotation_target(manifest, target):
@@ -897,23 +912,30 @@ def check_predecessor(document, receipt, predecessor, previous_roster):
         raise ValueError("custody rotation requires fresh recovery keys")
 
 
-def check_previous(trust, document, receipt, **options):
+def require_rotation_order(previous_at, rotation_at, successor_at=None):
+    if rotation_at < previous_at or (successor_at is not None and successor_at < rotation_at):
+        raise ValueError("rotation registration must be recorded between the predecessor and successor receipts")
+
+
+def check_previous(trust, document, receipt, *, published_at=None, **options):
     epoch = int(receipt["custody"]["epoch"])
     if epoch == 1:
         return
     previous_epoch = str(epoch - 1)
-    _, predecessor, previous_roster = read_epoch_record(trust, previous_epoch, **options)
+    _, predecessor, previous_roster, previous_at = read_epoch_record(trust, previous_epoch, **options)
     check_predecessor(document, receipt, predecessor, previous_roster)
     manifest = document["authorization"]["manifest"]
-    target = rotation_target(trust, manifest, previous_epoch, **options)
+    target, rotation_at = read_rotation_target(trust, manifest, previous_epoch, **options)
+    require_rotation_order(previous_at, rotation_at, published_at)
     if manifest["rotationTargetSha256"] != sha256(target):
         raise ValueError("custody record does not pin the registered rotation target")
     return target
 
 
 def check_custody_history_entry(trust, epoch, entry, previous):
-    fields(entry, "document", "rotation")
+    fields(entry, "document", "publishedAt", "rotation")
     document, rotation = entry["document"], entry["rotation"]
+    published_at = publication_time({"LastModified": entry["publishedAt"]})
     receipt, custodians = record(trust, document)
     if receipt["custody"]["epoch"] != epoch:
         raise ValueError("custody history epochs must be consecutive from genesis")
@@ -923,18 +945,20 @@ def check_custody_history_entry(trust, epoch, entry, previous):
         if rotation is not None:
             raise ValueError("genesis history cannot include a rotation")
     else:
-        predecessor, previous_roster = previous
+        predecessor, previous_roster, previous_at = previous
         check_predecessor(document, receipt, predecessor, previous_roster)
         fields(rotation, "approval", "publishedAt")
         prior_epoch = predecessor["custody"]["epoch"]
+        rotation_at = publication_time({"LastModified": rotation["publishedAt"]})
         target = check_registered_target(
             trust, rotation_target_name(manifest, prior_epoch), prior_epoch, sha256(predecessor),
-            rotation["approval"], publication_time({"LastModified": rotation["publishedAt"]}),
+            rotation["approval"], rotation_at,
         )
+        require_rotation_order(previous_at, rotation_at, published_at)
         check_rotation_target(manifest, target)
         if manifest["rotationTargetSha256"] != sha256(target):
             raise ValueError("custody record does not pin the registered rotation target")
-    return receipt, custodians
+    return receipt, custodians, published_at
 
 
 def check_custody_roster(trust, epoch, custodians, fingerprints, inspection_profiles, relay_build=None):
@@ -1044,7 +1068,7 @@ def publish(trust, document):
     epoch = receipt["custody"]["epoch"]
 
     def confirm():
-        stored, _, _ = read_epoch_record(trust, epoch)
+        stored, _, _ = load_epoch(trust, epoch)
         if canonical(stored["authorization"]["manifest"]) != canonical(authorization):
             raise ValueError("a different custody receipt is already committed")
 

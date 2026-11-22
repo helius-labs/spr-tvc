@@ -12,9 +12,10 @@ from approval import (
     parse_json, read_document, read_json, require_inspection_profiles, require_profile_account, sha256,
 )
 from custody_ledger import (
-    LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_custody_roster, list_objects, load_epoch, publication_time,
-    read_registered_target, read_stored_object, require_active_epoch, require_publication_roster, require_target_approval_window,
-    target_attestation, target_object_name, validate_target, verify_target_approval, wrapping_pairs, write_once,
+    LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_custody_roster, list_objects, load_epoch_with_time,
+    publication_time, read_registered_target, read_stored_object, require_active_epoch, require_publication_roster,
+    require_target_approval_window, target_attestation, target_object_name, validate_target, verify_target_approval,
+    wrapping_pairs, write_once,
 )
 from kms_policy import decrypt_conditions, key_policy, target_boot_pins
 from provenance import verify as verify_build
@@ -90,7 +91,7 @@ def register_target(trust, document, *, build=None):
     manifest = document["manifest"]
     validate_target(trust, manifest)
     epoch = manifest["custodyEpoch"]
-    _, receipt, custodians = load_epoch(trust, epoch)
+    _, receipt, custodians, receipt_at = load_epoch_with_time(trust, epoch)
     if manifest["receiptSha256"] != sha256(receipt):
         raise ValueError("target does not match the committed custody receipt")
     name = target_object_name(manifest)
@@ -104,16 +105,19 @@ def register_target(trust, document, *, build=None):
         target(trust, document, receipt, custodians, build, at=published_at)
     require_active_epoch(trust, epoch)
     if published_at is not None:
+        if published_at < receipt_at:
+            raise ValueError("target registration precedes its custody receipt")
         return
     require_target_approval_window(manifest, time.time(), remaining=LEDGER_WRITE_MARGIN_SECONDS)
     require_publication_roster(trust, manifest["approvalFromEpoch"])
-    write_once(trust, name, document, lambda: require_registered_target(trust, manifest))
+    write_once(trust, name, document, lambda: require_registered_target(trust, manifest, receipt_at=receipt_at))
 
 
-def require_registered_target(trust, manifest):
+def require_registered_target(trust, manifest, *, receipt_at=None):
     # Registration precedes the retirement check. Every wrap admitted before
     # the marker will appear in the subsequent inventory, even if it ends later.
-    recorded = read_registered_target(trust, target_object_name(manifest), manifest["custodyEpoch"], manifest["receiptSha256"])
+    recorded = read_registered_target(trust, target_object_name(manifest), manifest["custodyEpoch"], manifest["receiptSha256"],
+                                      receipt_at=receipt_at)
     if target_binding(recorded) != target_binding(manifest):
         raise ValueError("target does not match the immutable deployment register")
     require_active_epoch(trust, manifest["custodyEpoch"])
@@ -227,7 +231,7 @@ def main():
             deployment = config["deployment"]
             mode = deployment["mode"]
             epoch = deployment["custody" if mode == "serve" else "previous"]["epoch"]
-            _, receipt, custodians = load_epoch(trust, epoch)
+            _, receipt, custodians, _ = load_epoch_with_time(trust, epoch)
             measured = read_json(args.build / "measurements.json")["Measurements"]
             document = {"manifest": {
                 "network": trust["network"], "securityDomainId": config["securityDomainId"], "custodyEpoch": epoch,
@@ -248,10 +252,10 @@ def main():
         if args.command == "register":
             register_target(trust, document, build=args.build)
             return
-        _, receipt, custodians = load_epoch(trust, document["manifest"]["custodyEpoch"])
+        _, receipt, custodians, receipt_at = load_epoch_with_time(trust, document["manifest"]["custodyEpoch"])
         keys, policies, next_keys = target(trust, document, receipt, custodians, args.build)
         if args.command in {"host-policy", "attestation-pins"}:
-            require_registered_target(trust, verify_target_approval(trust, document))
+            require_registered_target(trust, verify_target_approval(trust, document), receipt_at=receipt_at)
             manifest = document["manifest"]
             result = host_policy(manifest) if args.command == "host-policy" else target_attestation(manifest)["pcrs"]
             print(canonical(result).decode())

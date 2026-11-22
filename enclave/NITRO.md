@@ -111,15 +111,16 @@ A conditional S3 write commits one record for the epoch. The operator
 authenticates the committed, versioned record before reporting success,
 including after a lost S3 response. Historical receipts verify with the
 public keys pinned for their epoch. Target approvals and retirement records
-verify under the roster active at the original S3 write. Publishing after a cutover requires
-approval from the incoming roster. An exact target registration retry verifies
-the stored record at its original write time and confirms the epoch is open.
-Retiring an approval or acknowledgement
-signing key leaves custody receipts verifiable offline. The archive checks
-the independently pinned digest of the receipt chain, each registered
-rotation approval, and each ceremony’s Nitro proof at its recorded
-verification time. Live admission also depends on the complete target and
-retirement history and the original S3 write times. An independently retained
+verify under the roster active at the original S3 write. A rotation registration
+must fall between its predecessor and successor receipts. A serving registration
+must follow its receipt, and a retirement marker must follow both receipts and
+the replacement registration. The verifier allows equal S3 timestamps.
+An exact target registration retry verifies the stored record at its original
+write time and confirms the epoch is open. Retiring an approval or
+acknowledgement signing key leaves custody receipts verifiable offline.
+The archive checks the independently pinned receipt chain and its publication
+times, each registered rotation approval, and each ceremony’s Nitro proof at
+its recorded verification time. An independently retained
 checkpoint of the paused ledger binds every key, version ID, write time and
 record body. Mainnet activation requires replication of the exact custody prefix
 to a bucket in a separate AWS account and region. A dedicated role can

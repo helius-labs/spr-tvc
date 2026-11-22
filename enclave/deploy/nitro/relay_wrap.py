@@ -10,7 +10,7 @@ from approval import (
     KEY_ARN, add_approval, approval_roster, arn, canonical, check_approvals, epoch_number, read_json,
     require_profile_account, sha256,
 )
-from custody_ledger import load_epoch, require_active_epoch, verify_target_approval
+from custody_ledger import load_epoch_with_time, require_active_epoch, verify_target_approval
 from deployment import require_registered_target, require_reviewed_target, target
 from kms_policy import RSA_CIPHERTEXT_BYTES
 from relay import live_recipient, recover_to_relay, relay_pins, relay_request, sealed_rsa_key
@@ -38,9 +38,9 @@ def prepare(trust, approval, build, index, port, inspection_profile=None):
     manifest = verify_target_approval(trust, approval, at=at)
     epoch = manifest["custodyEpoch"]
     relay = relay_pins(trust, epoch)
-    _, receipt, custodians = load_epoch(trust, epoch)
+    _, receipt, custodians, receipt_at = load_epoch_with_time(trust, epoch)
     _, policies, _ = target(trust, approval, receipt, custodians, build)
-    require_registered_target(trust, manifest)
+    require_registered_target(trust, manifest, receipt_at=receipt_at)
     roster = approval_roster(trust, epoch=epoch)
     if epoch_number(roster["fromEpoch"]) < epoch_number(manifest["approvalFromEpoch"]):
         raise ValueError("the relay's measured approval roster has retired")

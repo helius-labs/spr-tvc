@@ -23,7 +23,7 @@ from custody_archive import (
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
     check_custody_roster, check_installed_ledger, check_release_policy, draft, ledger_policy, ledger_reader_policy, ledger_replica_plan,
-    list_ledger_versions, list_objects, load_epoch, publish, read_object, read_registered_target, read_stored_payload,
+    list_ledger_versions, list_objects, load_epoch, publish, read_registered_target, read_stored_object, read_stored_payload,
     record, replication_configuration, require_active_epoch,
     sign_epoch, target_attestation,
     target_object_name, write_once,
@@ -229,7 +229,7 @@ class CustodyLedgerTests(unittest.TestCase):
     def test_reports_both_failures_when_a_ledger_write_cannot_be_confirmed(self):
         with patch("custody_ledger.storage", side_effect=[ValueError("write timed out"), ValueError("read denied")]):
             with self.assertRaisesRegex(ValueError, r"could not confirm ledger write \(write timed out\).*\(read denied\)"):
-                write_once(self.trust, "1.json", {}, lambda: read_object(self.trust, "1.json"))
+                write_once(self.trust, "1.json", {}, lambda: read_stored_object(self.trust, "1.json"))
 
     def test_custody_publish_requires_an_authenticated_readback(self):
         document = self.sign(self.document(1))
@@ -451,6 +451,13 @@ class CustodyLedgerTests(unittest.TestCase):
         self.rotate_approvals("2")
         second, approval = self.rotation_document(record(self.trust, first)[0])
         publish(self.trust, self.sign(second))
+        prefix = f"spr-custody/devnet/{DOMAIN}/"
+        registered_at = datetime.fromisoformat(self.timestamps[prefix + target_object_name(approval["manifest"])]).timestamp()
+        for name, at in (("1.json", registered_at + 1), ("2.json", registered_at - 1)):
+            edited = datetime.fromtimestamp(at, timezone.utc).isoformat()
+            with self.subTest(out_of_order=name), patch.dict(self.timestamps, {prefix + name: edited}):
+                with self.assertRaisesRegex(ValueError, "rotation registration must be recorded between"):
+                    load_epoch(self.trust, "2")
         output = BytesIO()
         archive(self.trust, "2", output)
         payload = output.getvalue()
@@ -490,6 +497,16 @@ class CustodyLedgerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "signing quorum"):
                 verify(encode(changed))
 
+            for index, at in ((0, registered_at + 1), (1, registered_at - 1)):
+                changed = copy.deepcopy(entries)
+                changed[index]["publishedAt"] = datetime.fromtimestamp(at, timezone.utc).isoformat()
+                with self.assertRaisesRegex(ValueError, "rotation registration must be recorded between"):
+                    verify(encode(changed))
+            changed = copy.deepcopy(entries)
+            del changed[0]["publishedAt"]
+            with self.assertRaisesRegex(ValueError, "publishedAt"):
+                verify(encode(changed))
+
             changed = copy.deepcopy(entries)
             changed[0]["document"] = self.sign(self.document(1, variant="cd"))
             with self.assertRaisesRegex(ValueError, "canonical previous receipt"):
@@ -525,6 +542,14 @@ class CustodyLedgerTests(unittest.TestCase):
         prefix = f"spr-custody/devnet/{DOMAIN}/"
         target = prefix + target_object_name(replacement)
         retired = prefix + "retired/1.json"
+        retired_at = datetime.fromisoformat(self.timestamps[retired]).timestamp()
+        after_retirement = datetime.fromtimestamp(retired_at + 1, timezone.utc).isoformat()
+        with patch.dict(self.timestamps, {prefix + "2.json": after_retirement, target: after_retirement}):
+            with self.assertRaisesRegex(ValueError, "retirement precedes a custody receipt"):
+                ledger_checkpoint(self.trust)
+        with patch.dict(self.timestamps, {target: after_retirement}):
+            with self.assertRaisesRegex(ValueError, "retirement precedes its replacement target registration"):
+                ledger_checkpoint(self.trust)
         changed_time = datetime.fromtimestamp(self.now, timezone.utc).isoformat()
         replica = {**self.trust, "ledger": {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1"}}
         replica_policy = ledger_policy(replica, ADMIN.replace("000000000008", "000000000010"),
@@ -1203,8 +1228,8 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertEqual(check(custody_signer=(next_pin["keyArn"], base64.b64decode(next_pin["publicKey"])[-65:].hex())),
                          {"custodyKeys": [base64.b64decode(pin["publicKey"])[-65:].hex() for pin in incoming["keys"]],
                           "nextCutover": None})
-        def close_during_target_read(*args):
-            subject = read_registered_target(*args)
+        def close_during_target_read(*args, **options):
+            subject = read_registered_target(*args, **options)
             if subject["mode"] == "serve":
                 self.objects[f"spr-custody/devnet/{DOMAIN}/retired/2.json"] = b"{}"
             return subject
@@ -1263,6 +1288,11 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertEqual(copied, expected)
             inspect_replica.assert_called_once_with(self.trust, replica, "replica-read")
             prefix = f"spr-custody/mainnet/{DOMAIN}/"
+            receipt_at = datetime.fromisoformat(self.timestamps[prefix + "3.json"]).timestamp()
+            before_receipt = datetime.fromtimestamp(receipt_at - 1, timezone.utc).isoformat()
+            with patch.dict(self.timestamps, {prefix + target_object_name(registered): before_receipt}):
+                with self.assertRaisesRegex(ValueError, "target registration precedes its custody receipt"):
+                    check_release_policy(self.trust, document, replica_profile="replica-read")
             genesis_path = prefix + "1.json"
             genesis = json.loads(self.objects[genesis_path])
             with patch.dict(self.objects, {genesis_path: canonical({**genesis, "acknowledgements": []})}):
@@ -1273,6 +1303,11 @@ class CustodyLedgerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "canonical previous receipt"):
                     check_release_policy(self.trust, document, replica_profile="replica-read")
             first_rotation = rotation_approval["manifest"]
+            registered_at = datetime.fromisoformat(self.timestamps[prefix + target_object_name(first_rotation)]).timestamp()
+            early_successor = datetime.fromtimestamp(registered_at - 1, timezone.utc).isoformat()
+            with patch.dict(self.timestamps, {prefix + "2.json": early_successor}):
+                with self.assertRaisesRegex(ValueError, "rotation registration must be recorded between"):
+                    check_release_policy(self.trust, document, replica_profile="replica-read")
             late_write = datetime.fromtimestamp(first_rotation["expiresAt"], timezone.utc).isoformat()
             with patch.dict(self.timestamps, {prefix + target_object_name(first_rotation): late_write}):
                 with self.assertRaisesRegex(ValueError, "target approval has expired"):

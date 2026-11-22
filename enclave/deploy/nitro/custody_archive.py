@@ -18,7 +18,7 @@ from approval import (
 from custody_ledger import (
     LABEL, RETIREMENT, TARGET_APPROVAL, check_custody_history_entry, check_recovery_bucket, ledger_object, ledger_prefix,
     ledger_record_fingerprint, ledger_record_version, ledger_replica, list_ledger_versions, load_retirement,
-    publication_time, read_object, read_registered_target, read_replicated_record, read_stored_object, read_stored_payload,
+    publication_time, read_registered_target, read_replicated_record, read_stored_object, read_stored_payload,
     replica_trust, require_frozen_ledger, require_pinned_replication, retirement_object_name, rotation_target_name,
     storage, target_object_name, verify_ceremony_capture,
 )
@@ -35,13 +35,13 @@ def custody_history(trust, epoch, **options):
     previous = None
     for index in range(1, epoch_number(epoch) + 1):
         current = str(index)
-        document = read_object(trust, ledger_object(trust, current), **options)
+        document, receipt_metadata = read_stored_object(trust, ledger_object(trust, current), **options)
         rotation = None
         if previous is not None:
             manifest = document["authorization"]["manifest"]
             approval, metadata = read_stored_object(trust, rotation_target_name(manifest, str(index - 1)), **options)
             rotation = {"approval": approval, "publishedAt": metadata["LastModified"]}
-        entry = {"document": document, "rotation": rotation}
+        entry = {"document": document, "publishedAt": receipt_metadata["LastModified"], "rotation": rotation}
         previous = check_custody_history_entry(trust, current, entry, previous)
         yield current, entry, previous[0]
 
@@ -73,18 +73,19 @@ def verify_ledger_records(trust, names, **options):
     receipts = {name for name in names if "/" not in name}
     if receipts != {f"{epoch}.json" for epoch in range(1, len(receipts) + 1)}:
         raise ValueError("custody ledger receipts must be consecutive from genesis")
-    digests = {}
+    receipt_pins = {}
     for epoch, entry, receipt in custody_history(trust, str(len(receipts)), **options):
         verify_ceremony_capture(entry["document"]["authorization"]["manifest"]["capture"])
-        digests[epoch] = sha256(receipt)
+        receipt_pins[epoch] = sha256(receipt), publication_time({"LastModified": entry["publishedAt"]})
     for name in names:
         if name in receipts:
             continue
         if target := TARGET_NAME.fullmatch(name):
             epoch = target[1]
-            if epoch not in digests:
+            if epoch not in receipt_pins:
                 raise ValueError("registered target is missing its custody receipt")
-            read_registered_target(trust, name, epoch, digests[epoch], **options)
+            digest, receipt_at = receipt_pins[epoch]
+            read_registered_target(trust, name, epoch, digest, receipt_at=receipt_at, **options)
         elif retirement := RETIREMENT_NAME.fullmatch(name):
             load_retirement(trust, retirement[1], **options)
         else:

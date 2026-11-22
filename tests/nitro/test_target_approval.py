@@ -74,7 +74,7 @@ class TargetApprovalTests(unittest.TestCase):
         self.recovery_metadata = {**self.key_metadata, "Arn": key(1), "KeySpec": "RSA_2048"}
         self.enterContext(patch("approval.kms", side_effect=self.kms))
         self.enterContext(patch("relay.kms", side_effect=self.kms))
-        self.ledger = self.enterContext(patch("relay_wrap.load_epoch", side_effect=self.load_epoch))
+        self.ledger = self.enterContext(patch("relay_wrap.load_epoch_with_time", side_effect=self.load_epoch))
         self.reviewed = self.enterContext(patch("relay_wrap.require_reviewed_target"))
         self.registry = self.enterContext(patch("relay_wrap.require_registered_target"))
         self.active = self.enterContext(patch("relay_wrap.require_active_epoch"))
@@ -93,7 +93,7 @@ class TargetApprovalTests(unittest.TestCase):
     def load_epoch(self, trust, epoch):
         self.assertEqual(trust, self.trust)
         self.assertEqual(epoch, "5")
-        return {}, self.receipt, self.custodians
+        return {}, self.receipt, self.custodians, 1
 
     def kms(self, arn, operation, args=(), _body=None, **_options):
         self.calls.append(operation)
@@ -115,7 +115,7 @@ class TargetApprovalTests(unittest.TestCase):
 
     def test_quorum_and_installed_policy_checked_before_opening_one_share(self):
         self.assertEqual(self.wrap(), b"c" * 256)
-        self.registry.assert_called_once_with(self.trust, self.manifest)
+        self.registry.assert_called_once_with(self.trust, self.manifest, receipt_at=1)
         self.assertEqual(self.active.call_count, 3)
         self.assertEqual(self.calls, ["describe-key", "get-key-policy", "get-public-key",
                                       "describe-key", "get-key-policy", "get-public-key", "decrypt"])
@@ -160,7 +160,7 @@ class TargetApprovalTests(unittest.TestCase):
                 signing_key, str(output), "--review", str(self.build / "review.json"), "--host-inspection-profile", "host-reader",
                 "--inspection-profiles", *profiles]
         reviewed = describe(self.build, "devnet", commit)
-        with (patch("sys.argv", argv), patch("deployment.load_epoch", side_effect=self.load_epoch),
+        with (patch("sys.argv", argv), patch("deployment.load_epoch_with_time", side_effect=self.load_epoch),
               patch("deployment.require_active_epoch") as active, patch("deployment.verify_build") as verify_build,
               patch("deployment.require_host_state") as inspect, patch("deployment.sealed_rsa_key") as inspect_key,
               patch("deployment.require_profile_account") as identity,
@@ -319,7 +319,7 @@ class TargetApprovalTests(unittest.TestCase):
         trust_path, target_path = self.build / "trust.json", self.build / "target.json"
         trust_path.write_text(json.dumps(self.trust))
         argv = ["deployment.py", str(trust_path), str(self.build), "host-policy", str(target_path)]
-        with (patch("sys.argv", argv), patch("deployment.load_epoch", side_effect=self.load_epoch),
+        with (patch("sys.argv", argv), patch("deployment.load_epoch_with_time", side_effect=self.load_epoch),
               patch("deployment.require_registered_target") as registered, patch("sys.stdout", new_callable=io.StringIO) as output):
             target_path.write_text(json.dumps({**self.approval, "signatures": []}))
             with self.assertRaisesRegex(SystemExit, "signing quorum"):
@@ -332,6 +332,7 @@ class TargetApprovalTests(unittest.TestCase):
             self.assertEqual(output.getvalue(), "")
             registered.side_effect = None
             main()
+            registered.assert_called_with(self.trust, self.manifest, receipt_at=1)
             self.assertEqual(json.loads(output.getvalue())["Statement"][0]["Resource"], self.manifest["wrappingKeys"])
 
     def test_register_command_confirms_the_original_write_with_the_reviewed_artifacts(self):
@@ -341,7 +342,7 @@ class TargetApprovalTests(unittest.TestCase):
         argv = ["deployment.py", str(trust_path), str(self.build), "register", str(target_path)]
         expiry = self.manifest["expiresAt"]
         written = datetime.fromtimestamp(expiry - 60, timezone.utc).isoformat()
-        with (patch("sys.argv", argv), patch("deployment.load_epoch", side_effect=self.load_epoch),
+        with (patch("sys.argv", argv), patch("deployment.load_epoch_with_time", side_effect=self.load_epoch),
               patch("deployment.list_objects", return_value=[target_object_name(self.manifest)]),
               patch("deployment.read_stored_object", return_value=(self.approval, {"LastModified": written})),
               patch("deployment.require_active_epoch") as active, patch("deployment.write_once") as write,
