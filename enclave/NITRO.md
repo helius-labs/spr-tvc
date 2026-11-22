@@ -401,7 +401,7 @@ advance to the shared checkpoint. The retry authenticates both policy heads
 and attests a boot under the current policy. Signed decrypt failures return
 to the wallet. A new call binds a fresh approval to its selected boot.
 
-The parent may replay a previously encrypted request to the same boot. Any result is still encrypted to the original signed response key. The service performs no chain writes and needs no replay database. The viewing and nullifier public keys are public lookup results. TLS protects ingress traffic in transit, while enclave-level encryption protects plaintext from ingress and the parent. See [AWS's attestation format and chain validation](https://docs.aws.amazon.com/enclaves/latest/user/verify-root.html).
+Before the signed deadline, the parent may replay an encrypted decrypt request to the same boot. Any reply goes to the original signed response key. The service performs no chain writes and keeps no replay database. The viewing and nullifier public keys are public lookup results. TLS protects ingress traffic in transit, while enclave-level encryption protects plaintext from ingress and the parent. See [AWS's attestation format and chain validation](https://docs.aws.amazon.com/enclaves/latest/user/verify-root.html).
 
 The enclave accepts connections from the EC2 parent. It caps active vsock
 connections at 64 for serving and four for provisioning or custody. Each
