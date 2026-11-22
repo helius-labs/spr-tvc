@@ -373,7 +373,8 @@ class CustodyLedgerTests(unittest.TestCase):
 
     @patch("custody_ledger.sealed_rsa_key")
     @patch("custody_ledger.check_recovery_key", side_effect=AssertionError("relay policy inspection cannot be skipped"))
-    def test_relay_receipt_requires_independent_inspection_of_every_slot_policy(self, _plaintext, inspect):
+    @patch("custody_ledger.verify_relay_build")
+    def test_relay_receipt_requires_build_provenance_and_independent_slot_inspection(self, provenance, _plaintext, inspect):
         roster = self.document(1)["authorization"]["manifest"]["custodians"]
         self.trust["recoveryRelays"] = {"1": {"hostRole": HOST, "pcrs": PINS}}
         keys = [bytes([i]) * 264 for i in range(1, 7)]
@@ -382,12 +383,21 @@ class CustodyLedgerTests(unittest.TestCase):
             check_recovery_roster(self.trust, "1", roster, fingerprints, ["same"] * 6)
         inspect.assert_not_called()
         profiles = [f"slot-{i}-inspect" for i in range(1, 7)]
+        with self.assertRaisesRegex(ValueError, "reviewed recovery relay build"):
+            check_recovery_roster(self.trust, "1", roster, fingerprints, profiles)
+        reviewed = ("relay-build", "ad" * 20, "refs/heads/native")
+        provenance.side_effect = ValueError("unreviewed relay build")
+        with self.assertRaisesRegex(ValueError, "unreviewed relay build"):
+            check_recovery_roster(self.trust, "1", roster, fingerprints, profiles, reviewed)
+        inspect.assert_not_called()
+        provenance.side_effect = None
         inspect.side_effect = keys[:-1] + [ValueError("unsealed source key")]
         with self.assertRaisesRegex(ValueError, "unsealed source key"):
-            check_recovery_roster(self.trust, "1", roster, fingerprints, profiles)
+            check_recovery_roster(self.trust, "1", roster, fingerprints, profiles, reviewed)
         inspect.reset_mock()
         inspect.side_effect = keys
-        check_recovery_roster(self.trust, "1", roster, fingerprints, profiles)
+        check_recovery_roster(self.trust, "1", roster, fingerprints, profiles, reviewed)
+        provenance.assert_called_with(self.trust, "1", *reviewed)
         self.assertEqual([call.kwargs["profile"] for call in inspect.call_args_list], profiles)
         self.assertEqual([call.args[0] for call in inspect.call_args_list], [member["recoveryKeyArn"] for member in roster])
 

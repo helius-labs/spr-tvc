@@ -270,11 +270,15 @@ entry contains the relay `hostRole` and reviewed `pcrs` from `measurements.json`
    custody epoch. Create RSA KMS recovery keys with those policies.
    Give the custody approvers separate read-only inspection profiles in the
    six slot accounts. Each approver runs `custody_ledger.py sign` with
-   `--inspection-profiles` in slot order. KMS `GetKeyPolicy` requires a session
-   in the key's own account. The tool checks every installed policy and the
-   public key in each measured recovery package. For rotation, use
-   `deployment.py sign --next-inspection-profiles` to qualify the successor
-   keys before releasing shares to the rotation EIF.
+   `--inspection-profiles` in slot order and `--relay-build BUILD COMMIT REF`.
+   Use the downloaded relay build, independently reviewed commit SHA and full
+   branch ref. The signer verifies GitHub provenance, the pinned PCRs and the
+   relay configuration's domain, epoch and ordered approval keys. It checks
+   every installed policy and the public key in each measured recovery
+   package. KMS `GetKeyPolicy` requires a session in the key's own account.
+   Before releasing shares to the rotation EIF, qualify the successor's
+   relay and keys using `deployment.py sign --next-relay-build BUILD COMMIT REF`
+   and `--next-inspection-profiles`.
 2. Forward the measured relay's vsock port 44031 through SSM to a loopback
    port. It serves for ten minutes. Each custodian runs `acknowledge` with
    `--relay-port`. KMS returns a recipient ciphertext. The relay opens it and

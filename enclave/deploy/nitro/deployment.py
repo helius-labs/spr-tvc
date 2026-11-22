@@ -156,6 +156,7 @@ def main():
     sign.add_argument("--source-commit", required=True)
     sign.add_argument("--source-ref", default=MAIN_REF)
     sign.add_argument("--next-inspection-profiles", nargs=6)
+    sign.add_argument("--next-relay-build", nargs=3, metavar=("BUILD", "COMMIT", "REF"))
     register = commands.add_parser("register")
     register.add_argument("target", type=Path)
     identity = commands.add_parser("host-policy")
@@ -205,9 +206,11 @@ def main():
         if next_keys:
             successor = manifest["nextCustodians"]
             check_recovery_roster(trust, str(int(manifest["custodyEpoch"]) + 1), successor, next_keys,
-                                  args.next_inspection_profiles)
+                                  args.next_inspection_profiles, args.next_relay_build)
             for custodian in successor:
                 check_acknowledgement_key(custodian)
+        elif args.next_relay_build is not None:
+            raise ValueError("a successor relay build is only used for rotation")
         approved = add_approval(keys, TARGET_APPROVAL, document, args.key)
         with args.output.open("xb") as output:
             output.write(canonical(approved) + b"\n")

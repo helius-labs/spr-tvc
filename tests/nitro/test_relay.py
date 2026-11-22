@@ -2,13 +2,16 @@ import base64
 import hashlib
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
-from relay import prove_share, recover_to_relay
-from relay_wrap import LABEL, prepare, release
+from approval import canonical, signing_sec1
 from kms_policy import RSA_OAEP
+from provenance import describe
+from relay import prove_share, recover_to_relay, verify_relay_build
+from relay_wrap import LABEL, prepare, release
 from nitro_fixtures import DOMAIN, HOST, key, pin, sign
 
 SCOPE = {"hostRole": HOST, "pcrs": {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)}}
@@ -23,6 +26,44 @@ NEXT_KEYS = [pin(key(i, 9)) for i in (13, 14, 15)]
 
 
 class RelayTests(unittest.TestCase):
+    @patch("provenance.subprocess.run")
+    def test_relay_must_match_the_reviewed_build_and_ordered_epoch_roster(self, github):
+        build = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        commit, ref = "ad" * 20, "refs/heads/native"
+        trust = {**TRUST, "securityDomainId": DOMAIN,
+                 "approvalKeys": [{"fromEpoch": "1", "activeFrom": 0, "keys": KEYS}]}
+        deployment = {"mode": "relay", "custodyEpoch": "1", "approvalKeys": [signing_sec1(key) for key in KEYS]}
+        config = {"releaseId": "recovery", "securityDomainId": DOMAIN, "deployment": deployment}
+        (build / "tvc_app").write_bytes(b"executable")
+        (build / "enclave.eif").write_bytes(b"EIF")
+        (build / "measurements.json").write_bytes(canonical({"Measurements": SCOPE["pcrs"]}))
+
+        def write_config(candidate):
+            (build / "configuration.json").write_bytes(canonical(candidate))
+            (build / "provenance.json").write_bytes(canonical(describe(build, "devnet", commit)))
+
+        write_config(config)
+        verify_relay_build(trust, "1", build, commit, ref)
+        github.assert_called_once()
+        github.reset_mock()
+        for invalid in (
+            {**config, "securityDomainId": "42" * 32},
+            {**config, "deployment": {**deployment, "custodyEpoch": "2"}},
+            {**config, "deployment": {**deployment, "mode": "serve"}},
+            {**config, "deployment": {**deployment, "approvalKeys": list(reversed(deployment["approvalKeys"]))}},
+        ):
+            write_config(invalid)
+            with self.assertRaisesRegex(ValueError, "pinned custody domain, epoch and approval roster"):
+                verify_relay_build(trust, "1", build, commit, ref)
+        github.assert_not_called()
+
+        write_config(config)
+        with self.assertRaisesRegex(ValueError, "reviewed build attestation"):
+            verify_relay_build(trust, "1", build, "ef" * 20, ref)
+        wrong_pins = {**SCOPE, "pcrs": {**SCOPE["pcrs"], "PCR2": "aa" * 48}}
+        with self.assertRaisesRegex(ValueError, "relay pins or configuration"):
+            verify_relay_build({**trust, "recoveryRelays": {"1": wrong_pins}}, "1", build, commit, ref)
+
     @patch("relay_wrap.time", return_value=10)
     @patch("relay_wrap.live_recipient", return_value=("ab" * 32, b"evidence"))
     @patch("relay_wrap.sealed_rsa_key", return_value=PUBLIC)

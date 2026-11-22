@@ -8,8 +8,11 @@ import secrets
 import subprocess
 from pathlib import Path
 
-from approval import canonical, fields, hex_digest, key_result, kms, parse_json, require_kms_key
+from approval import (
+    approval_keys, canonical, fields, hex_digest, key_result, kms, parse_json, read_document, require_kms_key, signing_sec1,
+)
 from kms_policy import RSA_OAEP, boot_pins, recovery_policy, relay_recovery_policy
+from provenance import verify as verify_build
 
 MAX_EVIDENCE = 16_384
 MAX_CMS = 6_144
@@ -22,6 +25,24 @@ def relay_pins(trust, epoch):
     scope = trust["recoveryRelays"][epoch]
     fields(scope, "hostRole", "pcrs")
     return scope
+
+
+def verify_relay_build(trust, epoch, build, source_commit, source_ref):
+    scope = relay_pins(trust, epoch)
+    build = Path(build)
+    configuration = read_document(build / "configuration.json")
+    config = parse_json(configuration)
+    fields(config, "releaseId", "securityDomainId", "deployment")
+    expected = {
+        "mode": "relay", "custodyEpoch": epoch,
+        "approvalKeys": [signing_sec1(key) for key in approval_keys(trust, epoch)],
+    }
+    if config["securityDomainId"] != trust["securityDomainId"] or config["deployment"] != expected:
+        raise ValueError("relay configuration does not match the pinned custody domain, epoch and approval roster")
+    reviewed = verify_build(build, trust["network"], source_commit, source_ref)
+    if (reviewed["pcrs"] != scope["pcrs"] or
+            reviewed["configurationSha256"] != hashlib.sha256(configuration).hexdigest()):
+        raise ValueError("relay pins or configuration do not match the reviewed build provenance")
 
 
 def relay_request(port, path, body, limit):
