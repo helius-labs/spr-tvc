@@ -10,19 +10,21 @@ viewing and nullifier keys from a seed and its Solana address. Each boot creates
 fresh request-encryption and response-signing keys. Replacing an enclave rotates
 the connection keys while the owner keeps access to existing notes.
 
-**Separate custody, release approval and owner authorization.** Six custodians
-each hold one encrypted share. Any three can approve an enclave to recover the
-seed. A measured rotation reissues six shares under fresh or retained custodian
-keys while keeping the same note seed. A separate signer quorum approves the
-releases wallets can use. For each decrypt batch, the owner signs the request
-and its response key. The host relays wrapped shares and encrypted operations.
+**Separate custody, release approval and owner authorization.** Two of three
+custody approval signers approve the exact enclave that may receive shares.
+Any three of the six custodians can then provision it. Rotation keeps the seed
+and issues fresh shares to six fresh recovery keys. Custodian accounts may
+stay the same. A separate release quorum approves the enclaves wallets can
+use. The owner signs each decrypt batch and its response key. The host relays
+wrapped shares and encrypted operations.
 
 **Make upgrades explicit.** A signed policy can authorize old and new replicas
 during an upgrade. The SDK verifies fresh Nitro evidence before encrypting to
 a replica and records the highest accepted policy sequence in the wallet's
 durable store. After a custody rotation, wallets advance their custody floor.
-Operators can roll back to a previously approved image within a trusted epoch. A failed rollout can interrupt service. Recovering the same
-shares restores access to the same notes.
+Operators can republish a previously approved image for the current custody
+epoch under a newer signed policy. Recovering the same seed restores access
+to the same notes.
 
 **Keep the runtime small.** Nitro and KMS give us measured execution and
 attested secret delivery. QuorumOS would also provide threshold provisioning
@@ -30,8 +32,9 @@ and key forwarding. For this service, independent custody and signed release
 policies cover the controls we need. The tradeoff is that we own the custody
 ceremony, rollout and recovery drills, and rely on AWS for attestation.
 
-The two-host AWS rehearsal reopened the same synthetic note after retiring the
-old enclave. Separate custody accounts and a real devnet send, claim and sweep across an
-upgrade remain part of qualification.
+The two-host AWS rehearsal reopened a synthetic note after stopping the old
+enclave. The 3-of-6 rotation rehearsal used one AWS account. Recovery across
+six independent accounts and a devnet send, claim and sweep across an upgrade
+remain to be verified.
 
 [Security specification](NITRO.md) · [Deployment runbook](deploy/nitro/README.md) · [Audit evidence](../tests/AUDIT.md)
