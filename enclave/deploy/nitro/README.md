@@ -139,13 +139,17 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    configuration before packaging.
    Dispatch `publish-enclave-image.yml` with the public configuration. For
    devnet, use the reviewed branch. Dispatch mainnet builds from protected `main`.
-   A different GitHub user reviews the artifact linked in the run summary and
-   approves `image-publish`. Dispatch a new run if the build needs another attempt.
+   Before building, the workflow checks that `image-publish` has a required
+   reviewer other than the dispatcher or a configured review team. A different
+   GitHub user reviews the artifact linked in the run summary and approves it.
+   If the sole required reviewer must dispatch, add another required reviewer
+   first. Dispatch a new run if the build needs another attempt.
    The reviewer records the summary's **Build review pins** as `review.json`
    after checking the unsigned artifact. The file pins the full ref, commit
    and SHA-256 of that run's `provenance.json`. Distribute it independently of
-   the signed build download. Each ceremony, target and recovery relay build
-   has its own review file.
+   the signed build download. The signing job checks the downloaded files
+   against the provenance digest shown for review. Each ceremony, target and
+   recovery relay build has its own review file.
    Download the run's `native-eif-<network>-<commit>` artifact. Verify it
    against the review before starting the enclave in normal mode.
    The verifier recomputes PCR0–PCR2 from the EIF and checks its embedded

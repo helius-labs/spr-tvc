@@ -45,8 +45,12 @@ jobs:
          github.workflow_ref == 'helius-labs/spr-tvc/.github/workflows/publish-enclave-image.yml@refs/heads/main')))
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    permissions:
+      actions: read
+      contents: read
     outputs:
       artifact: ${{ steps.upload.outputs.artifact-id }}
+      provenance_sha256: ${{ steps.measure.outputs.provenance_sha256 }}
     env:
       SPR_NETWORK: ${{ inputs.network || 'devnet' }}
       NITRO_CLI_REVISION: 536dca352e130e23bb39b6227753c91ad702048d # aws-nitro-enclaves-cli v1.5.3
@@ -54,6 +58,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check mainnet reviewer availability
+        if: inputs.network == 'mainnet'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          timeout 20s gh api "repos/$GITHUB_REPOSITORY/environments/image-publish" |
+            python3 -B enclave/deploy/nitro/provenance.py check-reviewers "$GITHUB_ACTOR_ID" "$GITHUB_RUN_ATTEMPT"
       - name: Audit native dependencies
         run: bash enclave/deploy/audit-dependencies.sh native
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -71,6 +83,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends libclang-dev libssl-dev linux-libc-dev musl-tools
           cargo +1.94.1 install --locked --path .nitro-source --root "$RUNNER_TEMP/nitro"
       - name: Build measured artifact
+        id: measure
         env:
           CONFIGURATION_JSON: ${{ inputs.configuration }}
           RELEASE_BUILD: ${{ github.event_name == 'workflow_dispatch' }}
@@ -89,6 +102,7 @@ jobs:
             enclave/native/target/x86_64-unknown-linux-musl/release/spr-nitro-decryption-service \
             "$RUNNER_TEMP/configuration.json" dist/native
           python3 -B enclave/deploy/nitro/provenance.py describe dist/native "$SPR_NETWORK" "$GITHUB_SHA" > dist/native/provenance.json
+          printf 'provenance_sha256=%s\n' "$(sha256sum dist/native/provenance.json | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         id: upload
         with:
@@ -99,13 +113,14 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         env:
           ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          PROVENANCE_SHA256: ${{ steps.measure.outputs.provenance_sha256 }}
         run: |
           {
             printf '### Native Nitro artifact for review\n\n[Unsigned EIF and configuration](%s)\n\n~~~json\n' "$ARTIFACT_URL"
             jq . dist/native/provenance.json
             printf '~~~\n\n### Build review pins\n\n~~~json\n'
             jq -n --arg commit "$GITHUB_SHA" --arg ref "$GITHUB_REF" \
-              --arg digest "$(sha256sum dist/native/provenance.json | cut -d ' ' -f 1)" \
+              --arg digest "$PROVENANCE_SHA256" \
               '{sourceCommit:$commit, sourceRef:$ref, provenanceSha256:$digest}'
             printf '~~~\n'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -139,6 +154,13 @@ jobs:
         with:
           artifact-ids: ${{ needs.build.outputs.artifact }}
           path: dist/native
+      - name: Verify the reviewed artifact before signing
+        env:
+          SPR_NETWORK: ${{ inputs.network }}
+          PROVENANCE_SHA256: ${{ needs.build.outputs.provenance_sha256 }}
+        run: |
+          python3 -B enclave/deploy/nitro/provenance.py check-artifact \
+            dist/native "$SPR_NETWORK" "$GITHUB_SHA" "$PROVENANCE_SHA256"
       - name: Attest build provenance
         id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4

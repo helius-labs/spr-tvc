@@ -8,8 +8,8 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
-from approval import canonical
-from provenance import WORKFLOW, describe, require_independent_review, verify
+from approval import MAX_DOCUMENT_BYTES, canonical
+from provenance import WORKFLOW, check_artifact, describe, require_available_reviewer, require_independent_review, verify
 
 COMMIT = "ab" * 20
 
@@ -17,6 +17,29 @@ COMMIT = "ab" * 20
 class IndependentReleaseReviewTests(unittest.TestCase):
     review = {"state": "approved", "user": {"id": 2, "type": "User"},
               "environments": [{"name": "image-publish"}]}
+
+    def test_requires_a_configured_reviewer_before_building_mainnet(self):
+        def environment(*reviewers):
+            return {"name": "image-publish", "protection_rules": [
+                {"type": "branch_policy"}, {"type": "required_reviewers", "reviewers": reviewers},
+            ]}
+
+        dispatcher = {"type": "User", "reviewer": {"id": 1, "type": "User"}}
+        other = {"type": "User", "reviewer": {"id": 2, "type": "User"}}
+        team = {"type": "Team", "reviewer": {"id": 1}}
+        for reviewers in ((other,), (dispatcher, other), (team,)):
+            require_available_reviewer(environment(*reviewers), "1", "1")
+        bot = {"type": "User", "reviewer": {"id": 2, "type": "Bot"}}
+        invalid_id = {"type": "User", "reviewer": {"id": True, "type": "User"}}
+        for reviewers in ((), (dispatcher,), (bot,), (invalid_id,)):
+            with self.subTest(reviewers=reviewers), self.assertRaisesRegex(ValueError, "no required reviewer"):
+                require_available_reviewer(environment(*reviewers), "1", "1")
+        with self.assertRaisesRegex(ValueError, "no required reviewer"):
+            require_available_reviewer({**environment(), "protection_rules": []}, "1", "1")
+        with self.assertRaisesRegex(ValueError, "expected the image-publish"):
+            require_available_reviewer({**environment(other), "name": "native-eif-devnet"}, "1", "1")
+        with self.assertRaisesRegex(ValueError, "dispatch a new mainnet build"):
+            require_available_reviewer(environment(other), "1", "2")
 
     def test_requires_an_independent_approval_of_the_production_environment(self):
         require_independent_review([self.review], "1", "1")
@@ -47,6 +70,8 @@ class ProvenanceTests(unittest.TestCase):
         }))
         self.manifest = self.build / "provenance.json"
         self.manifest.write_bytes(canonical(describe(self.build, "mainnet", COMMIT)))
+        self.bundle = self.build / "provenance.intoto.jsonl"
+        self.bundle.write_bytes(b'{"bundle":"signed"}\n')
         self.review = self.build / "review.json"
         self.pin_review()
         self.check_eif = self.enterContext(patch("provenance.verify_eif"))
@@ -58,25 +83,53 @@ class ProvenanceTests(unittest.TestCase):
     @patch("provenance.subprocess.run")
     def test_matches_the_exact_source_network_and_artifacts_before_github_verification(self, run):
         contents = self.manifest.read_bytes() + b"\n"
+        bundle = self.bundle.read_bytes()
         self.manifest.write_bytes(contents)
         self.pin_review()
 
         def verify_subject(args, **_options):
             subject = pathlib.Path(args[3])
+            verification_bundle = pathlib.Path(args[args.index("--bundle") + 1])
             self.assertNotEqual(subject, self.manifest)
+            self.assertNotEqual(verification_bundle, self.bundle)
             self.assertEqual(subject.read_bytes(), contents)
+            self.assertEqual(verification_bundle.read_bytes(), bundle)
 
         run.side_effect = verify_subject
         self.assertEqual(verify(self.build, "mainnet", self.review), describe(self.build, "mainnet", COMMIT))
         self.check_eif.assert_called_once_with(self.build / "enclave.eif", describe(self.build, "mainnet", COMMIT))
         run.assert_called_once()
         args = run.call_args.args[0]
-        self.assertIn(str(self.build / "provenance.intoto.jsonl"), args)
         self.assertEqual(args[args.index("--signer-workflow") + 1], WORKFLOW)
         self.assertEqual(args[args.index("--source-ref") + 1], "refs/heads/main")
         self.assertEqual(args[args.index("--source-digest") + 1], COMMIT)
         self.assertEqual(args[args.index("--signer-digest") + 1], COMMIT)
         self.assertIn("--deny-self-hosted-runners", args)
+
+    @patch("provenance.subprocess.run")
+    def test_rejects_missing_empty_or_oversized_bundles_before_gh(self, run):
+        self.bundle.unlink()
+        with self.assertRaises(FileNotFoundError):
+            verify(self.build, "mainnet", self.review)
+        for payload in (b"", b"a" * (MAX_DOCUMENT_BYTES + 1)):
+            self.bundle.write_bytes(payload)
+            with self.subTest(length=len(payload)), self.assertRaisesRegex(ValueError, "of at most 64 KiB"):
+                verify(self.build, "mainnet", self.review)
+        run.assert_not_called()
+
+    def test_checks_downloaded_artifacts_against_the_previewed_digest_before_signing(self):
+        contents = self.manifest.read_bytes()
+        digest = hashlib.sha256(contents).hexdigest()
+        manifest, verified = check_artifact(self.build, "mainnet", COMMIT, digest)
+        self.assertEqual(manifest, describe(self.build, "mainnet", COMMIT))
+        self.assertEqual(verified, contents)
+        self.manifest.write_bytes(contents + b"\n")
+        with self.assertRaisesRegex(ValueError, "independently reviewed digest"):
+            check_artifact(self.build, "mainnet", COMMIT, digest)
+        self.manifest.write_bytes(contents)
+        (self.build / "tvc_app").write_bytes(b"changed")
+        with self.assertRaisesRegex(ValueError, "does not match the reviewed build"):
+            check_artifact(self.build, "mainnet", COMMIT, digest)
 
     @patch("provenance.subprocess.run")
     def test_attestation_cannot_substitute_for_a_valid_eif(self, run):

@@ -39,8 +39,10 @@ EIFs from different configurations. Signers also verify the GitHub
 attestation came from the designated native EIF workflow. Devnet can
 use an explicit branch in this repository. Mainnet requires a fresh dispatch
 from protected `main` and an `image-publish` approval from a GitHub user other
-than the dispatcher. The build shows the immutable artifact and its hashes
-before review. The artifact packager runs the release binary against the exact
+than the dispatcher. Check reviewer eligibility before building. The build
+shows the immutable artifact and its hashes before review. The signing job
+rechecks the downloaded EIF and its files against that provenance digest.
+The artifact packager runs the release binary against the exact
 configuration bytes it will measure, using the same checks as enclave startup.
 The native builder fetches OpenSSL from a pinned 3.5 LTS revision, verifies its
 source hash and checks the version reported by the statically linked binary.
