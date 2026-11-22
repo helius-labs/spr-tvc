@@ -86,6 +86,8 @@ export async function setup(): Promise<ExampleSetup> {
   if (network !== "devnet") throw new Error("the example is limited to devnet and localnet");
   const localEndpoint = process.env["DECRYPTION_SERVICE_LOCAL_ENDPOINT"]?.trim();
   const nitroTrust = process.env["NITRO_WALLET_TRUST"]?.trim();
+  const retirementReport = process.env["NITRO_RETIREMENT_REPORT"]?.trim();
+  if (retirementReport && !nitroTrust) throw new Error("a retirement report requires NITRO_WALLET_TRUST");
   if (localEndpoint && nitroTrust) throw new Error("choose one decryption service for the example");
   if (!localEndpoint && process.env["EXAMPLE_ACCEPT_PUBLIC_RECIPIENT"] !== "1") {
     throw new Error("this flow publishes the recipient's Solana owner tag. Set EXAMPLE_ACCEPT_PUBLIC_RECIPIENT=1 to proceed");
@@ -116,7 +118,10 @@ export async function setup(): Promise<ExampleSetup> {
     const nextTrust = process.env["NITRO_REPLACEMENT_TRUST"]?.trim();
     const epoch = process.env["NITRO_REPLACEMENT_EPOCH"]?.trim();
     if (nextTrust && epoch) throw new Error("choose a seed cutover or a custody rotation");
-    const replacement = nextTrust ? { walletTrust: nextTrust } : { epoch: env("NITRO_REPLACEMENT_EPOCH") };
+    if (retirementReport && nextTrust) throw new Error("a retirement report requires a custody rotation");
+    const replacement = nextTrust ? { walletTrust: nextTrust } : {
+      epoch: env("NITRO_REPLACEMENT_EPOCH"), ...(retirementReport ? { retirementReport } : {}),
+    };
     const nitro = await nativeDevnet(nitroTrust, env("NITRO_CHECKPOINT_PATH"), replacement);
     return { zolana, sender, recipient, service: nitro.service, nitro };
   }

@@ -320,7 +320,8 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    than an hour. When EC2 cannot
    report a parent, the verifier requires that the latest AWS Config record
    for that exact managed EC2 instance is `ResourceDeleted`. Archive the
-   result with the on-chain canary, old signed receipt and public trust pins.
+   result with the [on-chain canary](../../../tests/README.md#live-nitro-upgrade),
+   old signed receipt and public trust pins.
    [EC2 instance visibility](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeInstances.html)
    · [AWS Config history](https://docs.aws.amazon.com/config/latest/APIReference/API_GetResourceConfigHistory.html)
    · [KMS key states](https://docs.aws.amazon.com/kms/latest/developerguide/key-state.html)

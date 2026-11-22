@@ -4,7 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { NitroPolicy, NitroTarget, NitroPolicyCheckpoint } from "@heliuslabs/spr-decryption-service/nitro";
-import { acceptedReplacementPolicy, checkpointStore, nativeDevnet, requireOriginalPolicy } from "../nitro.js";
+import { acceptedReplacementPolicy, checkpointStore, nativeDevnet, parseRetirementReport, requireOriginalPolicy } from "../nitro.js";
+
+test("the retirement canary accepts a later boot with three distinct slots after the transfer", () => {
+  const bootKeyId = "ab".repeat(32);
+  const walletPolicyDigest = "cd".repeat(32);
+  const bootstrap = { bootedAtMs: "301", bootKeyId, slots: [2, 4, 6] };
+  function report(observed: string, replacementBootstrap = bootstrap) {
+    return JSON.stringify({ retirementObservedAtMs: observed, replacement: { walletPolicyDigest, replacementBootstrap } });
+  }
+  assert.deepEqual(parseRetirementReport(report("300"), 299n), { bootKeyId, walletPolicyDigest });
+  assert.throws(() => parseRetirementReport(report("298"), 299n), /later boot from three custody slots/);
+  assert.throws(() => parseRetirementReport(report("301"), 299n), /later boot from three custody slots/);
+  for (const slots of [[2, 2, 6], [2, 4, 7], [2, 4], [1, 2, 4, 6]]) {
+    assert.throws(() => parseRetirementReport(report("300", { ...bootstrap, slots }), 299n), /later boot from three custody slots/);
+  }
+});
 
 function agreed(checkpoint: NitroPolicyCheckpoint, previousPolicyDigest: string | null) {
   const revision = { checkpoint, previousPolicyDigest };

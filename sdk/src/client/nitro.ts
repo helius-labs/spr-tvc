@@ -10,6 +10,7 @@ import { requireCurrentReleasePolicy } from "../connection/operations.js";
 import { awaitWithSignal } from "../connection/request.js";
 import { sessionFromConnector } from "../connection/session.js";
 import { DecryptionServiceError } from "../protocol/error.js";
+import { requireHex } from "../protocol/hex.js";
 import { genesisHashForNetwork } from "../protocol/network.js";
 import { decryptionServiceFromSession, type DecryptionService } from "./decryption.js";
 
@@ -21,6 +22,8 @@ export type NitroDecryptionServiceConfig = {
   /** Defaults to IndexedDB when available. Other runtimes supply a durable store. */
   readonly policyStore?: NitroPolicyStore;
   readonly requestTimeoutMs?: number;
+  /** Restrict operation sessions to one attested transport key ID. */
+  readonly requiredBootKeyId?: string;
 };
 
 const CONNECTION_TTL_MS = 60_000n;
@@ -32,6 +35,8 @@ const clock = () => BigInt(Date.now());
 export function createNitroDecryptionService(config: NitroDecryptionServiceConfig): DecryptionService {
   const trust = structuredClone(config.trust);
   validateNitroTrust(trust);
+  const { requiredBootKeyId } = config;
+  if (requiredBootKeyId !== undefined) requireHex(requiredBootKeyId, 32);
   const store = config.policyStore ?? indexedDbNitroPolicyStore(trust);
   let latest: NitroPolicyCheckpoint | undefined;
   let next = 0;
@@ -77,6 +82,9 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
       }
       probeSignal.throwIfAborted();
       const connected = await connectNitroTarget(policy.targets[index]!, trust, probeSignal);
+      if (requiredBootKeyId !== undefined && connected.info.quorum_key_id !== requiredBootKeyId) {
+        throw new DecryptionServiceError("BootProofUnverified");
+      }
       const now = currentTime();
       const sessionExpiry = now + CONNECTION_TTL_MS;
       const policyExpiry = sessionExpiry < expiresAt ? sessionExpiry : expiresAt - 1n;

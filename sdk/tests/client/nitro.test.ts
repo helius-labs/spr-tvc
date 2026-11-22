@@ -140,6 +140,20 @@ afterEach(() => {
 });
 
 describe("native client trust gate", () => {
+  it("requires the pinned boot before sending an operation or asking the owner to sign", async () => {
+    const discovery = await attestedDiscovery().json();
+    const fetch = policyHeads().mockResolvedValueOnce(Response.json(discovery));
+    policyHeads(fetch).mockResolvedValueOnce(Response.json(discovery))
+      .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    vi.stubGlobal("fetch", fetch);
+    const blocked = createNitroDecryptionService({ trust, policyStore: checkpointStore(), requiredBootKeyId: "42".repeat(32) });
+    await expect(blocked.open(signer, proofs)).rejects.toThrow("no authorized Nitro replica");
+    expect(signMessages).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    const allowed = createNitroDecryptionService({ trust, policyStore: checkpointStore(), requiredBootKeyId: discovery.boot.info.quorum_key_id });
+    await expect(allowed.address(signer.address)).resolves.toBeDefined();
+  });
+
   it("binds the bootstrap slots with the rest of the signed boot", async () => {
     const policy = signedPolicy();
     const response = await attestedDiscovery().json();
@@ -253,7 +267,7 @@ describe("native client trust gate", () => {
       expect(signMessages).not.toHaveBeenCalled();
     });
 
-  it("reattests at certificate expiry before sending another operation", async () => {
+  it.each([false, true])("reattests at certificate expiry with a boot pin set to %s", async pinned => {
     vi.useFakeTimers();
     try {
       const policy = signedPolicy();
@@ -265,13 +279,18 @@ describe("native client trust gate", () => {
       policyHeads(fetch, policy).mockImplementationOnce(() => attestedDiscovery(undefined, replacementBoot))
         .mockImplementationOnce((_url, init) => lookupReply(init, replacementBoot));
       vi.stubGlobal("fetch", fetch);
-      const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
+      const requiredBootKeyId = encodeLowerHex(sha256(requireHex(publicPair(secrets), 130)));
+      const client = createNitroDecryptionService({
+        trust, policyStore: checkpointStore(), ...(pinned ? { requiredBootKeyId } : {}),
+      });
       await client.address(signer.address);
       vi.setSystemTime(Number(validThrough + 1n));
-      await client.address(signer.address);
+      const lookup = client.address(signer.address);
+      if (pinned) await expect(lookup).rejects.toThrow("no authorized Nitro replica");
+      else await lookup;
       expect(verifyNativeNitroEvidence).toHaveBeenCalledTimes(2);
       expect(fetch.mock.calls.map(([url]) => url.pathname).filter(path => !path.endsWith("policy.json"))).toEqual([
-        "/v1/nitro/attestation", "/v1/operations", "/v1/nitro/attestation", "/v1/operations",
+        "/v1/nitro/attestation", "/v1/operations", "/v1/nitro/attestation", ...(pinned ? [] : ["/v1/operations"]),
       ]);
     } finally { vi.useRealTimers(); }
   });

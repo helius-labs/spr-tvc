@@ -41,6 +41,17 @@ values, recovers the transferred amount, and checks that its accepted
 policy is still the one used to qualify the replacement before sending
 the sweep. The recipient remains unregistered and holds no public SOL.
 
+To tie the claim to the post-retirement cold boot, set
+`NITRO_RETIREMENT_REPORT` to a new absolute path. Run the canary and
+`verify-retired` on the same clock-synchronized operator host. After the
+canary logs its confirmed transfer, follow the
+[retirement procedure](../enclave/deploy/nitro/README.md#rotate-custody-and-activate-releases).
+Use a separate canary transfer for the check before scheduling key deletion.
+Write the successful report to a temporary file and rename it to the
+canary's path. The canary waits up to one hour for the report. It recovers
+the note only through the report's attested boot key and policy, and logs the
+boot key ID alongside the transfer and sweep signatures.
+
 ## Live seed cutover
 
 Prepare two devnet seed domains with separately initialized seeds and approved

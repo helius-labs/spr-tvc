@@ -56,8 +56,9 @@ async function main(): Promise<void> {
     });
     await nitro?.beforeSend();
     const transferTx = await send(transfer);
+    const confirmedAt = BigInt(Date.now());
     if (nitro) console.log(`transfer recipient=${recipient.address} tx=${transferTx.signature} awaiting ${nitro.seedChanged ? "the seed cutover" : "the replacement custody epoch"}`);
-    const replacement = await nitro?.afterTransfer(recipientAddress);
+    const replacement = await nitro?.afterTransfer(recipientAddress, confirmedAt);
     const reader = replacement?.service ?? service;
     await checkRecipient(false);
     ownKeys = sender.address === recipient.address
@@ -110,7 +111,8 @@ async function main(): Promise<void> {
     });
     expectBalance("sweep", own.balance(SOL_MINT), AMOUNT, 1);
     await checkRecipient(localnet === true);
-    console.log(`sweep recipient=${recipient.address} private_balance=${AMOUNT} tx=${sweepTx.signature}`);
+    const boot = replacement?.bootKeyId ? ` transfer=${transferTx.signature} boot=${replacement.bootKeyId}` : "";
+    console.log(`sweep recipient=${recipient.address} private_balance=${AMOUNT} tx=${sweepTx.signature}${boot}`);
   } finally {
     serviceKeys?.destroy();
     if (ownKeys !== keys) ownKeys?.destroy();
