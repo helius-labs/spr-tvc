@@ -27,13 +27,14 @@ NITRO_CHECKPOINT_PATH="$checkpoint" NITRO_REPLACEMENT_EPOCH=2 \
 pnpm --filter spr-tvc-typescript-client-example example
 ```
 
-Use absolute file paths and a new checkpoint file for each rehearsal. Wait
-for the confirmed transfer printed by the example before promoting the new
-epoch. Raise the live wallet policy floor to the replacement epoch and stop
-the old replica. The example waits up to five minutes, opens the recipient
-through the new epoch, verifies the transfer amount, and sweeps the note to
-the recipient's own privacy keys. It checks that the recipient remains
-unregistered and holds no public SOL throughout the run.
+Use absolute file paths and a new checkpoint file for each rehearsal. The
+example checks that both buckets serve the policy it accepted for the original
+epoch before sending. Wait for the confirmed transfer, stop the old replica,
+then publish the replacement custody floor to both buckets. The example
+waits up to five minutes for both buckets to serve the replacement policy it
+accepted. It then opens the recipient, verifies the transfer amount, and
+sweeps the note to the recipient's own privacy keys. It checks that the
+recipient remains unregistered and holds no public SOL throughout the run.
 
 ### Synthetic recovery drill
 

@@ -6,6 +6,8 @@ import { DecryptionServiceError } from "@heliuslabs/spr-decryption-service";
 import {
   advancesNitroPolicy, createNitroDecryptionService, type NitroPolicyCheckpoint, type NitroPolicyStore, type NitroTrust,
 } from "@heliuslabs/spr-decryption-service/nitro";
+import { readPublishedNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
+import { DecryptionServiceError as PolicyReadError } from "../sdk/src/protocol/error.js";
 
 export function checkpointStore(path: string, trust: Pick<NitroTrust, "network" | "securityDomainId">) {
   if (!path || path === ":memory:") throw new Error("use a persistent checkpoint file");
@@ -44,6 +46,28 @@ export function checkpointStore(path: string, trust: Pick<NitroTrust, "network" 
 
 const RETRYABLE_POLICY_ERRORS = new Set(["ReleasePolicyInvalid", "BootProofUnverified", "EndpointUnavailable", "ExpiredRequest"]);
 
+function acceptedPolicy(
+  published: Awaited<ReturnType<typeof readPublishedNitroPolicy>>,
+  accepted: NitroPolicyCheckpoint | undefined,
+): boolean {
+  const { agreed, checkpoint } = published;
+  return agreed && accepted?.sequence === checkpoint.sequence && accepted.digest === checkpoint.digest &&
+    accepted.minimumCustodyEpoch === checkpoint.minimumCustodyEpoch;
+}
+
+export function requireOriginalPolicy(
+  published: Awaited<ReturnType<typeof readPublishedNitroPolicy>>,
+  accepted: NitroPolicyCheckpoint | undefined,
+  replacement: bigint,
+): void {
+  const { policy } = published;
+  const epoch = policy.targets[0]?.custodyEpoch;
+  if (!acceptedPolicy(published, accepted) || policy.action !== "activate" || epoch === undefined ||
+      BigInt(epoch) >= replacement || policy.targets.some(target => target.custodyEpoch !== epoch)) {
+    throw new Error("start with both buckets serving the accepted policy for the original custody epoch only");
+  }
+}
+
 export async function nativeDevnet(walletTrust: string, checkpoint: string, replacementEpoch: string) {
   const trust = JSON.parse(await readFile(walletTrust, "utf8")) as NitroTrust;
   if (trust.network !== "devnet") throw new Error("the Nitro rehearsal requires devnet wallet trust");
@@ -57,22 +81,23 @@ export async function nativeDevnet(walletTrust: string, checkpoint: string, repl
       service,
       close,
       async beforeSend() {
-        const previous = await store.current();
-        if (!previous || BigInt(previous.minimumCustodyEpoch) >= BigInt(replacementEpoch)) {
-          throw new Error("start with a live custody floor below NITRO_REPLACEMENT_EPOCH");
-        }
+        const published = await readPublishedNitroPolicy(trust, AbortSignal.timeout(5_000));
+        requireOriginalPolicy(published, await store.current(), BigInt(replacementEpoch));
       },
       async afterTransfer(recipient: Address) {
-        const next = createNitroDecryptionService({ trust: { ...trust, minimumCustodyEpoch: replacementEpoch }, policyStore: store });
+        const replacementTrust = { ...trust, minimumCustodyEpoch: replacementEpoch };
+        const next = createNitroDecryptionService({ trust: replacementTrust, policyStore: store });
         const signal = AbortSignal.timeout(5 * 60_000);
         while (!signal.aborted) {
           try {
             await next.address(recipient, { signal, timeoutMs: 10_000 });
-            return next;
+            const published = await readPublishedNitroPolicy(replacementTrust, signal);
+            if (published.policy.action === "activate" && acceptedPolicy(published, await store.current())) return next;
           } catch (error) {
             signal.throwIfAborted();
             const attemptTimedOut = error instanceof DOMException && error.name === "TimeoutError";
-            const policyUnavailable = error instanceof DecryptionServiceError && RETRYABLE_POLICY_ERRORS.has(error.code);
+            const policyUnavailable = (error instanceof DecryptionServiceError || error instanceof PolicyReadError) &&
+              RETRYABLE_POLICY_ERRORS.has(error.code);
             if (!attemptTimedOut && !policyUnavailable) throw error;
           }
           await setTimeout(2_000, undefined, { signal });
