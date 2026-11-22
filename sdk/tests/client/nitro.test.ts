@@ -620,18 +620,70 @@ describe("native client trust gate", () => {
     expect(signMessages).not.toHaveBeenCalled();
   });
 
-  it("refuses to use a connection superseded in another SDK instance", async () => {
-    const fetch = policyHeads().mockResolvedValueOnce(attestedDiscovery());
+  it.each(["activate", "revoke", "stale publications"] as const)(
+    "refreshes a superseded unsigned lookup once with %s", async change => {
+      const old = signedPolicy();
+      const { policy } = JSON.parse(old) as { policy: NitroPolicy };
+      const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(policy));
+      const updated = signedPolicy({
+        sequence: "3", previousPolicyDigest,
+        ...(change === "activate"
+          ? { targets: [{ ...policy.targets[0]!, endpoint: replacement }] }
+          : { action: "revoke", targets: [] }),
+      });
+      let published = old;
+      const fetch = vi.fn(async (url: URL, init: RequestInit) => {
+        if (url.pathname.endsWith("/policy.json")) return new Response(published);
+        const boot = url.origin === new URL(replacement).origin ? replacementBoot : secrets;
+        if (url.pathname === "/v1/nitro/attestation") return attestedDiscovery(undefined, boot);
+        return lookupReply(init, boot);
+      });
+      vi.stubGlobal("fetch", fetch);
+      vi.stubGlobal("indexedDB", new IDBFactory());
+      const oldClient = createNitroDecryptionService({ trust });
+      const newClient = createNitroDecryptionService({ trust });
+      await expect(oldClient.address(signer.address)).resolves.toBeDefined();
+      published = updated;
+      if (change === "activate") {
+        await expect(newClient.address(signer.address)).resolves.toBeDefined();
+      } else {
+        await expect(newClient.address(signer.address)).rejects.toMatchObject({ code: "ReleasePolicyRevoked" });
+      }
+      if (change === "stale publications") published = old;
+      fetch.mockClear();
+      const lookup = oldClient.address(signer.address);
+      if (change === "activate") await expect(lookup).resolves.toBeDefined();
+      else await expect(lookup).rejects.toMatchObject({
+        code: change === "revoke" ? "ReleasePolicyRevoked" : "ReleasePolicyInvalid",
+      });
+      expect(fetch.mock.calls.filter(([url]) => url.pathname.endsWith("/policy.json"))).toHaveLength(2);
+      const contacts = fetch.mock.calls.filter(([url]) => !url.pathname.endsWith("/policy.json")).map(([url]) => url.href);
+      expect(contacts).toEqual(change === "activate" ? [
+        `${replacement}v1/nitro/attestation`, `${replacement}v1/operations`,
+      ] : []);
+      expect(signMessages).not.toHaveBeenCalled();
+    },
+  );
+
+  it("discards a signed approval superseded while the signer waits", async () => {
+    const old = signedPolicy();
+    const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(old).policy));
+    const revoked = signedPolicy({ sequence: "3", previousPolicyDigest, action: "revoke", targets: [] });
+    const fetch = policyHeads(vi.fn(), old).mockResolvedValueOnce(attestedDiscovery())
+      .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    policyHeads(fetch, revoked);
     vi.stubGlobal("fetch", fetch);
-    const store = {
-      async accept() { return true; },
-      current: vi.fn().mockResolvedValueOnce(undefined)
-        .mockResolvedValue({ sequence: "3", minimumCustodyEpoch: "2", recoveryOnly: false, digest: "aa".repeat(32) }),
-    };
-    const client = createNitroDecryptionService({ trust, policyStore: store });
-    await expect(client.open(signer, proofs)).rejects.toThrow("ReleasePolicySuperseded");
-    expect(fetch).toHaveBeenCalledTimes(3);
-    expect(signMessages).not.toHaveBeenCalled();
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const newClient = createNitroDecryptionService({ trust });
+    signMessages.mockImplementationOnce(async () => {
+      await expect(newClient.address(signer.address)).rejects.toMatchObject({ code: "ReleasePolicyRevoked" });
+      return [{ [signer.address]: signatureBytes(new Uint8Array(64).fill(1)) }];
+    });
+    await expect(createNitroDecryptionService({ trust }).open(signer, proofs))
+      .rejects.toMatchObject({ code: "ReleasePolicySuperseded" });
+    expect(fetch).toHaveBeenCalledTimes(6);
+    expect(fetch.mock.calls.filter(([url]) => url.pathname === "/v1/operations")).toHaveLength(1);
+    expect(signMessages).toHaveBeenCalledOnce();
   });
 
   it("requires the second publication even if the first returned a usable signed policy", async () => {

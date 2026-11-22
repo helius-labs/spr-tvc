@@ -73,7 +73,8 @@ separate recovery pins with `recoveryOnly: true` for old notes.
 The same `address` and `open` APIs work with the attested client. Nitro allows
 12 seconds for an operation's HTTP response within the caller's overall
 deadline. An unsigned key lookup can retry once after fresh policy checks and
-attestation when a route fails or returns a reply bound to another boot.
+attestation when a route fails, a reply is bound to another boot, or another
+wallet instance advances the checkpoint.
 A rate-limit response goes straight to the caller. Each signed
 decrypt uses one boot and one wallet approval. After a replica failure, the
 next explicit call can establish a fresh session.

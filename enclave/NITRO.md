@@ -290,10 +290,11 @@ The enclave opens request frames into a zeroizing buffer and passes plaintext
 to the request parser only after verifying the AES-GCM tag.
 
 The SDK gives each operation's HTTP exchange 12 seconds within the caller's
-deadline. A timed-out replica is discarded. On a transport failure, a stale
-boot rejection or a server error, an unsigned key lookup can retry once with
-fresh policy checks and attestation. Signed decrypt failures return to the
-wallet. A new call binds a fresh approval to its selected boot.
+deadline. A timed-out replica is discarded. An unsigned key lookup can retry
+once after a transport failure, a stale boot rejection, a server error or an
+advance to the shared checkpoint. The retry authenticates both policy heads
+and attests a boot under the current policy. Signed decrypt failures return
+to the wallet. A new call binds a fresh approval to its selected boot.
 
 The parent may replay a previously encrypted request to the same boot. Any result is still encrypted to the original signed response key. The service performs no chain writes and needs no replay database. The viewing and nullifier public keys are public lookup results. TLS protects ingress traffic in transit, while enclave-level encryption protects plaintext from ingress and the parent. See [AWS's attestation format and chain validation](https://docs.aws.amazon.com/enclaves/latest/user/verify-root.html).
 
