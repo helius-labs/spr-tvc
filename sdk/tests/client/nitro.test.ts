@@ -117,13 +117,15 @@ function openRequest(init: RequestInit, boot: readonly Uint8Array[]): ServiceReq
   return JSON.parse(new TextDecoder().decode(qosDecrypt(boot[0]!, requireHex(ciphertext)))) as ServiceRequest;
 }
 
-function lookupReply(init: RequestInit, boot: readonly Uint8Array[], owner: string = signer.address) {
+function lookupReply(init: RequestInit, boot: readonly Uint8Array[], owner: string = signer.address,
+  nullifierPublicKey = "01".repeat(32),
+) {
   const request = openRequest(init, boot);
   expect(request.operation).toEqual({ type: "PublicKeys", address: owner });
   const viewing = ViewingKey.generate();
   try {
     return signedReply(request, boot, { type: "PublicKeys", viewing_public_key: encodeLowerHex(viewing.publicKey().toBytes()),
-      nullifier_public_key: "01".repeat(32) });
+      nullifier_public_key: nullifierPublicKey });
   } finally { viewing.destroy(); }
 }
 
@@ -960,6 +962,7 @@ describe("native client trust gate", () => {
     const revoked = signedPolicy({ sequence: "3", previousPolicyDigest, action: "revoke", targets: [] });
     const fetch = policyHeads(vi.fn(), old).mockResolvedValueOnce(attestedDiscovery())
       .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    policyHeads(fetch, old);
     policyHeads(fetch, revoked);
     vi.stubGlobal("fetch", fetch);
     vi.stubGlobal("indexedDB", new IDBFactory());
@@ -970,7 +973,7 @@ describe("native client trust gate", () => {
     });
     await expect(createNitroDecryptionService({ trust }).open(signer, proofs))
       .rejects.toMatchObject({ code: "ReleasePolicySuperseded" });
-    expect(fetch).toHaveBeenCalledTimes(6);
+    expect(fetch).toHaveBeenCalledTimes(8);
     expect(fetch.mock.calls.filter(([url]) => url.pathname === "/v1/operations")).toHaveLength(1);
     expect(signMessages).toHaveBeenCalledOnce();
   });
@@ -982,6 +985,7 @@ describe("native client trust gate", () => {
     const revoked = signedPolicy({ sequence: "3", previousPolicyDigest, action: "revoke", targets: [] });
     const fetch = policyHeads(vi.fn(), old).mockResolvedValueOnce(attestedDiscovery())
       .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    policyHeads(fetch, old);
     policyHeads(fetch, revoked);
     vi.stubGlobal("fetch", fetch);
     let stored: NitroPolicyCheckpoint | undefined;
@@ -999,6 +1003,59 @@ describe("native client trust gate", () => {
     await expect(client.open(signer, proofs)).rejects.toMatchObject({ code: "ReleasePolicySuperseded" });
     expect(fetch.mock.calls.filter(([url]) => url.pathname === "/v1/operations")).toHaveLength(1);
   });
+
+  it.each(["before signing", "after signing", "after the replica responds", "publisher outage", "current recovery policy"] as const)(
+    "checks published policy for a cached owner approval %s", async phase => {
+      await initializePoseidon();
+      const nullifierSecret = new Uint8Array(31).fill(2) as Bytes31;
+      const nullifier = NullifierKey.fromSecret(nullifierSecret);
+      const nullifierPublicKey = encodeLowerHex(nullifier.publicKey());
+      nullifier.destroy();
+      const old = signedPolicy({ recoveryOnly: true });
+      const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(old).policy));
+      const revoked = signedPolicy({ sequence: "3", previousPolicyDigest, action: "revoke", recoveryOnly: true, targets: [] });
+      let published = old;
+      let outage = false;
+      let decrypts = 0;
+      const fetch = vi.fn(async (url: URL, init: RequestInit) => {
+        if (url.pathname.endsWith("/policy.json")) {
+          if (outage && url.hostname.startsWith("release-peer.")) return new Response(null, { status: 503 });
+          return new Response(published);
+        }
+        if (url.pathname === "/v1/nitro/attestation") return attestedDiscovery();
+        const request = openRequest(init, secrets);
+        if (request.operation.type === "PublicKeys") {
+          if (phase === "before signing") published = revoked;
+          if (phase === "publisher outage") outage = true;
+          return lookupReply(init, secrets, signer.address, nullifierPublicKey);
+        }
+        decrypts++;
+        if (phase === "after the replica responds") published = revoked;
+        return signedReply(request, secrets, { type: "Decrypt", nullifier_secret: encodeLowerHex(nullifierSecret), plaintexts: [] });
+      });
+      vi.stubGlobal("fetch", fetch);
+      const signingExpected = phase !== "before signing" && phase !== "publisher outage";
+      if (signingExpected) {
+        signMessages.mockImplementationOnce(async () => {
+          if (phase === "after signing") published = revoked;
+          return [{ [signer.address]: signatureBytes(new Uint8Array(64).fill(1)) }];
+        });
+      }
+      const store = checkpointStore();
+      const client = createNitroDecryptionService({ trust, policyStore: store });
+      if (phase === "current recovery policy") {
+        const keys = await client.open(signer, { prove: vi.fn(), proveMerge: vi.fn() });
+        keys.destroy();
+      } else {
+        await expect(client.open(signer, proofs)).rejects.toMatchObject(phase === "publisher outage"
+          ? { code: "ReleasePolicyInvalid", status: 503 }
+          : { code: "ReleasePolicyRevoked" });
+      }
+      expect(signMessages).toHaveBeenCalledTimes(Number(signingExpected));
+      expect(decrypts).toBe(phase === "after the replica responds" || phase === "current recovery policy" ? 1 : 0);
+      expect(await store.current()).toMatchObject({ sequence: published === old ? "2" : "3", recoveryOnly: true });
+    },
+  );
 
   it.each(["fails", "succeeds"] as const)("observes a revocation during attestation when the first probe %s", async outcome => {
     const { policy } = JSON.parse(twoReplicas()) as { policy: NitroPolicy };
@@ -1098,8 +1155,10 @@ describe("native client trust gate", () => {
     let elapsed = 0;
     const ticks = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
     try {
-      const fetch = policyHeads().mockResolvedValueOnce(attestedDiscovery())
+      const policy = signedPolicy();
+      const fetch = policyHeads(vi.fn(), policy).mockResolvedValueOnce(attestedDiscovery())
         .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+      policyHeads(fetch, policy);
       vi.stubGlobal("fetch", fetch);
       signMessages.mockImplementationOnce(async () => {
         elapsed = 60_000;

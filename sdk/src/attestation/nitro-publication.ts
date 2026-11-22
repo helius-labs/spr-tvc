@@ -17,8 +17,9 @@ export async function readNitroPolicy(url: URL, signal: AbortSignal, account: st
   return (await readPolicyObject(url, signal, account)).text;
 }
 
-export async function readPublishedNitroPolicy(trust: NitroTrust, signal: AbortSignal) {
-  const deadline = AbortSignal.any([signal, AbortSignal.timeout(5_000)]);
+export async function readPublishedNitroPolicy(trust: NitroTrust, signal?: AbortSignal) {
+  const timeout = AbortSignal.timeout(5_000);
+  const deadline = signal ? AbortSignal.any([signal, timeout]) : timeout;
   const [primary, mirror] = trust.publications;
   const read = (publication: NitroTrust["publications"][number]) => {
     const { url, account } = nitroPublication(trust, publication);

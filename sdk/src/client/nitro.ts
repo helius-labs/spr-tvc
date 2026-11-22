@@ -41,8 +41,8 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
   let latest: NitroPolicyCheckpoint | undefined;
   let next = 0;
 
-  async function accept(update: NitroPolicyUpdate, signal: AbortSignal): Promise<void> {
-    signal.throwIfAborted();
+  async function accept(update: NitroPolicyUpdate, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     if (!advancesNitroPolicy(latest, update) ||
         !advancesNitroPolicy(await awaitWithSignal(store.current(), signal), update) ||
         !await awaitWithSignal(store.accept(update), signal) ||
@@ -138,12 +138,12 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
       nowMs: clock,
       ...window,
       requireCurrentCheckpoint,
-      async requirePublishedPaymentPolicy(signal) {
+      async requirePublishedPolicy(signal, forPayment) {
         await requireCurrentCheckpoint(signal);
         const { policy, update } = await readPublishedNitroPolicy(trust, signal);
         await accept(update, signal);
         if (policy.action === "revoke") throw new DecryptionServiceError("ReleasePolicyRevoked");
-        if (policy.recoveryOnly) throw new DecryptionServiceError("ReleasePolicyRecoveryOnly");
+        if (forPayment && policy.recoveryOnly) throw new DecryptionServiceError("ReleasePolicyRecoveryOnly");
         await requireCurrentCheckpoint(signal);
         requireCurrentReleasePolicy(window, clock());
       },

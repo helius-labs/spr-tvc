@@ -64,7 +64,7 @@ export type ConnectedTvcRuntime = {
   readonly releasePolicyExpiresAtMs: bigint;
   readonly policyFreshnessRemainingMs?: () => number;
   readonly requireCurrentCheckpoint?: (signal?: AbortSignal) => Promise<void>;
-  readonly requirePublishedPaymentPolicy?: (signal: AbortSignal) => Promise<void>;
+  readonly requirePublishedPolicy?: (signal?: AbortSignal, forPayment?: boolean) => Promise<void>;
   readonly nowMs: () => bigint;
   readonly trustVerifier: { verifyOperationAppProof(proof: TurnkeyAppProofWire, signal?: AbortSignal): Promise<void> };
 };

@@ -9,6 +9,7 @@ import {
   checkSignedRequestSize,
   remainingReleasePolicyMs,
   requireCurrentReleasePolicy,
+  requireOperationPolicy,
   sealedExchange,
 } from "../connection/operations.js";
 import { awaitWithSignal } from "../connection/request.js";
@@ -100,7 +101,9 @@ export async function executeServiceCall<T extends ServiceCall>(
   signal: AbortSignal,
 ): Promise<ServiceCallResult<T>> {
   signal.throwIfAborted();
-  if (call.type === "Decrypt" && session.requireCurrentCheckpoint) await session.requireCurrentCheckpoint(signal);
+  if (call.type === "Decrypt" && (session.requirePublishedPolicy || session.requireCurrentCheckpoint)) {
+    await requireOperationPolicy(session, "ServiceDecrypt", signal);
+  }
   const context = call.type === "Decrypt" ? ownerApprovalContext(session) : session;
   const { info } = context;
   requireCurrentReleasePolicy(context, context.nowMs());

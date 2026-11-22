@@ -68,9 +68,11 @@ commits before replica attestation.
 The SDK rechecks the checkpoint before probing each target and before caching
 the winning boot. An unsigned lookup can refresh once if another wallet instance
 supersedes that checkpoint during attestation.
-The wallet refreshes on use after 60 seconds from the start of the policy
-fetch. Both elapsed and wall time bound that window. Signed policy and
-certificate expiry can end it earlier.
+The wallet refreshes boot attestation after 60 seconds from the start of the
+policy fetch. Both elapsed and wall time bound that window. Signed policy and
+certificate expiry can end it earlier. A decrypt reads both published heads
+before prompting the owner, after signing and before opening the authenticated
+reply. A revoked, superseded or unavailable policy stops the exchange.
 
 The client uses the first verified boot from its staggered probes. A
 recovery-only client refuses `address()` with `ReleasePolicyRecoveryOnly` and

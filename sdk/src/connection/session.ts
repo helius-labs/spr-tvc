@@ -38,9 +38,9 @@ export function sessionFromConnector(
         signal.throwIfAborted();
         if (active && holds(active)) {
           const cached = active;
-          if (forPayment && cached.requirePublishedPaymentPolicy) {
+          if (forPayment && cached.requirePublishedPolicy) {
             try {
-              await cached.requirePublishedPaymentPolicy(signal);
+              await cached.requirePublishedPolicy(signal, true);
             } catch (error) {
               if (active === cached && error instanceof DecryptionServiceError &&
                   error.code === "ReleasePolicySuperseded") active = null;

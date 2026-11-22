@@ -69,6 +69,18 @@ export function requireCurrentReleasePolicy(window: ReleasePolicyWindow, nowMs: 
   if (!(remainingReleasePolicyMs(window, nowMs) > 0)) throw new DecryptionServiceError("ExpiredRequest");
 }
 
+export async function requireOperationPolicy(
+  context: ConnectedTvcRuntime, operation: OperationKind, signal?: AbortSignal,
+): Promise<void> {
+  requireCurrentReleasePolicy(context, context.nowMs());
+  if (operation === "ServiceDecrypt" && context.requirePublishedPolicy) {
+    await context.requirePublishedPolicy(signal);
+  } else {
+    await context.requireCurrentCheckpoint?.(signal);
+  }
+  requireCurrentReleasePolicy(context, context.nowMs());
+}
+
 /** One request, complete and signed, and what its answer must prove. */
 export type Exchange = {
   readonly request: Readonly<{ request_id: string }>;
@@ -187,8 +199,7 @@ export async function sealedExchange(
   // The ciphertext is hex, so it cannot exceed twice the byte ceiling;
   // RESPONSE_ENVELOPE_SLACK covers the surrounding JSON and App Proof.
   const maxResponseBytes = BigInt(context.info.max_encrypted_response_bytes);
-  if (context.requireCurrentCheckpoint) await context.requireCurrentCheckpoint(signal);
-  requireCurrentReleasePolicy(context, context.nowMs());
+  await requireOperationPolicy(context, exchange.operation, signal);
   const responseText = await sendToEnclave(
     context.backend.endpoint, encrypted, context.transport,
     maxResponseBytes * 2n + RESPONSE_ENVELOPE_SLACK, signal, context.responseTimeoutMs,
@@ -208,8 +219,7 @@ export async function sealedExchange(
     throw new DecryptionServiceError("ResponseTooLarge");
   }
   await verifyOperationProof(context, exchange, response, encryptedResult, signal);
-  if (context.requireCurrentCheckpoint) await context.requireCurrentCheckpoint(signal);
-  requireCurrentReleasePolicy(context, context.nowMs());
+  await requireOperationPolicy(context, exchange.operation, signal);
   let plaintext: string;
   try {
     plaintext = td.decode(qosDecrypt(exchange.responseSecret, encryptedResult));
