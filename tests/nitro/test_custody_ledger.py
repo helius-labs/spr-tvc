@@ -1379,6 +1379,127 @@ class CustodyLedgerTests(unittest.TestCase):
                     qualified_policy(self.trust, wallet_trust, scope, seed)
                 query.assert_not_called()
 
+    def test_closed_epoch_can_requalify_with_a_fresh_trio_and_keep_its_original_record(self):
+        publish(self.trust, self.sign(self.document(1)))
+        rotation, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
+        publish(self.trust, self.sign(rotation))
+        target = self.replacement_target()
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, target))
+        wallet = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory())) / "wallet.json"
+        wallet.write_bytes(self.wallet_pins)
+        self.trust["walletTrustSha256"] = hashlib.sha256(self.wallet_pins).hexdigest()
+        host_profiles = {"000000000007": "old-parent"}
+        profiles = [f"slot-{slot}" for slot in range(1, 7)]
+        new_slots = [2, 4, 6]
+
+        with (patch("retirement.run_command") as query, patch("retirement.require_recovery_quorum") as quorum,
+              patch("retirement.inspect_inventory", return_value={"keys": []}),
+              patch("retirement.inspect_old_parents", return_value=[]), patch("retirement.require_profile_account")):
+            def observe(boot):
+                query.return_value.stdout = canonical({
+                    "policyDigest": "fe" * 32, "targets": [{**target_attestation(target), "bootstrap": boot}],
+                })
+
+            observe(self.qualification(target)["replacementBootstrap"])
+            marker = qualified_manifest(self.trust, wallet, "1", "2")
+            closure = self.signed_retirement(marker)
+            commit_retirement(self.trust, wallet, closure)
+            original = dict(self.objects)
+            with self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
+                qualified_manifest(self.trust, wallet, "1", "2", requalify=True)
+
+            self.now += 1
+            new_boot = {"bootKeyId": "ab" * 32, "bootedAtMs": str(self.now * 1000), "slots": new_slots}
+            observe(new_boot)
+            options = {"wallet_trust": wallet, "host_profiles": host_profiles}
+            with self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
+                inspect_keys(self.trust, "1", 1, False, **options)
+            manifest = qualified_manifest(self.trust, wallet, "1", "2", requalify=True)
+            self.assertEqual(manifest["priorRetirementSha256"], sha256(closure))
+            self.assertEqual(manifest["replacementBootstrap"], new_boot)
+            document = self.signed_retirement(manifest, new_slots)
+            with patch("retirement.add_approval", return_value={"signatures": document["signatures"]}):
+                self.assertEqual(sign_retirement(self.trust, wallet, {**document, "signatures": []},
+                                                 approval_keys(self.trust)[0]["keyArn"]), document)
+
+            bad_anchor = self.signed_retirement({**manifest, "priorRetirementSha256": "ef" * 32}, new_slots)
+            early_boot = {**new_boot, "bootedAtMs": str(self.booted_at_ms + 999)}
+            early = self.signed_retirement({**manifest, "replacementBootstrap": early_boot,
+                                            "recoveryDeadline": closure["manifest"]["recoveryDeadline"]}, new_slots)
+            for supplied, error in (
+                (bad_anchor, "does not match the committed retirement"),
+                (early, "requires a boot after the committed retirement"),
+                ({**document, "signatures": document["signatures"][:1]}, "signing quorum"),
+                ({**document, "recoveryProofs": document["recoveryProofs"][:2]}, "signing quorum"),
+                (self.signed_retirement(manifest, (1, 4, 6)), "invalid or duplicate approval"),
+            ):
+                with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
+                    inspect_keys(self.trust, "1", 1, False, requalification=supplied, **options)
+            with patch("time.time", return_value=manifest["recoveryDeadline"]):
+                with self.assertRaisesRegex(ValueError, "outside the recovery window"):
+                    inspect_keys(self.trust, "1", 1, False, requalification=document, **options)
+            with self.assertRaisesRegex(ValueError, "retirement record is already committed"):
+                commit_retirement(self.trust, wallet, document)
+
+            inspected = inspect_keys(self.trust, "1", 1, False, requalification=document, **options)
+            self.assertEqual(inspected["requalificationSha256"], sha256(document))
+            self.assertEqual(inspected["replacement"]["replacementBootstrap"], new_boot)
+            _, _, members = load_epoch(self.trust, "2")
+            self.assertEqual(quorum.call_args.args[2], [members[slot - 1] for slot in new_slots])
+
+            later_boot = {**new_boot, "bootKeyId": "cd" * 32, "bootedAtMs": str((self.now + 1) * 1000)}
+            observe(later_boot)
+            report = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5, requalification=document)
+            self.assertEqual(report["replacement"]["replacementBootstrap"], later_boot)
+            self.assertEqual(report["retirementSha256"], sha256(closure))
+            self.assertEqual(report["requalificationSha256"], sha256(document))
+            self.assertEqual(original, self.objects)
+            self.rotate_approvals("3")
+            with self.assertRaisesRegex(ValueError, "approval roster does not match the verification time"):
+                inspect_keys(self.trust, "1", 1, False, requalification=document, **options)
+            with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
+                require_active_epoch(self.trust, "1")
+
+    def test_requalification_can_follow_a_later_custody_epoch_and_requires_its_replication(self):
+        publish(self.trust, self.sign(self.document(1)))
+        for epoch in ("1", "2"):
+            rotation, _ = self.rotation_document(load_epoch(self.trust, epoch)[1])
+            publish(self.trust, self.sign(rotation))
+        replacement = self.replacement_target()
+        latest = self.replacement_target(epoch="3", releaseId="epoch-three", instanceId="i-1234567890abcdefc",
+                                         wrappingKeys=[key(slot, 33) for slot in range(1, 7)])
+        for target in (replacement, latest):
+            register_target(self.trust, self.signed_subject(TARGET_APPROVAL, target))
+        with patch("retirement.qualified_policy") as qualify, patch("retirement.require_recovery_quorum"):
+            qualify.return_value = self.qualification(replacement)
+            closure = self.signed_retirement(qualified_manifest(self.trust, None, "1", "2"))
+            commit_retirement(self.trust, None, closure)
+            self.now += 1
+            evidence = self.qualification(latest)
+            evidence["replacementBootstrap"]["bootedAtMs"] = str(self.now * 1000)
+            qualify.return_value = evidence
+            second_closure = self.signed_retirement(qualified_manifest(self.trust, None, "2", "3"))
+            commit_retirement(self.trust, None, second_closure)
+            with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
+                replacement_targets(self.trust, closure["manifest"])
+            manifest = qualified_manifest(self.trust, None, "1", "3", requalify=True)
+            requalification = self.signed_retirement(manifest)
+
+        replica = {"bucket": "custody-recovery", "account": "000000000011", "region": "eu-west-1",
+                   "role": "arn:aws:iam::000000000008:role/replication"}
+        with (patch.dict(self.trust, {"ledgerReplica": replica}),
+              patch("retirement.require_replicated_custody") as copies):
+            qualified, _, keys, _, _ = retirement_inventory(self.trust, "1", 1, requalification=requalification)
+            self.assertEqual(qualified["replacementEpoch"], "3")
+            self.assertIn(key(1, 1), keys)
+            self.assertNotIn(key(1, 3), keys)
+            _, _, epoch, registrations = copies.call_args.args
+            self.assertEqual(epoch, "3")
+            self.assertTrue({"retired/1.json", target_object_name(replacement), target_object_name(latest)} <= registrations)
+            copies.side_effect = ValueError("new replacement registration has not replicated")
+            with self.assertRaisesRegex(ValueError, "has not replicated"):
+                retirement_inventory(self.trust, "1", 1, requalification=requalification)
+
     def test_retirement_report_requires_all_old_keys_inactive_and_a_later_boot(self):
         publish(self.trust, self.sign(self.document(1)))
         rotated, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
@@ -1544,7 +1665,8 @@ class CustodyLedgerTests(unittest.TestCase):
 
         with patch("sys.argv", argv), patch("retirement.verify_retired", side_effect=verify) as verify_retired:
             retirement_main()
-            verify_retired.assert_called_once_with(self.trust, wallet, "1", profiles, {}, 300, replica_profile="recovery-read")
+            verify_retired.assert_called_once_with(self.trust, wallet, "1", profiles, {}, 300,
+                                                   replica_profile="recovery-read", requalification=None)
             self.assertEqual(report.read_bytes(), canonical(result) + b"\n")
             with self.assertRaisesRegex(SystemExit, "retirement report already exists"):
                 retirement_main()

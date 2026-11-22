@@ -459,6 +459,23 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    write second. The role
    needs `kms:DescribeKey` for the six replacement keys. Use
    `inspect --check-inactive` for the historical key state check after scheduling.
+
+   If one of the proved slots is unavailable, or the replacement epoch is
+   already closed, cold-boot an approved target with an available trio on
+   the same or a newer active receipt. Draft a proof tied to the original
+   retirement record.
+
+   ```sh
+   python3 "$nitro/retirement.py" trust.json draft wallet-trust.json 1 "$active_epoch" \
+     --requalify > requalification-draft.json
+   ```
+
+   Collect three fresh `prove-recovery` signatures from the attested slots,
+   then two current custody approvals with `sign`. Pass the signed file as
+   `--requalification` to `inspect` and `verify-retired` within 24 hours of
+   the proved boot. These commands check the original closure and record the
+   signed file's digest in their output. Archive the file with the report.
+
    Scheduling immediately disables cryptographic use. Canceling leaves the
    key disabled, and the sealed policy grants no permission to re-enable it.
    Give the verifier a KMS inspection profile for each old custody account
@@ -483,7 +500,7 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    ```
 
    When the verifier reports it is waiting, cold-boot a registered replacement
-   with exactly three slots. The verifier reads the candidate registrations
+   with the proved three slots. The verifier reads the candidate registrations
    before starting the `--wait-seconds` timer and polls for a later attested
    boot. Before writing the report it checks the old keys, parents and replica
    records again, including the observed replacement's registration. It

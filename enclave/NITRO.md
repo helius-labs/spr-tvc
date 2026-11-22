@@ -165,11 +165,17 @@ second, and all six recovery and wrapping keys for those slots must be
 enabled. The same boot and wallet policy must still be current after the key
 checks. Where replication is configured, the observed replacement's
 registration must also match its copy in the pinned replica.
+If the proven trio is unavailable or its epoch has been retired, three
+custodians of the same or a newer active receipt can prove recovery again.
+The new proof binds the original retirement digest and a boot after that
+record committed. Two current custody approvers sign it. It is valid for
+24 hours from that boot. The same custody and replica checks apply to the
+new receipt. The original closure and old-key inventory stay authoritative.
 The read-only retirement verifier checks the old key inventory in all six
 accounts and requires each registered old serving or rotation parent to be
-terminated. It then checks for a later attested replacement boot and repeats
-the old key, parent and replica record checks. It verifies the replica's
-installed protections before issuing the report. When EC2 no longer lists a
+terminated. It then checks for a later attested boot using the proved trio
+and repeats the old key, parent and replica record checks. It verifies the
+replica's installed protections before issuing the report. When EC2 no longer lists a
 parent, the verifier requires its AWS Config deletion record for the exact
 managed EC2 resource. When KMS no longer returns a key's policy or state, the verifier
 requires a successful KMS `DeleteKey` service event in CloudTrail for the exact

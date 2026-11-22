@@ -616,16 +616,17 @@ def recovery_deadline(manifest):
     return deadline
 
 
-def verify_retirement(trust, document, epoch, published_at):
+def verify_retirement(trust, document, epoch, verified_at, *, requalification=False):
     approval = retirement_approval(document)
     manifest = document["manifest"]
+    extra_fields = ("priorRetirementSha256",) if requalification else ()
     fields(manifest, "network", "securityDomainId", "epoch", "receiptSha256", "replacementEpoch",
            "replacementReceiptSha256", "replacementCustodyDigest", "replacementTargetIdentity", "replacementTargetSha256",
-           "approvalFromEpoch", "walletPolicyDigest", "recoveryDeadline", "replacementBootstrap")
+           "approvalFromEpoch", "walletPolicyDigest", "recoveryDeadline", "replacementBootstrap", *extra_fields)
     retirement_bootstrap(manifest["replacementBootstrap"])
     deadline = recovery_deadline(manifest)
-    if not deadline - RECOVERY_WINDOW_SECONDS <= published_at < deadline:
-        raise ValueError("retirement was published outside the recovery window")
+    if not deadline - RECOVERY_WINDOW_SECONDS <= verified_at < deadline:
+        raise ValueError("retirement record is outside the recovery window")
     if ((manifest["network"], manifest["securityDomainId"], manifest["epoch"]) !=
             (trust["network"], trust["securityDomainId"], epoch) or
             epoch_number(manifest["replacementEpoch"]) <= epoch_number(epoch)):
@@ -633,9 +634,10 @@ def verify_retirement(trust, document, epoch, published_at):
     for field in ("receiptSha256", "replacementReceiptSha256", "replacementCustodyDigest", "replacementTargetIdentity",
                   "replacementTargetSha256", "walletPolicyDigest"):
         hex_digest(manifest[field])
-    roster = approval_roster(trust, at=published_at)
+    roster = approval_roster(trust, at=verified_at)
     if roster["fromEpoch"] != manifest["approvalFromEpoch"]:
-        raise ValueError("retirement approval roster does not match its publication time")
+        reference = "the verification time" if requalification else "its publication time"
+        raise ValueError(f"retirement approval roster does not match {reference}")
     check_approvals(roster["keys"], RETIREMENT, approval)
     return manifest
 
