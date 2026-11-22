@@ -71,8 +71,10 @@ custody record. Both serving and rotation use the same bootstrap:
 
 1. The enclave creates a temporary RSA-2048 recipient and attests its public
    key on vsock port 44031. The parent calls KMS with that evidence and each
-   wrapped share. A sealed key requires PCR0–PCR3 and exact context for
-   network, security domain, release, custody epoch and share index.
+   wrapped share. The host's inline IAM policy and each sealed key require
+   PCR0–PCR3 and exact context for network, security domain, release, custody
+   epoch and share index. The host gets the key ARNs and context from the
+   approved target whose file hash is pinned in its deployment configuration.
 2. KMS encrypts its response for that temporary recipient. The parent sends up
    to six CMS records, each prefixed by a two-byte big-endian length and
    limited to 6,144 bytes. The enclave counts three distinct committed shares

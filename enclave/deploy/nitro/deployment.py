@@ -15,7 +15,7 @@ from custody_ledger import (
     check_acknowledgement_key, check_recovery_key, list_objects, load_epoch, load_retirement, read_object,
     retirement_object_name, validate_roster, write_once,
 )
-from kms_policy import context, key_policy
+from kms_policy import boot_pins, decrypt_conditions, key_policy, target_context
 from provenance import MAIN_REF, verify as verify_build
 
 LABEL = "target-approval"
@@ -40,6 +40,15 @@ def verify_target_approval(trust, document, historical=False):
 def target_object_name(manifest):
     epoch_number(manifest["custodyEpoch"])
     return f"targets/{manifest['custodyEpoch']}/{sha256(manifest)}.json"
+
+
+def host_policy(manifest):
+    pins = boot_pins(manifest["hostRole"], manifest["pcrs"])
+    return {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "kms:Decrypt", "Resource": key,
+         "Condition": decrypt_conditions(pins, target_context(manifest, index))}
+        for index, key in enumerate(manifest["wrappingKeys"], start=1)
+    ]}
 
 
 def require_active_epoch(trust, epoch):
@@ -143,8 +152,7 @@ def target(trust, document, receipt, custodians, build):
                 arn(ROLE_ARN, custodian)[1] != account or arn(ROLE_ARN, retirement)[1] != account):
             raise ValueError("each custody slot requires separate keys and roles in its own account")
         accounts.add(account)
-        policies.append(key_policy(host, custodian, retirement, pins,
-                                   context(network, domain, release, source["epoch"], index)))
+        policies.append(key_policy(host, custodian, retirement, pins, target_context(manifest, index)))
     return keys, policies, next_keys
 
 
@@ -166,6 +174,8 @@ def main():
     sign.add_argument("--source-ref", default=MAIN_REF)
     register = commands.add_parser("register")
     register.add_argument("target", type=Path)
+    identity = commands.add_parser("host-policy")
+    identity.add_argument("target", type=Path)
     args = parser.parse_args()
     try:
         trust = read_json(args.trust)
@@ -194,6 +204,10 @@ def main():
         keys, _, next_keys = target(trust, document, receipt, custodians, args.build)
         if args.command == "register":
             register_target(trust, document)
+            return
+        if args.command == "host-policy":
+            require_registered_target(trust, verify_target_approval(trust, document))
+            print(canonical(host_policy(document["manifest"])).decode())
             return
         require_active_epoch(trust, receipt["custody"]["epoch"])
         verify_build(args.build, receipt["network"], args.source_commit, args.source_ref)

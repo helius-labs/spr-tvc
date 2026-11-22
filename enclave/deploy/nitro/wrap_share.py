@@ -10,7 +10,7 @@ from time import time
 from approval import check_approvals, key_result, kms, parse_json, read_json, require_kms_key
 from custody_ledger import load_epoch, open_share
 from deployment import LABEL, require_registered_target, target
-from kms_policy import context
+from kms_policy import target_context
 
 
 def sealed_policy(key, expected):
@@ -30,10 +30,7 @@ def wrap(trust, approval, build, index):
     check_approvals(keys, LABEL, approval)
     wrapping_key = manifest["wrappingKeys"][index - 1]
     sealed_policy(wrapping_key, policies[index - 1])
-    custody = receipt["custody"]
-    domain = receipt["securityDomainId"]
-    epoch = custody["epoch"]
-    ctx = context(receipt["network"], domain, manifest["releaseId"], epoch, index)
+    ctx = target_context(manifest, index)
     require_registered_target(trust, manifest)
     if time() >= manifest["expiresAt"]:
         raise ValueError("target approval expired before share release")

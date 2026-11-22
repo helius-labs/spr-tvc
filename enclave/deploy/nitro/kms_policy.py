@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 
-from approval import ROLE_ARN, arn, epoch_number
+from approval import ROLE_ARN, arn, epoch_number, hex_digest
 
 
 def context(network, domain, release, epoch, share):
@@ -24,6 +24,10 @@ def context(network, domain, release, epoch, share):
         "custody-epoch": epoch,
         "share": str(share),
     }
+
+
+def target_context(manifest, index):
+    return context(manifest["network"], manifest["securityDomainId"], manifest["releaseId"], manifest["custodyEpoch"], index)
 
 
 def statement(sid, effect, principal, action, **conditions):
@@ -76,20 +80,30 @@ def acknowledgement_policy(custodian, key_admin):
     ]}
 
 
+def boot_pins(host, measurements):
+    pins = {key: hex_digest(measurements[key], 48) for key in ("PCR0", "PCR1", "PCR2")}
+    pins["PCR3"] = hashlib.sha384(bytes(48) + host.encode()).hexdigest()
+    return pins
+
+
+def encryption_conditions(ctx):
+    return {
+        "StringEquals": {"kms:EncryptionContext:" + key: value for key, value in ctx.items()},
+        "ForAllValues:StringEquals": {"kms:EncryptionContextKeys": list(ctx)},
+    }
+
+
+def decrypt_conditions(pins, ctx):
+    return {**encryption_conditions(ctx),
+            "StringEqualsIgnoreCase": {"kms:RecipientAttestation:" + key: pin for key, pin in pins.items()}}
+
+
 def key_policy(host, custodian, key_admin, measurements, ctx):
     roles = [host, custodian, key_admin]
     if len({arn(ROLE_ARN, role)[0] for role in roles}) != len(roles):
         raise ValueError("expected distinct IAM roles for boot, encryption and key retirement")
-    pins = {key: measurements[key] for key in ("PCR0", "PCR1", "PCR2")}
-    pins["PCR3"] = hashlib.sha384(bytes(48) + host.encode()).hexdigest()
-    if any(not re.fullmatch(r"[0-9a-f]{96}", pin) or int(pin, 16) == 0 for pin in pins.values()):
-        raise ValueError("expected normal-mode Nitro measurements")
-    context_equals = {"kms:EncryptionContext:" + key: value for key, value in ctx.items()}
-    conditions = {
-        "StringEquals": context_equals,
-        "ForAllValues:StringEquals": {"kms:EncryptionContextKeys": list(ctx)},
-    }
-
+    pins = boot_pins(host, measurements)
+    conditions = encryption_conditions(ctx)
     return {
         "Version": "2012-10-17",
         "Statement": [
@@ -100,17 +114,14 @@ def key_policy(host, custodian, key_admin, measurements, ctx):
                 "StringNotEqualsIgnoreCase": {"kms:RecipientAttestation:" + pcr: pin},
             }) for pcr, pin in pins.items()],
             *[deny(f"DenyWrongContext{index}", "kms:Decrypt", Condition={"StringNotEquals": {field: value}})
-              for index, (field, value) in enumerate(context_equals.items())],
+              for index, (field, value) in enumerate(conditions["StringEquals"].items())],
             deny("DenyExtraContext", "kms:Decrypt", Condition={
                 "ForAnyValue:StringNotEquals": {"kms:EncryptionContextKeys": list(ctx)},
             }),
             retirement(key_admin),
             allow("InspectBeforeWrap", custodian, ["kms:DescribeKey", "kms:GetKeyPolicy"]),
             allow("WrapShare", custodian, "kms:Encrypt", Condition=conditions),
-            allow("ProvisionAttestedEnclave", host, "kms:Decrypt", Condition={
-                **conditions,
-                "StringEqualsIgnoreCase": {"kms:RecipientAttestation:" + key: pin for key, pin in pins.items()},
-            }),
+            allow("ProvisionAttestedEnclave", host, "kms:Decrypt", Condition=decrypt_conditions(pins, ctx)),
         ],
     }
 

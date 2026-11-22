@@ -1,13 +1,18 @@
+import base64
 import hashlib
+import json
 import pathlib
-import sys
 import struct
+import subprocess
+import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
+from deployment import host_policy
 from kms_policy import context, key_policy
-from provision import provision
+from provision import decrypt_share, provision, read_target, recipient_for
 
 HOST = "arn:aws:iam::111111111111:role/host"
 CUSTODIAN = "arn:aws:iam::222222222222:role/custodian"
@@ -15,7 +20,10 @@ RETIREMENT = "arn:aws:iam::222222222222:role/retirement"
 PINS = {f"PCR{index}": byte * 48 for index, byte in enumerate(("12", "23", "34"))}
 DOMAIN = "ab" * 32
 KEY_1 = "arn:aws:kms:eu-north-1:222222222222:key/12345678-1234-1234-1234-123456789abc"
-KEYS = [(KEY_1.replace("222222222222", f"{index:012d}"), str(index)) for index in range(1, 7)]
+KEYS = [KEY_1.replace("222222222222", f"{index:012d}") for index in range(1, 7)]
+TARGET = {"network": "mainnet", "securityDomainId": DOMAIN, "releaseId": "release-a", "custodyEpoch": "5",
+          "hostRole": HOST, "pcrs": PINS, "wrappingKeys": KEYS}
+SHARES = pathlib.Path("shares")
 
 
 class KeyPolicyTests(unittest.TestCase):
@@ -65,6 +73,16 @@ class KeyPolicyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 context(*fields)
 
+    def test_host_identity_policy_can_only_unwrap_its_exact_approved_slots(self):
+        statements = host_policy(TARGET)["Statement"]
+        self.assertEqual([rule["Resource"] for rule in statements], KEYS)
+        for index, rule in enumerate(statements, start=1):
+            resource_policy = key_policy(HOST, CUSTODIAN, RETIREMENT, PINS,
+                                         context("mainnet", DOMAIN, "release-a", "5", index))
+            decrypt = next(rule for rule in resource_policy["Statement"] if rule["Sid"] == "ProvisionAttestedEnclave")
+            self.assertEqual(rule, {"Effect": "Allow", "Action": "kms:Decrypt", "Resource": KEYS[index - 1],
+                                    "Condition": decrypt["Condition"]})
+
     @patch("provision.decrypt_share")
     @patch("provision.request", side_effect=[(200, b"evidence"), (204, b"")])
     def test_three_available_accounts_are_enough(self, request, decrypt):
@@ -74,9 +92,10 @@ class KeyPolicyTests(unittest.TestCase):
             raise ValueError("unavailable custodian")
 
         decrypt.side_effect = wrapped
-        provision(16, "mainnet", DOMAIN, "release-a", "5", KEYS)
+        self.assertEqual(provision(16, TARGET, SHARES), [2, 4, 6])
         args = sorted((call.args for call in decrypt.call_args_list), key=lambda arg: arg[3]["share"])
-        self.assertEqual([arg[0] for arg in args], [key for key, _ in KEYS])
+        self.assertEqual([arg[0] for arg in args], KEYS)
+        self.assertEqual([arg[1] for arg in args], [SHARES / f"{index}.kms" for index in range(1, 7)])
         self.assertEqual([arg[3]["share"] for arg in args], list("123456"))
         self.assertTrue(all(arg[3]["custody-epoch"] == "5" for arg in args))
         self.assertEqual({arg[2] for arg in args}, {args[0][2]})
@@ -88,15 +107,80 @@ class KeyPolicyTests(unittest.TestCase):
     def test_does_not_forward_fewer_than_three_shares(self, request, decrypt):
         decrypt.side_effect = [b"one", b"two", *[ValueError("unavailable")] * 4]
         with self.assertRaisesRegex(ValueError, "fewer than three"):
-            provision(16, "mainnet", DOMAIN, "release-a", "5", KEYS)
+            provision(16, TARGET, SHARES)
+        request.assert_called_once_with(16, "GET", "/recipient")
+
+    @patch("provision.decrypt_share", return_value=b"envelope")
+    @patch("provision.request", side_effect=[(200, b"evidence"), (204, b"")])
+    def test_rehearsal_uses_exactly_the_requested_slots_without_fallback(self, request, decrypt):
+        self.assertEqual(provision(16, TARGET, SHARES, [6, 2, 4]), [2, 4, 6])
+        self.assertEqual({call.args[0] for call in decrypt.call_args_list}, {KEYS[1], KEYS[3], KEYS[5]})
+        request.assert_called_with(16, "POST", "/shares", (struct.pack(">H", 8) + b"envelope") * 3)
+        request.reset_mock(side_effect=True)
+        request.return_value = (200, b"evidence")
+        decrypt.reset_mock(side_effect=True)
+        decrypt.side_effect = [b"one", b"two", ValueError("custodian key denied")]
+        with self.assertRaisesRegex(ValueError, "fewer than three"):
+            provision(16, TARGET, SHARES, [2, 4, 6])
+        self.assertEqual(decrypt.call_count, 3)
         request.assert_called_once_with(16, "GET", "/recipient")
 
     @patch("provision.request")
-    def test_rejects_aliases_and_keys_from_the_same_account_before_fetching_evidence(self, request):
-        for key in [KEYS[0][0], KEYS[0][0][:-1] + "d", "alias/other"]:
+    def test_refuses_keys_or_slot_selections_outside_the_approved_custody_set(self, request):
+        host_key = KEY_1.replace("222222222222", "111111111111")
+        for key in [KEYS[0], KEYS[0][:-1] + "d", "alias/other", host_key]:
             with self.assertRaises(ValueError):
-                provision(16, "mainnet", DOMAIN, "release-a", "5", [*KEYS[:5], (key, "old")])
+                provision(16, {**TARGET, "wrappingKeys": [*KEYS[:5], key]}, SHARES)
+        for slots in ([1, 1, 3], [1, 2, 8], [1, 2], [1, 2, 3, 4]):
+            with self.assertRaisesRegex(ValueError, "exactly three distinct"):
+                provision(16, TARGET, SHARES, slots)
         request.assert_not_called()
+
+    def test_provisioning_requires_the_exact_pinned_target_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "target.json"
+            body = json.dumps({"manifest": TARGET, "signatures": []}).encode()
+            path.write_bytes(body)
+            pin = hashlib.sha256(body).hexdigest()
+            self.assertEqual(read_target(path, pin), TARGET)
+            path.write_bytes(body.replace(b"release-a", b"release-b"))
+            with self.assertRaisesRegex(ValueError, "independently pinned digest"):
+                read_target(path, pin)
+
+    @patch("provision.sleep")
+    @patch("provision.request", side_effect=[ConnectionRefusedError(), (503, b""), (200, b"evidence")])
+    def test_waits_for_recipient_readiness(self, request, sleep):
+        recipient = json.loads(recipient_for(16))
+        self.assertEqual(recipient["AttestationDocument"], base64.b64encode(b"evidence").decode())
+        self.assertEqual(request.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    @patch("provision.monotonic", side_effect=[0, 21])
+    @patch("provision.request", side_effect=ConnectionRefusedError)
+    def test_recipient_startup_has_a_deadline(self, request, _):
+        with self.assertRaisesRegex(ValueError, "did not become ready"):
+            recipient_for(16)
+        request.assert_called_once_with(16, "GET", "/recipient")
+
+    @patch("provision.request", return_value=(200, b""))
+    def test_refuses_invalid_recipient_evidence(self, request):
+        with self.assertRaisesRegex(ValueError, "invalid recipient evidence"):
+            recipient_for(16)
+        request.assert_called_once_with(16, "GET", "/recipient")
+
+    @patch("provision.subprocess.run")
+    def test_decrypt_accepts_only_ciphertext_for_the_requested_recipient(self, run):
+        result = {"KeyId": KEY_1, "CiphertextForRecipient": base64.b64encode(b"wrapped").decode()}
+        for expected, reply in [(b"wrapped", result), (b"wrapped", {**result, "Plaintext": ""}),
+                                (b"wrapped", {**result, "Plaintext": None}), (None, {**result, "Plaintext": "YQ=="}),
+                                (None, {**result, "KeyId": KEYS[0]}), (None, {**result, "CiphertextForRecipient": ""})]:
+            run.return_value = subprocess.CompletedProcess([], 0, json.dumps(reply), "")
+            args = (KEY_1, SHARES / "1.kms", "recipient", context("mainnet", DOMAIN, "release-a", "5", 1))
+            if expected is None:
+                with self.assertRaises(ValueError):
+                    decrypt_share(*args)
+            else:
+                self.assertEqual(decrypt_share(*args), expected)
 
 if __name__ == "__main__":
     unittest.main()

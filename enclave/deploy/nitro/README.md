@@ -133,7 +133,8 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    python3 "$nitro/deployment.py" trust.json "$build_dir" sign target-draft.json "$approval_key" \
      target-signed.json --source-commit "$reviewed_commit" --source-ref "$source_ref"
    python3 "$nitro/deployment.py" trust.json "$build_dir" register target-signed.json
-   python3 "$nitro/wrap_share.py" trust.json target-signed.json "$build_dir" "$share_index" share.kms
+   python3 "$nitro/deployment.py" trust.json "$build_dir" host-policy target-signed.json > host-kms-policy.json
+   python3 "$nitro/wrap_share.py" trust.json target-signed.json "$build_dir" "$share_index" "$share_index.kms"
    ```
 
    Register with the dedicated ledger publisher. The ledger keeps the exact
@@ -142,13 +143,19 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    policies. A trusted custodian workstation sees one plaintext share during
    acknowledgement and wrapping. The tool writes only the wrapped ciphertext.
    Obtain more than three ciphertexts so a boot can tolerate unavailable keys.
-3. Give the parent `kms:Decrypt` only on the exact slot's wrapping key ARNs,
-   and read access to pinned versions of the EIF and wrapped artifacts. Its
-   plan contains `epoch` and six ordered `keys` entries with `keyArn` and a
-   relative `ciphertext` path. An unavailable slot may omit its ciphertext file.
+3. Use a host role dedicated to the measured target. Install
+   `host-kms-policy.json` as an inline IAM policy on that role. Cross-account
+   KMS requires it in addition to the policies on the keys.
+   Archive the host policy with the approved target. Give the parent read
+   access to pinned versions of the EIF, signed target and wrapped shares.
+   Record the SHA-256 of `target-signed.json` in the reviewed host deployment
+   configuration. Copy it verbatim and place each wrapped share at
+   `shares/<slot>.kms` next to it. Omit the file for an unavailable slot.
+   The approval deadline gates new share wraps. Cold boots can use existing
+   wrapped shares from the pinned target until the keys are retired.
 
    ```sh
-   python3 "$nitro/provision.py" 16 "$network" "$security_domain" "$release_id" "$key_plan"
+   python3 "$nitro/provision.py" 16 "$approved_target" --target-sha256 "$target_sha256"
    ```
 
 4. Keep port 44031 private. Forward port 44030 through TLS without caching.
@@ -168,8 +175,10 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    shares to that EIF, using its release ID and the old custody epoch. The
    rotation enclave verifies the old seed commitment before issuing the new
    shares. Commit the new receipt only after all six new keys acknowledge it.
-2. Commission new serving slots from the new receipt and cold-boot from three
-   new shares. Through the real ingress, use the wallet to open a note
+2. Commission new serving slots from the new receipt. On a fresh enclave run,
+   pass `--slots 2 4 6` to `provision.py` to use only those three current slots.
+   Provisioning fails if any selected slot fails. Capture the accepted slot
+   list. Through the real ingress, use the wallet to open a note
    addressed before rotation. Keep healthy old slots during qualification.
 3. Allow overlap while the wallet policy floor covers both epochs. After a
    cold boot and wallet canary on the new epoch, publish a policy with
@@ -194,8 +203,8 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    Each retirement role checks its inventory against the installed KMS policies,
    schedules approved keys for deletion, and repeats `inspect` with
    `--check-inactive`. Capture the results before AWS deletes the key metadata.
-   Cold-boot again from three current custodians and open a note from before
-   rotation. Retain the old signed receipt and its public trust pins.
+   Cold-boot again with exactly three current slots and open a note from
+   before rotation. Retain the old signed receipt and its public trust pins.
 5. A leaked threshold of old shares still exposes the underlying seed.
    Refreshing shares controls future access. A seed compromise requires
    owner-authorized migration to a new seed domain.

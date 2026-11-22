@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import io
 import json
 import pathlib
 import sys
@@ -10,7 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import sha256
-from deployment import LABEL, file_digest, target
+from deployment import LABEL, file_digest, main, target
 from kms_policy import recovery_policy
 from nitro_fixtures import DOMAIN, HOST, key, pin, schedule, sign
 from wrap_share import wrap
@@ -111,6 +112,26 @@ class TargetApprovalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "signature"):
             self.wrap()
         self.assertEqual(self.calls, [])
+
+    def test_host_policy_command_requires_the_registered_quorum_approved_target(self):
+        trust_path, target_path = self.build / "trust.json", self.build / "target.json"
+        trust_path.write_text(json.dumps(self.trust))
+        argv = ["deployment.py", str(trust_path), str(self.build), "host-policy", str(target_path)]
+        with (patch("sys.argv", argv), patch("deployment.load_epoch", side_effect=self.load_epoch),
+              patch("deployment.require_registered_target") as registered, patch("sys.stdout", new_callable=io.StringIO) as output):
+            target_path.write_text(json.dumps({**self.approval, "signatures": []}))
+            with self.assertRaisesRegex(SystemExit, "signing quorum"):
+                main()
+            registered.assert_not_called()
+            target_path.write_text(json.dumps(self.approval))
+            registered.side_effect = ValueError("target is unregistered")
+            with self.assertRaisesRegex(SystemExit, "unregistered"):
+                main()
+            self.assertEqual(output.getvalue(), "")
+            registered.side_effect = None
+            main()
+            self.assertEqual([rule["Resource"] for rule in json.loads(output.getvalue())["Statement"]],
+                             self.manifest["wrappingKeys"])
 
     def test_rejects_receipt_and_eif_substitution(self):
         self.receipt["packages"][0]["ciphertext"] = "00" * 256
