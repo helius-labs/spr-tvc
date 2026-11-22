@@ -1,6 +1,6 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { verifyNitroCustodyEvidence } from "./boot-proof.js";
-import type { NitroPcrs } from "./nitro-policy.js";
+import type { NitroPcrs, NitroTargetPcrs } from "./nitro-policy.js";
 import { decodeDecimalU64 } from "../protocol/decimal.js";
 import { DecryptionServiceError } from "../protocol/error.js";
 import { encodeLowerHex, requireHex } from "../protocol/hex.js";
@@ -24,7 +24,7 @@ export type CustodyExpectation = {
   /** For rotation, the independently recorded commitment of the original seed. */
   noteSeedCommitment?: string;
   recipientPublicKeys: string[];
-  pcrs: NitroPcrs;
+  pcrs: NitroPcrs | NitroTargetPcrs;
 };
 
 const te = new TextEncoder();
@@ -44,7 +44,7 @@ export async function verifyCustodyReceipt(
     : expected.noteSeedCommitment === custody.noteSeedCommitment;
   if (!seedMatches || result.network !== expected.network || result.securityDomainId !== expected.securityDomainId ||
       result.releaseId !== expected.releaseId || custody.epoch !== expected.epoch ||
-      epoch < 1n || nonce.length !== 32 ||
+      epoch < 1n || (epoch > 1n) !== (4 in expected.pcrs) || nonce.length !== 32 ||
       !requireHex(custody.noteSeedCommitment, 32).some(byte => byte !== 0) ||
       !Array.isArray(custody.shareCommitments) || custody.shareCommitments.length !== 6 ||
       new Set(custody.shareCommitments).size !== 6 || !Array.isArray(packages) || packages.length !== 6 ||

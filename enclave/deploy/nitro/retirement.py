@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import re
 import subprocess
 import sys
 import time
@@ -10,7 +11,8 @@ from pathlib import Path
 from subprocess import run as run_command
 
 from approval import (
-    MAX_DOCUMENT_BYTES, add_approval, approval_keys, approval_roster, canonical, check_approvals, epoch_number, fields, hex_digest, kms,
+    MAX_DOCUMENT_BYTES, ROLE_ARN, add_approval, approval_keys, approval_roster, arn, canonical, check_approvals,
+    epoch_number, fields, hex_digest, kms,
     parse_json, read_json, require_kms_key, sha256,
 )
 from custody_ledger import (
@@ -20,6 +22,7 @@ from custody_ledger import (
     require_publication_roster, retirement_bootstrap, retirement_recovery, retirement_target, sign_share_recovery,
     target_attestation, write_once,
 )
+from deployment import require_host_state
 from kms_policy import RSA_KEYS, key_policy
 from relay import custody_recovery_policy
 
@@ -72,10 +75,11 @@ def qualified_policy(trust, wallet_trust, scope, seed, *, after_ms=0):
         raise ValueError("wallet trust file does not match the pinned digest")
     epoch = scope["replacementEpoch"]
     require_active_epoch(trust, epoch)
+    old_instances = {target["instanceId"] for target in registered_targets(trust, scope["epoch"], scope["receiptSha256"])}
     candidates = [target for target in registered_targets(trust, epoch, scope["replacementReceiptSha256"])
-                  if target["mode"] == "serve"]
+                  if target["mode"] == "serve" and target["instanceId"] not in old_instances]
     if not candidates:
-        raise ValueError("no registered serving target for the replacement epoch")
+        raise ValueError("no registered serving target on a separate replacement instance")
     root = Path(__file__).resolve().parents[3]
     reply = run_command([
         "pnpm", "--dir", str(root / "example"), "exec", "tsx", str(root / "xtask/nitro-retirement.ts"),
@@ -185,7 +189,7 @@ def slot_inventory(trust, epoch, member, targets, index):
     keys = {member["recoveryKeyArn"]: custody_recovery_policy(trust, member, epoch)}
     for target in targets:
         key = target["wrappingKeys"][index - 1]
-        expected = key_policy(target["hostRole"], custodian, admin, target["pcrs"])
+        expected = key_policy(target["hostRole"], custodian, admin, target["pcrs"], target["instanceId"])
         if keys.setdefault(key, expected) != expected:
             raise ValueError("one key appears with different retirement policies")
     return admin, keys
@@ -210,7 +214,7 @@ def inspect_inventory(inventory, check_inactive, **options):
     return {"retirementRole": role, "keys": result}
 
 
-def verify_retired(trust, wallet_trust, epoch, profiles, wait_seconds):
+def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_seconds):
     if len(profiles) != 6 or len(set(profiles)) != 6 or wait_seconds <= 0:
         raise ValueError("provide six distinct read-only profiles in slot order and a positive wait time")
     document, custodians = load_retirement(trust, epoch)
@@ -225,12 +229,17 @@ def verify_retired(trust, wallet_trust, epoch, profiles, wait_seconds):
                     slot_inventory(trust, epoch, member, targets, index), True, profile=profile),
                 range(1, 7), custodians, profiles,
             ))
-        return slots
+        hosts = {(arn(ROLE_ARN, target["hostRole"])[1], target["hostRegion"], target["instanceId"]): target
+                 for target in targets}
+        if set(host_profiles) != {account for account, _, _ in hosts}:
+            raise ValueError("provide one host inspection profile for each old parent account")
+        terminated = [require_host_state(hosts[host], "terminated", host_profiles[host[0]]) for host in sorted(hosts)]
+        return slots, terminated
 
     inspect_all()
     after_ms = int(time.time() * 1000)
     deadline = time.monotonic() + wait_seconds
-    print("All six old slots verified inactive. Waiting for a newer replacement boot.", file=sys.stderr, flush=True)
+    print("All old keys are inactive and registered parents terminated. Waiting for a newer replacement boot.", file=sys.stderr, flush=True)
     while True:
         try:
             evidence = qualified_policy(trust, wallet_trust, marker, replacement["custody"]["noteSeedCommitment"],
@@ -245,8 +254,9 @@ def verify_retired(trust, wallet_trust, epoch, profiles, wait_seconds):
     slots = retirement_bootstrap(evidence["replacementBootstrap"])
     require_recovery_quorum(trust, {**marker, **evidence}, [replacement_custodians[slot - 1] for slot in slots])
     require_active_epoch(trust, marker["replacementEpoch"])
-    return {"retirementSha256": sha256(document), "inactiveObservedAtMs": str(after_ms),
-            "replacement": evidence, "slots": inspect_all()}
+    slots, parents = inspect_all()
+    return {"retirementSha256": sha256(document), "retirementObservedAtMs": str(after_ms),
+            "replacement": evidence, "slots": slots, "terminatedParents": parents}
 
 
 def main():
@@ -276,6 +286,7 @@ def main():
     verify.add_argument("wallet_trust", type=Path)
     verify.add_argument("epoch")
     verify.add_argument("--inspection-profiles", nargs=6, required=True)
+    verify.add_argument("--host-inspection-profile", metavar="ACCOUNT=PROFILE", action="append", default=[])
     verify.add_argument("--wait-seconds", type=int, default=300)
     args = parser.parse_args()
     try:
@@ -283,7 +294,13 @@ def main():
         if args.command == "inspect":
             result = inspect_keys(trust, args.epoch, args.share, args.check_inactive)
         elif args.command == "verify-retired":
-            result = verify_retired(trust, args.wallet_trust, args.epoch, args.inspection_profiles, args.wait_seconds)
+            profiles = {}
+            for mapping in args.host_inspection_profile:
+                account, _, profile = mapping.partition("=")
+                if not re.fullmatch(r"[0-9]{12}", account) or not profile or account in profiles:
+                    raise ValueError("provide distinct host inspection profiles as ACCOUNT=PROFILE")
+                profiles[account] = profile
+            result = verify_retired(trust, args.wallet_trust, args.epoch, args.inspection_profiles, profiles, args.wait_seconds)
         elif args.command == "draft":
             result = {"manifest": qualified_manifest(trust, args.wallet_trust, args.epoch, args.replacement),
                       "signatures": [], "recoveryProofs": []}

@@ -18,7 +18,7 @@ const expectation: CustodyExpectation = {
   epoch: "2",
   noteSeedCommitment: "bb".repeat(32),
   recipientPublicKeys: Array.from({ length: 6 }, (_, i) => `a${i}`.repeat(64)),
-  pcrs: { 0: "11".repeat(48), 1: "22".repeat(48), 2: "33".repeat(48), 3: "44".repeat(48) },
+  pcrs: { 0: "11".repeat(48), 1: "22".repeat(48), 2: "33".repeat(48), 3: "44".repeat(48), 4: "56".repeat(48) },
 };
 const nonce = new Uint8Array(32).fill(5);
 const now = 1_750_000_000_000n;
@@ -69,6 +69,8 @@ it("rejects substituted recipients, commitments, seed, epoch or network before a
     { ...result, packages: [{ ...result.packages[0]!, ciphertext: "00" }, ...result.packages.slice(1)] },
   ]) await expect(verify(manipulated)).rejects.toThrow();
   await expect(verify(result, { ...expectation, noteSeedCommitment: undefined })).rejects.toThrow();
+  const pcrs = { 0: "11".repeat(48), 1: "22".repeat(48), 2: "33".repeat(48), 3: "44".repeat(48) };
+  await expect(verify(result, { ...expectation, pcrs })).rejects.toThrow("BootProofUnverified");
   expect(verifyNitroCustodyEvidence).not.toHaveBeenCalled();
 });
 

@@ -8,24 +8,38 @@ import time
 from pathlib import Path
 
 from approval import (
-    KEY_ARN, ROLE_ARN, add_approval, approval_roster, arn, canonical, fields, file_digest, hex_digest,
+    KEY_ARN, ROLE_ARN, add_approval, approval_roster, arn, aws, canonical, fields, file_digest, hex_digest,
     parse_json, read_document, read_json, sha256,
 )
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_acknowledgement_key, check_recovery_roster, load_epoch,
     read_registered_target, require_active_epoch, require_publication_roster, require_target_approval_window,
-    target_object_name, validate_target, verify_target_approval, write_once,
+    target_attestation, target_object_name, validate_target, verify_target_approval, write_once,
 )
-from kms_policy import boot_pins, decrypt_conditions, key_policy
+from kms_policy import decrypt_conditions, key_policy, target_boot_pins
 from provenance import MAIN_REF, verify as verify_build
 from relay import relay_pins
 
 def host_policy(manifest):
-    pins = boot_pins(manifest["hostRole"], manifest["pcrs"])
+    pins = target_boot_pins(manifest["hostRole"], manifest["pcrs"], manifest["instanceId"])
     return {"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow", "Action": "kms:Decrypt", "Resource": manifest["wrappingKeys"],
          "Condition": decrypt_conditions(pins)}
     ]}
+
+
+def require_host_state(manifest, state, profile):
+    account = arn(ROLE_ARN, manifest["hostRole"])[1]
+    region, instance = manifest["hostRegion"], manifest["instanceId"]
+    reservations = aws(region, "ec2", "describe-instances", ["--instance-ids", instance], profile=profile)["Reservations"]
+    if len(reservations) != 1 or reservations[0].get("OwnerId") != account:
+        raise ValueError(f"missing EC2 evidence for {account}/{region}/{instance}")
+    instances = reservations[0].get("Instances", [])
+    if (len(instances) != 1 or instances[0].get("InstanceId") != instance or
+            instances[0].get("State", {}).get("Name") != state or
+            (state == "running" and instances[0].get("EnclaveOptions", {}).get("Enabled") is not True)):
+        raise ValueError(f"expected {account}/{region}/{instance} to be {state}")
+    return {"account": account, "region": region, "instanceId": instance, "state": state}
 
 
 def target_binding(manifest):
@@ -128,7 +142,7 @@ def target(trust, document, receipt, custodians, build):
                 arn(ROLE_ARN, custodian)[1] != account or arn(ROLE_ARN, retirement)[1] != account):
             raise ValueError("each custody slot requires separate keys and roles in its own account")
         accounts.add(account)
-        policies.append(key_policy(host, custodian, retirement, pins))
+        policies.append(key_policy(host, custodian, retirement, pins, manifest["instanceId"]))
     return roster["keys"], policies, next_keys
 
 
@@ -141,11 +155,14 @@ def main():
     prepare.add_argument("host_role")
     prepare.add_argument("wrapping_keys", type=Path)
     prepare.add_argument("expires_at", type=int)
+    prepare.add_argument("--host-region", required=True)
+    prepare.add_argument("--instance-id", required=True)
     prepare.add_argument("--next-roster", type=Path)
     sign = commands.add_parser("sign")
     sign.add_argument("target", type=Path)
     sign.add_argument("key")
     sign.add_argument("output", type=Path)
+    sign.add_argument("--host-inspection-profile", required=True)
     sign.add_argument("--source-commit", required=True)
     sign.add_argument("--source-ref", default=MAIN_REF)
     sign.add_argument("--next-inspection-profiles", nargs=6)
@@ -154,6 +171,7 @@ def main():
     register.add_argument("target", type=Path)
     identity = commands.add_parser("host-policy")
     identity.add_argument("target", type=Path)
+    commands.add_parser("attestation-pins").add_argument("target", type=Path)
     args = parser.parse_args()
     try:
         trust = read_json(args.trust)
@@ -171,7 +189,8 @@ def main():
                 "expiresAt": args.expires_at, "eifSha256": file_digest(args.build / "enclave.eif"),
                 "executableSha256": file_digest(args.build / "tvc_app"),
                 "configurationSha256": file_digest(config_path), "pcrs": {pcr: measured[pcr] for pcr in ("PCR0", "PCR1", "PCR2")},
-                "hostRole": args.host_role, "wrappingKeys": read_json(args.wrapping_keys),
+                "hostRole": args.host_role, "hostRegion": args.host_region, "instanceId": args.instance_id,
+                "wrappingKeys": read_json(args.wrapping_keys),
                 "nextCustodians": read_json(args.next_roster) if args.next_roster else None,
                 "nextRelay": relay_pins(trust, str(int(epoch) + 1)) if mode == "rotate" else None,
                 "approvalFromEpoch": approval_roster(trust)["fromEpoch"],
@@ -185,9 +204,11 @@ def main():
         if args.command == "register":
             register_target(trust, document)
             return
-        if args.command == "host-policy":
+        if args.command in {"host-policy", "attestation-pins"}:
             require_registered_target(trust, verify_target_approval(trust, document))
-            print(canonical(host_policy(document["manifest"])).decode())
+            manifest = document["manifest"]
+            result = host_policy(manifest) if args.command == "host-policy" else target_attestation(manifest)["pcrs"]
+            print(canonical(result).decode())
             return
         require_active_epoch(trust, receipt["custody"]["epoch"])
         reviewed = verify_build(args.build, receipt["network"], args.source_commit, args.source_ref)
@@ -204,6 +225,7 @@ def main():
                 check_acknowledgement_key(custodian)
         elif args.next_relay_build is not None:
             raise ValueError("a successor relay build is only used for rotation")
+        require_host_state(manifest, "running", args.host_inspection_profile)
         approved = add_approval(keys, TARGET_APPROVAL, document, args.key)
         with args.output.open("xb") as output:
             output.write(canonical(approved) + b"\n")

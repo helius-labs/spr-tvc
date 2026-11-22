@@ -65,6 +65,12 @@ def boot_pins(host, measurements):
     return pins
 
 
+def target_boot_pins(host, measurements, instance):
+    if not isinstance(instance, str) or not re.fullmatch(r"i-[0-9a-f]{17}", instance):
+        raise ValueError("expected an EC2 instance ID")
+    return {**boot_pins(host, measurements), "PCR4": hashlib.sha384(bytes(48) + instance.encode()).hexdigest()}
+
+
 def decrypt_conditions(pins):
     return {
         "StringEquals": {"kms:EncryptionAlgorithm": RSA_OAEP},
@@ -101,12 +107,12 @@ def recovery_policy(custodian, key_admin, relay_host, measurements, epoch):
     ]}
 
 
-def key_policy(host, custodian, key_admin, measurements):
+def key_policy(host, custodian, key_admin, measurements, instance):
     validate_custodian_roles(custodian, key_admin)
     account = arn(ROLE_ARN, custodian)[1]
     if arn(ROLE_ARN, host)[1] == account:
         raise ValueError("target host must be in a separate account from the custodian")
-    pins = boot_pins(host, measurements)
+    pins = target_boot_pins(host, measurements, instance)
     return {"Version": "2012-10-17", "Statement": [
         seal(),
         *restrict_decrypt(host, pins),
@@ -123,11 +129,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("measurements", type=argparse.FileType("r"))
     parser.add_argument("--host-role", required=True)
+    parser.add_argument("--instance-id", required=True)
     parser.add_argument("--custodian-role", required=True)
     parser.add_argument("--key-admin-role", required=True)
     args = parser.parse_args()
     measurements = json.load(args.measurements)["Measurements"]
-    print(json.dumps(key_policy(args.host_role, args.custodian_role, args.key_admin_role, measurements), indent=2))
+    print(json.dumps(key_policy(args.host_role, args.custodian_role, args.key_admin_role, measurements, args.instance_id), indent=2))
 
 
 if __name__ == "__main__":

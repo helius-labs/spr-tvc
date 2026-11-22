@@ -24,7 +24,7 @@ from custody_ledger import (
 )
 from deployment import register_target, require_registered_target
 from kms_policy import acknowledgement_policy, boot_pins
-from nitro_fixtures import DOMAIN, HOST, key, pin, schedule, sign
+from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, schedule, sign
 from provenance import describe
 from retirement import (commit_retirement, inspect_keys, key_inventory, prove_recovery, qualified_manifest, qualified_policy,
                         retirement_scope, sign_retirement, verify_retired)
@@ -93,11 +93,12 @@ class CustodyLedgerTests(unittest.TestCase):
         target = {"network": "devnet", "securityDomainId": DOMAIN, "receiptSha256": sha256(predecessor),
                   "custodyEpoch": "1", "approvalFromEpoch": approval_roster(self.trust)["fromEpoch"], "expiresAt": self.now + 3600,
                   "releaseId": manifest["capture"]["receipt"]["releaseId"], "mode": "rotate", "hostRole": HOST,
-                  "pcrs": PINS, "eifSha256": manifest["ceremonyEifSha256"],
+                  "hostRegion": REGION, "instanceId": INSTANCE, "pcrs": PINS, "eifSha256": manifest["ceremonyEifSha256"],
                   "executableSha256": hashlib.sha256(b"rotation executable fixture").hexdigest(),
                   "configurationSha256": sha256(manifest["capture"]["configuration"]),
                   "nextCustodians": copy.deepcopy(manifest["custodians"]), "nextRelay": copy.deepcopy(manifest["relay"]),
                   "wrappingKeys": [key(i, 21) for i in range(1, 7)]}
+        manifest["capture"]["pcrs"] = target_attestation(target)["pcrs"]
         manifest["rotationTargetSha256"] = sha256(target)
         approval = self.signed_subject(TARGET_APPROVAL, target)
         if register:
@@ -293,7 +294,8 @@ class CustodyLedgerTests(unittest.TestCase):
                 ({"custodians": [{**roster[0], "acknowledgementKey": pin(key(1, 33))}, *roster[1:]]}, "successor roster"),
                 ({"ceremonyEifSha256": "ff" * 32}, "ceremony image"),
                 ({"rotationTargetSha256": "ab" * 32}, "does not pin"),
-                ({"capture": {**capture, "pcrs": {**capture["pcrs"], "3": "ef" * 48}}}, "ceremony image"),
+                ({"capture": {**capture, "pcrs": {**capture["pcrs"], "3": "ef" * 48}}}, "object missing"),
+                ({"capture": {**capture, "pcrs": {**capture["pcrs"], "4": "ef" * 48}}}, "object missing"),
             ):
                 bad = copy.deepcopy(document)
                 bad["authorization"]["manifest"].update(copy.deepcopy(change))
@@ -456,6 +458,7 @@ class CustodyLedgerTests(unittest.TestCase):
         return {"network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "2",
                 "receiptSha256": sha256(receipt), "approvalFromEpoch": approval_roster(self.trust)["fromEpoch"],
                 "releaseId": "new-slot", "mode": "serve", "hostRole": HOST, "expiresAt": self.now + 3600,
+                "hostRegion": REGION, "instanceId": "i-1234567890abcdef1",
                 "executableSha256": "ab" * 32, "configurationSha256": "bc" * 32, "eifSha256": "cd" * 32,
                 "nextCustodians": None, "nextRelay": None, "wrappingKeys": [key(i, 22) for i in range(1, 7)],
                 "pcrs": {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)}, **overrides}
@@ -512,6 +515,7 @@ class CustodyLedgerTests(unittest.TestCase):
         for changes, message in (({"custodyDigest": "aa" * 32}, "committed custody record"),
                                  ({"executableSha256": "aa" * 32}, "custody-approved target"),
                                  ({"pcrs": {**replica["pcrs"], "3": "aa" * 48}}, "object missing"),
+                                 ({"pcrs": {**replica["pcrs"], "4": "aa" * 48}}, "object missing"),
                                  ({"custodyEpoch": "1"}, "below the wallet custody floor")):
             with self.assertRaisesRegex(ValueError, message):
                 check(targets=[replica, {**replica, **changes}])
@@ -540,6 +544,7 @@ class CustodyLedgerTests(unittest.TestCase):
         target = {
             "network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "1", "receiptSha256": sha256(old),
             "approvalFromEpoch": "1", "releaseId": "old-slot", "hostRole": HOST, "expiresAt": self.now + 3600,
+            "hostRegion": REGION, "instanceId": "i-1234567890abcdef2",
             "mode": "serve", "nextCustodians": None, "nextRelay": None,
             "executableSha256": "ab" * 32, "configurationSha256": "bc" * 32, "eifSha256": "cd" * 32,
             "wrappingKeys": [key(account, 11) for account in range(1, 7)],
@@ -636,7 +641,7 @@ class CustodyLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
             require_active_epoch(self.trust, "1")
 
-    def test_retirement_qualifies_only_a_live_registered_serving_image_and_role(self):
+    def test_retirement_qualifies_only_a_live_registered_serving_replica_on_a_new_parent(self):
         publish(self.trust, self.sign(self.document(1)))
         _, old, _ = load_epoch(self.trust, "1")
         rotated, _ = self.rotation_document(old)
@@ -644,7 +649,7 @@ class CustodyLedgerTests(unittest.TestCase):
         scope, receipt, _ = retirement_scope(self.trust, "1", "2")
         seed = receipt["custody"]["noteSeedCommitment"]
         registered = self.replacement_target()
-        pins = {key.removeprefix("PCR"): value for key, value in boot_pins(HOST, registered["pcrs"]).items()}
+        pins = target_attestation(registered)["pcrs"]
         observed = {"releaseId": registered["releaseId"], "pcrs": pins,
                     "bootstrap": self.qualification(registered)["replacementBootstrap"]}
         evidence = {"policyDigest": "fe" * 32, "targets": [observed]}
@@ -663,16 +668,19 @@ class CustodyLedgerTests(unittest.TestCase):
                             "nextCustodians": rotated["authorization"]["manifest"]["custodians"],
                             "nextRelay": self.trust["recoveryRelays"]["3"]}
                 register_target(self.trust, self.signed_subject(TARGET_APPROVAL, rotation))
-                with self.assertRaisesRegex(ValueError, "no registered serving target"):
+                same_parent = {**registered, "instanceId": INSTANCE, "wrappingKeys": [key(i, 23) for i in range(1, 7)]}
+                register_target(self.trust, self.signed_subject(TARGET_APPROVAL, same_parent))
+                with self.assertRaisesRegex(ValueError, "no registered serving target on a separate replacement instance"):
                     qualified_policy(self.trust, wallet_trust, scope, seed)
                 query.assert_not_called()
 
                 register_target(self.trust, self.signed_subject(TARGET_APPROVAL, registered))
-                query.return_value.stdout = json.dumps({**evidence, "targets": [
-                    {**observed, "pcrs": {**pins, "3": "ab" * 48}},
-                ]}).encode()
-                with self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
-                    qualified_policy(self.trust, wallet_trust, scope, seed)
+                for pcr in ("3", "4"):
+                    query.return_value.stdout = json.dumps({**evidence, "targets": [
+                        {**observed, "pcrs": {**pins, pcr: "ab" * 48}},
+                    ]}).encode()
+                    with self.subTest(pcr=pcr), self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
+                        qualified_policy(self.trust, wallet_trust, scope, seed)
 
                 for slots in ([1, 2], [1, 1, 2], [1, 2, 7], [True, 2, 3], [3, 2, 1]):
                     bootstrap = {**observed["bootstrap"], "slots": slots}
@@ -709,7 +717,9 @@ class CustodyLedgerTests(unittest.TestCase):
         profiles = [f"old-slot-{index}" for index in range(1, 7)]
         inventory = {arn: (profile, policy) for index, profile in enumerate(profiles, 1)
                      for arn, policy in key_inventory(self.trust, "1", index)[1].items()}
+        host_profiles = {"000000000007": "old-parents"}
         active = key(6, 21)
+        parent = {"account": "000000000007", "region": REGION, "instanceId": INSTANCE, "state": "terminated"}
         visited = []
 
         def kms(arn, operation, args=(), *, profile):
@@ -732,25 +742,36 @@ class CustodyLedgerTests(unittest.TestCase):
         self.trust["walletTrustSha256"] = hashlib.sha256(wallet.read_bytes()).hexdigest()
         with (patch("retirement.kms", side_effect=kms),
               patch("retirement.run_command") as query, patch("retirement.time.sleep"),
+              patch("retirement.require_host_state", return_value=parent) as host_state,
               patch("retirement.require_recovery_quorum") as quorum):
             with self.assertRaisesRegex(ValueError, active):
-                verify_retired(self.trust, wallet, "1", profiles, 5)
+                verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
             query.assert_not_called()
             active = None
+            with self.assertRaisesRegex(ValueError, "provide one host inspection profile"):
+                verify_retired(self.trust, wallet, "1", profiles, {}, 5)
+            with patch("retirement.require_host_state", side_effect=ValueError("old parent remains running")):
+                with self.assertRaisesRegex(ValueError, "old parent remains running"):
+                    verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
+            query.assert_not_called()
             visited.clear()
             with patch("retirement.time.monotonic", side_effect=[0, 6]):
                 query.return_value.stdout = stale
                 with self.assertRaisesRegex(ValueError, "no replacement boot observed"):
-                    verify_retired(self.trust, wallet, "1", profiles, 5)
+                    verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
             quorum.assert_not_called()
             visited.clear()
+            host_state.reset_mock()
             query.reset_mock()
             query.side_effect = [SimpleNamespace(stdout=body) for body in (stale, ready)]
-            report = verify_retired(self.trust, wallet, "1", profiles, 5)
+            report = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
             self.assertEqual(set(inventory), set(visited))
             self.assertEqual(len(visited), 2 * len(inventory))
             self.assertEqual(report["retirementSha256"], sha256(retired))
-            self.assertEqual(report["inactiveObservedAtMs"], str(self.booted_at_ms))
+            self.assertEqual(report["retirementObservedAtMs"], str(self.booted_at_ms))
+            self.assertEqual(report["terminatedParents"], [parent])
+            self.assertEqual(host_state.call_count, 2)
+            host_state.assert_called_with(ANY, "terminated", "old-parents")
             self.assertEqual(report["replacement"]["replacementBootstrap"], fresh)
             self.assertEqual({row["keyArn"] for slot in report["slots"] for row in slot["keys"]}, set(inventory))
             quorum.assert_called_once()
@@ -776,7 +797,11 @@ class CustodyLedgerTests(unittest.TestCase):
         renewed = {**winner, "expiresAt": self.now + 60, "approvalFromEpoch": "3"}
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, renewed))
         require_registered_target(self.trust, renewed)
-        self.assertEqual(len([name for name in self.objects if "/targets/2/" in name]), 1)
+        sibling = {**renewed, "instanceId": "i-1234567890abcdef3", "wrappingKeys": [key(i, 5) for i in range(1, 7)]}
+        self.assertNotEqual(target_object_name(renewed), target_object_name(sibling))
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, sibling))
+        require_registered_target(self.trust, sibling)
+        self.assertEqual(len([name for name in self.objects if "/targets/2/" in name]), 2)
 
     def test_target_registration_refuses_a_deadline_inside_the_write_budget(self):
         publish(self.trust, self.sign(self.document(1)))

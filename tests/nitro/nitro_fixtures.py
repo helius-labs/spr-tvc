@@ -9,6 +9,9 @@ from approval import approval_message
 DOMAIN = "ab" * 32
 HOST = "arn:aws:iam::000000000007:role/host"
 
+INSTANCE = "i-1234567890abcdef0"
+REGION = "eu-north-1"
+
 
 def key(account, slot=1):
     return f"arn:aws:kms:eu-north-1:{account:012}:key/12345678-1234-1234-1234-{slot:012}"

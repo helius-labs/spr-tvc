@@ -5,7 +5,7 @@ import { decodeDecimalU64, encodeDecimalU64 } from "../sdk/src/protocol/decimal.
 import { encodeLowerHex, requireHex } from "../sdk/src/protocol/hex.js";
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
 import type { Network } from "../sdk/src/protocol/types.js";
-import type { NitroPcrs } from "../sdk/src/attestation/nitro-policy.js";
+import type { NitroPcrs, NitroTargetPcrs } from "../sdk/src/attestation/nitro-policy.js";
 
 type Configuration = {
   releaseId: string;
@@ -23,10 +23,10 @@ type Capture = {
   nonce: string;
   verifiedAtMs: string;
   configuration: Configuration;
-  pcrs: NitroPcrs;
+  pcrs: NitroPcrs | NitroTargetPcrs;
 };
 
-function expectation(configuration: Configuration, network: Network, pcrs: NitroPcrs) {
+function expectation(configuration: Configuration, network: Network, pcrs: NitroPcrs | NitroTargetPcrs) {
   const { releaseId, securityDomainId, deployment } = configuration;
   const { mode, previous, recipientPublicKeys } = deployment;
   if (!((mode === "rotate" && previous) || (mode === "initialize" && !previous))) {
@@ -66,7 +66,7 @@ async function main(): Promise<void> {
   }
   const config = parseStrictJson<Configuration>(await readFile(configuration, "utf8"),
     ["releaseId", "securityDomainId", "deployment"]);
-  const pcrs = JSON.parse(await readFile(pinFile, "utf8")) as NitroPcrs;
+  const pcrs = JSON.parse(await readFile(pinFile, "utf8")) as NitroPcrs | NitroTargetPcrs;
   const nonce = crypto.getRandomValues(new Uint8Array(32));
   const signal = AbortSignal.timeout(10_000);
   const response = await fetch(url, { method: "POST", body: nonce, redirect: "error", signal });

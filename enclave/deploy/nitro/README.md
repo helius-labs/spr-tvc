@@ -150,31 +150,36 @@ accounts. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
    `{"mode":"serve","custody":{...}}`. Build and review the EIF. In the six
    custody accounts, install the final wrapping policy on a fresh
    KMS-generated RSA `ENCRYPT_DECRYPT` key per slot. Render the policy with
-   `kms_policy.py` using the build measurements and exact host, custodian and
+   `kms_policy.py` using the build measurements, `--instance-id`, and exact host, custodian and
    retirement roles. Keep the returned immutable ARNs in `wrapping-keys.json`,
    an array in roster order. Choose an approval deadline in Unix seconds.
 2. Two approval signers independently check and sign the target manifest. It
-   binds the canonical receipt, mode, EIF, configuration, measurements and
-   six wrapping keys. A rotation draft also takes `--next-roster roster-next.json`
+   binds the canonical receipt, mode, EIF, configuration, measurements, parent
+   account, EC2 region and instance ID, and six wrapping keys. Each signer uses
+   a read-only profile with `ec2:DescribeInstances` in the host account to
+   confirm that exact parent is running with enclave support enabled. A rotation draft also takes `--next-roster roster-next.json`
    and binds the successor relay from custody trust. Before authorizing a
    rotation, both signers verify the successor's build and keys with
    `--next-relay-build BUILD COMMIT REF` and `--next-inspection-profiles`.
 
    ```sh
    python3 "$nitro/deployment.py" trust.json "$build_dir" draft "$host_role" wrapping-keys.json \
-     "$approval_deadline" > target-draft.json
+     "$approval_deadline" --host-region "$host_region" --instance-id "$instance_id" > target-draft.json
    python3 "$nitro/deployment.py" trust.json "$build_dir" sign target-draft.json "$approval_key" \
-     target-signed.json --source-commit "$reviewed_commit" --source-ref "$source_ref"
+     target-signed.json --source-commit "$reviewed_commit" --source-ref "$source_ref" \
+     --host-inspection-profile "$host_read_profile"
    python3 "$nitro/deployment.py" trust.json "$build_dir" register target-signed.json
    python3 "$nitro/deployment.py" trust.json "$build_dir" host-policy target-signed.json > host-kms-policy.json
+   python3 "$nitro/deployment.py" trust.json "$build_dir" attestation-pins target-signed.json > pcrs.json
    ```
 
    Register with the dedicated ledger publisher more than 30 seconds before
    the approval deadline. The ledger verifies that S3 recorded the first
    registration before expiry. It keeps the signed target and all six
    wrapping-key ARNs. Within an epoch, a release ID
-   and PCR0–PCR3 identify one wrapping-key set. Use a fresh release identity
-   for a different key set. A fresh approval can renew the wrapping deadline
+   and PCR0–PCR4 identify one wrapping-key set. Each parent needs its own set.
+   Use a fresh release identity to replace keys for the same image and parent.
+   A fresh approval can renew the wrapping deadline
    without replacing the registered target. Use [Share release](#share-release)
    to produce more than three wraps so a new boot can tolerate unavailable
    keys.
@@ -213,8 +218,9 @@ accounts. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
    Build a distinct rotation EIF. Three old custodians wrap their previous
    shares to that EIF, using its release ID and the old custody epoch. The
    rotation enclave verifies the old seed commitment before issuing the new
-   shares. Commit the new receipt only after all six new keys acknowledge it.
-2. Commission new serving slots from the new receipt. On a fresh enclave run,
+   shares. Use the rotation target's `attestation-pins` output for the
+   ceremony capture. Commit the new receipt after all six keys acknowledge it.
+2. Commission serving slots from the new receipt on separate EC2 parents. On a fresh enclave run,
    pass `--slots 2 4 6` to `provision.py` to use only those three current slots.
    Provisioning fails if any selected slot fails. Save the three slots that
    the enclave reports using to restore the seed. If the response is lost,
@@ -223,8 +229,8 @@ accounts. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
    addressed before rotation. Keep healthy old slots during qualification.
 3. Allow overlap while the wallet policy floor covers both epochs. After a
    cold boot and wallet canary on the new epoch, publish a policy with
-   `minimumCustodyEpoch` at the new epoch. Drain old sessions and stop the old
-   enclaves. An older executable can be built for the current epoch if needed.
+   `minimumCustodyEpoch` at the new epoch. Drain old sessions and terminate
+   every parent registered to serve or rotate the old epoch. An older executable can be built for the current epoch if needed.
 4. Pin the file SHA-256 of the independently distributed wallet trust bundle
    as `walletTrustSha256` in the custody trust file. The retirement draft
    records the replacement's attested boot key ID, Nitro bootstrap time and
@@ -264,21 +270,26 @@ accounts. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
    inventory, schedules approved keys, and repeats `inspect --check-inactive`.
    Scheduling immediately disables cryptographic use. Canceling leaves the
    key disabled, and the sealed policy grants no permission to re-enable it.
-   Run the read-only verification before AWS deletes the key metadata. Give
-   it one read-only inspection profile for each of the six old custody
-   accounts. Use an operator host with a synchronized clock.
+   Run the read-only verification while AWS still reports the terminated
+   instances and the old key metadata. Give it a KMS inspection profile for
+   each old custody account and an EC2 inspection profile for each old parent
+   account. Use an operator host with a synchronized clock.
 
    ```sh
    python3 "$nitro/retirement.py" trust.json verify-retired wallet-trust.json 1 \
-     --inspection-profiles "${old_inspection_profiles[@]}" > retirement-report.json
+     --inspection-profiles "${old_inspection_profiles[@]}" \
+     --host-inspection-profile "$old_host_account=$old_host_read_profile" > retirement-report.json
    ```
 
-   After it verifies the old keys, cold-boot a registered replacement with
-   exactly three slots. The verifier waits for a later attested boot, checks
-   the six keys used by its slots, and checks the entire old key inventory a
-   second time. Record the shutdown of the old fleet and the on-chain canary
-   alongside the report. Retain the old signed receipt and public trust pins.
-   [AWS KMS key states](https://docs.aws.amazon.com/kms/latest/developerguide/key-state.html)
+   After it verifies that the old keys are inactive and the registered
+   parents terminated, cold-boot a registered replacement with exactly three
+   slots. The verifier waits for that later attested boot, checks the six keys
+   used by its slots, then checks the old keys and parents again. If an
+   instance is missing from EC2, the verifier refuses the report. AWS
+   usually lists terminated instances for less than an hour. Archive the
+   result with the on-chain canary, old signed receipt and public trust pins.
+   [EC2 instance visibility](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeInstances.html)
+   · [KMS key states](https://docs.aws.amazon.com/kms/latest/developerguide/key-state.html)
 
 ## Share release
 
@@ -355,10 +366,11 @@ Sequence 1 has `previousPolicyDigest: null`. Each later sequence signs the
 digest of the current published policy. Use the domain-separated policy
 digest specified in [the Nitro security spec](../../NITRO.md#proposal-and-publication).
 Each target contains `endpoint`, `releaseId`, `executableSha256`,
-`custodyEpoch`, `custodyDigest` and `pcrs`. Obtain `custodyDigest` with
+`custodyEpoch`, `custodyDigest` and `pcrs`. Use `attestation-pins` from
+the registered target for `pcrs`. Obtain `custodyDigest` with
 `python3 "$nitro/custody_ledger.py" trust.json read "$epoch" --custody-digest`.
 Register each serving target before signing an activation. The signing and
-publication tools match its executable, release ID and PCR0–PCR3 to the
+publication tools match its executable, release ID and PCR0–PCR4 to the
 registered serving image and verify its committed, active custody epoch.
 Give release signers, custody signers and both publishers scoped ledger read
 access using `reader-policy`. Distribute the custody trust file independently.

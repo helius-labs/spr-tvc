@@ -44,7 +44,7 @@ function signedPolicy(overrides: Partial<NitroPolicy> = {}) {
       releaseId: "nitro-2",
       custodyEpoch: "1", custodyDigest: "99".repeat(32),
       executableSha256: "77".repeat(32),
-      pcrs: { 0: "11".repeat(48), 1: "22".repeat(48), 2: "33".repeat(48), 3: "44".repeat(48) },
+      pcrs: { 0: "11".repeat(48), 1: "22".repeat(48), 2: "33".repeat(48), 3: "44".repeat(48), 4: "56".repeat(48) },
     }],
     ...overrides,
   };

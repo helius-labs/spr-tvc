@@ -18,6 +18,8 @@ from provision import provision, read_target, recipient_for
 from relay import decrypt_recipient
 
 HOST = "arn:aws:iam::111111111111:role/host"
+INSTANCE = "i-1234567890abcdef0"
+PCR4 = "08f996b5d43e047a9eb51e7f548bfee7e164fd7dc8f65541f2ac09d6545ac812719327281c401a67a10fcba87ae79ce0"
 CUSTODIAN = "arn:aws:iam::222222222222:role/custodian"
 RETIREMENT = "arn:aws:iam::222222222222:role/retirement"
 PINS = {f"PCR{index}": byte * 48 for index, byte in enumerate(("12", "23", "34"))}
@@ -25,7 +27,7 @@ DOMAIN = "ab" * 32
 KEY_1 = "arn:aws:kms:eu-north-1:222222222222:key/12345678-1234-1234-1234-123456789abc"
 KEYS = [KEY_1.replace("222222222222", f"{index:012d}") for index in range(1, 7)]
 TARGET = {"network": "mainnet", "securityDomainId": DOMAIN, "releaseId": "release-a", "custodyEpoch": "5",
-          "hostRole": HOST, "pcrs": PINS, "wrappingKeys": KEYS, "mode": "serve", "expiresAt": 2_000_000_000,
+          "hostRole": HOST, "hostRegion": "eu-north-1", "instanceId": INSTANCE, "pcrs": PINS, "wrappingKeys": KEYS, "mode": "serve", "expiresAt": 2_000_000_000,
           "nextCustodians": None, "nextRelay": None, "approvalFromEpoch": "1", "receiptSha256": "11" * 32,
           "eifSha256": "22" * 32, "configurationSha256": "33" * 32, "executableSha256": "44" * 32}
 SHARES = pathlib.Path("shares")
@@ -35,12 +37,14 @@ class KeyPolicyTests(unittest.TestCase):
     def test_only_the_approved_principal_with_all_pcrs_can_decrypt(self):
         for policy, principal in (
             (recovery_policy(CUSTODIAN, RETIREMENT, HOST, PINS, "5"), CUSTODIAN),
-            (key_policy(HOST, CUSTODIAN, RETIREMENT, PINS), HOST),
+            (key_policy(HOST, CUSTODIAN, RETIREMENT, PINS, INSTANCE), HOST),
         ):
             statements = policy["Statement"]
             grant, = [rule for rule in statements if rule["Effect"] == "Allow" and rule["Action"] == "kms:Decrypt"]
             self.assertEqual(grant["Principal"], {"AWS": principal})
             expected = {**PINS, "PCR3": hashlib.sha384(bytes(48) + HOST.encode()).hexdigest()}
+            if principal == HOST:
+                expected["PCR4"] = PCR4
             self.assertEqual(grant["Condition"], {
                 "StringEqualsIgnoreCase": {f"kms:RecipientAttestation:{pcr}": pin for pcr, pin in expected.items()},
                 "StringEquals": {"kms:EncryptionAlgorithm": RSA_OAEP},
@@ -62,7 +66,7 @@ class KeyPolicyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 recovery_policy(CUSTODIAN, RETIREMENT, host, measurements, "5")
             with self.assertRaises(ValueError):
-                key_policy(host, CUSTODIAN, RETIREMENT, measurements)
+                key_policy(host, CUSTODIAN, RETIREMENT, measurements, INSTANCE)
         for fields in [
             ("localnet", DOMAIN, "release-a", "1"), ("mainnet", "0" * 64, "release-a", "1"),
             ("mainnet", DOMAIN, "../release-a", "1"), ("mainnet", DOMAIN, "release-a", "0"),
@@ -73,7 +77,7 @@ class KeyPolicyTests(unittest.TestCase):
 
     def test_host_identity_policy_can_only_unwrap_its_exact_approved_slots(self):
         statement, = host_policy(TARGET)["Statement"]
-        policy = key_policy(HOST, CUSTODIAN, RETIREMENT, PINS)
+        policy = key_policy(HOST, CUSTODIAN, RETIREMENT, PINS, INSTANCE)
         decrypt = next(rule for rule in policy["Statement"] if rule["Sid"] == "ProvisionAttestedEnclave")
         self.assertEqual(statement, {"Effect": "Allow", "Action": "kms:Decrypt", "Resource": KEYS,
                                      "Condition": decrypt["Condition"]})

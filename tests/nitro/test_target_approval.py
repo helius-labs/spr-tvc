@@ -12,9 +12,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import sha256
 from custody_ledger import TARGET_APPROVAL
-from deployment import file_digest, main, target
+from deployment import file_digest, main, require_host_state, target
 from kms_policy import recovery_policy
-from nitro_fixtures import DOMAIN, HOST, key, pin, schedule, sign
+from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, schedule, sign
 from provenance import describe
 from relay_wrap import LABEL, release
 
@@ -55,7 +55,7 @@ class TargetApprovalTests(unittest.TestCase):
             "eifSha256": file_digest(self.build / "enclave.eif"),
             "executableSha256": file_digest(self.build / "tvc_app"),
             "configurationSha256": file_digest(self.build / "configuration.json"),
-            "pcrs": PINS, "hostRole": HOST, "wrappingKeys": [key(i, 2) for i in range(1, 7)],
+            "pcrs": PINS, "hostRole": HOST, "hostRegion": REGION, "instanceId": INSTANCE, "wrappingKeys": [key(i, 2) for i in range(1, 7)],
             "nextCustodians": None, "nextRelay": None,
         }
         self.approval = {"manifest": self.manifest, "signatures": [
@@ -144,10 +144,11 @@ class TargetApprovalTests(unittest.TestCase):
         commit = "ab" * 20
         signing_key = self.trust["approvalKeys"][0]["keys"][2]["keyArn"]
         argv = ["deployment.py", str(trust_path), str(self.build), "sign", str(target_path),
-                signing_key, str(output), "--source-commit", commit]
+                signing_key, str(output), "--source-commit", commit, "--host-inspection-profile", "host-reader"]
         reviewed = describe(self.build, "devnet", commit)
         with (patch("sys.argv", argv), patch("deployment.load_epoch", side_effect=self.load_epoch),
               patch("deployment.require_active_epoch"), patch("deployment.verify_build") as verify_build,
+              patch("deployment.require_host_state") as inspect,
               patch("deployment.add_approval", return_value=self.approval) as sign_target):
             for field in ("configurationSha256", "eifSha256", "executableSha256", "pcrs"):
                 value = {**PINS, "PCR0": "aa" * 48} if field == "pcrs" else "aa" * 32
@@ -159,7 +160,31 @@ class TargetApprovalTests(unittest.TestCase):
             verify_build.return_value = reviewed
             main()
             self.assertEqual(json.loads(output.read_bytes()), self.approval)
+            inspect.assert_called_once_with(self.manifest, "running", "host-reader")
             sign_target.assert_called_once()
+
+    @patch("deployment.aws")
+    def test_host_state_requires_exact_account_id_and_expected_state(self, describe):
+        instance = {"InstanceId": INSTANCE, "State": {"Name": "terminated"}}
+        reservation = {"OwnerId": "000000000007", "Instances": [instance]}
+        describe.return_value = {"Reservations": [reservation]}
+        self.assertEqual(require_host_state(self.manifest, "terminated", "host-reader")["instanceId"], INSTANCE)
+        describe.assert_called_once_with(REGION, "ec2", "describe-instances", ["--instance-ids", INSTANCE],
+                                        profile="host-reader")
+        for state in ("running", "stopped", "shutting-down"):
+            instance["State"]["Name"] = state
+            with self.subTest(state=state), self.assertRaises(ValueError):
+                require_host_state(self.manifest, "terminated", "host-reader")
+        instance["State"]["Name"] = "running"
+        with self.assertRaisesRegex(ValueError, "running"):
+            require_host_state(self.manifest, "running", "host-reader")
+        instance["EnclaveOptions"] = {"Enabled": True}
+        require_host_state(self.manifest, "running", "host-reader")
+        for changed in ([], [{**reservation, "OwnerId": "000000000006"}],
+                        [{**reservation, "Instances": [{**instance, "InstanceId": "i-1234567890abcdef1"}]}]):
+            describe.return_value = {"Reservations": changed}
+            with self.assertRaises(ValueError):
+                require_host_state(self.manifest, "running", "host-reader")
 
     def test_host_policy_command_requires_the_registered_quorum_approved_target(self):
         trust_path, target_path = self.build / "trust.json", self.build / "target.json"

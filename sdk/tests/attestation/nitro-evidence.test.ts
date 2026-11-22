@@ -26,7 +26,7 @@ describe("native Nitro evidence from a disposable AWS enclave", () => {
     });
   });
 
-  it.each([0, 1, 2, 3])("refuses a mismatch in pinned PCR %s", async (index) => {
+  it.each([0, 1, 2, 3, 4])("refuses a mismatch in pinned PCR %s", async (index) => {
     await expect(verifyNativeNitroEvidence(evidence, nonce, binding, {
       ...pcrs, [index]: "66".repeat(48),
     }, now)).rejects.toThrow("BootProofUnverified");

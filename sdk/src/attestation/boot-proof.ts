@@ -19,7 +19,7 @@ import {
 
 import { verifyAwsNitroAttestation, type CoseSign1 } from "./aws-nitro.js";
 import { parseQosP256Public } from "../crypto/qos.js";
-import type { NitroPcrs } from "./nitro-policy.js";
+import type { NitroPcrs, NitroTargetPcrs } from "./nitro-policy.js";
 
 const QOS_LIVE_MANIFEST_PCR_COMMITMENT_DOMAIN = "qos-live-manifest-pcr-commitment-v1";
 const QOS_LIVE_MANIFEST_COMMITMENT_PCR_INDEX = 17;
@@ -91,11 +91,12 @@ export async function verifyNativeNitroEvidence(
   document: Uint8Array,
   nonce: Uint8Array,
   discoveryBinding: Uint8Array,
-  expectedPcrs: NitroPcrs,
+  expectedPcrs: NitroTargetPcrs,
   nowMs: bigint,
 ) {
   try {
     const { attestation, validity } = await verifyNativeBinding(document, nonce, discoveryBinding, expectedPcrs, nowMs);
+    verifyPcr(attestation, 4, expectedPcrs[4]);
     const publicKey = asBytes(attestation.get("public_key"));
     parseQosP256Public(publicKey);
     return { proofKey: encodeLowerHex(publicKey), attestedAtMs: BigInt(attestation.get("timestamp") as number), ...validity };
@@ -108,11 +109,12 @@ export async function verifyNitroCustodyEvidence(
   document: Uint8Array,
   nonce: Uint8Array,
   binding: Uint8Array,
-  expectedPcrs: NitroPcrs,
+  expectedPcrs: NitroPcrs | NitroTargetPcrs,
   nowMs: bigint,
 ): Promise<void> {
   try {
     const { attestation } = await verifyNativeBinding(document, nonce, binding, expectedPcrs, nowMs);
+    if (4 in expectedPcrs) verifyPcr(attestation, 4, expectedPcrs[4]);
     if (attestation.get("public_key") != null) throw new DecryptionServiceError("BootProofUnverified");
   } catch {
     throw new DecryptionServiceError("BootProofUnverified");
@@ -295,10 +297,13 @@ function verifyProofBindings(
 
 function verifyIdentityPcrs(attestation: AwsNitroAttestationDocument, expectedPcrs: QosIdentityPcrs): void {
   for (const index of [0, 1, 2, 3] as const) {
-    const expected = decodeFixedLowerHex(expectedPcrs[index], SHA384_LEN);
-    if (!bytesEqual(expected, getPcr(attestation, index))) {
-      throw new DecryptionServiceError("BootProofUnverified");
-    }
+    verifyPcr(attestation, index, expectedPcrs[index]);
+  }
+}
+
+function verifyPcr(attestation: AwsNitroAttestationDocument, index: number, expected: string): void {
+  if (!bytesEqual(decodeFixedLowerHex(expected, SHA384_LEN), getPcr(attestation, index))) {
+    throw new DecryptionServiceError("BootProofUnverified");
   }
 }
 

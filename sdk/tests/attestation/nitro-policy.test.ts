@@ -42,7 +42,7 @@ const binding: NitroPolicy = {
     custodyEpoch: "1",
     custodyDigest: "11".repeat(32),
     executableSha256: "33".repeat(32),
-    pcrs: { 0: "11".repeat(48), 1: "22".repeat(48), 2: "33".repeat(48), 3: "44".repeat(48) },
+    pcrs: { 0: "11".repeat(48), 1: "22".repeat(48), 2: "33".repeat(48), 3: "44".repeat(48), 4: "56".repeat(48) },
   }],
 };
 
@@ -192,9 +192,16 @@ describe("native Nitro release policy", () => {
       [{ ...first, releaseId: "../escape" }],
       [{ ...first, pcrs: { ...first.pcrs, 0: "00".repeat(48) } }],
       [{ ...first, pcrs: { ...first.pcrs, 3: "33".repeat(32) } }],
+      [{ ...first, pcrs: { ...first.pcrs, 4: "00".repeat(48) } }],
       [{ ...first, pcrs: { ...first.pcrs, 8: "33".repeat(48) } }],
       [{ ...first, executableSha256: "00".repeat(32) }],
     ]) expect(() => verifyNitroPolicy(manifest({ ...binding, targets }, 0, 1), trust, now)).toThrow();
+    const { 0: image, 1: kernel, 2: application, 3: role } = first.pcrs;
+    const missingParent = {
+      ...first, pcrs: { 0: image, 1: kernel, 2: application, 3: role } as typeof first.pcrs,
+    };
+    expect(() => verifyNitroPolicy(manifest({ ...binding, targets: [missingParent] }, 0, 1), trust, now))
+      .toThrow("InvalidCanonicalJson");
     expect(() => verifyNitroPolicy(manifest({
       ...binding, network: "devnet", targets: [{ ...first, endpoint: "http://127.0.0.1/" }],
     }, 0, 1), { ...trust, network: "devnet" }, now)).not.toThrow();

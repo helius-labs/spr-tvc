@@ -90,7 +90,7 @@ test("requires custody registration and live attestation before publishing any a
   const activate: NitroPolicy = { ...first, action: "activate", targets: [{
     endpoint: "https://replica.example.com/", releaseId: "candidate", custodyEpoch: "1", executableSha256: "11".repeat(32),
     custodyDigest: "22".repeat(32),
-    pcrs: { 0: "12".repeat(48), 1: "23".repeat(48), 2: "34".repeat(48), 3: "45".repeat(48) },
+    pcrs: { 0: "12".repeat(48), 1: "23".repeat(48), 2: "34".repeat(48), 3: "45".repeat(48), 4: "56".repeat(48) },
   }] };
   const text = signed(activate);
   const bucket = trust.publications[0].bucket;

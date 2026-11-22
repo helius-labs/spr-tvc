@@ -15,7 +15,7 @@ from approval import (
     epoch_number, fields, file_digest, get_signing_key, hex_digest, kms, parse_json, read_document,
     read_json, sha256, signing_key, signing_sec1,
 )
-from kms_policy import acknowledgement_policy, boot_pins, validate_custodian_roles, validate_scope
+from kms_policy import acknowledgement_policy, boot_pins, target_boot_pins, validate_custodian_roles, validate_scope
 from provenance import MAIN_REF, verify as verify_build
 from relay import custody_recovery_policy, prove_share, relay_pins, sealed_rsa_key, verify_relay_build
 
@@ -113,7 +113,7 @@ def target_path(epoch, identity):
 
 
 def target_attestation(manifest):
-    pins = boot_pins(manifest["hostRole"], manifest["pcrs"])
+    pins = target_boot_pins(manifest["hostRole"], manifest["pcrs"], manifest["instanceId"])
     return {"releaseId": manifest["releaseId"], "pcrs": {key.removeprefix("PCR"): value for key, value in pins.items()}}
 
 
@@ -294,7 +294,7 @@ def require_target_approval_window(manifest, at, *, remaining=0):
 
 def target_fields(manifest):
     fields(manifest, "network", "securityDomainId", "custodyEpoch", "receiptSha256", "releaseId", "mode", "expiresAt",
-           "eifSha256", "configurationSha256", "executableSha256", "pcrs", "hostRole", "wrappingKeys",
+           "eifSha256", "configurationSha256", "executableSha256", "pcrs", "hostRole", "hostRegion", "instanceId", "wrappingKeys",
            "nextCustodians", "nextRelay", "approvalFromEpoch")
 
 
@@ -305,6 +305,11 @@ def validate_target(trust, manifest):
     validate_scope(network, domain, manifest["releaseId"], epoch)
     if (network, domain) != (trust["network"], trust["securityDomainId"]):
         raise ValueError("target is outside the pinned custody domain")
+    if not isinstance(manifest["hostRegion"], str) or not re.fullmatch(r"[a-z]{2}(?:-[a-z]+)+-[0-9]+", manifest["hostRegion"]):
+        raise ValueError("expected an EC2 region")
+    arn(ROLE_ARN, manifest["hostRole"])
+    fields(manifest["pcrs"], "PCR0", "PCR1", "PCR2")
+    target_attestation(manifest)
     relay_pins(trust, epoch)
     if manifest["mode"] == "rotate":
         if manifest["nextRelay"] != relay_pins(trust, str(int(epoch) + 1)):
@@ -505,12 +510,10 @@ def draft(trust, capture, build, host, roster):
 def rotation_target(trust, manifest, previous_epoch):
     capture = manifest["capture"]
     pcrs = capture["pcrs"]
-    fields(pcrs, "0", "1", "2", "3")
-    identity = {
-        "releaseId": capture["receipt"]["releaseId"], "hostRole": manifest["ceremonyHostRole"],
-        "pcrs": {f"PCR{i}": pcrs[str(i)] for i in range(3)}, "custodyEpoch": previous_epoch,
-    }
-    target = read_registered_target(trust, target_object_name(identity), previous_epoch, manifest["previousReceiptSha256"])
+    fields(pcrs, "0", "1", "2", "3", "4")
+    identity = {"releaseId": capture["receipt"]["releaseId"], "pcrs": pcrs}
+    target = read_registered_target(trust, target_path(previous_epoch, sha256(identity)), previous_epoch,
+                                    manifest["previousReceiptSha256"])
     if (target["mode"] != "rotate" or target["hostRole"] != manifest["ceremonyHostRole"] or
             pcrs != target_attestation(target)["pcrs"] or target["eifSha256"] != manifest["ceremonyEifSha256"] or
             target["nextCustodians"] != manifest["custodians"] or target["nextRelay"] != manifest["relay"]):
@@ -569,10 +572,13 @@ def sign_epoch(trust, document, key, build, source_commit, source_ref, inspectio
     if target is not None and target["configurationSha256"] != configuration_digest:
         raise ValueError("ceremony build configuration does not match the registered rotation target")
     reviewed = verify_build(build, receipt["network"], source_commit, source_ref)
-    pins = {name.removeprefix("PCR"): pin for name, pin in boot_pins(manifest["ceremonyHostRole"], reviewed["pcrs"]).items()}
+    pins = target_attestation(target)["pcrs"] if target is not None else {
+        name.removeprefix("PCR"): pin for name, pin in boot_pins(manifest["ceremonyHostRole"], reviewed["pcrs"]).items()
+    }
     if (capture["configuration"] != config or configuration_digest != reviewed["configurationSha256"] or
             capture["pcrs"] != pins or manifest["ceremonyEifSha256"] != reviewed["eifSha256"] or
-            (target is not None and target["executableSha256"] != reviewed["executableSha256"])):
+            (target is not None and (target["executableSha256"], target["pcrs"]) !=
+             (reviewed["executableSha256"], reviewed["pcrs"]))):
         raise ValueError("captured ceremony does not match the verified build provenance")
     root = Path(__file__).resolve().parents[3]
     subprocess.run(["pnpm", "--dir", str(root / "example"), "exec", "tsx",

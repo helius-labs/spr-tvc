@@ -54,7 +54,7 @@ recipient's wallet-local keys.
 Use two test EIFs commissioned according to the [native runbook](../enclave/deploy/nitro/README.md).
 In a scratch directory write `a-pin.json` and `b-pin.json` with each release ID,
 executable SHA-256, custody epoch, canonical custody digest and independently
-derived PCR0–PCR3 in the policy's target format. Put the shared security domain and note seed commitment in
+PCR0–PCR4 from each registered target's `attestation-pins` output. Put the shared security domain and note seed commitment in
 `inputs.json` as `domain` and `seed`. Use only synthetic notes and test keys.
 
 ```sh

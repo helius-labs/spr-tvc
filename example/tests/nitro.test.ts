@@ -10,7 +10,7 @@ test("native rehearsal requires both buckets to agree on the accepted original-o
   const target: NitroTarget = {
     endpoint: "https://original.example/", releaseId: "old",
     executableSha256: "11".repeat(32), custodyEpoch: "1", custodyDigest: "22".repeat(32),
-    pcrs: { 0: "11".repeat(48), 1: "22".repeat(48), 2: "33".repeat(48), 3: "44".repeat(48) },
+    pcrs: { 0: "11".repeat(48), 1: "22".repeat(48), 2: "33".repeat(48), 3: "44".repeat(48), 4: "56".repeat(48) },
   };
   const replacement = { ...target, endpoint: "https://replacement.example/", releaseId: "new", custodyEpoch: "2" };
   const policy: NitroPolicy = {

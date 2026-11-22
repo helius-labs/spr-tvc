@@ -8,6 +8,7 @@ import { assertExactObjectKeys, parseStrictJson } from "../protocol/json.js";
 import type { Network } from "../protocol/types.js";
 
 export type NitroPcrs = Readonly<Record<0 | 1 | 2 | 3, string>>;
+export type NitroTargetPcrs = NitroPcrs & Readonly<Record<4, string>>;
 
 export type NitroTarget = {
   readonly endpoint: string;
@@ -15,7 +16,7 @@ export type NitroTarget = {
   readonly executableSha256: string;
   readonly custodyEpoch: string;
   readonly custodyDigest: string;
-  readonly pcrs: NitroPcrs;
+  readonly pcrs: NitroTargetPcrs;
 };
 
 export type NitroPolicy = {
@@ -196,7 +197,7 @@ function verifySignedPolicy(text: string, trust: NitroTrust) {
     const known = records.get(target.custodyEpoch);
     if (known !== undefined && known !== target.custodyDigest) invalid();
     records.set(target.custodyEpoch, target.custodyDigest);
-    assertExactObjectKeys(target.pcrs, ["0", "1", "2", "3"], "ReleasePolicyInvalid");
+    assertExactObjectKeys(target.pcrs, ["0", "1", "2", "3", "4"], "ReleasePolicyInvalid");
     for (const pcr of Object.values(target.pcrs)) checkDigest(pcr, 48);
   }
   const digest = nitroPolicySigningDigest(policy);
