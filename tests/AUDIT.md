@@ -227,6 +227,10 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | Q-07 | Attested share release | All new epochs use the measured relay for acknowledgements, retirement proofs, RSA target wrapping and bootstrap. Prove the actual two KMS exchanges and receipt signing across six independent accounts. Rehearse approval-roster rotation before mainnet commissioning. The earlier disposable rehearsals used plaintext-capable keys and a different receipt format. [Relay procedure](../enclave/deploy/nitro/README.md#share-release) |
 | Q-08 | Custody ledger recovery | Run the [cross-account S3 replication plan](../enclave/deploy/nitro/README.md#replicate-the-custody-ledger) in AWS. Prove the live replica preserves S3 metadata. Exercise lag, a stale checkpoint and an unreachable original before verifying promotion. Check historical approvals and closure of retired epochs. Backfill the original versions to a new replica, then test publishing to the promoted bucket, rejection of writes to the old one and retirement against the new replica. |
 
+## Browser checkpoint rehearsal
+
+On 2026-11-22, two Chrome 157 tabs on macOS used the SDK at `d5ee887` to verify and store distinct quorum-signed successors from the same origin. One successor won the race and both tabs observed its digest. After the test browser was killed, a new process using the same profile retained the digest, custody floor and recovery-only flag. It rejected an older policy, the competing revision, a successor on the losing branch, a lower custody floor and payment reopening. The remaining wallet platform, restore and live publisher checks are listed in Q-02.
+
 ## 3-of-6 custody rehearsal
 
 A disposable AWS Nitro host ran four measured images in sequence. The genesis
