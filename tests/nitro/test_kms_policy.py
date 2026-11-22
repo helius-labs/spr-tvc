@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import json
 import os
 import pathlib
 import struct
@@ -16,6 +17,7 @@ from deployment import host_policy
 from kms_policy import RSA_OAEP, acknowledgement_policy, key_policy, recovery_policy, validate_scope
 from provision import UnconfirmedBootstrap, provision, read_target, recipient_for
 from relay import decrypt_recipient
+from retirement import inspect_inventory
 
 HOST = "arn:aws:iam::111111111111:role/host"
 INSTANCE = "i-1234567890abcdef0"
@@ -91,6 +93,53 @@ class KeyPolicyTests(unittest.TestCase):
         decrypt = next(rule for rule in policy["Statement"] if rule["Sid"] == "ProvisionAttestedEnclave")
         self.assertEqual(statement, {"Effect": "Allow", "Action": "kms:Decrypt", "Resource": KEYS,
                                      "Condition": decrypt["Condition"]})
+
+    @patch("retirement.kms", side_effect=ValueError("KMS key unavailable"))
+    @patch("retirement.aws")
+    def test_missing_key_requires_successful_service_deletion_of_the_exact_arn(self, cloudtrail, _):
+        inventory = (RETIREMENT, {KEY_1: key_policy(HOST, CUSTODIAN, RETIREMENT, PINS, INSTANCE)})
+        event_id = "b25f9cda-74e1-4458-847b-4972a0bf9668"
+        event = {
+            "eventID": event_id, "eventSource": "kms.amazonaws.com", "eventName": "DeleteKey",
+            "eventType": "AwsServiceEvent", "recipientAccountId": "222222222222",
+            "awsRegion": "eu-north-1", "responseElements": None,
+            "resources": [{"type": "AWS::KMS::Key", "accountId": "222222222222", "ARN": KEY_1}],
+        }
+        with self.assertRaisesRegex(ValueError, "KMS key unavailable"):
+            inspect_inventory(inventory, False, profile="slot")
+        cloudtrail.assert_not_called()
+        cloudtrail.side_effect = [
+            {"Events": [], "NextToken": "next"}, {"Events": [{"CloudTrailEvent": json.dumps(event)}]},
+        ]
+        self.assertEqual(inspect_inventory(inventory, True, profile="slot")["keys"], [
+            {"keyArn": KEY_1, "state": "Deleted", "deletionEventId": event_id},
+        ])
+        selectors = []
+        for call in cloudtrail.call_args_list:
+            region, service, operation, args = call.args
+            self.assertEqual((region, service, operation), ("eu-north-1", "cloudtrail", "lookup-events"))
+            self.assertEqual(call.kwargs, {"profile": "slot"})
+            selectors.append(json.loads(args[args.index("--cli-input-json") + 1]))
+        self.assertEqual([page.get("NextToken") for page in selectors], [None, "next"])
+        self.assertTrue(all(page["LookupAttributes"] == [{"AttributeKey": "EventName", "AttributeValue": "DeleteKey"}]
+                            for page in selectors))
+        cloudtrail.side_effect = None
+        for update in (
+            {"eventName": "ScheduleKeyDeletion"}, {"eventSource": "cloudtrail.amazonaws.com"},
+            {"eventType": "AwsApiCall"}, {"recipientAccountId": "111111111111"}, {"awsRegion": "eu-west-1"},
+            {"resources": [{**event["resources"][0], "ARN": KEYS[0]}]},
+            {"resources": [{**event["resources"][0], "accountId": "111111111111"}]},
+            {"errorCode": "AccessDenied"}, {"eventID": ""},
+        ):
+            cloudtrail.return_value = {"Events": [{"CloudTrailEvent": json.dumps({**event, **update})}]}
+            with self.subTest(update=update), self.assertRaisesRegex(ValueError, "no verified KMS deletion event"):
+                inspect_inventory(inventory, True, profile="slot")
+        cloudtrail.return_value = {"Events": []}
+        with self.assertRaisesRegex(ValueError, "no verified KMS deletion event"):
+            inspect_inventory(inventory, True, profile="slot")
+        cloudtrail.return_value = {"Events": [], "NextToken": "repeated"}
+        with self.assertRaisesRegex(ValueError, "invalid CloudTrail continuation token"):
+            inspect_inventory(inventory, True, profile="slot")
 
     @patch("provision.decrypt_recipient")
     @patch("provision.request", side_effect=[(200, b"evidence"), (200, bytes([2, 4, 6]))])

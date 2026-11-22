@@ -293,11 +293,16 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    inventory, schedules approved keys, and repeats `inspect --check-inactive`.
    Scheduling immediately disables cryptographic use. Canceling leaves the
    key disabled, and the sealed policy grants no permission to re-enable it.
-   Run the read-only verification while AWS still reports the old key
-   metadata. Give it a KMS inspection profile for each old custody account
-   and an EC2 inspection profile for each old parent account. Enable AWS
-   Config recording of `AWS::EC2::Instance` before commissioning, and give
-   each host inspection profile `config:GetResourceConfigHistory` as well.
+   Give the verifier a KMS inspection profile for each old custody account
+   and an EC2 inspection profile for each old parent account. Add
+   `cloudtrail:LookupEvents` to a custody inspection profile to verify keys
+   after permanent deletion. The verifier requires the exact key's AWS KMS
+   `DeleteKey` service event and includes its ID in the report. CloudTrail
+   event history covers 90 days, so collect the retirement report within
+   that window. [KMS deletion event](https://docs.aws.amazon.com/kms/latest/developerguide/ct-delete-key.html)
+   · [CloudTrail event history](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html).
+   Enable AWS Config recording of `AWS::EC2::Instance` before commissioning
+   and give each host inspection profile `config:GetResourceConfigHistory`.
    Use an operator host with a synchronized clock.
 
    ```sh

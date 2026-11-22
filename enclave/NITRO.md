@@ -44,10 +44,12 @@ The workflow attests the executable, configuration, EIF and
 PCR0–PCR2 hashes after verifying the approval. Signers verify a private copy of
 the exact provenance bytes and match their proposed target or ceremony against
 the authenticated hashes. The KMS wrapping policy pins PCR3 to the parent IAM
-role and PCR4 to the EC2 instance ID. Each wrapping-key set serves a single
-parent. A replacement parent needs its own approval and wrapping keys, even
-when it runs the same EIF. Recovery keys still pin the measured relay and its
-role. The relay handles one share and can only wrap it to its approved target.
+role and PCR4 to the EC2 instance ID. That authorization covers the approved
+image across boots on the registered parent. Each serving boot generates its
+own RSA recipient and P-256 transport and signing keys. A replacement parent
+needs its own approval and wrapping keys, even when it runs the same EIF.
+Recovery keys pin the measured relay and its role. The relay handles one
+share and can only wrap it to its approved target.
 
 ## Custody and startup
 
@@ -119,7 +121,9 @@ accounts and requires each registered old serving or rotation parent to be
 terminated. It then checks for a later attested replacement boot and repeats
 the old key and parent checks. When EC2 no longer lists a parent, the
 verifier requires its AWS Config deletion record for the exact managed EC2
-resource. Record the on-chain canary with the report.
+resource. When KMS no longer returns a key's policy or state, the verifier
+requires a successful KMS `DeleteKey` service event in CloudTrail for the exact
+key ARN. Record the on-chain canary with the report.
 The report concerns the registered targets and their sealed policies. A
 seed disclosed before retirement requires a new seed domain.
 

@@ -11,7 +11,7 @@ from pathlib import Path
 from subprocess import run as run_command
 
 from approval import (
-    MAX_DOCUMENT_BYTES, ROLE_ARN, add_approval, approval_keys, approval_roster, arn, aws, canonical, check_approvals,
+    KEY_ARN, MAX_DOCUMENT_BYTES, ROLE_ARN, add_approval, approval_keys, approval_roster, arn, aws, canonical, check_approvals,
     epoch_number, fields, hex_digest, kms,
     parse_json, read_json, require_kms_key, sha256,
 )
@@ -207,19 +207,64 @@ def inspect_keys(trust, epoch, index, check_inactive):
     return inspect_inventory(key_inventory(trust, epoch, index), check_inactive)
 
 
+def deleted_keys(region, account, keys, **options):
+    # CloudTrail indexes DeleteKey by event name. Its KMS ARN is inside the event.
+    selector = {"LookupAttributes": [{"AttributeKey": "EventName", "AttributeValue": "DeleteKey"}], "MaxResults": 20}
+    missing = set(keys)
+    tokens = set()
+    while missing:
+        page = aws(region, "cloudtrail", "lookup-events", [
+            "--no-paginate", "--cli-input-json", canonical(selector).decode(),
+        ], **options)
+        for row in page["Events"]:
+            event = parse_json(row["CloudTrailEvent"])
+            event_id = event.get("eventID")
+            if (event.get("eventSource") != "kms.amazonaws.com" or event.get("eventName") != "DeleteKey" or
+                    event.get("eventType") != "AwsServiceEvent" or event.get("awsRegion") != region or
+                    event.get("recipientAccountId") != account or
+                    "errorCode" in event or not isinstance(event_id, str) or not event_id):
+                continue
+            for resource in event.get("resources", []):
+                key = resource.get("ARN")
+                if (key in missing and resource.get("type") == "AWS::KMS::Key" and
+                        resource.get("accountId") == account):
+                    missing.remove(key)
+                    yield {"keyArn": key, "state": "Deleted", "deletionEventId": event_id}
+        token = page.get("NextToken")
+        if token is None or not missing:
+            break
+        if not isinstance(token, str) or not token or token in tokens:
+            raise ValueError("invalid CloudTrail continuation token")
+        tokens.add(token)
+        selector["NextToken"] = token
+    if missing:
+        raise ValueError(f"retirement keys have no verified KMS deletion event: {', '.join(sorted(missing))}")
+
+
 def inspect_inventory(inventory, check_inactive, **options):
     role, keys = inventory
     result = []
-    for key, expected in sorted(keys.items()):
-        installed = parse_json(kms(key, "get-key-policy", ["--policy-name", "default"], **options)["Policy"])
-        metadata = kms(key, "describe-key", **options)["KeyMetadata"]
+    missing = {}
+    for key, expected in keys.items():
+        try:
+            policy = kms(key, "get-key-policy", ["--policy-name", "default"], **options)["Policy"]
+            metadata = kms(key, "describe-key", **options)["KeyMetadata"]
+        except (ValueError, subprocess.TimeoutExpired):
+            if not check_inactive:
+                raise
+            region = arn(KEY_ARN, key)[1]
+            missing.setdefault(region, []).append(key)
+            continue
+        installed = parse_json(policy)
         if installed != expected or metadata.get("Arn") != key:
             raise ValueError("retirement key does not match the recorded epoch policy")
         state = metadata["KeyState"]
         if check_inactive and state not in {"Disabled", "PendingDeletion"}:
             raise ValueError(f"retirement key {key} remains usable or unverified")
         result.append({"keyArn": key, "state": state})
-    return {"retirementRole": role, "keys": result}
+    for region, absent_keys in missing.items():
+        result.extend(deleted_keys(region, arn(ROLE_ARN, role)[1], absent_keys, **options))
+    return {"retirementRole": role, "keys": sorted(result, key=lambda row: row["keyArn"])}
 
 
 def require_terminated_parent(target, profile):
