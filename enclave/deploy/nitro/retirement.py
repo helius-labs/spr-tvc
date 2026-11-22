@@ -194,7 +194,7 @@ def commit_retirement(trust, wallet_trust, document):
     epoch = manifest["epoch"]
     existing = find_retirement(trust, epoch)
     if existing is not None:
-        stored, _ = existing
+        stored, _, _ = existing
         if stored != document:
             raise ValueError("a different retirement record is already committed")
         return
@@ -210,12 +210,12 @@ def commit_retirement(trust, wallet_trust, document):
 def retirement_inventory(trust, epoch, index):
     if index not in range(1, 7):
         raise ValueError("invalid custody slot")
-    document, custodians = load_retirement(trust, epoch)
+    document, custodians, published_at = load_retirement(trust, epoch)
     marker = document["manifest"]
     targets = list(registered_targets(trust, epoch, marker["receiptSha256"]))
     require_retirement_replication(trust, marker, targets)
     role, keys = slot_inventory(trust, epoch, custodians[index - 1], targets, index)
-    return marker, role, keys
+    return marker, role, keys, published_at
 
 
 def require_retirement_replication(trust, marker, targets):
@@ -252,7 +252,7 @@ def slot_inventory(trust, epoch, member, targets, index):
     return admin, keys
 
 
-def qualify_key_retirement(trust, wallet_trust, marker):
+def qualify_key_retirement(trust, wallet_trust, marker, published_at):
     pinned_trust = pinned_wallet_trust(trust, wallet_trust)
     replacement = marker["replacementEpoch"]
     _, receipt, custodians = load_epoch(trust, replacement)
@@ -262,8 +262,10 @@ def qualify_key_retirement(trust, wallet_trust, marker):
         raise ValueError("retirement requires the originally approved replacement target")
     slots = retirement_bootstrap(marker["replacementBootstrap"])
     require_recovery_quorum(trust, marker, [custodians[slot - 1] for slot in slots])
+    # S3 Last-Modified only resolves to a second. Require a boot after that second.
+    after_ms = (int(published_at) + 1) * 1000 - 1
     evidence = qualified_boot(pinned_trust, {identity: target}, marker, receipt["custody"]["noteSeedCommitment"],
-                              required_slots=slots)
+                              after_ms=after_ms, required_slots=slots)
     require_active_epoch(trust, replacement)
     return evidence
 
@@ -279,10 +281,10 @@ def inspect_keys(trust, epoch, index, check_inactive, *, wallet_trust=None, repl
             if replica_profile is None:
                 raise ValueError("provide --replica-profile before scheduling key deletion")
             check_recovery_bucket(trust, replica, replica_profile)
-    marker, role, keys = retirement_inventory(trust, epoch, index)
+    marker, role, keys, published_at = retirement_inventory(trust, epoch, index)
     result = inspect_inventory((role, keys), check_inactive)
     if not check_inactive:
-        result["replacement"] = qualify_key_retirement(trust, wallet_trust, marker)
+        result["replacement"] = qualify_key_retirement(trust, wallet_trust, marker, published_at)
     return result
 
 
@@ -377,7 +379,7 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
     require_inspection_profiles(profiles)
     if wait_seconds <= 0:
         raise ValueError("provide a positive replacement boot wait time")
-    document, custodians = load_retirement(trust, epoch)
+    document, custodians, _ = load_retirement(trust, epoch)
     marker = document["manifest"]
     _, replacement, replacement_custodians = load_epoch(trust, marker["replacementEpoch"])
 
@@ -459,7 +461,7 @@ def main():
     inspect.add_argument("epoch")
     inspect.add_argument("share", type=int, choices=range(1, 7))
     inspect.add_argument("--check-inactive", action="store_true")
-    inspect.add_argument("--wallet-trust", type=Path, help="verify the live replacement before scheduling deletion")
+    inspect.add_argument("--wallet-trust", type=Path, help="verify the post-commit cold boot before scheduling deletion")
     inspect.add_argument("--replica-profile", help="inspect the custody recovery bucket in its owner's AWS account")
     verify = commands.add_parser("verify-retired")
     verify.add_argument("wallet_trust", type=Path)

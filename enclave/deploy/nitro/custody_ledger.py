@@ -613,7 +613,8 @@ def retirement_target(trust, marker):
 
 def load_retirement(trust, epoch):
     document, metadata = read_stored_object(trust, retirement_object_name(epoch))
-    marker = verify_retirement(trust, document, epoch, publication_time(metadata))
+    published_at = publication_time(metadata)
+    marker = verify_retirement(trust, document, epoch, published_at)
     _, previous, custodians = load_epoch(trust, epoch)
     replacement_epoch = marker["replacementEpoch"]
     _, replacement, replacement_custodians = load_epoch(trust, replacement_epoch)
@@ -623,7 +624,7 @@ def load_retirement(trust, epoch):
         raise ValueError("retirement receipts do not match the ledger")
     retirement_recovery(document, replacement_custodians)
     retirement_target(trust, marker)
-    return document, custodians
+    return document, custodians, published_at
 
 
 def find_retirement(trust, epoch):

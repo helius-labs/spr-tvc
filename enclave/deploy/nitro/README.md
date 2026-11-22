@@ -427,13 +427,14 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    marker, receipt chain and required target registrations. The retirement
    marker closes the old epoch as soon as it commits on the source.
 
-   Before scheduling any deletion, cold-boot the pinned replacement with the
-   three slots proved in the retirement marker and open a note from before
-   rotation. Each retirement role runs `inspect --wallet-trust` immediately
-   before scheduling. It checks that those recovery and wrapping keys are
-   enabled, the replacement epoch is open, and the original registered
-   target attests with those slots under the current wallet policy. A new boot
-   or policy revision can qualify with the same target and slots. The role
+   After the retirement marker commits, wait until the next second and
+   cold-boot the pinned replacement with the three proved slots. Open a note
+   from before rotation. Each retirement role runs `inspect --wallet-trust`
+   immediately before scheduling deletion. It checks that the recovery and
+   wrapping keys are enabled, the replacement epoch is open, and the original
+   registered target attests under the current wallet policy. The attested
+   bootstrap must be later than the marker's S3 write second and use the
+   same three slots. The role
    needs `kms:DescribeKey` for the six replacement keys. Use
    `inspect --check-inactive` for the historical key state check after scheduling.
    Scheduling immediately disables cryptographic use. Canceling leaves the

@@ -573,7 +573,7 @@ class CustodyLedgerTests(unittest.TestCase):
             return {**reply, "ReplicationStatus": "REPLICA", **change}
 
         with patch("custody_ledger.aws", side_effect=aws):
-            _, _, keys = retirement_inventory(self.trust, "1", 1)
+            _, _, keys, _ = retirement_inventory(self.trust, "1", 1)
             self.assertIn(original_target["wrappingKeys"][0], keys)
             self.assertEqual(copied, set(self.objects))
             source_status[prefix + "1.json"] = "REPLICA"
@@ -978,7 +978,7 @@ class CustodyLedgerTests(unittest.TestCase):
             kms.assert_not_called()
 
         self.rotate_approvals("3")
-        _, role, inventory = retirement_inventory(self.trust, "1", 1)
+        _, role, inventory, _ = retirement_inventory(self.trust, "1", 1)
         self.assertTrue(role.endswith(":role/retirement"))
         self.assertEqual(set(inventory), {key(1), key(1, 11), key(1, 12), key(1, 21)})
 
@@ -1035,7 +1035,7 @@ class CustodyLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
             require_active_epoch(self.trust, "1")
 
-    def test_pre_deletion_inspection_reattests_the_exact_replacement_and_proven_slots(self):
+    def test_pre_deletion_inspection_requires_a_post_commit_boot_with_the_proven_slots(self):
         publish(self.trust, self.sign(self.document(1)))
         rotated, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
         publish(self.trust, self.sign(rotated))
@@ -1044,9 +1044,11 @@ class CustodyLedgerTests(unittest.TestCase):
         with (patch("retirement.qualified_policy", return_value=self.qualification(replacement)),
               patch("retirement.require_recovery_quorum")):
             marker = qualified_manifest(self.trust, None, "1", "2")
+            self.now += 2
             commit_retirement(self.trust, None, self.signed_retirement(marker))
+        published_at = self.now
 
-        self.now = marker["recoveryDeadline"] + 1
+        self.now += 1
         directory = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
         wallet = directory / "wallet.json"
         wallet.write_bytes(self.wallet_pins)
@@ -1077,6 +1079,8 @@ class CustodyLedgerTests(unittest.TestCase):
             for other in (
                 {**observed, "bootstrap": {**boot, "slots": different_slots}},
                 {**observed, "bootstrap": marker["replacementBootstrap"]},
+                {**observed, "bootstrap": {**boot, "bootedAtMs": str(published_at * 1000 - 1)}},
+                {**observed, "bootstrap": {**boot, "bootedAtMs": str(published_at * 1000 + 999)}},
                 {**observed, "pcrs": {**observed["pcrs"], "4": "ab" * 48}},
             ):
                 query.return_value.stdout = evidence(other)
