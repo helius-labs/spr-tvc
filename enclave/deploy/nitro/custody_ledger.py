@@ -757,7 +757,18 @@ def find_retirement(trust, epoch):
         raise ValueError(f"cannot verify retirement record for epoch {epoch}: {error}") from error
 
 
+def replica_has_retirement(trust, epoch):
+    replica = ledger_replica(trust)
+    if replica is None:
+        return False
+    name = retirement_object_name(epoch)
+    return name in list_objects(replica_trust(trust, replica), name)
+
+
 def require_active_epoch(trust, epoch):
+    # Read the source last so a closure still replicating can block admission.
+    if replica_has_retirement(trust, epoch):
+        raise ValueError("custody epoch has a retirement record in the pinned replica")
     if find_retirement(trust, epoch) is not None:
         raise ValueError("custody epoch is retired")
 

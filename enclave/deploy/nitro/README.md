@@ -73,9 +73,14 @@ reporting success. If the write and readback both fail, the error reports both
 failures. If a canonical record fails verification, halt the affected
 operation and compare it with the current trust schedule and signed archives. The
 independent bucket administrator investigates and preserves the versions and
-audit logs before any repair. A valid retirement record permanently closes its
-epoch. Custody listings must name the pinned bucket and prefix and account for
-every result page. The tools use AWS service endpoints and ignore CLI endpoint
+audit logs before any repair. A valid retirement record permanently closes its epoch. When a replica is
+configured, check its retirement index first and the source last. The epoch
+is usable only if both listings show no retirement record. A replica-only
+record blocks use of the epoch. Key deletion still requires the authenticated
+source record and matching replicated evidence. Grant operators who register
+targets, sign or release shares, or activate policies access to list the
+retirement prefix in both buckets. Listings must match the pinned bucket and
+prefix and account for every result page. The tools use AWS service endpoints and ignore CLI endpoint
 overrides. [AWS CLI endpoint settings](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html)
 
 Before creating the recovery keys, build the epoch's relay EIF with

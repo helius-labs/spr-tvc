@@ -22,7 +22,7 @@ from custody_ledger import (
     check_recovery_bucket, check_registered_target, find_retirement, ledger_replica, list_objects, load_epoch,
     load_epoch_with_time, load_retirement, publication_time, read_registered_target, read_replicated_record,
     recovery_deadline, replica_trust,
-    require_active_epoch, require_pinned_publications,
+    replica_has_retirement, require_active_epoch, require_pinned_publications,
     require_publication_roster, require_replicated_custody, retirement_approval, retirement_bootstrap,
     retirement_object_name, retirement_recovery, retirement_target, sign_share_recovery,
     target_attestation, target_object_name, target_path, verify_retirement, write_once,
@@ -285,6 +285,13 @@ def commit_retirement(trust, wallet_trust, document):
         return
     check_approvals(approval_keys(trust), RETIREMENT, approval)
     boot = verify_qualification(trust, wallet_trust, document)
+    if replica_has_retirement(trust, epoch):
+        # A concurrent identical commit may already have reached the replica.
+        existing = find_retirement(trust, epoch)
+        if existing is None:
+            raise ValueError("retirement record in the pinned replica is missing from the source")
+        require_same_record(existing[0])
+        return
     require_recovery_window(manifest, remaining=LEDGER_WRITE_MARGIN_SECONDS)
     require_publication_roster(trust, manifest["approvalFromEpoch"])
     boot.require_current(remaining=LEDGER_WRITE_MARGIN_SECONDS)

@@ -72,6 +72,7 @@ class CustodyLedgerTests(unittest.TestCase):
         }
         self.wallet_pins = canonical({"publications": self.trust["publications"]})
         self.objects = {}
+        self.replica_objects = {}
         self.timestamps = {}
         self.versions = {}
         self.bucket_policy = ledger_policy(self.trust)
@@ -144,6 +145,16 @@ class CustodyLedgerTests(unittest.TestCase):
         return document
 
     def aws(self, region, service, operation, args, **options):
+        replica = self.trust.get("ledgerReplica")
+        bucket = args[args.index("--bucket") + 1]
+        if replica and bucket == replica["bucket"] and operation == "list-objects-v2":
+            self.assertEqual((region, service), (replica["region"], "s3api"))
+            self.assertEqual(args[args.index("--expected-bucket-owner") + 1], replica["account"])
+            prefix = args[args.index("--prefix") + 1]
+            self.assertTrue(prefix.startswith(f"spr-custody/{self.trust['network']}/{DOMAIN}/retired/"))
+            with self.lock:
+                names = [name for name in sorted(self.replica_objects) if name.startswith(prefix)]
+            return listing(prefix, names, Name=bucket)
         self.assertEqual((region, service), ("eu-north-1", "s3api"))
         self.assertEqual(args[args.index("--expected-bucket-owner") + 1], "000000000008")
         if operation == "get-bucket-policy":
@@ -291,6 +302,37 @@ class CustodyLedgerTests(unittest.TestCase):
         ):
             with (self.subTest(listing=invalid), patch("custody_ledger.storage", return_value=invalid),
                   self.assertRaisesRegex(ValueError, "invalid custody ledger")):
+                require_active_epoch(self.trust, "1")
+
+    def test_retirement_checks_the_pinned_replica_before_the_source(self):
+        replica = {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1",
+                   **RECOVERY_ROLES, "role": "arn:aws:iam::000000000008:role/replication"}
+        self.trust["ledgerReplica"] = replica
+        marker = f"spr-custody/devnet/{DOMAIN}/retired/1.json"
+        self.replica_objects[marker + ".note"] = b"unrelated"
+        require_active_epoch(self.trust, "1")
+        with patch.dict(self.replica_objects, {marker: b"{}"}):
+            with self.assertRaisesRegex(ValueError, "retirement record in the pinned replica"):
+                require_active_epoch(self.trust, "1")
+
+        def aws(region, service, operation, args, **options):
+            result = self.aws(region, service, operation, args, **options)
+            if region == replica["region"] and operation == "list-objects-v2":
+                self.objects[marker] = b"{}"
+            return result
+
+        with patch("custody_ledger.aws", side_effect=aws):
+            with self.assertRaisesRegex(ValueError, "cannot verify retirement record"):
+                require_active_epoch(self.trust, "1")
+        del self.objects[marker]
+
+        def broken_replica(region, service, operation, args, **options):
+            if region == replica["region"]:
+                raise OSError("replica unreachable")
+            return self.aws(region, service, operation, args, **options)
+
+        with patch("custody_ledger.aws", side_effect=broken_replica):
+            with self.assertRaisesRegex(OSError, "replica unreachable"):
                 require_active_epoch(self.trust, "1")
 
     def test_target_inventory_follows_only_advancing_pages_in_the_requested_prefix(self):
@@ -881,6 +923,8 @@ class CustodyLedgerTests(unittest.TestCase):
                     name = args[args.index("--key") + 1]
                     reply["ReplicationStatus"] = source_status.get(name, "COMPLETED")
                 return reply
+            if operation == "list-objects-v2":
+                return self.aws(region, service, operation, args, **options)
             self.assertEqual((region, service, operation), ("eu-west-1", "s3api", "get-object"))
             self.assertEqual(args[:4], ["--bucket", "custody-recovery", "--expected-bucket-owner", "000000000010"])
             name = args[args.index("--key") + 1]
@@ -908,6 +952,26 @@ class CustodyLedgerTests(unittest.TestCase):
                         self.assertNotIn(marker_key, self.objects)
                 self.assertNotIn(marker_key, copied)
                 commit_retirement(self.trust, None, retirement)
+            with patch.dict(self.objects), patch.dict(self.replica_objects, {marker_key: self.objects[marker_key]}):
+                saved = self.objects.pop(marker_key)
+                with self.assertRaisesRegex(ValueError, "retirement record in the pinned replica"):
+                    require_active_epoch(self.trust, "1")
+                with patch("retirement.kms") as kms, self.assertRaisesRegex(ValueError, "object missing"):
+                    inspect_keys(self.trust, "1", 1, False, wallet_trust=pathlib.Path("wallet.json"),
+                                 replica_profile="recovery-read")
+                kms.assert_not_called()
+
+                with (patch("retirement.verify_qualification") as qualify, patch("retirement.write_once") as write):
+                    with self.assertRaisesRegex(ValueError, "retirement record in the pinned replica"):
+                        commit_retirement(self.trust, None, retirement)
+                    self.assertNotIn(marker_key, self.objects)
+
+                    def concurrent_commit(*_args):
+                        self.objects[marker_key] = saved
+
+                    qualify.side_effect = concurrent_commit
+                    commit_retirement(self.trust, None, retirement)
+                    write.assert_not_called()
             _, _, keys, _, _ = retirement_inventory(self.trust, "1", 1)
             self.assertIn(original_target["wrappingKeys"][0], keys)
             self.assertEqual(copied, set(self.objects))
@@ -1347,6 +1411,9 @@ class CustodyLedgerTests(unittest.TestCase):
             inspect_source.assert_called_once_with(self.trust, "source-read")
             inspect_replica.assert_called_once_with(self.trust, replica, "replica-read")
             prefix = f"spr-custody/mainnet/{DOMAIN}/"
+            with patch.dict(self.replica_objects, {prefix + "retired/3.json": b"{}"}):
+                with self.assertRaisesRegex(ValueError, "retirement record in the pinned replica"):
+                    check_release_policy(self.trust, document, **PAYMENT_PROFILES)
             receipt_at = datetime.fromisoformat(self.timestamps[prefix + "3.json"]).timestamp()
             before_receipt = datetime.fromtimestamp(receipt_at - 1, timezone.utc).isoformat()
             with patch.dict(self.timestamps, {prefix + target_object_name(registered): before_receipt}):
