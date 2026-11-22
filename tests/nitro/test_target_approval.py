@@ -11,7 +11,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import sha256
-from deployment import LABEL, file_digest, main, target
+from custody_ledger import TARGET_APPROVAL
+from deployment import file_digest, main, target
 from kms_policy import recovery_policy
 from nitro_fixtures import DOMAIN, HOST, key, pin, schedule, sign
 from wrap_share import wrap
@@ -50,7 +51,7 @@ class TargetApprovalTests(unittest.TestCase):
             "pcrs": PINS, "hostRole": HOST, "wrappingKeys": [key(i, 2) for i in range(1, 7)], "nextCustodians": None,
         }
         self.approval = {"manifest": self.manifest, "signatures": [
-            sign(LABEL, self.manifest, signer["keyArn"]) for signer in self.trust["approvalKeys"][0]["keys"][:2]
+            sign(TARGET_APPROVAL, self.manifest, signer["keyArn"]) for signer in self.trust["approvalKeys"][0]["keys"][:2]
         ]}
         _, policies, _ = target(self.trust, self.approval, self.receipt, self.custodians, self.build)
         self.policy = policies[0]

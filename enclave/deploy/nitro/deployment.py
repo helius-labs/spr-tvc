@@ -8,39 +8,14 @@ import time
 from pathlib import Path
 
 from approval import (
-    KEY_ARN, ROLE_ARN, add_approval, approval_keys, arn, canonical, check_approvals, epoch_number,
-    fields, file_digest, hex_digest, read_json, sha256,
+    KEY_ARN, ROLE_ARN, add_approval, approval_keys, arn, canonical, fields, file_digest, hex_digest, read_json, sha256,
 )
 from custody_ledger import (
-    check_acknowledgement_key, check_recovery_key, list_objects, load_epoch, load_retirement, read_object,
-    retirement_object_name, validate_roster, write_once,
+    TARGET_APPROVAL, check_acknowledgement_key, check_recovery_key, list_objects, load_epoch, load_retirement,
+    read_object, retirement_object_name, target_object_name, validate_roster, verify_target_approval, write_once,
 )
 from kms_policy import boot_pins, decrypt_conditions, key_policy, target_context
 from provenance import MAIN_REF, verify as verify_build
-
-LABEL = "target-approval"
-
-
-def verify_target_approval(trust, document, historical=False):
-    manifest = document["manifest"]
-    epoch = manifest["approvalFromEpoch"]
-    schedule = trust["approvalKeys"]
-    if historical:
-        if not any(entry["fromEpoch"] == epoch for entry in schedule):
-            raise ValueError("unknown target approval roster")
-        keys = approval_keys(trust, epoch)
-    else:
-        keys = approval_keys(trust)
-        if schedule[-1]["fromEpoch"] != epoch:
-            raise ValueError("target requires the current approval roster")
-    check_approvals(keys, LABEL, document)
-    return manifest
-
-
-def target_object_name(manifest):
-    epoch_number(manifest["custodyEpoch"])
-    return f"targets/{manifest['custodyEpoch']}/{sha256(manifest)}.json"
-
 
 def host_policy(manifest):
     pins = boot_pins(manifest["hostRole"], manifest["pcrs"])
@@ -215,7 +190,7 @@ def main():
             check_recovery_key(key, fingerprint)
         for custodian in document["manifest"]["nextCustodians"] or ():
             check_acknowledgement_key(custodian)
-        approved = add_approval(keys, LABEL, document, args.key)
+        approved = add_approval(keys, TARGET_APPROVAL, document, args.key)
         with args.output.open("xb") as output:
             output.write(canonical(approved) + b"\n")
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:

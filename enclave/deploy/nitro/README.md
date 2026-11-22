@@ -188,9 +188,11 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    as `walletTrustSha256` in the custody trust file. Draft, sign twice and
    publish a retirement record. Each step verifies the canonical wallet policy
    and attests its replacement replicas against the exact committed custody
-   record. Both public buckets must agree before and after attestation.
-   Publication closes the old epoch to
-   new wraps. Each slot's inventory includes its recovery key and all wrapping
+   record. At least one live replica must match a serving target in the custody
+   ledger by release ID and PCR0–PCR3. Both public buckets must agree before
+   and after attestation. The signed retirement record pins the matched target
+   and closes the old epoch to new wraps. Each slot's inventory includes its
+   recovery key and all wrapping
    keys registered before retirement, including those from in-flight requests.
 
    ```sh

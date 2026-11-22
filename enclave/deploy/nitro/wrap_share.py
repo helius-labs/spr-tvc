@@ -8,8 +8,8 @@ from pathlib import Path
 from time import time
 
 from approval import check_approvals, key_result, kms, parse_json, read_json, require_kms_key
-from custody_ledger import load_epoch, open_share
-from deployment import LABEL, require_registered_target, target
+from custody_ledger import TARGET_APPROVAL, load_epoch, open_share
+from deployment import require_registered_target, target
 from kms_policy import target_context
 
 
@@ -27,7 +27,7 @@ def wrap(trust, approval, build, index):
     manifest = approval["manifest"]
     _, receipt, custodians = load_epoch(trust, manifest["custodyEpoch"])
     keys, policies, _ = target(trust, approval, receipt, custodians, build)
-    check_approvals(keys, LABEL, approval)
+    check_approvals(keys, TARGET_APPROVAL, approval)
     wrapping_key = manifest["wrappingKeys"][index - 1]
     sealed_policy(wrapping_key, policies[index - 1])
     ctx = target_context(manifest, index)

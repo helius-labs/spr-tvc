@@ -18,6 +18,7 @@ from provenance import MAIN_REF, verify as verify_build
 
 LABEL = "custody-epoch"
 ACKNOWLEDGEMENT = "custodian-acknowledgement"
+TARGET_APPROVAL = "target-approval"
 RETIREMENT = "custody-retirement"
 RECOVERY_SPECS = {"RSA_2048", "RSA_3072", "RSA_4096"}
 
@@ -91,6 +92,15 @@ def ledger_object(trust, epoch):
 def retirement_object_name(epoch):
     epoch_number(epoch)
     return f"retired/{epoch}.json"
+
+
+def target_path(epoch, digest):
+    epoch_number(epoch)
+    return f"targets/{epoch}/{hex_digest(digest)}.json"
+
+
+def target_object_name(manifest):
+    return target_path(manifest["custodyEpoch"], sha256(manifest))
 
 
 def storage(trust, operation, args):
@@ -203,16 +213,43 @@ def check_commit(trust, document, receipt, custodians):
                     ACKNOWLEDGEMENT, acknowledgements(document), minimum=6)
 
 
+def verify_target_approval(trust, document, historical=False):
+    manifest = document["manifest"]
+    epoch = manifest["approvalFromEpoch"]
+    schedule = trust["approvalKeys"]
+    if historical:
+        if not any(entry["fromEpoch"] == epoch for entry in schedule):
+            raise ValueError("unknown target approval roster")
+        keys = approval_keys(trust, epoch)
+    else:
+        keys = approval_keys(trust)
+        if schedule[-1]["fromEpoch"] != epoch:
+            raise ValueError("target requires the current approval roster")
+    check_approvals(keys, TARGET_APPROVAL, document)
+    return manifest
+
+
+def read_registered_target(trust, name, epoch, receipt_digest):
+    target = verify_target_approval(trust, read_object(trust, name), historical=True)
+    if (name != target_object_name(target) or
+            (target["network"], target["securityDomainId"], target["custodyEpoch"], target["receiptSha256"]) !=
+            (trust["network"], trust["securityDomainId"], epoch, receipt_digest)):
+        raise ValueError("registered target does not match the committed custody receipt")
+    return target
+
+
 def verify_retirement(trust, document, epoch):
     fields(document, "manifest", "signatures")
     manifest = document["manifest"]
     fields(manifest, "network", "securityDomainId", "epoch", "receiptSha256", "replacementEpoch",
-           "replacementReceiptSha256", "replacementCustodyDigest", "approvalFromEpoch", "walletPolicyDigest")
+           "replacementReceiptSha256", "replacementCustodyDigest", "replacementTargetSha256", "approvalFromEpoch",
+           "walletPolicyDigest")
     if ((manifest["network"], manifest["securityDomainId"], manifest["epoch"]) !=
             (trust["network"], trust["securityDomainId"], epoch) or
             epoch_number(manifest["replacementEpoch"]) <= epoch_number(epoch)):
         raise ValueError("retirement record does not match the requested epoch")
-    for field in ("receiptSha256", "replacementReceiptSha256", "replacementCustodyDigest", "walletPolicyDigest"):
+    for field in ("receiptSha256", "replacementReceiptSha256", "replacementCustodyDigest", "replacementTargetSha256",
+                  "walletPolicyDigest"):
         hex_digest(manifest[field])
     start = manifest["approvalFromEpoch"]
     if not any(entry["fromEpoch"] == start for entry in trust["approvalKeys"]):
@@ -224,11 +261,15 @@ def verify_retirement(trust, document, epoch):
 def load_retirement(trust, epoch):
     marker = verify_retirement(trust, read_object(trust, retirement_object_name(epoch)), epoch)
     _, previous, custodians = load_epoch(trust, epoch)
-    _, replacement, _ = load_epoch(trust, marker["replacementEpoch"])
+    replacement_epoch = marker["replacementEpoch"]
+    _, replacement, _ = load_epoch(trust, replacement_epoch)
     if (marker["receiptSha256"] != sha256(previous) or marker["replacementReceiptSha256"] != sha256(replacement) or
             marker["replacementCustodyDigest"] != sha256(replacement["custody"]) or
             previous["custody"]["noteSeedCommitment"] != replacement["custody"]["noteSeedCommitment"]):
         raise ValueError("retirement receipts do not match the ledger")
+    name = target_path(replacement_epoch, marker["replacementTargetSha256"])
+    if read_registered_target(trust, name, replacement_epoch, marker["replacementReceiptSha256"])["mode"] != "serve":
+        raise ValueError("replacement target is not a registered serving enclave")
     return marker, custodians
 
 

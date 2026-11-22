@@ -1,18 +1,20 @@
 """Close an old custody epoch and inventory the KMS keys that must be retired."""
 
 import argparse
+import hashlib
 import subprocess
 from pathlib import Path
 
 from approval import (
-    add_approval, approval_keys, canonical, check_approvals, epoch_number, file_digest, hex_digest, kms,
+    MAX_DOCUMENT_BYTES, add_approval, approval_keys, canonical, check_approvals, epoch_number, fields, hex_digest, kms,
     parse_json, read_json, sha256,
 )
 from custody_ledger import (
-    RETIREMENT, list_objects, load_epoch, load_retirement, read_object, retirement_object_name, verify_retirement, write_once,
+    RETIREMENT, list_objects, load_epoch, load_retirement, read_registered_target, retirement_object_name,
+    verify_retirement, write_once,
 )
-from deployment import require_active_epoch, target_object_name, verify_target_approval
-from kms_policy import context, key_policy, recovery_policy
+from deployment import require_active_epoch
+from kms_policy import boot_pins, key_policy, recovery_policy, target_context
 
 
 def retirement_scope(trust, epoch, replacement):
@@ -30,22 +32,41 @@ def retirement_scope(trust, epoch, replacement):
     }, new["custody"]["noteSeedCommitment"]
 
 
+def registered_targets(trust, epoch, receipt_digest):
+    for name in list_objects(trust, f"targets/{epoch}/"):
+        yield read_registered_target(trust, name, epoch, receipt_digest)
+
+
 def qualified_policy(trust, wallet_trust, scope, seed):
-    if file_digest(wallet_trust) != hex_digest(trust["walletTrustSha256"]):
+    with wallet_trust.open("rb") as source:
+        pinned_trust = source.read(MAX_DOCUMENT_BYTES + 1)
+    if (len(pinned_trust) > MAX_DOCUMENT_BYTES or
+            hashlib.sha256(pinned_trust).hexdigest() != hex_digest(trust["walletTrustSha256"])):
         raise ValueError("wallet trust file does not match the pinned digest")
-    require_active_epoch(trust, scope["replacementEpoch"])
+    epoch = scope["replacementEpoch"]
+    require_active_epoch(trust, epoch)
+    candidates = [target for target in registered_targets(trust, epoch, scope["replacementReceiptSha256"])
+                  if target["mode"] == "serve"]
+    if not candidates:
+        raise ValueError("no registered serving target for the replacement epoch")
     root = Path(__file__).resolve().parents[3]
     reply = subprocess.run([
         "pnpm", "--dir", str(root / "example"), "exec", "tsx", str(root / "xtask/nitro-retirement.ts"),
-        str(wallet_trust.resolve()), scope["network"], scope["securityDomainId"], seed,
-        scope["replacementEpoch"], scope["replacementCustodyDigest"],
-    ], stdout=subprocess.PIPE, check=True, timeout=25)
-    return hex_digest(reply.stdout.decode())
+        scope["network"], scope["securityDomainId"], seed, epoch, scope["replacementCustodyDigest"],
+    ], input=pinned_trust, stdout=subprocess.PIPE, check=True, timeout=25)
+    evidence = parse_json(reply.stdout)
+    fields(evidence, "policyDigest", "targets")
+    for target in candidates:
+        pcrs = {key.removeprefix("PCR"): value for key, value in boot_pins(target["hostRole"], target["pcrs"]).items()}
+        if {"releaseId": target["releaseId"], "pcrs": pcrs} in evidence["targets"]:
+            return hex_digest(evidence["policyDigest"]), sha256(target)
+    raise ValueError("no attested serving target matches the registered replacement")
 
 
 def qualified_manifest(trust, wallet_trust, epoch, replacement):
     scope, seed = retirement_scope(trust, epoch, replacement)
-    return {**scope, "walletPolicyDigest": qualified_policy(trust, wallet_trust, scope, seed)}
+    policy_digest, target_digest = qualified_policy(trust, wallet_trust, scope, seed)
+    return {**scope, "walletPolicyDigest": policy_digest, "replacementTargetSha256": target_digest}
 
 
 def commit_retirement(trust, wallet_trust, document):
@@ -66,16 +87,9 @@ def key_inventory(trust, epoch, index):
     member = custodians[index - 1]
     custodian, admin = member["custodianRole"], member["retirementRole"]
     keys = {member["recoveryKeyArn"]: recovery_policy(custodian, admin, epoch)}
-    for name in list_objects(trust, f"targets/{epoch}/"):
-        stored = read_object(trust, name)
-        target = verify_target_approval(trust, stored, historical=True)
-        if (name != target_object_name(target) or
-                (target["network"], target["securityDomainId"], target["custodyEpoch"], target["receiptSha256"]) !=
-                (trust["network"], trust["securityDomainId"], epoch, marker["receiptSha256"])):
-            raise ValueError("target inventory does not match the retiring receipt")
+    for target in registered_targets(trust, epoch, marker["receiptSha256"]):
         key = target["wrappingKeys"][index - 1]
-        ctx = context(target["network"], target["securityDomainId"], target["releaseId"], epoch, index)
-        expected = key_policy(target["hostRole"], custodian, admin, target["pcrs"], ctx)
+        expected = key_policy(target["hostRole"], custodian, admin, target["pcrs"], target_context(target, index))
         if keys.setdefault(key, expected) != expected:
             raise ValueError("one key appears with different retirement policies")
     return admin, keys

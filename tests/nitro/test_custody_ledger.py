@@ -1,7 +1,9 @@
 import copy
+import hashlib
 import json
 import pathlib
 import sys
+import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
@@ -10,13 +12,13 @@ from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import approval_keys, sha256
 from custody_ledger import (
-    ACKNOWLEDGEMENT, LABEL, RETIREMENT, acknowledge, ledger_policy, ledger_reader_policy, load_epoch,
+    ACKNOWLEDGEMENT, LABEL, RETIREMENT, TARGET_APPROVAL, acknowledge, ledger_policy, ledger_reader_policy, load_epoch,
     publish, record, verify_archive, write_once,
 )
-from deployment import LABEL as TARGET, register_target, require_active_epoch, require_registered_target
-from kms_policy import acknowledgement_policy
+from deployment import register_target, require_active_epoch, require_registered_target
+from kms_policy import acknowledgement_policy, boot_pins
 from nitro_fixtures import DOMAIN, HOST, key, pin, schedule, sign
-from retirement import commit_retirement, inspect_keys, key_inventory, qualified_manifest
+from retirement import commit_retirement, inspect_keys, key_inventory, qualified_manifest, qualified_policy, retirement_scope
 
 READ_ROLE = "arn:aws:iam::000000000001:role/custodian"
 PUBLISHER = "arn:aws:iam::000000000008:role/publisher"
@@ -204,7 +206,14 @@ class CustodyLedgerTests(unittest.TestCase):
         return {"manifest": manifest, "signatures": [sign(label, manifest, member["keyArn"])
                                                     for member in approval_keys(self.trust)[:2]]}
 
-    @patch("retirement.qualified_policy", return_value="fe" * 32)
+    def replacement_target(self, **overrides):
+        _, receipt, _ = load_epoch(self.trust, "2")
+        return {"network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "2",
+                "receiptSha256": sha256(receipt), "approvalFromEpoch": self.trust["approvalKeys"][-1]["fromEpoch"],
+                "releaseId": "new-slot", "mode": "serve", "hostRole": HOST,
+                "pcrs": {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)}, **overrides}
+
+    @patch("retirement.qualified_policy")
     def test_closing_an_epoch_freezes_share_release_and_preserves_the_full_key_inventory(self, qualification):
         first = self.sign(self.document(1))
         publish(self.trust, first)
@@ -216,19 +225,22 @@ class CustodyLedgerTests(unittest.TestCase):
             "wrappingKeys": [key(account, 11) for account in range(1, 7)],
             "pcrs": {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)},
         }
-        target_doc = self.signed_subject(TARGET, target)
+        target_doc = self.signed_subject(TARGET_APPROVAL, target)
         with self.assertRaisesRegex(ValueError, "object missing"):
             require_registered_target(self.trust, target)
         register_target(self.trust, target_doc)
         require_registered_target(self.trust, target)
 
+        replacement = self.replacement_target()
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
+        qualification.return_value = ("fe" * 32, sha256(replacement))
         marker = qualified_manifest(self.trust, None, "1", "2")
         retired = self.signed_subject(RETIREMENT, marker)
-        qualification.return_value = "cd" * 32
+        qualification.return_value = ("cd" * 32, sha256(replacement))
         with self.assertRaisesRegex(ValueError, "no longer matches"):
             commit_retirement(self.trust, None, retired)
         require_registered_target(self.trust, target)
-        qualification.return_value = marker["walletPolicyDigest"]
+        qualification.return_value = (marker["walletPolicyDigest"], sha256(replacement))
         concurrent = {**target, "releaseId": "other-slot", "wrappingKeys": [key(account, 12) for account in range(1, 7)]}
 
         def register_during_retirement(*args):
@@ -237,7 +249,7 @@ class CustodyLedgerTests(unittest.TestCase):
 
         with patch("deployment.write_once", side_effect=register_during_retirement):
             with self.assertRaisesRegex(ValueError, "retired"):
-                register_target(self.trust, self.signed_subject(TARGET, concurrent))
+                register_target(self.trust, self.signed_subject(TARGET_APPROVAL, concurrent))
         with self.assertRaisesRegex(ValueError, "retired"):
             require_registered_target(self.trust, target)
         with self.assertRaisesRegex(ValueError, "retired"):
@@ -261,8 +273,8 @@ class CustodyLedgerTests(unittest.TestCase):
             states[key(1, 11)] = "Disabled"
             self.assertEqual({row["state"] for row in inspect_keys(self.trust, "1", 1, True)["keys"]}, set(states.values()))
 
-    @patch("retirement.qualified_policy", return_value="fe" * 32)
-    def test_unverified_retirement_halts_share_release_without_authorizing_key_retirement(self, _):
+    @patch("retirement.qualified_policy")
+    def test_unverified_retirement_halts_share_release_without_authorizing_key_retirement(self, qualification):
         publish(self.trust, self.sign(self.document(1)))
         _, old, _ = load_epoch(self.trust, "1")
         self.trust["approvalKeys"].append(schedule("2", 9))
@@ -275,10 +287,19 @@ class CustodyLedgerTests(unittest.TestCase):
             inspect_keys(self.trust, "1", 1, False)
         kms.assert_not_called()
 
+        replacement = self.replacement_target()
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
+        qualification.return_value = ("fe" * 32, sha256(replacement))
         marker = qualified_manifest(self.trust, None, "1", "2")
         wrong = self.signed_subject(RETIREMENT, {**marker, "replacementReceiptSha256": "ab" * 32})
         self.objects[path] = json.dumps(wrong).encode()
         with patch("retirement.kms") as kms, self.assertRaisesRegex(ValueError, "retirement receipts do not match the ledger"):
+            inspect_keys(self.trust, "1", 1, False)
+        kms.assert_not_called()
+
+        wrong = self.signed_subject(RETIREMENT, {**marker, "replacementTargetSha256": "ab" * 32})
+        self.objects[path] = json.dumps(wrong).encode()
+        with patch("retirement.kms") as kms, self.assertRaisesRegex(ValueError, "object missing"):
             inspect_keys(self.trust, "1", 1, False)
         kms.assert_not_called()
 
@@ -288,3 +309,44 @@ class CustodyLedgerTests(unittest.TestCase):
             require_active_epoch(stale, "1")
         with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
             require_active_epoch(self.trust, "1")
+
+    def test_retirement_qualifies_only_a_live_registered_serving_image_and_role(self):
+        publish(self.trust, self.sign(self.document(1)))
+        _, old, _ = load_epoch(self.trust, "1")
+        publish(self.trust, self.sign(self.document(2, old, variant="fe")))
+        scope, seed = retirement_scope(self.trust, "1", "2")
+        registered = self.replacement_target()
+        pins = {key.removeprefix("PCR"): value for key, value in boot_pins(HOST, registered["pcrs"]).items()}
+        evidence = {"policyDigest": "fe" * 32, "targets": [{"releaseId": registered["releaseId"], "pcrs": pins}]}
+
+        with tempfile.TemporaryDirectory() as directory:
+            wallet_trust = pathlib.Path(directory) / "wallet.json"
+            body = b'{"wallet":"trust fixture"}\n'
+            wallet_trust.write_bytes(body)
+            self.trust["walletTrustSha256"] = hashlib.sha256(body).hexdigest()
+            with patch("retirement.subprocess") as subprocess:
+                subprocess.run.return_value.stdout = json.dumps(evidence).encode()
+                with self.assertRaisesRegex(ValueError, "no registered serving target"):
+                    qualified_policy(self.trust, wallet_trust, scope, seed)
+
+                register_target(self.trust, self.signed_subject(TARGET_APPROVAL, {**registered, "mode": "rotate"}))
+                with self.assertRaisesRegex(ValueError, "no registered serving target"):
+                    qualified_policy(self.trust, wallet_trust, scope, seed)
+                subprocess.run.assert_not_called()
+
+                register_target(self.trust, self.signed_subject(TARGET_APPROVAL, registered))
+                subprocess.run.return_value.stdout = json.dumps({**evidence, "targets": [
+                    {"releaseId": registered["releaseId"], "pcrs": {**pins, "3": "ab" * 48}},
+                ]}).encode()
+                with self.assertRaisesRegex(ValueError, "no attested serving target"):
+                    qualified_policy(self.trust, wallet_trust, scope, seed)
+
+                subprocess.run.return_value.stdout = json.dumps(evidence).encode()
+                self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, seed), ("fe" * 32, sha256(registered)))
+                self.assertEqual(subprocess.run.call_args.kwargs["input"], body)
+                self.assertNotIn(str(wallet_trust), subprocess.run.call_args.args[0])
+                subprocess.run.reset_mock()
+                wallet_trust.write_bytes(b"{}")
+                with self.assertRaisesRegex(ValueError, "does not match the pinned digest"):
+                    qualified_policy(self.trust, wallet_trust, scope, seed)
+                subprocess.run.assert_not_called()
