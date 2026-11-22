@@ -83,6 +83,34 @@ describe("the keys of an address under the service", () => {
     }
   });
 
+  it("validates the whole batch before requesting approval for any item", async () => {
+    const { address, nullifier, decrypt, keys: held } = keys(bytes(5, 31) as Bytes31);
+    const transfer = {
+      ciphertext: bytes(7, 50), viewingPublicKey: address.viewingPublicKey,
+      txViewingPublicKey: address.viewingPublicKey, salt: bytes(0, 16) as never,
+      slotIndex: 0xffff_ffff, label: "transfer",
+    } as const;
+    const ringDeposit = { ...transfer, slotIndex: 0, label: "ringDeposit" } as const;
+    try {
+      for (const invalid of [
+        { ...transfer, slotIndex: -1 }, { ...transfer, slotIndex: 1.5 },
+        { ...transfer, slotIndex: 0x1_0000_0000 }, { ...transfer, slotIndex: NaN },
+        { ...ringDeposit, slotIndex: 1 }, { ...transfer, salt: bytes(0, 15) as never },
+        { ...transfer, label: "constructor" as never },
+      ]) {
+        await expect(held.decrypt([transfer, invalid])).rejects.toMatchObject({ code: "InvalidDecryptItem" });
+      }
+      expect(decrypt).not.toHaveBeenCalled();
+      await expect(held.decrypt([transfer, ringDeposit])).resolves.toEqual([bytes(7, 50), bytes(7, 50)]);
+      expect(decrypt.mock.calls[0]?.[0].map(({ slot_index, label }) => [slot_index, label])).toEqual([
+        ["4294967295", "Transfer"], ["0", "RingDeposit"],
+      ]);
+    } finally {
+      held.destroy();
+      nullifier.destroy();
+    }
+  });
+
   it("aborts pending decrypts and prevents new requests after destruction", async () => {
     let finish!: (value: string[]) => void;
     const reply = new Promise<string[]>(resolve => { finish = resolve; });

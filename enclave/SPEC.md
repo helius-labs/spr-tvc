@@ -55,9 +55,11 @@ signs the request.
    recipient's Solana address. The commitment binds that address and service
    nullifier public key through `owner_hash`.
 3. **Authorize the exact batch.** The recipient wallet uses the owner tag to
-   find candidate outputs. It generates a fresh P-256 response key pair and
-   keeps the private key. The owner signs a Solana off-chain message that
-   binds the network, target release and Quorum identity, fresh request ID,
+   find candidate outputs. The SDK checks each item's cipher label, 16-byte
+   salt and slot before asking the owner to sign. Transfer slots are unsigned
+   32-bit integers. Ring deposits use slot zero. The SDK generates a fresh
+   P-256 response key pair and keeps the private key. The owner signs a Solana
+   off-chain message that binds the network, target release and Quorum identity, fresh request ID,
    ordered items, and response public key. The SDK seals the signed request
    to the pinned Quorum encryption key. An empty batch uses the same
    authorization to obtain the service nullifier secret.

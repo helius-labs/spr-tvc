@@ -2,23 +2,24 @@ import type { DecryptRequest } from "@heliuslabs/spr";
 
 import { DecryptionServiceError } from "../protocol/error.js";
 import { encodeLowerHex } from "../protocol/hex.js";
-import type { DecryptItem, DecryptLabel } from "../protocol/types.js";
+import type { DecryptItem } from "../protocol/types.js";
 
 const MAX_ITEMS_PER_BATCH = 256;
 
-const LABELS: Record<DecryptRequest["label"], DecryptLabel> = {
-  transfer: "Transfer",
-  ringDeposit: "RingDeposit",
-};
-
 /** One SDK decrypt request on the wire's terms. */
 export function decryptItem(request: DecryptRequest): DecryptItem {
+  const { slotIndex, label, salt } = request;
+  if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex > 0xffff_ffff ||
+      (label === "ringDeposit" ? slotIndex !== 0 : label !== "transfer") ||
+      salt?.byteLength !== 16) {
+    throw new DecryptionServiceError("InvalidDecryptItem");
+  }
   return {
     ciphertext: encodeLowerHex(request.ciphertext),
     ephemeral_viewing_public_key: encodeLowerHex(request.txViewingPublicKey.toBytes()),
-    salt: encodeLowerHex(request.salt),
-    slot_index: String(request.slotIndex),
-    label: LABELS[request.label],
+    salt: encodeLowerHex(salt),
+    slot_index: String(slotIndex),
+    label: label === "transfer" ? "Transfer" : "RingDeposit",
   };
 }
 
