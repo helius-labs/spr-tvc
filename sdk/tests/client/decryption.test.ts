@@ -41,7 +41,7 @@ function fixture() {
 it("asks for an address's keys from the release it verified", async () => {
   const { context, fetch, quorum, info } = fixture();
   const forget = vi.fn();
-  const service = decryptionServiceFromSession({ context: async () => context, forget, reset: vi.fn() }, genesisHashForNetwork("devnet"));
+  const service = decryptionServiceFromSession({ context: async () => context, forget }, genesisHashForNetwork("devnet"));
   const owner = ownerAddress;
 
   await expect(service.address(owner)).rejects.toMatchObject({ code: "OperationUnavailable" });

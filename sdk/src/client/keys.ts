@@ -45,11 +45,12 @@ export class ServiceKeys implements DecryptionServiceKeys {
     proofs: ProofService,
     decrypt: Decrypt,
   ) {
-    const nullifierKey = NullifierKey.fromSecret(nullifierSecret);
-    const transactionKey = ViewingKey.fromBytes(
-      hkdf(sha256, nullifierSecret, undefined, TRANSACTION_KEY_LABEL, 32) as Bytes32,
-    );
+    const transactionBytes = hkdf(sha256, nullifierSecret, undefined, TRANSACTION_KEY_LABEL, 32) as Bytes32;
+    let nullifierKey: NullifierKey | undefined;
+    let transactionKey: ViewingKey | undefined;
     try {
+      nullifierKey = NullifierKey.fromSecret(nullifierSecret);
+      transactionKey = ViewingKey.fromBytes(transactionBytes);
       this.#transactionKey = transactionKey.publicKey();
       this.#local = LocalKeys.fromKeys({
         address: ShieldedAddress.fromPublicKeys(
@@ -61,8 +62,9 @@ export class ServiceKeys implements DecryptionServiceKeys {
         nullifierKey,
       }, proofs);
     } finally {
-      nullifierKey.destroy();
-      transactionKey.destroy();
+      transactionBytes.fill(0);
+      transactionKey?.destroy();
+      nullifierKey?.destroy();
     }
     this.#address = address;
     this.#decrypt = decrypt;

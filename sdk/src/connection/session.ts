@@ -9,15 +9,13 @@ import {
 /**
  * The client's one verified connection, made on first use. Verification runs
  * again once the release policy's validity window no longer holds, and after
- * `forget` or `reset`; nothing else replaces it.
+ * `forget`.
  */
 export type DecryptionServiceSession = {
   /** The verified connection, verifying first when there is none or it no longer holds. */
   context(signal: AbortSignal): Promise<ConnectedTvcRuntime>;
   /** Drops `context` if it is still the current one, so the next call verifies again. */
   forget(context: ConnectedTvcRuntime): void;
-  /** Drops the current connection and any verification in flight, so the next call verifies anew. */
-  reset(): void;
 };
 
 /** Whether the connection's release policy is still in force. Operations check the same window again before they sign. */
@@ -44,8 +42,7 @@ export function sessionFromConnector(
           const current: Flight = { controller, users: 0, promise: Promise.resolve().then(async () => {
             controller.signal.throwIfAborted();
             const context = await connect(controller.signal);
-            // An abandoned connector may ignore cancellation and finish after its
-            // replacement, and a reset one must not become current.
+            // An abandoned connector may ignore cancellation and finish after its replacement.
             controller.signal.throwIfAborted();
             if (pending === current) active = context;
             return context;
@@ -66,11 +63,6 @@ export function sessionFromConnector(
 
     forget(context): void {
       if (active === context) active = null;
-    },
-
-    reset(): void {
-      active = null;
-      pending = null;
     },
   };
 }

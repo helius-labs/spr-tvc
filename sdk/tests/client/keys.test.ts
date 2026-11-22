@@ -1,4 +1,4 @@
-import { NullifierKey, ShieldedAddress, ShieldedPublicKey, initializePoseidon, type Bytes32, type RequestContext } from "@heliuslabs/spr";
+import { NullifierKey, ShieldedAddress, ShieldedPublicKey, ViewingKey, initializePoseidon, type Bytes32, type RequestContext } from "@heliuslabs/spr";
 import { X25519Keypair, X25519PublicKey, type Bytes31 } from "@heliuslabs/spr/keypair";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -42,6 +42,22 @@ describe("the keys of an address under the service", () => {
     expect(await mint(5, 1)).toBe(await mint(5, 1));
     expect(await mint(5, 1)).not.toBe(await mint(5, 2));
     expect(await mint(5, 1)).not.toBe(await mint(6, 1));
+  });
+
+  it("clears the transaction key derivation buffer on success and when the identity fails", () => {
+    const fromBytes = vi.spyOn(ViewingKey, "fromBytes");
+    const { address, nullifier, decrypt, keys: held } = keys(bytes(5, 31) as Bytes31);
+    try {
+      expect(fromBytes.mock.calls[0]?.[0]).toEqual(bytes(0));
+      fromBytes.mockClear();
+      expect(() => new ServiceKeys(address, bytes(6, 31) as Bytes31, proofs, decrypt))
+        .toThrow(/IDENTITY_MISMATCH/);
+      expect(fromBytes.mock.calls[0]?.[0]).toEqual(bytes(0));
+    } finally {
+      fromBytes.mockRestore();
+      held.destroy();
+      nullifier.destroy();
+    }
   });
 
   it("open outputs through the service, in order", async () => {

@@ -50,26 +50,6 @@ it("verifies again once the release policy's window no longer holds, and after f
   expect(connect).toHaveBeenCalledTimes(4);
 });
 
-it("verifies anew after reset, and a verification in flight at the reset never becomes current", async () => {
-  const ready = deferred<ConnectedTvcRuntime>();
-  const connect = vi.fn((_signal: AbortSignal) => ready.promise);
-  const session = sessionFromConnector(connect);
-  const inFlight = session.context(signal());
-  await Promise.resolve();
-  session.reset();
-  connect.mockResolvedValueOnce(runtime("after"));
-  const after = await session.context(signal());
-  expect(after.info.release_id).toBe("after");
-  ready.resolve(runtime("before"));
-  await expect(inFlight).resolves.toMatchObject({ info: { release_id: "before" } });
-  await expect(session.context(signal())).resolves.toBe(after);
-
-  session.reset();
-  connect.mockResolvedValueOnce(runtime("again"));
-  await expect(session.context(signal())).resolves.toMatchObject({ info: { release_id: "again" } });
-  expect(connect).toHaveBeenCalledTimes(3);
-});
-
 it("lets one caller cancel while another receives the shared verification", async () => {
   const connection = runtime("shared");
   const ready = deferred<ConnectedTvcRuntime>();
