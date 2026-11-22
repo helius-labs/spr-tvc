@@ -186,6 +186,13 @@ class TargetApprovalTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
             active.side_effect = None
+            inspect.side_effect = ValueError("target instance profile does not contain the approved host role")
+            with self.assertRaisesRegex(SystemExit, "approved host role"):
+                main()
+            sign_target.assert_not_called()
+            self.assertFalse(output.exists())
+
+            inspect.side_effect = None
             inspect.reset_mock()
             inspect_key.reset_mock()
             main()
@@ -214,12 +221,50 @@ class TargetApprovalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "running"):
             require_host_state(self.manifest, "running", "host-reader")
         instance["EnclaveOptions"] = {"Enabled": True}
-        require_host_state(self.manifest, "running", "host-reader")
         for changed in ([], [{**reservation, "OwnerId": "000000000006"}],
                         [{**reservation, "Instances": [{**instance, "InstanceId": "i-1234567890abcdef1"}]}]):
             describe.return_value = {"Reservations": changed}
             with self.assertRaises(ValueError):
                 require_host_state(self.manifest, "running", "host-reader")
+
+    @patch("deployment.aws")
+    def test_running_parent_must_have_the_approved_architecture_and_role(self, aws):
+        account = "000000000007"
+        attachment = {"Arn": f"arn:aws:iam::{account}:instance-profile/nitro/serving-parent", "Id": "AIPAEXAMPLE"}
+        parent = {"InstanceId": INSTANCE, "State": {"Name": "running"}, "EnclaveOptions": {"Enabled": True},
+                  "Architecture": "x86_64", "IamInstanceProfile": attachment}
+        profile = {"Arn": attachment["Arn"], "InstanceProfileId": attachment["Id"], "Roles": [{"Arn": HOST}]}
+        responses = {
+            "describe-instances": {"Reservations": [{"OwnerId": account, "Instances": [parent]}]},
+            "get-instance-profile": {"InstanceProfile": profile},
+        }
+        aws.side_effect = lambda _region, _service, operation, _args, **_options: responses[operation]
+        self.assertEqual(require_host_state(self.manifest, "running", "host-reader")["instanceId"], INSTANCE)
+        self.assertEqual(aws.call_args_list, [
+            call(REGION, "ec2", "describe-instances", ["--instance-ids", INSTANCE], profile="host-reader"),
+            call(REGION, "iam", "get-instance-profile", ["--instance-profile-name", "serving-parent"], profile="host-reader"),
+        ])
+        for changed, error in (
+            ({"Architecture": "arm64"}, "x86-64 EIF"),
+            ({"IamInstanceProfile": None}, "no instance profile"),
+            ({"IamInstanceProfile": {**attachment, "Arn": attachment["Arn"].replace(account, "000000000006")}},
+             "approved account"),
+            ({"IamInstanceProfile": {**attachment, "Id": ""}}, "approved account"),
+        ):
+            aws.reset_mock()
+            with self.subTest(parent=changed), patch.dict(parent, changed):
+                with self.assertRaisesRegex(ValueError, error):
+                    require_host_state(self.manifest, "running", "host-reader")
+            aws.assert_called_once()
+        for changed in (
+            {"Arn": attachment["Arn"] + "-other"},
+            {"InstanceProfileId": "AIPAOTHER"},
+            {"Roles": []},
+            {"Roles": [{"Arn": HOST + "-other"}]},
+        ):
+            with self.subTest(iam=changed), patch.dict(profile, changed):
+                with self.assertRaisesRegex(ValueError, "approved host role"):
+                    require_host_state(self.manifest, "running", "host-reader")
 
     @patch("retirement.aws")
     @patch("retirement.require_host_state")

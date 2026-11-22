@@ -55,8 +55,11 @@ The workflow attests the executable, configuration, EIF and PCR0–PCR2
 hashes after verifying the approval. Signers verify a private copy of the
 exact provenance bytes and match their proposed target or ceremony against
 the authenticated hashes. The KMS wrapping policy pins PCR3 to the parent IAM
-role and PCR4 to the EC2 instance ID. That authorization covers the approved
-image across boots on the registered parent. Each serving boot generates its
+role and PCR4 to the EC2 instance ID. Before signing, approvers read the
+parent's EC2 and IAM records to verify the running x86-64 instance and its
+attached role. At boot, KMS verifies PCR3 and PCR4 on the Nitro attestation
+document. That authorization covers the approved image across boots on the
+registered parent. Each serving boot generates its
 own RSA recipient and P-256 transport and signing keys. A replacement parent
 needs its own approval and wrapping keys, even when it runs the same EIF.
 Recovery keys pin the measured relay and its role. The relay handles one

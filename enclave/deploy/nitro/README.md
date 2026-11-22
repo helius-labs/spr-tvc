@@ -291,9 +291,13 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
 2. Two approval signers independently check and sign the target manifest. It
    binds the canonical receipt, mode, EIF, configuration, measurements, parent
    account, EC2 region and instance ID, and six wrapping keys. Each signer uses
-   a read-only profile with `ec2:DescribeInstances` in the host account to
-   confirm that exact parent is running with enclave support enabled. Supply
-   six read-only profiles in slot order to verify the installed wrapping
+   a read-only profile in the host account with `ec2:DescribeInstances` and
+   `iam:GetInstanceProfile`. The parent must be running on x86-64 with Nitro
+   Enclaves enabled. The IAM profile returned for the EC2 attachment must
+   have the same ARN and ID, and contain the role bound into PCR3.
+   [IAM instance profile lookup](https://docs.aws.amazon.com/IAM/latest/APIReference/API_GetInstanceProfile.html)
+
+   Supply six read-only profiles in slot order to verify the installed wrapping
    policies and RSA key metadata before signing. A rotation draft takes
    `--next-roster roster-next.json` and binds the successor relay from custody trust. Before authorizing a
    rotation, both signers verify the successor's build and keys with
