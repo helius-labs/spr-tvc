@@ -143,18 +143,27 @@ def read_object(trust, name):
 
 
 def read_stored_object(trust, name):
+    payload, metadata = read_stored_payload(trust, name)
+    return parse_json(payload), metadata
+
+
+def read_stored_payload(trust, name):
     _, prefix = ledger_prefix(trust)
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "record.json"
         metadata = storage(trust, "get-object", ["--key", prefix + name, "--range", f"bytes=0-{MAX_DOCUMENT_BYTES}", str(path)])
-        return read_json(path), metadata
+        return read_document(path), metadata
 
 
-def publication_time(metadata):
+def publication_datetime(metadata):
     committed = datetime.fromisoformat(metadata["LastModified"])
     if committed.tzinfo is None:
         raise ValueError("custody ledger publication time requires a timezone")
-    return committed.timestamp()
+    return committed
+
+
+def publication_time(metadata):
+    return publication_datetime(metadata).timestamp()
 
 
 def require_publication_roster(trust, start):

@@ -16,7 +16,7 @@ from unittest.mock import ANY, call, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import approval_keys, approval_roster, canonical, sha256
-from custody_archive import MAX_ARCHIVE_ENTRY_BYTES, archive, verify_archive
+from custody_archive import MAX_ARCHIVE_ENTRY_BYTES, archive, ledger_checkpoint, verify_archive
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
     check_custody_roster, check_installed_ledger, check_serving_policy, draft, ledger_policy, ledger_reader_policy,
@@ -54,6 +54,7 @@ class CustodyLedgerTests(unittest.TestCase):
         }
         self.objects = {}
         self.timestamps = {}
+        self.versions = {}
         self.lock = Lock()
         self.now = int(time.time())
         self.booted_at_ms = self.now * 1000
@@ -138,7 +139,8 @@ class CustodyLedgerTests(unittest.TestCase):
                 self.timestamps[name] = now
             elif operation == "get-object" and name in self.objects:
                 pathlib.Path(args[-1]).write_bytes(self.objects[name])
-                return {"LastModified": self.timestamps.get(name, now)}
+                return {"LastModified": self.timestamps.get(name, now),
+                        "VersionId": self.versions.get(name, hashlib.sha256(name.encode()).hexdigest())}
             else:
                 raise ValueError("object missing")
         return {}
@@ -423,6 +425,62 @@ class CustodyLedgerTests(unittest.TestCase):
             evidence.side_effect = ValueError("invalid ceremony evidence")
             with self.assertRaisesRegex(ValueError, "invalid ceremony evidence"):
                 verify(payload)
+
+    def test_ledger_checkpoint_requires_every_original_record_and_s3_version(self):
+        publish(self.trust, self.sign(self.document(1)))
+        _, old, _ = load_epoch(self.trust, "1")
+        rotated, rotation = self.rotation_document(old)
+        publish(self.trust, self.sign(rotated))
+        replacement = self.replacement_target()
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
+        with (patch("retirement.qualified_policy", return_value=self.qualification(replacement)),
+              patch("retirement.require_recovery_quorum")):
+            marker = qualified_manifest(self.trust, None, "1", "2")
+            commit_retirement(self.trust, None, self.signed_retirement(marker))
+
+        pinned = ledger_checkpoint(self.trust)
+        self.now = max(marker["recoveryDeadline"], rotation["manifest"]["expiresAt"]) + 1
+        prefix = f"spr-custody/devnet/{DOMAIN}/"
+        target = prefix + target_object_name(replacement)
+        retired = prefix + "retired/1.json"
+        changed_time = datetime.fromtimestamp(self.now, timezone.utc).isoformat()
+        replica = {**self.trust, "ledger": {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1"}}
+
+        def replica_aws(region, service, operation, args):
+            self.assertEqual(region, "eu-west-1")
+            self.assertEqual(args[:4], ["--bucket", "custody-recovery", "--expected-bucket-owner", "000000000010"])
+            original = ["--bucket", "custody-journal", "--expected-bucket-owner", "000000000008", *args[4:]]
+            reply = self.aws("eu-north-1", service, operation, original)
+            return {**reply, "Name": "custody-recovery"} if operation == "list-objects-v2" else reply
+
+        with patch("custody_ledger.aws", side_effect=replica_aws):
+            self.assertEqual(ledger_checkpoint(replica, pinned), pinned)
+            with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
+                require_active_epoch(replica, "1")
+
+        for objects in (
+            {name: body for name, body in self.objects.items() if name != retired},
+            {name: body for name, body in self.objects.items() if name != target},
+            {**self.objects, prefix + "3.json": self.objects[prefix + "2.json"]},
+            {**self.objects, target: self.objects[target] + b" "},
+        ):
+            with patch.dict(self.objects, objects, clear=True):
+                with self.assertRaisesRegex(ValueError, "differs from the independently pinned checkpoint"):
+                    ledger_checkpoint(self.trust, pinned)
+        with patch.dict(self.timestamps, {target: changed_time}):
+            with self.assertRaisesRegex(ValueError, "independently pinned checkpoint"):
+                ledger_checkpoint(self.trust, pinned)
+        with patch.dict(self.versions, {target: "copy-version"}):
+            with self.assertRaisesRegex(ValueError, "independently pinned checkpoint"):
+                ledger_checkpoint(self.trust, pinned)
+        with patch.dict(self.versions, {target: "null"}):
+            with self.assertRaisesRegex(ValueError, "requires an original S3 version"):
+                ledger_checkpoint(self.trust, pinned)
+
+        names = [name.removeprefix(prefix) for name in sorted(self.objects)]
+        with patch("custody_archive.list_objects", side_effect=[iter(names), iter(names[:-1])]):
+            with self.assertRaisesRegex(ValueError, "changed during checkpoint"):
+                ledger_checkpoint(self.trust, pinned)
 
     def test_genesis_host_role_must_match_the_captured_identity_before_publication(self):
         document = self.document(1)

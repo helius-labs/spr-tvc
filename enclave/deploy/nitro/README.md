@@ -171,14 +171,26 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    python3 "$nitro/custody_archive.py" trust.json verify "$epoch" custody.jsonl "$pinned_sha256"
    ```
 
-   Preserve the original ledger object versions and their write times. The
-   receipt archive covers receipts and rotation approvals. A ledger recovery
-   also needs every serving registration and retirement record. Suspend
-   target registration, share release and key retirement if the canonical
-   ledger is unavailable or incomplete. Before resuming, independently verify
-   the recovered records, original write times and complete target and
-   retirement indexes. An ordinary S3 object restore assigns a new creation
-   date. [AWS Backup metadata](https://docs.aws.amazon.com/aws-backup/latest/devguide/s3-backups.html)
+   Pause ledger publication and wait for in-flight writes before recording a
+   checkpoint. Use an inspection identity with `s3:ListBucket` on the full
+   custody prefix and `s3:GetObject` on its records. Retain the digest
+   independently with evidence of the last committed write. The digest covers
+   every receipt, target registration and retirement marker, including each
+   object's original version ID, write time and exact bytes. Keep the pinned
+   approval schedule and relay keys when updating the bucket, owner and region
+   in the recovered trust file.
+
+   ```sh
+   python3 "$nitro/custody_archive.py" trust.json ledger-checkpoint
+   python3 "$nitro/custody_archive.py" recovered-trust.json ledger-checkpoint --expect "$ledger_checkpoint_sha256"
+   ```
+
+   Suspend registration, share release and key retirement if the canonical
+   ledger becomes unavailable or incomplete. Resume only after the recovered
+   bucket matches an independently retained checkpoint that covers all
+   committed writes, and passes the installed bucket controls check above.
+   AWS Backup creates new object creation dates and version IDs on restore.
+   [AWS Backup metadata](https://docs.aws.amazon.com/aws-backup/latest/devguide/s3-backups.html)
 
    To change custody approval keys, append a schedule entry for the first
    uncommitted epoch and set a cutover time. Distribute the updated trust file

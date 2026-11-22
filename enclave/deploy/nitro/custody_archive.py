@@ -1,16 +1,18 @@
-"""Export and verify historical custody receipts and registered rotations."""
+"""Verify historical custody receipts and checkpoint the complete ledger."""
 
 import argparse
 import hashlib
 import json
 import subprocess
 import sys
+from datetime import timezone
 from pathlib import Path
 
 from approval import MAX_DOCUMENT_BYTES, canonical, epoch_number, fields, hex_digest, read_json, sha256, unique_object
 from custody_ledger import (
-    check_commit, check_predecessor, check_registered_target, check_rotation_target, ledger_object,
-    publication_time, read_object, read_stored_object, record, rotation_target_name, verify_ceremony_capture,
+    check_commit, check_predecessor, check_registered_target, check_rotation_target, ledger_object, ledger_prefix,
+    list_objects, publication_datetime, publication_time, read_object, read_stored_object, read_stored_payload, record,
+    rotation_target_name, verify_ceremony_capture,
 )
 
 MAX_ARCHIVE_ENTRY_BYTES = 2 * MAX_DOCUMENT_BYTES + 256
@@ -75,6 +77,31 @@ def verify_archive(trust, epoch, source, expected_digest):
     return previous[0]
 
 
+def ledger_checkpoint(trust, expected=None):
+    if expected is not None:
+        hex_digest(expected)
+    _, prefix = ledger_prefix(trust)
+    checksum = hashlib.sha256(b"SPR/native-nitro/ledger-checkpoint/v1\0" + prefix.encode())
+    names = tuple(list_objects(trust, ""))
+    if "1.json" not in names:
+        raise ValueError("custody ledger checkpoint requires a committed genesis")
+    for name in names:
+        payload, metadata = read_stored_payload(trust, name)
+        if not 0 < len(payload) <= MAX_DOCUMENT_BYTES:
+            raise ValueError(f"invalid custody ledger record size for {name}")
+        version = metadata.get("VersionId")
+        if not isinstance(version, str) or not version or version == "null":
+            raise ValueError(f"custody ledger record {name} requires an original S3 version")
+        published_at = publication_datetime(metadata).astimezone(timezone.utc).isoformat()
+        checksum.update(canonical([name, version, published_at, hashlib.sha256(payload).hexdigest()]) + b"\n")
+    if names != tuple(list_objects(trust, "")):
+        raise ValueError("custody ledger changed during checkpoint")
+    actual = checksum.hexdigest()
+    if expected is not None and actual != expected:
+        raise ValueError("custody ledger differs from the independently pinned checkpoint")
+    return actual
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("trust", type=Path)
@@ -85,11 +112,15 @@ def main():
     verify.add_argument("epoch")
     verify.add_argument("archive", type=Path)
     verify.add_argument("sha256")
+    checkpoint = commands.add_parser("ledger-checkpoint")
+    checkpoint.add_argument("--expect", metavar="SHA256")
     args = parser.parse_args()
     try:
         trust = read_json(args.trust)
         if args.command == "export":
             archive(trust, args.epoch, sys.stdout.buffer)
+        elif args.command == "ledger-checkpoint":
+            print(ledger_checkpoint(trust, args.expect))
         else:
             with args.archive.open("rb") as source:
                 receipt = verify_archive(trust, args.epoch, source, args.sha256)
