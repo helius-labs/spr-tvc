@@ -506,8 +506,11 @@ pinned history and excluded versions.
      --replica-profile "$recovery_bucket_read_profile"
    ```
 
-   Mainnet pre-deletion inspection and final retirement verification require
-   a pinned ledger replica. Devnet without a replica omits `--replica-profile`.
+   Mainnet signing, publication, pre-deletion inspection and final retirement
+   verification require a pinned ledger replica. Before signing or publishing,
+   confirm that both copies contain the receipt chain, old target registrations
+   and the selected replacement registration. This check also runs on devnet
+   with a pinned replica. Devnet without a replica omits `--replica-profile`.
    Use a read-only profile in the recovery bucket owner's account with the
    S3 inspection permissions listed under
    the ledger installation check, excluding `s3:GetReplicationConfiguration`.
@@ -515,8 +518,9 @@ pinned history and excluded versions.
    bucket ownership, public access blocks, the write and deletion policy,
    and absence of lifecycle rules. [S3 bucket policy permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketPolicy.html)
 
-   Give retirement inspection roles `s3:GetObject` on the custody prefix in
-   both buckets and include them in the reader lists. The inventory requires
+   Include retirement signers, publishers and inspectors in both reader
+   lists. Grant `s3:ListBucket` for the source custody prefix and
+   `s3:GetObject` for that prefix in both buckets. The inventory requires
    matching bytes, original version IDs and write times for the retirement
    marker, receipt chain and required target registrations. The retirement
    marker closes the old epoch as soon as it commits on the source.
@@ -658,7 +662,10 @@ to its KMS policy. [Nitro attestation](https://docs.aws.amazon.com/enclaves/late
    cutover sequence when distributing old-domain recovery trust to wallets.
 3. Keep the old domain available for owner-signed recovery. Open it with the
    recovery pins, scan the owner's outputs, verify commitments, and sweep to
-   wallet-local notes. Switch new sends to the new domain. Rehearse both paths
+   wallet-local notes. Switch new sends to the new domain and discard cached
+   service-derived destinations. Recovery-only mode applies when resolving a
+   recipient through the service. An explicit shielded address can still be
+   used in a transaction. Rehearse both paths
    using [the on-chain devnet procedure](../../../tests/README.md#live-seed-cutover).
    Retain the old recovery capability until affected owners have a recovery
    path. Treat previously exposed note data as compromised.

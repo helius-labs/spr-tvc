@@ -839,6 +839,7 @@ class CustodyLedgerTests(unittest.TestCase):
                     require_uncommitted_record(self.trust, name, version)
 
     def test_retirement_inventory_requires_the_actual_replicas_of_its_dependencies(self):
+        self.trust["network"] = "mainnet"
         publish(self.trust, self.sign(self.document(1)))
         _, old, _ = load_epoch(self.trust, "1")
         rotated, _ = self.rotation_document(old)
@@ -848,14 +849,15 @@ class CustodyLedgerTests(unittest.TestCase):
         original_target = {**replacement, "custodyEpoch": "1", "receiptSha256": sha256(old), "releaseId": "old-serving",
                            "instanceId": INSTANCE, "wrappingKeys": [key(slot, 31) for slot in range(1, 7)]}
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, original_target))
-        with (patch("retirement.qualified_policy", return_value=self.live_qualification(replacement)),
-              patch("retirement.require_recovery_quorum")):
+        with patch("retirement.qualified_policy", return_value=self.live_qualification(replacement)):
             marker = qualified_manifest(self.trust, None, "1", "2")
-            commit_retirement(self.trust, None, self.signed_retirement(marker))
+            retirement = self.signed_retirement(marker)
+            with self.assertRaisesRegex(ValueError, "mainnet retirement requires a pinned custody ledger replica"):
+                commit_retirement(self.trust, None, retirement)
 
         self.trust["ledgerReplica"] = {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1",
                                       "role": "arn:aws:iam::000000000008:role/replication"}
-        prefix = f"spr-custody/devnet/{DOMAIN}/"
+        prefix = f"spr-custody/mainnet/{DOMAIN}/"
         source_status = {}
         copied = set()
         marker_key = prefix + "retired/1.json"
@@ -882,6 +884,19 @@ class CustodyLedgerTests(unittest.TestCase):
             return {**reply, "ReplicationStatus": "REPLICA", **change}
 
         with patch("custody_ledger.aws", side_effect=aws):
+            with (patch("retirement.qualified_policy", return_value=self.live_qualification(replacement)),
+                  patch("retirement.require_recovery_quorum")):
+                for name in sorted(self.objects):
+                    with self.subTest(before_closure=name), patch.dict(source_status, {name: "PENDING"}):
+                        with patch("retirement.add_approval") as sign:
+                            with self.assertRaisesRegex(ValueError, "has not completed S3 replication"):
+                                sign_retirement(self.trust, None, retirement, approval_keys(self.trust)[0]["keyArn"])
+                            sign.assert_not_called()
+                        with self.assertRaisesRegex(ValueError, "has not completed S3 replication"):
+                            commit_retirement(self.trust, None, retirement)
+                        self.assertNotIn(marker_key, self.objects)
+                self.assertNotIn(marker_key, copied)
+                commit_retirement(self.trust, None, retirement)
             _, _, keys, _, _ = retirement_inventory(self.trust, "1", 1)
             self.assertIn(original_target["wrappingKeys"][0], keys)
             self.assertEqual(copied, set(self.objects))
@@ -1678,7 +1693,7 @@ class CustodyLedgerTests(unittest.TestCase):
         _, old, _ = load_epoch(self.trust, "1")
         rotated, _ = self.rotation_document(old)
         publish(self.trust, self.sign(rotated))
-        scope, receipt, _ = retirement_scope(self.trust, "1", "2")
+        scope, receipt, _, _ = retirement_scope(self.trust, "1", "2")
         seed = receipt["custody"]["noteSeedCommitment"]
         registered = self.replacement_target()
         pins = target_attestation(registered)["pcrs"]
@@ -1707,6 +1722,12 @@ class CustodyLedgerTests(unittest.TestCase):
                 query.assert_not_called()
 
                 register_target(self.trust, self.signed_subject(TARGET_APPROVAL, registered))
+                name = f"spr-custody/devnet/{DOMAIN}/{target_object_name(registered)}"
+                early = datetime.fromtimestamp(self.now - 1, timezone.utc).isoformat()
+                with patch.dict(self.timestamps, {name: early}):
+                    with self.assertRaisesRegex(ValueError, "target registration precedes its custody receipt"):
+                        qualified_policy(self.trust, wallet_trust, scope, seed)
+                    query.assert_not_called()
                 for pcr in ("3", "4"):
                     query.return_value.stdout = self.attestation_reply({**evidence, "targets": [
                         {**observed, "pcrs": {**pins, pcr: "ab" * 48}},
@@ -1781,17 +1802,6 @@ class CustodyLedgerTests(unittest.TestCase):
             marker = qualified_manifest(self.trust, wallet, "1", "2")
             self.assertEqual(marker["replacementTargetSha256"], sha256(primary))
             signed = self.signed_retirement(marker)
-            replica = {"bucket": "custody-recovery", "account": "000000000011", "region": "eu-west-1",
-                       "role": "arn:aws:iam::000000000008:role/replication"}
-            with (patch.dict(self.trust, {"ledgerReplica": replica}), patch("retirement.add_approval") as sign,
-                  patch("retirement.read_replicated_record", side_effect=ValueError("replication pending")) as read):
-                with self.assertRaisesRegex(ValueError, "replication pending"):
-                    sign_retirement(self.trust, wallet, {**signed, "signatures": []},
-                                    approval_keys(self.trust)[0]["keyArn"])
-                sign.assert_not_called()
-                with self.assertRaisesRegex(ValueError, "replication pending"):
-                    commit_retirement(self.trust, wallet, signed)
-                self.assertEqual([call.args[-1] for call in read.call_args_list], [target_object_name(primary)] * 2)
             commit_retirement(self.trust, wallet, signed)
             self.now += 1
             for observed in (primary_observed, standby_observed):
@@ -2292,6 +2302,17 @@ class CustodyLedgerTests(unittest.TestCase):
                 commit_retirement(self.trust, None, retirement)
             self.assertIn(recovery_keys[2], inspected)
             states[recovery_keys[2]] = "Enabled"
+            journal = f"spr-custody/devnet/{DOMAIN}/"
+            early_target = datetime.fromtimestamp(self.now - 1, timezone.utc).isoformat()
+            late_receipt = datetime.fromtimestamp(self.now + 1, timezone.utc).isoformat()
+            for timestamps, error in (
+                ({journal + target_object_name(replacement): early_target}, "target registration precedes its custody receipt"),
+                ({journal + "2.json": late_receipt}, "retirement cannot precede a committed custody receipt"),
+            ):
+                with patch.dict(self.timestamps, timestamps), patch("retirement.write_once") as write:
+                    with self.assertRaisesRegex(ValueError, error):
+                        commit_retirement(self.trust, None, retirement)
+                    write.assert_not_called()
             inspected.clear()
             with patch("retirement.add_approval", return_value={"signatures": retirement["signatures"]}):
                 self.assertEqual(sign_retirement(self.trust, None, {**retirement, "signatures": []},

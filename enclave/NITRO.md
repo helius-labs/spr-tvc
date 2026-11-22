@@ -177,8 +177,12 @@ bootstrap. Both publication buckets must serve the same signed policy file
 before and after attestation. A draft selects a registered boot whose
 registration is replicated when configured and whose three recovery and
 three wrapping keys remain enabled. Signers and the publisher reattest that
-exact boot and recheck its registration and keys. Restarting the replacement
-before publication requires a new candidate.
+exact boot, check the publication order of the replacement's receipt and
+registration, and recheck those keys. When a replica is pinned, they also
+verify that the receipt chain and the relevant old and replacement target
+registrations are replicated before closing the epoch. Mainnet requires this
+replica. Restarting the replacement before publication requires a new
+candidate.
 The ledger checks the S3 write time against the proof window and verifies
 both receipts, the signatures and the target before producing the key
 inventory. An unverifiable record halts new wraps and requires ledger recovery.
