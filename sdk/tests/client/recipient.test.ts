@@ -19,25 +19,57 @@ function shielded(owner: Address): ShieldedAddress {
 }
 const registryAddress = shielded(recipient);
 const fallbackAddress = shielded(recipient);
+const registered = { address: registryAddress } as NonNullable<Awaited<ReturnType<typeof lookup>>>;
 const service = { address: vi.fn(async () => fallbackAddress), genesisHash: genesisHashForNetwork("devnet") };
 const genesis = vi.fn(async () => service.genesisHash);
 const rpc = { getAccount: vi.fn(), solanaRpc: { getGenesisHash: () => ({ send: genesis }) } };
 const request = { rpc, owner: recipient, service };
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  lookup.mockReset();
+  vi.clearAllMocks();
+});
 
 it("uses the registered address before asking the service", async () => {
-  lookup.mockResolvedValue({ address: registryAddress } as NonNullable<Awaited<ReturnType<typeof lookup>>>);
+  lookup.mockResolvedValue(registered);
   await expect(resolvePaymentAddress(request)).resolves.toBe(registryAddress);
+  expect(lookup).toHaveBeenCalledTimes(1);
   expect(lookup).toHaveBeenCalledWith({ rpc, owner: recipient }, { signal: expect.any(AbortSignal) });
   expect(service.address).not.toHaveBeenCalled();
   expect(genesis).not.toHaveBeenCalled();
 });
 
-it("uses the service only when the registry lookup succeeds with no record", async () => {
+it("uses the service when both registry reads succeed with no record", async () => {
   lookup.mockResolvedValue(undefined);
   await expect(resolvePaymentAddress(request)).resolves.toBe(fallbackAddress);
+  expect(lookup).toHaveBeenCalledTimes(2);
+  expect(lookup.mock.calls[1]).toEqual(lookup.mock.calls[0]);
   expect(service.address).toHaveBeenCalledWith(recipient, lookup.mock.calls[0]?.[1]);
+});
+
+it("uses a registration that appears during the service lookup", async () => {
+  lookup.mockResolvedValueOnce(undefined).mockResolvedValueOnce(registered);
+  await expect(resolvePaymentAddress(request)).resolves.toBe(registryAddress);
+  expect(service.address).toHaveBeenCalledOnce();
+  expect(lookup).toHaveBeenCalledTimes(2);
+});
+
+it("refuses the service address if the second registry read fails", async () => {
+  const failure = new Error("registry unavailable after service lookup");
+  lookup.mockResolvedValueOnce(undefined).mockRejectedValueOnce(failure);
+  await expect(resolvePaymentAddress(request)).rejects.toBe(failure);
+  expect(service.address).toHaveBeenCalledOnce();
+});
+
+it("refuses the service address if the payment is cancelled during the second registry read", async () => {
+  const controller = new AbortController();
+  const reason = new Error("payment cancelled");
+  lookup.mockResolvedValueOnce(undefined).mockImplementationOnce(async () => {
+    controller.abort(reason);
+    return undefined;
+  });
+  await expect(resolvePaymentAddress(request, { signal: controller.signal })).rejects.toBe(reason);
+  expect(service.address).toHaveBeenCalledOnce();
 });
 
 it("propagates a registry failure without redirecting the payment", async () => {

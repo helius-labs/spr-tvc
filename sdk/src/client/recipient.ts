@@ -11,15 +11,16 @@ type PaymentRpc = Parameters<typeof resolveRegisteredAddress>[0]["rpc"] & {
   };
 };
 
-/** Resolve the destination for this payment. Only an absent registry record uses the service. */
+/** Prefer the registry record, including one observed after the service lookup. */
 export async function resolvePaymentAddress(
   { rpc, owner, service }: Readonly<{ rpc: PaymentRpc; owner: Address; service: Pick<DecryptionService, "address" | "genesisHash"> }>,
   options?: DecryptionServiceRequestOptions,
 ): Promise<ShieldedAddress> {
   const { signal, dispose } = requestScope(options);
   try {
+    const lookup = () => awaitWithSignal(resolveRegisteredAddress({ rpc, owner }, { signal }), signal);
     signal.throwIfAborted();
-    const registered = await awaitWithSignal(resolveRegisteredAddress({ rpc, owner }, { signal }), signal);
+    const registered = await lookup();
     if (registered) return registered.address;
     signal.throwIfAborted();
     const genesisHash = await awaitWithSignal(rpc.solanaRpc.getGenesisHash().send({ abortSignal: signal }), signal);
@@ -32,7 +33,7 @@ export async function resolvePaymentAddress(
         fallback.solanaAddress() !== owner) {
       throw new DecryptionServiceError("ReleaseBindingMismatch", "payment address does not match its owner");
     }
-    return fallback;
+    return (await lookup())?.address ?? fallback;
   } finally {
     dispose();
   }
