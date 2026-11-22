@@ -48,9 +48,18 @@ class ProvenanceTests(unittest.TestCase):
 
     @patch("provenance.subprocess.run")
     def test_matches_the_exact_source_network_and_artifacts_before_github_verification(self, run):
-        verify(self.build, "mainnet", COMMIT)
+        contents = self.manifest.read_bytes() + b"\n"
+        self.manifest.write_bytes(contents)
+
+        def verify_subject(args, **_options):
+            subject = pathlib.Path(args[3])
+            self.assertNotEqual(subject, self.manifest)
+            self.assertEqual(subject.read_bytes(), contents)
+
+        run.side_effect = verify_subject
+        self.assertEqual(verify(self.build, "mainnet", COMMIT), describe(self.build, "mainnet", COMMIT))
+        run.assert_called_once()
         args = run.call_args.args[0]
-        self.assertIn(str(self.manifest), args)
         self.assertIn(str(self.build / "provenance.intoto.jsonl"), args)
         self.assertEqual(args[args.index("--signer-workflow") + 1], WORKFLOW)
         self.assertEqual(args[args.index("--source-ref") + 1], "refs/heads/main")

@@ -22,6 +22,7 @@ from custody_ledger import (
 from deployment import register_target, require_registered_target
 from kms_policy import acknowledgement_policy, boot_pins
 from nitro_fixtures import DOMAIN, HOST, key, pin, schedule, sign
+from provenance import describe
 from retirement import (commit_retirement, inspect_keys, key_inventory, prove_recovery, qualified_manifest, qualified_policy,
                         retirement_scope, sign_retirement)
 
@@ -75,6 +76,7 @@ class CustodyLedgerTests(unittest.TestCase):
                   "custodyEpoch": "1", "approvalFromEpoch": self.trust["approvalKeys"][-1]["fromEpoch"],
                   "releaseId": manifest["capture"]["receipt"]["releaseId"], "mode": "rotate", "hostRole": HOST,
                   "pcrs": PINS, "eifSha256": manifest["ceremonyEifSha256"],
+                  "executableSha256": hashlib.sha256(b"rotation executable fixture").hexdigest(),
                   "configurationSha256": sha256(manifest["capture"]["configuration"]),
                   "nextCustodians": copy.deepcopy(manifest["custodians"]), "wrappingKeys": [key(i, 21) for i in range(1, 7)]}
         manifest["rotationTargetSha256"] = sha256(target)
@@ -148,6 +150,33 @@ class CustodyLedgerTests(unittest.TestCase):
             publish(self.trust, self.sign(bad))
         publish(self.trust, self.sign(new))
         self.assertEqual(load_epoch(self.trust, "2")[1]["custody"]["noteSeedCommitment"], previous["custody"]["noteSeedCommitment"])
+
+    def test_signs_only_a_ceremony_bound_to_verified_provenance(self):
+        publish(self.trust, self.sign(self.document(1)))
+        document, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
+        capture = document["authorization"]["manifest"]["capture"]
+        capture["receipt"]["packages"] = [{"recipientSha256": f"{index:02x}" * 32} for index in range(1, 7)]
+        build = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (build / "enclave.eif").write_bytes(b"rotation EIF fixture")
+        (build / "tvc_app").write_bytes(b"rotation executable fixture")
+        (build / "configuration.json").write_bytes(canonical(capture["configuration"]))
+        (build / "measurements.json").write_bytes(canonical({"Measurements": PINS}))
+        commit = "ab" * 20
+        reviewed = describe(build, "devnet", commit)
+        with (patch("custody_ledger.verify_build") as verify_build, patch("custody_ledger.subprocess") as capture_verifier,
+              patch("custody_ledger.check_recovery_key"), patch("custody_ledger.check_acknowledgement_key"),
+              patch("custody_ledger.add_approval", return_value=document["authorization"]) as sign_record):
+            for field in ("configurationSha256", "eifSha256", "executableSha256", "pcrs"):
+                value = {**PINS, "PCR0": "aa" * 48} if field == "pcrs" else "aa" * 32
+                verify_build.return_value = {**reviewed, field: value}
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, "verified build provenance"):
+                    sign_epoch(self.trust, document, key(8, 7), build, commit, "refs/heads/devnet")
+            capture_verifier.run.assert_not_called()
+            sign_record.assert_not_called()
+            verify_build.return_value = reviewed
+            self.assertEqual(sign_epoch(self.trust, document, key(8, 7), build, commit, "refs/heads/devnet"), document)
+            capture_verifier.run.assert_called_once()
+            sign_record.assert_called_once()
 
     def test_rotation_receipt_must_match_the_registered_image_and_successor_roster(self):
         publish(self.trust, self.sign(self.document(1)))

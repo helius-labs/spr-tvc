@@ -8,7 +8,8 @@ import time
 from pathlib import Path
 
 from approval import (
-    KEY_ARN, ROLE_ARN, add_approval, approval_keys, arn, canonical, fields, file_digest, hex_digest, read_json, sha256,
+    KEY_ARN, ROLE_ARN, add_approval, approval_keys, arn, canonical, fields, file_digest, hex_digest,
+    parse_json, read_document, read_json, sha256,
 )
 from custody_ledger import (
     TARGET_APPROVAL, check_acknowledgement_key, check_recovery_key, load_epoch, read_object, require_active_epoch,
@@ -69,12 +70,12 @@ def target(trust, document, receipt, custodians, build):
     if type(expires) is not int or not time.time() < expires <= 2**53 - 1:
         raise ValueError("target approval has expired or has an invalid deadline")
 
-    config_path = build / "configuration.json"
-    if (hex_digest(manifest["configurationSha256"]) != file_digest(config_path) or
+    configuration = read_document(build / "configuration.json")
+    config = parse_json(configuration)
+    if (hex_digest(manifest["configurationSha256"]) != hashlib.sha256(configuration).hexdigest() or
             hex_digest(manifest["eifSha256"]) != file_digest(build / "enclave.eif") or
             hex_digest(manifest["executableSha256"]) != file_digest(build / "tvc_app")):
         raise ValueError("target artifacts do not match the approved hashes")
-    config = read_json(config_path)
     fields(config, "releaseId", "securityDomainId", "deployment")
     config_release, config_domain = config["releaseId"], config["securityDomainId"]
     if (config_release, config_domain) != (release, domain):
@@ -184,7 +185,12 @@ def main():
             print(canonical(host_policy(document["manifest"])).decode())
             return
         require_active_epoch(trust, receipt["custody"]["epoch"])
-        verify_build(args.build, receipt["network"], args.source_commit, args.source_ref)
+        reviewed = verify_build(args.build, receipt["network"], args.source_commit, args.source_ref)
+        manifest = document["manifest"]
+        if any(manifest[field] != reviewed[field] for field in (
+            "configurationSha256", "eifSha256", "executableSha256", "pcrs",
+        )):
+            raise ValueError("target does not match the verified build provenance")
         for key, fingerprint in next_keys:
             check_recovery_key(key, fingerprint)
         for custodian in document["manifest"]["nextCustodians"] or ():

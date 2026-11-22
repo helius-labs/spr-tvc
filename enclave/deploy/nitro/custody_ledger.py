@@ -12,8 +12,8 @@ from pathlib import Path
 
 from approval import (
     KEY_ARN, ROLE_ARN, MAX_DOCUMENT_BYTES, add_approval, approval_keys, arn, aws, canonical, check_approvals,
-    epoch_number, fields, file_digest, get_signing_key, hex_digest, key_result, kms, parse_json, read_json, require_kms_key,
-    sha256, signing_key,
+    epoch_number, fields, file_digest, get_signing_key, hex_digest, key_result, kms, parse_json, read_document,
+    read_json, require_kms_key, sha256, signing_key,
 )
 from kms_policy import acknowledgement_policy, boot_pins, context, recovery_policy, validate_custodian_roles
 from provenance import MAIN_REF, verify as verify_build
@@ -483,15 +483,17 @@ def sign_epoch(trust, document, key, build, source_commit, source_ref):
     authorization = document["authorization"]
     manifest = authorization["manifest"]
     capture = manifest["capture"]
-    build_pins = read_json(build / "measurements.json")["Measurements"]
-    pins = {str(index): build_pins[f"PCR{index}"] for index in range(3)}
-    pins["3"] = hashlib.sha384(bytes(48) + manifest["ceremonyHostRole"].encode()).hexdigest()
-    if (capture["configuration"] != read_json(build / "configuration.json") or capture["pcrs"] != pins or
-            manifest["ceremonyEifSha256"] != file_digest(build / "enclave.eif")):
-        raise ValueError("captured ceremony does not match the reviewed build")
-    if target is not None and target["configurationSha256"] != file_digest(build / "configuration.json"):
+    configuration = read_document(build / "configuration.json")
+    config = parse_json(configuration)
+    configuration_digest = hashlib.sha256(configuration).hexdigest()
+    if target is not None and target["configurationSha256"] != configuration_digest:
         raise ValueError("ceremony build configuration does not match the registered rotation target")
-    verify_build(build, receipt["network"], source_commit, source_ref)
+    reviewed = verify_build(build, receipt["network"], source_commit, source_ref)
+    pins = {name.removeprefix("PCR"): pin for name, pin in boot_pins(manifest["ceremonyHostRole"], reviewed["pcrs"]).items()}
+    if (capture["configuration"] != config or configuration_digest != reviewed["configurationSha256"] or
+            capture["pcrs"] != pins or manifest["ceremonyEifSha256"] != reviewed["eifSha256"] or
+            (target is not None and target["executableSha256"] != reviewed["executableSha256"])):
+        raise ValueError("captured ceremony does not match the verified build provenance")
     root = Path(__file__).resolve().parents[3]
     subprocess.run(["pnpm", "--dir", str(root / "example"), "exec", "tsx",
                     str(root / "xtask/nitro-ceremony.ts"), "verify"],

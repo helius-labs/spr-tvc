@@ -4,9 +4,10 @@ import argparse
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-from approval import MAX_DOCUMENT_BYTES, canonical, file_digest, hex_digest, parse_json, read_json
+from approval import MAX_DOCUMENT_BYTES, canonical, file_digest, hex_digest, parse_json, read_document, read_json
 
 REPO = "helius-labs/spr-tvc"
 WORKFLOW = f"{REPO}/.github/workflows/native-eif.yml"
@@ -31,14 +32,19 @@ def verify(build, network, source_commit, source_ref=MAIN_REF):
     if (not re.fullmatch(r"refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", source_ref) or
             (network == "mainnet" and source_ref != MAIN_REF)):
         raise ValueError("expected a reviewed branch ref; mainnet requires refs/heads/main")
-    manifest = build / "provenance.json"
-    if read_json(manifest) != describe(build, network, source_commit):
+    contents = read_document(build / "provenance.json")
+    manifest = parse_json(contents)
+    if manifest != describe(build, network, source_commit):
         raise ValueError("artifact does not match the reviewed build attestation")
-    subprocess.run([
-        "gh", "attestation", "verify", str(manifest), "--bundle", str(build / "provenance.intoto.jsonl"),
-        "--repo", REPO, "--signer-workflow", WORKFLOW, "--source-ref", source_ref,
-        "--source-digest", source_commit, "--signer-digest", source_commit, "--deny-self-hosted-runners",
-    ], check=True, timeout=30, stdout=subprocess.DEVNULL)
+    with tempfile.TemporaryDirectory() as directory:
+        subject = Path(directory) / "provenance.json"
+        subject.write_bytes(contents)
+        subprocess.run([
+            "gh", "attestation", "verify", str(subject), "--bundle", str(build / "provenance.intoto.jsonl"),
+            "--repo", REPO, "--signer-workflow", WORKFLOW, "--source-ref", source_ref,
+            "--source-digest", source_commit, "--signer-digest", source_commit, "--deny-self-hosted-runners",
+        ], check=True, timeout=30, stdout=subprocess.DEVNULL)
+    return manifest
 
 
 def require_independent_review(reviews, actor_id, attempt):

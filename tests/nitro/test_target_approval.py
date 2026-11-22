@@ -15,6 +15,7 @@ from custody_ledger import TARGET_APPROVAL
 from deployment import file_digest, main, target
 from kms_policy import recovery_policy
 from nitro_fixtures import DOMAIN, HOST, key, pin, schedule, sign
+from provenance import describe
 from wrap_share import wrap
 
 PINS = {f"PCR{index}": byte * 48 for index, byte in enumerate(("12", "23", "34"))}
@@ -121,6 +122,30 @@ class TargetApprovalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "target artifacts do not match"):
             self.wrap()
         self.assertEqual(self.calls, [])
+
+    def test_signs_only_the_target_bound_to_verified_provenance(self):
+        trust_path, target_path, output = (self.build / name for name in ("trust.json", "target.json", "approved.json"))
+        trust_path.write_text(json.dumps(self.trust))
+        target_path.write_text(json.dumps(self.approval))
+        commit = "ab" * 20
+        signing_key = self.trust["approvalKeys"][0]["keys"][2]["keyArn"]
+        argv = ["deployment.py", str(trust_path), str(self.build), "sign", str(target_path),
+                signing_key, str(output), "--source-commit", commit]
+        reviewed = describe(self.build, "devnet", commit)
+        with (patch("sys.argv", argv), patch("deployment.load_epoch", side_effect=self.load_epoch),
+              patch("deployment.require_active_epoch"), patch("deployment.verify_build") as verify_build,
+              patch("deployment.add_approval", return_value=self.approval) as sign_target):
+            for field in ("configurationSha256", "eifSha256", "executableSha256", "pcrs"):
+                value = {**PINS, "PCR0": "aa" * 48} if field == "pcrs" else "aa" * 32
+                verify_build.return_value = {**reviewed, field: value}
+                with self.subTest(field=field), self.assertRaisesRegex(SystemExit, "verified build provenance"):
+                    main()
+            sign_target.assert_not_called()
+            self.assertFalse(output.exists())
+            verify_build.return_value = reviewed
+            main()
+            self.assertEqual(json.loads(output.read_bytes()), self.approval)
+            sign_target.assert_called_once()
 
     def test_host_policy_command_requires_the_registered_quorum_approved_target(self):
         trust_path, target_path = self.build / "trust.json", self.build / "target.json"

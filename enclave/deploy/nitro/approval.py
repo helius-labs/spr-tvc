@@ -34,9 +34,13 @@ def parse_json(data):
     return json.loads(data, object_pairs_hook=unique_object)
 
 
-def read_json(path):
+def read_document(path):
     with path.open("rb") as source:
-        return parse_json(source.read(MAX_DOCUMENT_BYTES + 1))
+        return source.read(MAX_DOCUMENT_BYTES + 1)
+
+
+def read_json(path):
+    return parse_json(read_document(path))
 
 
 def canonical(value):
