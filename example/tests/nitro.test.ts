@@ -4,14 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { NitroPolicy, NitroTarget, NitroPolicyCheckpoint } from "@heliuslabs/spr-decryption-service/nitro";
-import { checkpointStore, nativeDevnet, requireOriginalPolicy } from "../nitro.js";
+import { acceptedReplacementPolicy, checkpointStore, nativeDevnet, requireOriginalPolicy } from "../nitro.js";
 
 function agreed(checkpoint: NitroPolicyCheckpoint, previousPolicyDigest: string | null) {
   const revision = { checkpoint, previousPolicyDigest };
   return [revision, revision] as const;
 }
 
-test("native rehearsal requires both buckets to agree on the accepted original-only policy", () => {
+test("native rotation rehearsal checks both published policies and the exact serving epochs", () => {
   const target: NitroTarget = {
     endpoint: "https://original.example/", releaseId: "old",
     executableSha256: "11".repeat(32), custodyEpoch: "1", custodyDigest: "22".repeat(32),
@@ -36,6 +36,20 @@ test("native rehearsal requires both buckets to agree on the accepted original-o
     assert.throws(() => requireOriginalPolicy(candidate, checkpoint, 2n), /original custody epoch only/);
   }
   assert.throws(() => requireOriginalPolicy(published, undefined, 2n), /original custody epoch only/);
+
+  const nextCheckpoint = { ...checkpoint, sequence: "2", digest: "77".repeat(32), minimumCustodyEpoch: "2" };
+  const replacementPolicy = {
+    ...policy, sequence: nextCheckpoint.sequence, minimumCustodyEpoch: nextCheckpoint.minimumCustodyEpoch,
+    previousPolicyDigest: checkpoint.digest, targets: [replacement],
+  };
+  const next = { ...published, checkpoint: nextCheckpoint, policy: replacementPolicy };
+  const later = { ...replacement, endpoint: "https://later.example/", custodyEpoch: "3" };
+  assert.equal(acceptedReplacementPolicy(next, nextCheckpoint, "2"), true);
+  assert.equal(acceptedReplacementPolicy(next, checkpoint, "2"), false);
+  assert.equal(acceptedReplacementPolicy({ ...next, agreed: false }, nextCheckpoint, "2"), false);
+  for (const targets of [[later], [replacement, later]]) {
+    assert.equal(acceptedReplacementPolicy({ ...next, policy: { ...replacementPolicy, targets } }, nextCheckpoint, "2"), false);
+  }
 });
 
 test("native rehearsal checkpoints survive closing the database and exclude earlier custody floors", async () => {

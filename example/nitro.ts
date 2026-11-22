@@ -59,8 +59,11 @@ function acceptedPolicy(
   published: VerifiedPublication,
   accepted: NitroPolicyCheckpoint | undefined,
 ): boolean {
-  const { agreed, checkpoint } = published;
-  return agreed && accepted?.sequence === checkpoint.sequence && accepted.digest === checkpoint.digest &&
+  return published.agreed && sameCheckpoint(accepted, published.checkpoint);
+}
+
+function sameCheckpoint(accepted: NitroPolicyCheckpoint | undefined, checkpoint: NitroPolicyCheckpoint): boolean {
+  return accepted?.sequence === checkpoint.sequence && accepted.digest === checkpoint.digest &&
     accepted.minimumCustodyEpoch === checkpoint.minimumCustodyEpoch && accepted.recoveryOnly === checkpoint.recoveryOnly;
 }
 
@@ -75,6 +78,16 @@ export function requireOriginalPolicy(
       (replacement !== undefined && BigInt(epoch) >= replacement) || policy.targets.some(target => target.custodyEpoch !== epoch)) {
     throw new Error("start with both buckets serving the accepted policy for the original custody epoch only");
   }
+}
+
+export function acceptedReplacementPolicy(
+  published: VerifiedPublication,
+  accepted: NitroPolicyCheckpoint | undefined,
+  epoch?: string,
+): boolean {
+  const { policy } = published;
+  return acceptedPolicy(published, accepted) && policy.action === "activate" && !policy.recoveryOnly &&
+    (epoch === undefined || policy.targets.every(target => target.custodyEpoch === epoch));
 }
 
 type Replacement = { epoch: string } | { walletTrust: string };
@@ -142,12 +155,24 @@ export async function nativeDevnet(walletTrust: string, checkpoint: string, repl
             }
             const destination = await next.address(recipient, options);
             const published = await readPublishedNitroPolicy(nextTrust, signal);
-            if (published.policy.action === "activate" && !published.policy.recoveryOnly && acceptedPolicy(published, await nextStore.current())) {
-              if (reader && (Buffer.from(destination.viewingPublicKey.toBytes()).equals(oldDestination.viewingPublicKey.toBytes()) ||
-                  Buffer.from(destination.nullifierPublicKey).equals(oldDestination.nullifierPublicKey))) {
+            const accepted = await nextStore.current();
+            if (accepted && acceptedReplacementPolicy(published, accepted, replacementEpoch)) {
+              const sameViewingKey = Buffer.from(destination.viewingPublicKey.toBytes()).equals(oldDestination.viewingPublicKey.toBytes());
+              const sameNullifierKey = Buffer.from(destination.nullifierPublicKey).equals(oldDestination.nullifierPublicKey);
+              if (reader && (sameViewingKey || sameNullifierKey)) {
                 throw new Error("replacement domain repeated an old recipient key");
               }
-              return reader ?? next;
+              if (!reader && (!sameViewingKey || !sameNullifierKey)) {
+                throw new Error("custody rotation changed the recipient keys");
+              }
+              return {
+                service: reader ?? next,
+                async requireSamePolicy() {
+                  if (!sameCheckpoint(await nextStore.current(), accepted)) {
+                    throw new Error("replacement policy changed during the claim");
+                  }
+                },
+              };
             }
           } catch (error) {
             signal.throwIfAborted();

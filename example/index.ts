@@ -57,7 +57,8 @@ async function main(): Promise<void> {
     await nitro?.beforeSend();
     const transferTx = await send(transfer);
     if (nitro) console.log(`transfer recipient=${recipient.address} tx=${transferTx.signature} awaiting ${nitro.seedChanged ? "the seed cutover" : "the replacement custody epoch"}`);
-    const reader = nitro ? await nitro.afterTransfer(recipientAddress) : service;
+    const replacement = await nitro?.afterTransfer(recipientAddress);
+    const reader = replacement?.service ?? service;
     await checkRecipient(false);
     ownKeys = sender.address === recipient.address
       ? keys
@@ -88,6 +89,7 @@ async function main(): Promise<void> {
       config: { requireSlot: transferTx.slot },
     });
     expectBalance("receive", received.balance(SOL_MINT), AMOUNT, 1);
+    await replacement?.requireSamePolicy();
 
     const sweep = await buildTransferTransaction({
       client: zolana,
@@ -97,6 +99,7 @@ async function main(): Promise<void> {
       recipient: localnet ? recipient.address : ownKeys.address(),
       amount: AMOUNT,
     });
+    await replacement?.requireSamePolicy();
     const sweepTx = await sweepSend(sweep);
     const own = new Wallet({ identity: ownKeys.address() });
     await syncWallet({

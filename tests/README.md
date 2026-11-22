@@ -34,10 +34,12 @@ Use absolute file paths and a new checkpoint file for each rehearsal. The
 example checks that both buckets serve the policy it accepted for the original
 epoch before sending. Wait for the confirmed transfer, stop the old replica,
 then publish the replacement custody floor to both buckets. The example
-waits up to five minutes for both buckets to serve the replacement policy it
-accepted. It then opens the recipient, verifies the transfer amount, and
-sweeps the note to the recipient's own privacy keys. It checks that the
-recipient remains unregistered and holds no public SOL throughout the run.
+waits up to five minutes for both buckets to serve its accepted policy
+with targets only at the requested replacement epoch. It checks that the
+recipient's viewing and nullifier public keys match their pre-rotation
+values, recovers the transferred amount, and checks that its accepted
+policy is still the one used to qualify the replacement before sending
+the sweep. The recipient remains unregistered and holds no public SOL.
 
 ## Live seed cutover
 
