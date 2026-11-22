@@ -193,6 +193,27 @@ def read_replicated_record(trust, destination, name, **options):
     return original, fingerprint
 
 
+def require_replicated_custody(trust, replica, epoch, registrations):
+    destination = replica_trust(trust, replica)
+
+    def read(name):
+        return read_replicated_record(trust, destination, name)[0]
+
+    def check_epoch(number):
+        payload = read(ledger_object(trust, str(number)))
+        if number > 1:
+            manifest = parse_json(payload)["authorization"]["manifest"]
+            read(rotation_target_name(manifest, str(number - 1)))
+
+    # Schedule bounded batches even when a signed epoch number is very large.
+    last = epoch_number(epoch)
+    batch_size = 8
+    with ThreadPoolExecutor(max_workers=batch_size) as workers:
+        for start in range(1, last + 1, batch_size):
+            list(workers.map(check_epoch, range(start, min(start + batch_size, last + 1))))
+        list(workers.map(read, sorted(registrations)))
+
+
 def require_publication_roster(trust, start):
     # Leave room for the AWS CLI's 25-second request deadline.
     now = time.time()
@@ -672,6 +693,9 @@ def check_release_policy(trust, document, custody_signer=None):
         return None
     if policy["action"] != "activate" or not isinstance(targets, list) or not 1 <= len(targets) <= 8:
         raise ValueError("expected an activation with one to eight serving targets")
+    ledger_backup = ledger_replica(trust)
+    if ledger_backup is None and trust["network"] == "mainnet":
+        raise ValueError("mainnet activation requires a pinned custody ledger replica")
     by_epoch = {}
     floor = epoch_number(policy["minimumCustodyEpoch"])
     for target in targets:
@@ -687,17 +711,23 @@ def check_release_policy(trust, document, custody_signer=None):
         if policy["noteSeedCommitment"] != custody["noteSeedCommitment"]:
             raise ValueError("wallet policy does not match the committed note seed")
         custody_digest, receipt_digest = sha256(custody), sha256(receipt)
+        registrations = set()
         for replica in replicas:
             if replica["custodyDigest"] != custody_digest:
                 raise ValueError("serving target does not match the committed custody record")
             identity = {"releaseId": replica["releaseId"], "pcrs": replica["pcrs"]}
-            registered = read_registered_target(trust, target_path(epoch, sha256(identity)), epoch, receipt_digest)
+            name = target_path(epoch, sha256(identity))
+            registered = read_registered_target(trust, name, epoch, receipt_digest)
             if (registered["mode"] != "serve" or
                     hex_digest(registered["executableSha256"]) != replica["executableSha256"]):
                 raise ValueError("serving executable does not match the custody-approved target")
+            registrations.add(name)
+        return registrations
 
     with ThreadPoolExecutor(max_workers=len(by_epoch)) as workers:
-        list(workers.map(check_epoch, by_epoch.items()))
+        registrations = set().union(*workers.map(check_epoch, by_epoch.items()))
+        if ledger_backup is not None:
+            require_replicated_custody(trust, ledger_backup, max(by_epoch, key=epoch_number), registrations)
         # Check retirement after all of the immutable receipt and target reads.
         list(workers.map(lambda epoch: require_active_epoch(trust, epoch), by_epoch))
     now = time.time()

@@ -106,7 +106,7 @@ rotation approval, and each ceremony’s Nitro proof at its recorded
 verification time. Live admission also depends on the complete target and
 retirement history and the original S3 write times. An independently retained
 checkpoint of the paused ledger binds every key, version ID, write time and
-record body. An optional S3 replication rule copies the exact custody prefix
+record body. Mainnet activation requires replication of the exact custody prefix
 to a bucket in a separate AWS account and region. A dedicated role can
 replicate records to the pinned owner. Replicated deletes and direct writes
 are denied on that bucket. The checkpoint verifier requires a frozen bucket
@@ -211,7 +211,10 @@ The policy digest is SHA-256 of the UTF-8 string
 Release signers sign this digest. Every policy after sequence 1 includes the
 previous published digest. Signers and publishers independently verify that
 each activation target matches an active epoch, the committed custody receipt,
-and a custody-approved serving executable, release ID and PCR0–PCR4. Two of
+and a custody-approved serving executable, release ID and PCR0–PCR4. They
+require a pinned mainnet custody replica and compare the receipt chain,
+rotation approvals and serving registrations against it. Each copy must
+match the source bytes, S3 version ID and write time. Two of
 three independently pinned custody approval keys also sign the entire
 policy. Their digest uses `SPR/native-nitro/custody-release-policy/v1`
 followed by the same canonical JSON. The SDK verifies both quorums before

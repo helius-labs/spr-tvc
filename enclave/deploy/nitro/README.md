@@ -89,9 +89,9 @@ inspecting that slot's keys.
 
 ## Replicate the custody ledger
 
-S3 replication preserves the original version IDs and write times used to
-verify historical approvals. To configure it, add `ledgerReplica` to custody
-trust with the destination `bucket`, `account`, `region`, and the dedicated
+Mainnet activation requires S3 replicas that preserve the original version IDs
+and write times used to verify historical approvals. Add `ledgerReplica` to
+custody trust with the destination `bucket`, `account`, `region`, and the dedicated
 replication `role` ARN in the source account. Use a separate account and region.
 Set up both private, versioned, bucket-owner-enforced buckets before genesis.
 The source uses SSE-S3 for custody records. [S3 replication](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication.html)
@@ -574,11 +574,16 @@ the registered target for `pcrs`. Obtain `custodyDigest` with
 Register each serving target before signing an activation. The signing and
 publication tools match its executable, release ID and PCR0–PCR4 to the
 registered serving image and verify its committed, active custody epoch.
+For mainnet and any devnet with a pinned replica, signers and publishers
+also check both copies of the receipt chain, its rotation approvals and
+the serving registrations. Resolve missing or failed replication before
+retrying activation. [S3 replication status](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication-status.html)
 Both publishers require the activation's wallet custody pins to match the
 active roster in their independently distributed custody trust file. They
 leave at least 30 seconds before a scheduled roster cutover to submit the S3 write.
 Give release signers, custody signers and both publishers scoped ledger read
-access using `reader-policy`. Distribute the custody trust file independently.
+access using `reader-policy` in the source and replica. Distribute the custody
+trust file independently.
 Collect the release quorum and two custody signatures on every policy.
 Each signer supplies `--custody-trust` to verify the publication pair. For
 activation, the signer also checks the approved targets against the ledger.

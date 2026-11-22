@@ -20,7 +20,7 @@ from custody_archive import MAX_ARCHIVE_ENTRY_BYTES, archive, ledger_checkpoint,
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
     check_custody_roster, check_installed_ledger, check_release_policy, draft, ledger_policy, ledger_reader_policy,
-    list_objects, load_epoch, publish, read_registered_target,
+    list_objects, load_epoch, publish, read_registered_target, read_stored_payload,
     record, require_active_epoch,
     sign_epoch, target_attestation,
     target_object_name, write_once,
@@ -83,7 +83,7 @@ class CustodyLedgerTests(unittest.TestCase):
         } for index in range(1, 7)]
         custody = {"epoch": str(epoch), "noteSeedCommitment": "34" * 32, "shareCommitments": [variant * 32] * 6}
         receipt = {
-            "network": "devnet", "securityDomainId": DOMAIN, "releaseId": f"custody-{epoch}",
+            "network": self.trust["network"], "securityDomainId": DOMAIN, "releaseId": f"custody-{epoch}",
             "custody": custody, "packages": [{}] * 6,
         }
         deployment = {"mode": "initialize", "recipientPublicKeys": []}
@@ -103,7 +103,7 @@ class CustodyLedgerTests(unittest.TestCase):
     def rotation_document(self, predecessor, variant="fe", register=True):
         document = self.document(2, predecessor, variant)
         manifest = document["authorization"]["manifest"]
-        target = {"network": "devnet", "securityDomainId": DOMAIN, "receiptSha256": sha256(predecessor),
+        target = {"network": self.trust["network"], "securityDomainId": DOMAIN, "receiptSha256": sha256(predecessor),
                   "custodyEpoch": "1", "approvalFromEpoch": approval_roster(self.trust)["fromEpoch"], "expiresAt": self.now + 3600,
                   "releaseId": manifest["capture"]["receipt"]["releaseId"], "mode": "rotate", "hostRole": HOST,
                   "hostRegion": REGION, "instanceId": INSTANCE, "pcrs": PINS, "eifSha256": manifest["ceremonyEifSha256"],
@@ -137,11 +137,11 @@ class CustodyLedgerTests(unittest.TestCase):
             return self.lifecycle
         if operation == "list-objects-v2":
             prefix = args[args.index("--prefix") + 1]
-            self.assertTrue(prefix.startswith(f"spr-custody/devnet/{DOMAIN}/"))
+            self.assertTrue(prefix.startswith(f"spr-custody/{self.trust['network']}/{DOMAIN}/"))
             with self.lock:
                 return listing(prefix, [name for name in sorted(self.objects) if name.startswith(prefix)])
         name = args[args.index("--key") + 1]
-        self.assertTrue(name.startswith(f"spr-custody/devnet/{DOMAIN}/"))
+        self.assertTrue(name.startswith(f"spr-custody/{self.trust['network']}/{DOMAIN}/"))
         now = datetime.fromtimestamp(time.time(), timezone.utc).isoformat()
         with self.lock:
             if operation == "put-object":
@@ -824,7 +824,7 @@ class CustodyLedgerTests(unittest.TestCase):
 
     def replacement_target(self, **overrides):
         _, receipt, _ = load_epoch(self.trust, "2")
-        return {"network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "2",
+        return {"network": self.trust["network"], "securityDomainId": DOMAIN, "custodyEpoch": "2",
                 "receiptSha256": sha256(receipt), "approvalFromEpoch": approval_roster(self.trust)["fromEpoch"],
                 "releaseId": "new-slot", "mode": "serve", "hostRole": HOST, "expiresAt": self.now + 3600,
                 "hostRegion": REGION, "instanceId": "i-1234567890abcdef1",
@@ -917,12 +917,62 @@ class CustodyLedgerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "cannot verify retirement"):
                 check()
 
+    def test_mainnet_activation_requires_matching_replicas_of_custody_history_and_serving_targets(self):
+        self.trust["network"] = "mainnet"
+        publish(self.trust, self.sign(self.document(1)))
+        _, previous, _ = load_epoch(self.trust, "1")
+        rotated, rotation_approval = self.rotation_document(previous)
+        publish(self.trust, self.sign(rotated))
+        _, receipt, _ = load_epoch(self.trust, "2")
+        registered = self.replacement_target()
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, registered))
+        target = {**target_attestation(registered), "custodyEpoch": "2",
+                  "executableSha256": registered["executableSha256"], "custodyDigest": sha256(receipt["custody"])}
+        policy = {"action": "activate", "recoveryOnly": False, "network": "mainnet", "securityDomainId": DOMAIN,
+                  "noteSeedCommitment": receipt["custody"]["noteSeedCommitment"], "minimumCustodyEpoch": "2",
+                  "publications": self.trust["publications"], "targets": [target]}
+        document = {"policy": policy, "signatures": [], "custodySignatures": []}
+        with self.assertRaisesRegex(ValueError, "mainnet activation requires a pinned custody ledger replica"):
+            check_release_policy(self.trust, document)
+
+        replica = {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1",
+                   "role": "arn:aws:iam::000000000008:role/replication"}
+        self.trust["ledgerReplica"] = replica
+        expected = {"1.json", "2.json", target_object_name(rotation_approval["manifest"]), target_object_name(registered)}
+        copied = set()
+        missing = set()
+        changes = {}
+
+        def read(trust, name):
+            payload, metadata = read_stored_payload(self.trust, name)
+            if trust is self.trust:
+                return payload, {**metadata, "ReplicationStatus": "COMPLETED"}
+            self.assertEqual(trust["ledger"], {field: replica[field] for field in ("bucket", "account", "region")})
+            copied.add(name)
+            if name in missing:
+                raise ValueError("object missing")
+            return payload, {**metadata, "ReplicationStatus": "REPLICA", **changes.get(name, {})}
+
+        with patch("custody_ledger.read_stored_payload", side_effect=read):
+            check_release_policy(self.trust, document)
+            self.assertEqual(copied, expected)
+            for name in sorted(expected):
+                missing.add(name)
+                with self.subTest(missing=name), self.assertRaisesRegex(ValueError, "from the pinned replica"):
+                    check_release_policy(self.trust, document)
+                missing.clear()
+            changes[target_object_name(registered)] = {"VersionId": "a-different-version"}
+            with self.assertRaisesRegex(ValueError, "differs from the pinned replica"):
+                check_release_policy(self.trust, document)
+
     def test_revocation_checks_the_pinned_pair_without_reading_the_ledger(self):
         policy = {"action": "revoke", "recoveryOnly": True, "targets": [], "network": "devnet",
                   "securityDomainId": DOMAIN, "publications": self.trust["publications"]}
         with patch("custody_ledger.storage", side_effect=AssertionError("revocation needs only local pins")):
             document = {"policy": policy, "signatures": [], "custodySignatures": []}
             self.assertIsNone(check_release_policy(self.trust, document))
+            self.assertIsNone(check_release_policy({**self.trust, "network": "mainnet"},
+                                                   {**document, "policy": {**policy, "network": "mainnet"}}))
             for alternate in (None, self.trust["publications"][::-1]):
                 with self.assertRaisesRegex(ValueError, "pinned primary and mirror"):
                     check_release_policy(self.trust, {**document, "policy": {**policy, "publications": alternate}})
