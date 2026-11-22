@@ -93,9 +93,14 @@ rotation approval, and each ceremony’s Nitro proof at its recorded
 verification time. Live admission also depends on the complete target and
 retirement history and the original S3 write times. An independently retained
 checkpoint of the paused ledger binds every key, version ID, write time and
-record body. The checkpoint verifier requires a frozen bucket policy and
-confirms that lifecycle rules are absent. Recovery compares the checkpoint
-against the frozen recovered bucket before any new admission.
+record body. An optional S3 replication rule copies the exact custody prefix
+to a bucket in a separate AWS account and region. A dedicated role can
+replicate records to the pinned owner. Replicated deletes and direct writes
+are denied on that bucket. The checkpoint verifier requires a frozen bucket
+policy and confirms that lifecycle rules are absent. When replication is
+configured, every source record must have completed replication. Recovery
+compares the checkpoint against the frozen recovered bucket before any new
+admission.
 
 The custody ledger registers one wrapping-key set per epoch, release ID and
 PCR0–PCR4. Before signing, each approver checks that all six RSA wrapping

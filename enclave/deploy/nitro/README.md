@@ -37,9 +37,9 @@ python3 "$nitro/custody_ledger.py" trust.json acknowledgement-policy "$custodian
 Supply every ledger reader role to `policy`, and attach the generated read
 policy to each cross-account reader role in its own account. Install the bucket
 policy on a private, versioned general-purpose bucket with bucket-owner-enforced
-ownership, all four bucket public access blocks enabled, and no lifecycle or
-replication configuration. Check the installed controls with the same role list
-before publishing custody records.
+ownership, all four bucket public access blocks enabled, and no lifecycle rules.
+The bucket accepts only the replication configuration pinned below. Check the
+installed controls with the same role list before publishing custody records.
 
 ```sh
 python3 "$nitro/custody_ledger.py" trust.json policy "$ledger_admin_role" "$publisher_role" "$reader_role" --check-installed
@@ -85,6 +85,36 @@ inspect. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
 Custody approval checks each profile's actual AWS account through STS before
 inspecting that slot's keys.
 [GetKeyPolicy permissions](https://docs.aws.amazon.com/kms/latest/APIReference/API_GetKeyPolicy.html)
+
+## Replicate the custody ledger
+
+S3 replication preserves the original version IDs and write times used to
+verify historical approvals. To configure it, add `ledgerReplica` to custody
+trust with the destination `bucket`, `account`, `region`, and the dedicated
+replication `role` ARN in the source account. Use a separate account and region.
+Set up both private, versioned, bucket-owner-enforced buckets before genesis.
+The source uses SSE-S3 for custody records. [S3 replication](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication.html)
+
+```sh
+python3 "$nitro/custody_ledger.py" trust.json replica-plan "$replica_admin_role" "$replica_publisher_role" "$replica_reader_role" > replica-plan.json
+```
+
+Create the source role with `roleTrust` and `rolePermissions`. Install
+`destinationPolicy` as the recovery bucket policy. Render the source policy
+from the updated trust file and install `replication` as the S3 replication
+configuration on the source. Run `policy --check-installed` on the source.
+The recovery account administers the destination. Only the pinned S3 role can
+replicate records there, and the destination denies publisher writes and
+replicated deletions. [AWS replication permissions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/setting-repl-config-perm-overview.html)
+
+Replication is asynchronous. For a planned cutover, freeze the source and
+record a checkpoint after S3 reports `COMPLETED` for every record. Replace
+the destination's receiving policy with the normal frozen ledger policy to
+close replication writes, then compare the destination with that checkpoint.
+When the source is unavailable, use an independently retained checkpoint
+that accounts for all committed writes. A checkpoint taken before the last
+committed write cannot authorize promotion.
+[S3 replication status](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication-status.html)
 
 ## Commit a custody epoch
 
@@ -200,7 +230,8 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    bucket matches an independently retained checkpoint covering all committed
    writes. Keep the original ledger's write fence in force while promoting
    the recovered bucket. Install and verify the normal writable policy on the
-   recovered bucket before resuming.
+   recovered bucket before resuming. Remove the old `ledgerReplica` entry from
+   the recovered trust when switching `ledger` to that bucket.
    AWS Backup creates new object creation dates and version IDs on restore.
    [AWS Backup metadata](https://docs.aws.amazon.com/aws-backup/latest/devguide/s3-backups.html)
 

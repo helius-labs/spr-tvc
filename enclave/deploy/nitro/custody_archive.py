@@ -10,7 +10,7 @@ from pathlib import Path
 
 from approval import MAX_DOCUMENT_BYTES, canonical, epoch_number, fields, hex_digest, read_json, sha256, unique_object
 from custody_ledger import (
-    check_commit, check_predecessor, check_registered_target, check_rotation_target, ledger_object, ledger_prefix,
+    check_commit, check_predecessor, check_registered_target, check_rotation_target, ledger_object, ledger_prefix, ledger_replica,
     list_objects, publication_datetime, publication_time, read_object, read_stored_object, read_stored_payload, record,
     require_frozen_ledger, rotation_target_name, verify_ceremony_capture,
 )
@@ -82,12 +82,15 @@ def ledger_checkpoint(trust, expected=None):
         hex_digest(expected)
     require_frozen_ledger(trust)
     _, prefix = ledger_prefix(trust)
+    replica = ledger_replica(trust)
     checksum = hashlib.sha256(b"SPR/native-nitro/ledger-checkpoint/v1\0" + prefix.encode())
     names = tuple(list_objects(trust, ""))
     if "1.json" not in names:
         raise ValueError("custody ledger checkpoint requires a committed genesis")
     for name in names:
         payload, metadata = read_stored_payload(trust, name)
+        if replica is not None and metadata.get("ReplicationStatus") != "COMPLETED":
+            raise ValueError(f"custody ledger record {name} has not completed S3 replication")
         if not 0 < len(payload) <= MAX_DOCUMENT_BYTES:
             raise ValueError(f"invalid custody ledger record size for {name}")
         version = metadata.get("VersionId")

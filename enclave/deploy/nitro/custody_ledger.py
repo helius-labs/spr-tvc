@@ -179,11 +179,12 @@ def write_once(trust, name, document, subject):
     payload = canonical(document) + b"\n"
     if len(payload) > MAX_DOCUMENT_BYTES:
         raise ValueError("record exceeds the ledger size limit")
+    encryption = ["--server-side-encryption", "AES256"] if ledger_replica(trust) is not None else []
     try:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "record.json"
             path.write_bytes(payload)
-            storage(trust, "put-object", ["--key", prefix + name, "--if-none-match", "*", "--body", str(path)])
+            storage(trust, "put-object", ["--key", prefix + name, "--if-none-match", "*", "--body", str(path), *encryption])
     except (ValueError, subprocess.TimeoutExpired) as write_error:
         # Resolve ambiguous writes by reading the authenticated immutable subject.
         try:
@@ -250,6 +251,28 @@ def custody_history_statement(trust, *, frozen=False):
             "Resource": f"arn:aws:s3:::{ledger['bucket']}/{prefix}*", "Action": actions}
 
 
+def ledger_replica(trust):
+    if "ledgerReplica" not in trust:
+        return None
+    replica = trust["ledgerReplica"]
+    fields(replica, "bucket", "region", "account", "role")
+    source, _ = ledger_prefix(trust)
+    destination, _ = ledger_prefix({**trust, "ledger": {name: replica[name] for name in ("bucket", "region", "account")}})
+    if (any(source[field] == destination[field] for field in ("bucket", "account", "region")) or
+            arn(ROLE_ARN, replica["role"])[1] != source["account"]):
+        raise ValueError("ledger replication requires a source role and a separate bucket, account and region")
+    return replica
+
+
+def replication_configuration(trust, replica):
+    _, prefix = ledger_prefix(trust)
+    return {"Role": replica["role"], "Rules": [{
+        "ID": "spr-custody", "Priority": 1, "Status": "Enabled", "Filter": {"Prefix": prefix},
+        "DeleteMarkerReplication": {"Status": "Disabled"},
+        "Destination": {"Bucket": f"arn:aws:s3:::{replica['bucket']}", "StorageClass": "STANDARD"},
+    }]}
+
+
 def ledger_policy(trust, administrator, publisher, readers, *, frozen=False):
     read, listing = ledger_reader_policy(trust)["Statement"]
     ledger = trust["ledger"]
@@ -260,8 +283,14 @@ def ledger_policy(trust, administrator, publisher, readers, *, frozen=False):
     for reader in readers:
         arn(ROLE_ARN, reader)
     resource = read["Resource"]
-    principals = {"AWS": sorted(set([publisher, *readers]))}
-    return {"Version": "2012-10-17", "Statement": [
+    data_roles = {publisher, *readers}
+    replica = ledger_replica(trust)
+    replica_role = {replica["role"]} if replica is not None else set()
+    if replica_role & {administrator, *data_roles}:
+        raise ValueError("ledger replication requires its own role")
+    principals = {"AWS": sorted(data_roles)}
+    allowed_to_read = [administrator, *sorted(data_roles | replica_role)]
+    policy = {"Version": "2012-10-17", "Statement": [
         {"Sid": "RestrictBucketAdministration", "Effect": "Deny", "Principal": "*",
          "Action": ["s3:DeleteBucket", "s3:DeleteBucketPolicy", "s3:PutBucketPolicy", "s3:PutBucketVersioning",
                     "s3:PutLifecycleConfiguration", "s3:PutReplicationConfiguration", "s3:PutBucketOwnershipControls",
@@ -269,9 +298,9 @@ def ledger_policy(trust, administrator, publisher, readers, *, frozen=False):
                     "s3:PutBucketObjectLockConfiguration"],
          "Resource": listing["Resource"], "Condition": {"StringNotEquals": {"aws:PrincipalArn": administrator}}},
         {"Sid": "RestrictRecordReads", "Effect": "Deny", "Principal": "*", "Action": "s3:GetObject*", "Resource": resource,
-         "Condition": {"StringNotEquals": {"aws:PrincipalArn": [administrator, *principals["AWS"]]}}},
+         "Condition": {"StringNotEquals": {"aws:PrincipalArn": allowed_to_read}}},
         {"Sid": "RestrictBucketListing", "Effect": "Deny", "Principal": "*", "Action": "s3:ListBucket*",
-         "Resource": listing["Resource"], "Condition": {"StringNotEquals": {"aws:PrincipalArn": [administrator, *principals["AWS"]]}}},
+         "Resource": listing["Resource"], "Condition": {"StringNotEquals": {"aws:PrincipalArn": allowed_to_read}}},
         {"Sid": "RequireWriteOnce", "Effect": "Deny", "Principal": "*", "Action": "s3:PutObject",
          "Resource": resource, "Condition": {"StringNotEquals": {"s3:if-none-match": "*"}}},
         {"Sid": "RestrictPublisher", "Effect": "Deny", "Principal": "*", "Action": "s3:PutObject",
@@ -282,6 +311,47 @@ def ledger_policy(trust, administrator, publisher, readers, *, frozen=False):
         {**read, "Principal": principals},
         {**listing, "Principal": principals},
     ]}
+    if replica is not None:
+        policy["Statement"].append(
+            {"Sid": "RequireSseS3", "Effect": "Deny", "Principal": "*", "Action": "s3:PutObject", "Resource": resource,
+             "Condition": {"StringNotEquals": {"s3:x-amz-server-side-encryption": "AES256"}}},
+        )
+    return policy
+
+
+def ledger_replica_plan(trust, administrator, publisher, readers):
+    replica = ledger_replica(trust)
+    if replica is None:
+        raise ValueError("pin ledgerReplica before configuring replication")
+    source, prefix = ledger_prefix(trust)
+    destination_trust = {name: trust[name] for name in ("network", "securityDomainId")}
+    destination_trust["ledger"] = {name: replica[name] for name in ("bucket", "account", "region")}
+    destination_policy = ledger_policy(destination_trust, administrator, publisher, readers, frozen=True)
+    history = next(rule for rule in destination_policy["Statement"] if rule["Sid"] == "PreserveCustodyHistory")
+    history["Action"].remove("s3:ReplicateObject")
+    resource, role = history["Resource"], replica["role"]
+    destination_policy["Statement"].extend([
+        {"Sid": "RestrictReplication", "Effect": "Deny", "Principal": "*", "Action": "s3:ReplicateObject",
+         "Resource": resource, "Condition": {"StringNotEquals": {"aws:PrincipalArn": role}}},
+        {"Sid": "AllowReplication", "Effect": "Allow", "Principal": {"AWS": role}, "Action": "s3:ReplicateObject",
+         "Resource": resource},
+    ])
+    source_bucket = f"arn:aws:s3:::{source['bucket']}"
+    return {
+        "replication": replication_configuration(trust, replica),
+        "roleTrust": {"Version": "2012-10-17", "Statement": [{
+            "Effect": "Allow", "Principal": {"Service": "s3.amazonaws.com"}, "Action": "sts:AssumeRole",
+        }]},
+        "rolePermissions": {"Version": "2012-10-17", "Statement": [
+            {"Effect": "Allow", "Action": ["s3:GetReplicationConfiguration", "s3:ListBucket"], "Resource": source_bucket,
+             "Condition": {"StringEquals": {"s3:ResourceAccount": source["account"]}}},
+            {"Effect": "Allow", "Action": ["s3:GetObjectVersionForReplication", "s3:GetObjectVersionAcl"],
+             "Resource": f"{source_bucket}/{prefix}*", "Condition": {"StringEquals": {"s3:ResourceAccount": source["account"]}}},
+            {"Effect": "Allow", "Action": "s3:ReplicateObject", "Resource": resource,
+             "Condition": {"StringEquals": {"s3:ResourceAccount": replica["account"]}}},
+        ]},
+        "destinationPolicy": destination_policy,
+    }
 
 
 def installed_ledger_policy(trust):
@@ -318,8 +388,13 @@ def check_installed_ledger(trust, expected_policy):
     )):
         raise ValueError("custody ledger bucket requires all four public access blocks")
     require_no_ledger_lifecycle(trust)
-    if storage(trust, "get-bucket-replication", absent="ReplicationConfigurationNotFoundError") is not None:
-        raise ValueError("custody ledger bucket must have no replication configuration")
+    replication = storage(trust, "get-bucket-replication", absent="ReplicationConfigurationNotFoundError")
+    replica = ledger_replica(trust)
+    if replica is None:
+        if replication is not None:
+            raise ValueError("custody ledger bucket must have no replication configuration")
+    elif replication is None or replication.get("ReplicationConfiguration") != replication_configuration(trust, replica):
+        raise ValueError("installed S3 replication does not match the pinned ledger replica")
 
 
 def read_epoch_record(trust, epoch):
@@ -766,6 +841,10 @@ def main():
     policy.add_argument("readers", nargs="+")
     policy.add_argument("--check-installed", action="store_true")
     policy.add_argument("--frozen", action="store_true", help="deny all object writes on this custody prefix")
+    replica_plan = commands.add_parser("replica-plan")
+    replica_plan.add_argument("administrator")
+    replica_plan.add_argument("publisher")
+    replica_plan.add_argument("readers", nargs="+")
     commands.add_parser("reader-policy")
     recovery = commands.add_parser("recovery-policy")
     recovery.add_argument("custodian_role")
@@ -784,6 +863,9 @@ def main():
                 print("Custody ledger bucket controls verified")
             else:
                 print(canonical(expected).decode())
+            return
+        if args.command == "replica-plan":
+            print(canonical(ledger_replica_plan(trust, args.administrator, args.publisher, args.readers)).decode())
             return
         if args.command == "reader-policy":
             print(canonical(ledger_reader_policy(trust)).decode())
