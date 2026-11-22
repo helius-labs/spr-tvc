@@ -317,12 +317,22 @@ def retirement_approval(document):
     return {"manifest": document["manifest"], "signatures": document["signatures"]}
 
 
+def retirement_bootstrap(bootstrap):
+    fields(bootstrap, "bootKeyId", "slots")
+    hex_digest(bootstrap["bootKeyId"])
+    slots = bootstrap["slots"]
+    if (not isinstance(slots, list) or len(slots) != 3 or
+            any(type(slot) is not int or slot not in range(1, 7) for slot in slots) or slots != sorted(set(slots))):
+        raise ValueError("expected three distinct attested bootstrap slots in order")
+    return slots
+
+
 def retirement_recovery(document, custodians):
-    proofs = {"manifest": document["manifest"], "signatures": document["recoveryProofs"]}
-    keys = [member["acknowledgementKey"] for member in custodians]
-    check_approvals(keys, RETIREMENT_RECOVERY, proofs, minimum=3)
-    proven = {proof["keyArn"] for proof in proofs["signatures"]}
-    return [member for member in custodians if member["acknowledgementKey"]["keyArn"] in proven]
+    manifest = document["manifest"]
+    proofs = {"manifest": manifest, "signatures": document["recoveryProofs"]}
+    members = [custodians[slot - 1] for slot in retirement_bootstrap(manifest["replacementBootstrap"])]
+    check_approvals([member["acknowledgementKey"] for member in members], RETIREMENT_RECOVERY, proofs, minimum=3)
+    return members
 
 
 def recovery_deadline(manifest):
@@ -337,7 +347,8 @@ def verify_retirement(trust, document, epoch, published_at):
     manifest = document["manifest"]
     fields(manifest, "network", "securityDomainId", "epoch", "receiptSha256", "replacementEpoch",
            "replacementReceiptSha256", "replacementCustodyDigest", "replacementTargetIdentity", "replacementTargetSha256",
-           "approvalFromEpoch", "walletPolicyDigest", "recoveryDeadline")
+           "approvalFromEpoch", "walletPolicyDigest", "recoveryDeadline", "replacementBootstrap")
+    retirement_bootstrap(manifest["replacementBootstrap"])
     deadline = recovery_deadline(manifest)
     if not deadline - RECOVERY_WINDOW_SECONDS <= published_at < deadline:
         raise ValueError("retirement was published outside the recovery window")

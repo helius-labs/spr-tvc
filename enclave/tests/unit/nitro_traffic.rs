@@ -18,7 +18,7 @@ async fn wallet_preflight_allows_only_credential_free_json_and_attestation_posts
         ephemeral: KeyPair::Native(NativePair::generate().unwrap()),
         note_seed: NoteSeed(Zeroizing::new([4; 32])),
     });
-    let router = serving_router(service);
+    let router = serving_router(service, [1, 3, 5]);
     for path in ["/v1/nitro/attestation", "/v1/operations"] {
         let request = Request::builder()
             .method(Method::OPTIONS)

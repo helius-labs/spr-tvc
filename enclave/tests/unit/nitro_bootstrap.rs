@@ -113,7 +113,9 @@ async fn bootstrap_acknowledges_only_the_slots_used_to_restore_the_seed() {
         .await
         .unwrap();
     assert_eq!(slots, [1, 3, 5]);
-    assert_eq!(*restored.await.unwrap().0, *seed.0);
+    let (restored, actual_slots) = restored.await.unwrap();
+    assert_eq!(*restored.0, *seed.0);
+    assert_eq!(actual_slots, [1, 3, 5]);
     assert_eq!(
         accept_shares(State(state), valid).await.unwrap_err(),
         StatusCode::GONE

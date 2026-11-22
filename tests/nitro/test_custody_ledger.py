@@ -378,7 +378,8 @@ class CustodyLedgerTests(unittest.TestCase):
 
     def qualification(self, target, policy_digest="fe" * 32):
         return {"walletPolicyDigest": policy_digest, "replacementTargetIdentity": sha256(target_attestation(target)),
-                "replacementTargetSha256": sha256(target)}
+                "replacementTargetSha256": sha256(target),
+                "replacementBootstrap": {"bootKeyId": "de" * 32, "slots": [1, 2, 3]}}
 
     def signed_retirement(self, manifest, slots=(1, 2, 3)):
         result = self.signed_subject(RETIREMENT, manifest)
@@ -576,7 +577,9 @@ class CustodyLedgerTests(unittest.TestCase):
         seed = receipt["custody"]["noteSeedCommitment"]
         registered = self.replacement_target()
         pins = {key.removeprefix("PCR"): value for key, value in boot_pins(HOST, registered["pcrs"]).items()}
-        evidence = {"policyDigest": "fe" * 32, "targets": [{"releaseId": registered["releaseId"], "pcrs": pins}]}
+        observed = {"releaseId": registered["releaseId"], "pcrs": pins,
+                    "bootstrap": self.qualification(registered)["replacementBootstrap"]}
+        evidence = {"policyDigest": "fe" * 32, "targets": [observed]}
 
         with tempfile.TemporaryDirectory() as directory:
             wallet_trust = pathlib.Path(directory) / "wallet.json"
@@ -596,11 +599,16 @@ class CustodyLedgerTests(unittest.TestCase):
 
                 register_target(self.trust, self.signed_subject(TARGET_APPROVAL, registered))
                 subprocess.run.return_value.stdout = json.dumps({**evidence, "targets": [
-                    {"releaseId": registered["releaseId"], "pcrs": {**pins, "3": "ab" * 48}},
+                    {**observed, "pcrs": {**pins, "3": "ab" * 48}},
                 ]}).encode()
                 with self.assertRaisesRegex(ValueError, "no attested serving target"):
                     qualified_policy(self.trust, wallet_trust, scope, seed)
 
+                for slots in ([1, 2], [1, 1, 2], [1, 2, 7], [True, 2, 3], [3, 2, 1]):
+                    bootstrap = {**observed["bootstrap"], "slots": slots}
+                    subprocess.run.return_value.stdout = json.dumps({**evidence, "targets": [{**observed, "bootstrap": bootstrap}]}).encode()
+                    with self.assertRaisesRegex(ValueError, "three distinct attested bootstrap slots"):
+                        qualified_policy(self.trust, wallet_trust, scope, seed)
                 subprocess.run.return_value.stdout = json.dumps(evidence).encode()
                 self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, seed), self.qualification(registered))
                 self.assertEqual(subprocess.run.call_args.kwargs["input"], body)
@@ -728,7 +736,15 @@ class CustodyLedgerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "only 2 proven replacement recovery keys"):
                 commit_retirement(self.trust, None, retirement)
             self.assertTrue(all("/retired/" not in name for name in self.objects))
-            commit_retirement(self.trust, None, self.signed_retirement(marker, (1, 2, 4)))
+            with self.assertRaisesRegex(ValueError, "invalid or duplicate approval"):
+                commit_retirement(self.trust, None, self.signed_retirement(marker, (1, 2, 4)))
+            states[2] = "Enabled"
+            qualification.return_value = {**self.qualification(replacement),
+                                          "replacementBootstrap": {**marker["replacementBootstrap"], "bootKeyId": "bc" * 32}}
+            with self.assertRaisesRegex(ValueError, "no longer matches the qualified replacement"):
+                commit_retirement(self.trust, None, retirement)
+            qualification.return_value = self.qualification(replacement)
+            commit_retirement(self.trust, None, retirement)
 
     @patch("retirement.require_recovery_quorum")
     @patch("retirement.qualified_policy")
@@ -746,7 +762,7 @@ class CustodyLedgerTests(unittest.TestCase):
         other = self.signed_retirement({**marker, "recoveryDeadline": marker["recoveryDeadline"] - 1})
         path = f"spr-custody/devnet/{DOMAIN}/retired/1.json"
         for invalid, message in ((proofs[:2], "signing quorum"), ([*proofs[:2], proofs[0]], "duplicate approval"),
-                                 (rotated["acknowledgements"], "invalid custody approval signature"),
+                                 (rotated["acknowledgements"][:3], "invalid custody approval signature"),
                                  (other["recoveryProofs"], "invalid custody approval signature")):
             bad = {**retired, "recoveryProofs": invalid}
             with self.assertRaisesRegex(ValueError, message):
@@ -807,6 +823,8 @@ class CustodyLedgerTests(unittest.TestCase):
               patch("custody_ledger.add_approval") as approval):
             with self.assertRaisesRegex(ValueError, "committed receipts"):
                 prove_recovery(self.trust, {**candidate, "manifest": {**marker, "replacementReceiptSha256": "ab" * 32}}, 2)
+            with self.assertRaisesRegex(ValueError, "did not supply an attested bootstrap slot"):
+                prove_recovery(self.trust, candidate, 4)
             kms.assert_not_called()
             with self.assertRaisesRegex(ValueError, "recovery failed"):
                 prove_recovery(self.trust, candidate, 2)

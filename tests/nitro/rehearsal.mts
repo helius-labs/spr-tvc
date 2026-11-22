@@ -106,8 +106,8 @@ function clientFor(state = checkpoint) {
   });
 }
 
-function discoveryBinding(info: object): Uint8Array {
-  return sha256(new TextEncoder().encode("SPR/native-nitro/discovery/v1" + canonicalizeJsonValue(info)));
+function discoveryBinding(boot: object): Uint8Array {
+  return sha256(new TextEncoder().encode("SPR/native-nitro/discovery/v1" + canonicalizeJsonValue(boot)));
 }
 
 async function checkEvidence(pin: NitroTarget) {
@@ -119,11 +119,12 @@ async function checkEvidence(pin: NitroTarget) {
     signal,
   });
   assert.equal(response.status, 200);
-  const decoded = await response.json() as { info: ServiceInfo; evidence: string };
-  const { info } = decoded;
+  const decoded = await response.json() as { boot: { info: ServiceInfo; bootstrapSlots: number[] }; evidence: string };
+  const { boot } = decoded;
+  const { info, bootstrapSlots } = boot;
   const evidence = requireHex(decoded.evidence);
   const now = BigInt(Date.now());
-  const binding = discoveryBinding(info);
+  const binding = discoveryBinding(boot);
   const { proofKey } = await verifyNativeNitroEvidence(evidence, nonce, binding, pin.pcrs, now);
   await assert.rejects(
     verifyNativeNitroEvidence(evidence, crypto.getRandomValues(new Uint8Array(32)), binding, pin.pcrs, now),
@@ -131,12 +132,17 @@ async function checkEvidence(pin: NitroTarget) {
   );
   const fakeTransport = "00".repeat(info.quorum_public_key.length / 2);
   await assert.rejects(
-    verifyNativeNitroEvidence(evidence, nonce, discoveryBinding({ ...info, quorum_public_key: fakeTransport }), pin.pcrs, now),
+    verifyNativeNitroEvidence(evidence, nonce, discoveryBinding({ ...boot, info: { ...info, quorum_public_key: fakeTransport } }), pin.pcrs, now),
     /BootProofUnverified/,
+  );
+  await assert.rejects(
+    verifyNativeNitroEvidence(evidence, nonce, discoveryBinding({
+      ...boot, bootstrapSlots: [bootstrapSlots[1], bootstrapSlots[0], bootstrapSlots[2]],
+    }), pin.pcrs, now), /BootProofUnverified/,
   );
   writeFileSync(resolve(directory, pin.releaseId + "-evidence.json"),
     JSON.stringify({ now: String(now), nonce: encodeLowerHex(nonce), binding: encodeLowerHex(binding),
-      pcrs: pin.pcrs, proofKey, evidence: decoded.evidence }, null, 2));
+      pcrs: pin.pcrs, proofKey, boot, evidence: decoded.evidence }, null, 2));
   return { info, proofKey };
 }
 

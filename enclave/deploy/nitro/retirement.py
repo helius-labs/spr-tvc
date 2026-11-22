@@ -15,7 +15,7 @@ from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_SPECS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
     find_retirement, list_objects, load_epoch,
     load_retirement, read_registered_target, recovery_deadline, require_active_epoch, retirement_approval, retirement_object_name,
-    require_publication_roster, retirement_recovery, sign_share_recovery, target_attestation, write_once,
+    require_publication_roster, retirement_bootstrap, retirement_recovery, sign_share_recovery, target_attestation, write_once,
 )
 from kms_policy import key_policy, recovery_policy, target_context
 
@@ -75,11 +75,16 @@ def qualified_policy(trust, wallet_trust, scope, seed):
     ], input=pinned_trust, stdout=subprocess.PIPE, check=True, timeout=25)
     evidence = parse_json(reply.stdout)
     fields(evidence, "policyDigest", "targets")
-    for target in candidates:
-        attestation = target_attestation(target)
-        if attestation in evidence["targets"]:
+    by_identity = {sha256(target_attestation(target)): target for target in candidates}
+    for observed in evidence["targets"]:
+        fields(observed, "releaseId", "pcrs", "bootstrap")
+        identity = sha256({"releaseId": observed["releaseId"], "pcrs": observed["pcrs"]})
+        if identity in by_identity:
+            bootstrap = observed["bootstrap"]
+            retirement_bootstrap(bootstrap)
             return {"walletPolicyDigest": hex_digest(evidence["policyDigest"]),
-                    "replacementTargetIdentity": sha256(attestation), "replacementTargetSha256": sha256(target)}
+                    "replacementTargetIdentity": identity, "replacementTargetSha256": sha256(by_identity[identity]),
+                    "replacementBootstrap": bootstrap}
     raise ValueError("no attested serving target matches the registered replacement")
 
 
@@ -107,6 +112,8 @@ def checked_scope(trust, manifest):
 def prove_recovery(trust, document, index):
     manifest = retirement_approval(document)["manifest"]
     _, receipt, custodians = checked_scope(trust, manifest)
+    if index not in retirement_bootstrap(manifest["replacementBootstrap"]):
+        raise ValueError("custodian did not supply an attested bootstrap slot")
     proof = {"manifest": manifest, "signatures": document["recoveryProofs"]}
     signatures = sign_share_recovery(trust, custodians, receipt, index, RETIREMENT_RECOVERY, proof)
     require_recovery_window(manifest)

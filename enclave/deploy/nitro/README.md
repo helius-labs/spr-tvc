@@ -213,18 +213,20 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    `minimumCustodyEpoch` at the new epoch. Drain old sessions and stop the old
    enclaves. An older executable can be built for the current epoch if needed.
 4. Pin the file SHA-256 of the independently distributed wallet trust bundle
-   as `walletTrustSha256` in the custody trust file. Three current custodians
-   run `prove-recovery` in their respective roles. Each command reopens that
-   custodian's package from the replacement receipt and signs the retirement
-   candidate with its acknowledgement key. Keep those keys enabled for the
+   as `walletTrustSha256` in the custody trust file. The retirement draft
+   records the replacement's attested boot key ID and actual bootstrap slots.
+   The three custodians named by those slots run `prove-recovery` in their
+   respective roles. Each command reopens that custodian's package from the
+   replacement receipt and signs the candidate with its acknowledgement key. Keep those keys enabled for the
    current epoch. Pass each output to the next custodian.
 
    Two custody approval signers then sign, and the ledger publisher commits
    the record within 24 hours of drafting. Signers and the publisher need
    `kms:DescribeKey` on the proven recovery keys and check that at least
    three are enabled. Draft, sign and publish check that both public buckets
-   agree before and after attestation and that a live replacement matches
-   the registered serving target. After a timeout, retry the same signed
+   agree before and after attestation and that the replacement matches the
+   registered serving target. If the attested boot key or slots change, draft
+   a new candidate and collect proofs for those slots. After a timeout, retry the same signed
    document. The tool verifies a committed record against its historical
    roster and S3 timestamp, even after the recovery window closes. If the
    write never committed and the window or policy changed, draft a new
@@ -249,8 +251,11 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    Scheduling immediately disables cryptographic use. Canceling leaves the
    key disabled, and the sealed policy grants no permission to re-enable it.
    Capture the results before AWS deletes the metadata. Repeat the cold boot
-   and canary after retirement. Retain the old signed receipt and public
-   trust pins. [AWS key deletion](https://docs.aws.amazon.com/kms/latest/APIReference/API_ScheduleKeyDeletion.html) · [AWS cancellation behavior](https://docs.aws.amazon.com/kms/latest/APIReference/API_CancelKeyDeletion.html)
+   and canary after retirement. The attested slot record proves which shares
+   booted the replacement. Record the cold-boot timing, shutdown of the old
+   fleet and the on-chain canary separately. Retain the old signed receipt
+   and public trust pins. [AWS key deletion](https://docs.aws.amazon.com/kms/latest/APIReference/API_ScheduleKeyDeletion.html) · [AWS cancellation behavior](https://docs.aws.amazon.com/kms/latest/APIReference/API_CancelKeyDeletion.html)
+
 ## Replace a compromised seed
 
 1. Freeze new sends that resolve through the old service. Initialize a fresh

@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use spr_tvc_protocol::{
     digest::sha256,
     encoding::{hex, jcs_serialize, parse_strict_json},
+    types::ServiceInfo,
 };
 use tokio::sync::{oneshot, Semaphore};
 use tokio_vsock::{VsockAddr, VsockListener, VsockStream, VMADDR_CID_ANY};
@@ -121,8 +122,8 @@ pub async fn run(config: Config) -> io::Result<()> {
     match config.deployment {
         Deployment::Serve { custody } => {
             custody.validate()?;
-            let note_seed = provision(domain, custody.clone()).await?;
-            serve(domain, release_id, custody, note_seed).await
+            let (note_seed, slots) = provision(domain, custody.clone()).await?;
+            serve(domain, release_id, custody, note_seed, slots).await
         }
         Deployment::Initialize {
             recipient_public_keys,
@@ -142,7 +143,7 @@ pub async fn run(config: Config) -> io::Result<()> {
                 .epoch
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("custody epoch exhausted"))?;
-            let note_seed = provision(domain, previous).await?;
+            let (note_seed, _) = provision(domain, previous).await?;
             publish_custody(domain, release_id, recipients, epoch, note_seed).await
         }
     }
@@ -153,6 +154,7 @@ async fn serve(
     release_id: String,
     custody: Custody,
     note_seed: NoteSeed,
+    slots: [u8; THRESHOLD],
 ) -> io::Result<()> {
     let executable = sha256(&std::fs::read(std::env::current_exe()?)?);
     let release_identity = sha256(
@@ -182,7 +184,7 @@ async fn serve(
     });
     nitro_http::serve(
         ParentListener::bind(44030)?,
-        serving_router(service),
+        serving_router(service, slots),
         MAX_SERVING_CONNECTIONS,
         pending(),
     )
@@ -190,10 +192,14 @@ async fn serve(
     Ok(())
 }
 
-fn serving_router(service: Arc<Service>) -> Router {
+#[derive(Clone, Copy)]
+struct BootstrapSlots([u8; THRESHOLD]);
+
+fn serving_router(service: Arc<Service>, slots: [u8; THRESHOLD]) -> Router {
     let attestation = Router::new()
         .route("/v1/nitro/attestation", post(client_attestation))
         .layer(DefaultBodyLimit::max(32))
+        .layer(Extension(BootstrapSlots(slots)))
         .layer(Extension(Arc::new(Semaphore::new(1))))
         .layer(middleware::from_fn_with_state(
             Arc::new(Semaphore::new(MAX_ATTESTATION_REQUESTS)),
@@ -230,9 +236,11 @@ async fn limit_serving_request(
     }
 }
 
+type RestoredSeed = (NoteSeed, [u8; THRESHOLD]);
+
 struct Recipient {
     private: PKey<Private>,
-    sender: oneshot::Sender<NoteSeed>,
+    sender: oneshot::Sender<RestoredSeed>,
 }
 
 struct Bootstrap {
@@ -241,7 +249,7 @@ struct Bootstrap {
     custody: Custody,
 }
 
-async fn provision(domain: [u8; 32], custody: Custody) -> io::Result<NoteSeed> {
+async fn provision(domain: [u8; 32], custody: Custody) -> io::Result<RestoredSeed> {
     let (sender, seed) = oneshot::channel();
     let private =
         PKey::from_rsa(Rsa::generate(2048).map_err(io::Error::other)?).map_err(io::Error::other)?;
@@ -299,12 +307,13 @@ async fn accept_shares(State(state): State<Arc<Bootstrap>>, body: Bytes) -> Repl
         .lock()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let recipient = pending.as_ref().ok_or(StatusCode::GONE)?;
-    let (seed, slots) = open_shares(&recipient.private, &body, &state.domain, &state.custody)
+    let restored = open_shares(&recipient.private, &body, &state.domain, &state.custody)
         .ok_or(StatusCode::BAD_REQUEST)?;
+    let slots = restored.1;
     let recipient = pending.take().ok_or(StatusCode::GONE)?;
     recipient
         .sender
-        .send(seed)
+        .send(restored)
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     Ok(([(CONTENT_TYPE, "application/octet-stream")], slots.to_vec()))
 }
@@ -314,7 +323,7 @@ fn open_shares(
     mut frame: &[u8],
     domain: &[u8; 32],
     custody: &Custody,
-) -> Option<(NoteSeed, [u8; THRESHOLD])> {
+) -> Option<RestoredSeed> {
     let mut shares = Vec::with_capacity(SHARE_COUNT);
     let mut count = 0;
     while !frame.is_empty() {
@@ -408,20 +417,32 @@ async fn custody_attestation(
 
 type Reply<T> = Result<([(axum::http::HeaderName, &'static str); 1], T), StatusCode>;
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServingBoot<'a> {
+    info: &'a ServiceInfo,
+    bootstrap_slots: [u8; THRESHOLD],
+}
+
 async fn client_attestation(
     State(service): State<Arc<Service>>,
+    Extension(BootstrapSlots(slots)): Extension<BootstrapSlots>,
     Extension(worker): Extension<Arc<Semaphore>>,
     nonce: Bytes,
 ) -> Reply<String> {
     if nonce.len() != 32 {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let discovery = jcs_serialize(&service.info).map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let discovery = jcs_serialize(&ServingBoot {
+        info: &service.info,
+        bootstrap_slots: slots,
+    })
+    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let public = service.ephemeral.public_bytes();
     issue_attestation(worker, move || {
         attested_json(
             "SPR/native-nitro/discovery/v1",
-            "info",
+            "boot",
             &discovery,
             Some(public),
             nonce,

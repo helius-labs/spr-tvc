@@ -27,6 +27,8 @@ export const nitroTransport = {
   },
 };
 
+type ServingBoot = { readonly info: ServiceInfo; readonly bootstrapSlots: readonly [number, number, number] };
+
 /** Attests one replica before returning values used to build or sign a request. */
 export async function connectNitroTarget(target: NitroTarget, trust: NitroTrust, requestSignal?: AbortSignal) {
   const timeout = AbortSignal.timeout(TARGET_TIMEOUT_MS);
@@ -39,10 +41,16 @@ export async function connectNitroTarget(target: NitroTarget, trust: NitroTrust,
     headers: { "Content-Type": "application/octet-stream" },
   }, signal);
   if (!response.ok) throw httpError(response, "BootProofUnverified");
-  const { info, evidence } = parseStrictJson<{ info: ServiceInfo; evidence: string }>(
-    await readBoundedText(response, MAX_DISCOVERY_BYTES, signal), ["info", "evidence"],
+  const { boot, evidence } = parseStrictJson<{ boot: ServingBoot; evidence: string }>(
+    await readBoundedText(response, MAX_DISCOVERY_BYTES, signal), ["boot", "evidence"],
   );
+  assertExactObjectKeys(boot, ["info", "bootstrapSlots"], "DiscoveryUntrusted");
+  const { info, bootstrapSlots } = boot;
   assertExactObjectKeys(info, SERVICE_INFO_KEYS, "DiscoveryUntrusted");
+  if (!Array.isArray(bootstrapSlots) || bootstrapSlots.length !== 3 || new Set(bootstrapSlots).size !== 3 ||
+      bootstrapSlots.some(slot => !Number.isInteger(slot) || slot < 1 || slot > 6)) {
+    throw new DecryptionServiceError("DiscoveryUntrusted");
+  }
   if (typeof evidence !== "string" || evidence.length > 2 * MAX_ATTESTATION_BYTES) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
@@ -64,7 +72,7 @@ export async function connectNitroTarget(target: NitroTarget, trust: NitroTrust,
     throw new DecryptionServiceError("DiscoveryUntrusted");
   }
   parseQosP256Public(transportKey);
-  const binding = sha256(te.encode("SPR/native-nitro/discovery/v1" + canonicalizeJsonValue(info)));
+  const binding = sha256(te.encode("SPR/native-nitro/discovery/v1" + canonicalizeJsonValue(boot)));
   const verified = await awaitWithSignal(
     verifyNativeNitroEvidence(requireHex(evidence), nonce, binding, target.pcrs, BigInt(Date.now())), signal,
   );
@@ -72,5 +80,5 @@ export async function connectNitroTarget(target: NitroTarget, trust: NitroTrust,
   if (now < verified.certificateValidFromMs || now > verified.certificateValidThroughMs) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
-  return { endpoint, info, ...verified };
+  return { endpoint, info, bootstrapSlots, ...verified };
 }

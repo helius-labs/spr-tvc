@@ -74,13 +74,13 @@ function attestedDiscovery(custodyDigest = "99".repeat(32), boot = secrets, cert
   vi.mocked(verifyNativeNitroEvidence).mockResolvedValue({
     proofKey: pair, certificateValidFromMs: BigInt(Date.now()) - 1_000n, certificateValidThroughMs,
   });
-  return Response.json({ info: {
+  return Response.json({ boot: { bootstrapSlots: [1, 3, 5], info: {
     version: 1, network: trust.network, security_domain_id: trust.securityDomainId, release_id: "nitro-2",
     manifest_digest: encodeLowerHex(identity), executable_digest: executable, quorum_public_key: pair,
     quorum_key_id: encodeLowerHex(sha256(requireHex(pair, 130))), quorum_key_epoch: "1",
     supported_operations: ["ServicePublicKeys", "ServiceDecrypt"], proof_type: "spr.tvc.decryption_service.v1",
     max_encrypted_request_bytes: "262144", max_encrypted_response_bytes: "262144",
-  }, evidence: "aa" });
+  } }, evidence: "aa" });
 }
 
 const signMessages = vi.fn<MessagePartialSigner["signMessages"]>();
@@ -140,6 +140,38 @@ afterEach(() => {
 });
 
 describe("native client trust gate", () => {
+  it("binds the bootstrap slots with the rest of the signed boot", async () => {
+    const response = await attestedDiscovery().json();
+    const binding = sha256(new TextEncoder().encode("SPR/native-nitro/discovery/v1" + canonicalizeJsonValue(response.boot)));
+    const verified = vi.mocked(verifyNativeNitroEvidence);
+    verified.mockImplementation(async (_evidence, _nonce, received) => {
+      if (encodeLowerHex(received) !== encodeLowerHex(binding)) throw new Error("wrong attestation binding");
+      return { proofKey: publicPair(secrets), certificateValidFromMs: 0n, certificateValidThroughMs: BigInt(Date.now()) + 60_000n };
+    });
+    const fetch = policyHeads().mockResolvedValueOnce(Response.json({
+      ...response, boot: { ...response.boot, bootstrapSlots: [1, 3, 6] },
+    }));
+    policyHeads(fetch).mockResolvedValueOnce(Response.json(response))
+      .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    vi.stubGlobal("fetch", fetch);
+    const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
+    await expect(client.address(signer.address)).rejects.toThrow("no authorized Nitro replica");
+    await expect(client.address(signer.address)).resolves.toBeDefined();
+    expect(verified).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([[1, 1, 3], [1, 3, 7], [1, 3], [1, 3, 4.5], [1, "3", 5]].map(slots => ({ slots })))(
+    "rejects invalid bootstrap slots $slots", async ({ slots }) => {
+    const response = await attestedDiscovery().json();
+    const fetch = policyHeads().mockResolvedValueOnce(Response.json({
+      ...response, boot: { ...response.boot, bootstrapSlots: slots },
+    }));
+    vi.stubGlobal("fetch", fetch);
+    const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
+    await expect(client.address(signer.address)).rejects.toThrow("no authorized Nitro replica");
+    expect(verifyNativeNitroEvidence).not.toHaveBeenCalled();
+  });
+
   it("refuses payment addresses while the owner can still open and decrypt a recovery note", async () => {
     await initializePoseidon();
     const policy = signedPolicy({ recoveryOnly: true });
