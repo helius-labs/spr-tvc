@@ -206,7 +206,11 @@ describe("verification", () => {
       bootProof,
       pingAnswer,
     } = connectFixture();
-    const resolveBootProof = vi.fn().mockResolvedValue(bootProof);
+    let now = 1_750_000_000_000n;
+    const resolveBootProof = vi.fn().mockImplementation(async () => {
+      now += 10n;
+      return bootProof;
+    });
     const config: DecryptionServiceConnectionConfig = {
       backend: {
         endpoint: new URL("https://tvc.example.invalid/api/tvc/"),
@@ -214,7 +218,7 @@ describe("verification", () => {
       },
       network: "devnet",
       release: { releasePolicy: signedPolicy, releaseAuthorities: authorities, qosIdentityPcrs: expectedPcrs },
-      nowMs: () => 1_750_000_000_000n,
+      nowMs: () => now,
       transport: {
         fetch: async (url, init) => {
           if (url.pathname === "/api/tvc/v1/info") {
@@ -243,8 +247,18 @@ describe("verification", () => {
       bootProof,
       allowedManifestSha256: [manifestDigest],
       expectedPcrs,
-      nowMs: 1_750_000_000_000n,
+      nowMs: 1_750_000_000_010n,
     });
+
+    const expiry = BigInt(signedPolicy.policy.expiresAtMs);
+    now = expiry - 5n;
+    await expect(verify(config)).rejects.toMatchObject({ code: "ExpiredRequest" });
+    expect(verifyBootProofMock).toHaveBeenCalledOnce();
+
+    now = expiry - 100n;
+    verifyBootProofMock.mockImplementationOnce(async () => { now = expiry + 1n; });
+    await expect(verify(config)).rejects.toMatchObject({ code: "ExpiredRequest" });
+    now = 1_750_000_000_000n;
 
     // A resolver may ignore cancellation; no late result may verify or publish a connection.
     const controller = new AbortController();

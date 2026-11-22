@@ -116,7 +116,6 @@ export async function executeServiceCall<T extends ServiceCall>(
       if (context.requireCurrentCheckpoint) await context.requireCurrentCheckpoint(signal);
     }
 
-    requireCurrentReleasePolicy(context, context.nowMs());
     const plaintext = await sealedExchange(context, {
       request,
       requestDigest,

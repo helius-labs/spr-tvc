@@ -186,6 +186,7 @@ export async function sealedExchange(
   // The ciphertext is hex, so it cannot exceed twice the byte ceiling;
   // RESPONSE_ENVELOPE_SLACK covers the surrounding JSON and App Proof.
   const maxResponseBytes = BigInt(context.info.max_encrypted_response_bytes);
+  requireCurrentReleasePolicy(context, context.nowMs());
   const responseText = await sendToEnclave(
     context.backend.endpoint, encrypted, context.transport,
     maxResponseBytes * 2n + RESPONSE_ENVELOPE_SLACK, signal, context.responseTimeoutMs,
@@ -205,10 +206,8 @@ export async function sealedExchange(
     throw new DecryptionServiceError("ResponseTooLarge");
   }
   await verifyOperationProof(context, exchange, response, encryptedResult, signal);
-  if (context.requireCurrentCheckpoint) {
-    await context.requireCurrentCheckpoint(signal);
-    requireCurrentReleasePolicy(context, context.nowMs());
-  }
+  if (context.requireCurrentCheckpoint) await context.requireCurrentCheckpoint(signal);
+  requireCurrentReleasePolicy(context, context.nowMs());
   let plaintext: string;
   try {
     plaintext = td.decode(qosDecrypt(exchange.responseSecret, encryptedResult));

@@ -72,8 +72,9 @@ signs the request.
    canonical JSON directly into a fixed-capacity buffer and wipes that buffer
    after encryption. The replica signs an App Proof binding the request ID,
    operation, request digest, and encrypted result digest. The SDK verifies
-   the proof before opening the reply. It binds the handle to the owner and verifies the
-   nullifier secret against the discovered public key. Later replies must
+   the proof and checks that the release is still current before opening
+   the reply. It binds the handle to the owner and verifies the nullifier
+   secret against the discovered public key. Later replies must
    carry the same secret and one plaintext of the expected length per item.
    The SPR wallet recomputes each candidate's commitment before accepting it.
 6. **Sweep.** The recipient wallet derives transaction viewing keys locally

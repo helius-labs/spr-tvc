@@ -190,47 +190,43 @@ export async function connectAndVerifyTvc(
   const { releasePolicy, qosIdentityPcrs } = release;
   verifySignedReleasePolicy(releasePolicy, release.releaseAuthorities, network, nowMs());
   const transport = config.transport ?? createDefaultTransport();
+  const window = {
+    releasePolicyValidFromMs: BigInt(releasePolicy.policy.validFromMs),
+    releasePolicyExpiresAtMs: BigInt(releasePolicy.policy.expiresAtMs),
+  };
 
   const verifyReplica = async (
     appProof: TurnkeyAppProofWire,
-    verificationNow: bigint,
     verifySignal?: AbortSignal,
-  ) => awaitWithSignal(verifyBootProof({
-    ephemeralPublicKey: appProof.publicKey,
-    bootProof: await lookupBootProof(backend, appProof, verifySignal),
-    allowedManifestSha256: releasePolicy.policy.acceptedManifestDigests,
-    expectedPcrs: qosIdentityPcrs,
-    nowMs: verificationNow,
-  }), verifySignal);
+  ) => {
+    verifySignal?.throwIfAborted();
+    requireCurrentReleasePolicy(window, nowMs());
+    const bootProof = await lookupBootProof(backend, appProof, verifySignal);
+    const verificationNow = nowMs();
+    requireCurrentReleasePolicy(window, verificationNow);
+    await awaitWithSignal(verifyBootProof({
+      ephemeralPublicKey: appProof.publicKey,
+      bootProof,
+      allowedManifestSha256: releasePolicy.policy.acceptedManifestDigests,
+      expectedPcrs: qosIdentityPcrs,
+      nowMs: verificationNow,
+    }), verifySignal);
+  };
 
   const challenge = qosPingChallenge(releasePolicy.policy.quorumPublicKey);
   const session = await fetchSession(backend, challenge.body, transport, signal);
   const info = parseServiceInfo(session.infoText);
   bindDiscoveryToPolicy(info, releasePolicy);
   const appProof = verifyQosPingAnswer(session.pingText, challenge);
-  await verifyReplica(appProof, nowMs(), signal);
-
-  const releasePolicyValidFromMs = BigInt(releasePolicy.policy.validFromMs);
-  const releasePolicyExpiresAtMs = BigInt(releasePolicy.policy.expiresAtMs);
-  const trustVerifier: { verifyOperationAppProof(proof: TurnkeyAppProofWire, signal?: AbortSignal): Promise<void> } = Object.freeze({
-    async verifyOperationAppProof(operationAppProof, operationSignal) {
-      operationSignal?.throwIfAborted();
-      const verificationNow = nowMs();
-      requireCurrentReleasePolicy(
-        { releasePolicyValidFromMs, releasePolicyExpiresAtMs },
-        verificationNow,
-      );
-      await verifyReplica(operationAppProof, verificationNow, operationSignal);
-    },
-  });
+  await verifyReplica(appProof, signal);
+  requireCurrentReleasePolicy(window, nowMs());
 
   return {
     backend,
     info,
     transport,
-    releasePolicyValidFromMs,
-    releasePolicyExpiresAtMs,
+    ...window,
     nowMs,
-    trustVerifier,
+    trustVerifier: Object.freeze({ verifyOperationAppProof: verifyReplica }),
   };
 }

@@ -95,10 +95,25 @@ describe("operation replies", () => {
     expect(f.verifyOperationAppProof).toHaveBeenCalledBefore(requireCurrentCheckpoint);
   });
 
-  it("checks whether the native session expired while the reply was in flight", async () => {
+  it.each(["hosted", "native"])("rejects a %s reply if proof verification crosses expiry", async backend => {
     const f = fixture();
-    const context = { ...f.context, requireCurrentCheckpoint: async () => {}, nowMs: () => 3n };
+    let now = 1n;
+    f.verifyOperationAppProof.mockImplementationOnce(async () => { now = 3n; });
+    const context = {
+      ...f.context,
+      nowMs: () => now,
+      ...(backend === "native" ? { requireCurrentCheckpoint: async () => {} } : {}),
+    };
     await expect(sealedExchange(context, f.exchange)).rejects.toMatchObject({ code: "ExpiredRequest" });
+    expect(f.verifyOperationAppProof).toHaveBeenCalledOnce();
+  });
+
+  it("never sends an operation whose release window already expired", async () => {
+    const f = fixture();
+    const fetch = vi.fn(f.context.transport.fetch);
+    await expect(sealedExchange({ ...f.context, transport: { fetch }, nowMs: () => 3n }, f.exchange))
+      .rejects.toMatchObject({ code: "ExpiredRequest" });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each([
