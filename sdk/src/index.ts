@@ -3,6 +3,7 @@ export {
   type DecryptionService,
   type DecryptionServiceConfig,
 } from "./client/decryption.js";
+export { resolvePaymentAddress } from "./client/recipient.js";
 export { DECRYPTION_SERVICE_RELEASES } from "./protocol/releases.js";
 export type { DecryptionServiceKeys } from "./client/keys.js";
 export type { BootProofResolver, ResolveBootProofInput } from "./connection/backend.js";

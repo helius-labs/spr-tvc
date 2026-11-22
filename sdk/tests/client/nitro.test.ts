@@ -295,6 +295,89 @@ describe("native client trust gate", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("uses the healthy replica inside the caller deadline and cancels the stalled probe", async () => {
+    vi.useFakeTimers();
+    try {
+      const policy = twoReplicas();
+      const cancel = vi.fn();
+      const fetch = vi.fn(async (url: URL, init: RequestInit) => {
+        if (url.pathname.endsWith("/policy.json")) return new Response(policy);
+        const winner = url.hostname === "replacement.example.com";
+        if (url.pathname === "/v1/nitro/attestation") {
+          return winner ? attestedDiscovery(undefined, replacementBoot) : new Response(new ReadableStream({ cancel }));
+        }
+        expect(winner).toBe(true);
+        return lookupReply(init, replacementBoot);
+      });
+      vi.stubGlobal("fetch", fetch);
+      const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
+      const result = expect(client.address(signer.address, { timeoutMs: 800 })).resolves.toBeDefined();
+      await vi.advanceTimersByTimeAsync(800);
+      await result;
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(verifyNativeNitroEvidence).toHaveBeenCalledTimes(1);
+      expect(signMessages).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("starts the next probe immediately after a fast failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const policy = twoReplicas();
+      const fetch = vi.fn(async (url: URL, init: RequestInit) => {
+        if (url.pathname.endsWith("/policy.json")) return new Response(policy);
+        if (url.hostname !== "replacement.example.com") return new Response(null, { status: 503 });
+        return url.pathname === "/v1/nitro/attestation" ? attestedDiscovery(undefined, replacementBoot)
+          : lookupReply(init, replacementBoot);
+      });
+      vi.stubGlobal("fetch", fetch);
+      const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
+      const result = expect(client.address(signer.address, { timeoutMs: 100 })).resolves.toBeDefined();
+      await vi.advanceTimersByTimeAsync(100);
+      await result;
+      expect(verifyNativeNitroEvidence).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("cancels the active probe and pending fallbacks when the caller leaves", async () => {
+    vi.useFakeTimers();
+    try {
+      const policy = twoReplicas();
+      const cancel = vi.fn();
+      const fetch = vi.fn(async (url: URL) => url.pathname.endsWith("/policy.json")
+        ? new Response(policy) : new Response(new ReadableStream({ cancel })));
+      vi.stubGlobal("fetch", fetch);
+      const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
+      const result = expect(client.address(signer.address, { timeoutMs: 100 })).rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(1000);
+      await result;
+      expect(fetch).toHaveBeenCalledTimes(3);
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(signMessages).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("discards a reply from a different boot and retries the unsigned lookup on an attested replacement", async () => {
+    const policy = twoReplicas();
+    const fetch = vi.fn(async (url: URL, init: RequestInit) => {
+      if (url.pathname.endsWith("/policy.json")) return new Response(policy);
+      const boot = url.hostname === "replacement.example.com" ? replacementBoot : secrets;
+      if (url.pathname === "/v1/nitro/attestation") return attestedDiscovery(undefined, boot);
+      return boot === secrets
+        ? signedReply(openRequest(init, secrets), replacementBoot, {
+            type: "PublicKeys", viewing_public_key: "00", nullifier_public_key: "00",
+          })
+        : lookupReply(init, replacementBoot);
+    });
+    vi.stubGlobal("fetch", fetch);
+    const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
+    await expect(client.address(signer.address)).resolves.toBeDefined();
+    expect(verifyNativeNitroEvidence).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls.filter(([url]) => url.pathname === "/v1/operations").map(([url]) => url.hostname))
+      .toEqual(["replica.example.com", "replacement.example.com"]);
+    expect(signMessages).not.toHaveBeenCalled();
+  });
+
   it("retries an unsigned lookup once with fresh evidence after a replica stalls mid-response", async () => {
     vi.useFakeTimers();
     try {
@@ -323,7 +406,7 @@ describe("native client trust gate", () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it("leaves a failed signed request with its original boot and reattests on the next explicit lookup", async () => {
+  it.each(["http", "binding"] as const)("never retransmits a signed decrypt after a %s failure", async failure => {
     const policy = twoReplicas();
     let requests = 0;
     const fetch = vi.fn(async (url: URL, init: RequestInit) => {
@@ -334,14 +417,17 @@ describe("native client trust gate", () => {
         const { ciphertext } = JSON.parse(String(init.body)) as { ciphertext: string };
         const request = JSON.parse(new TextDecoder().decode(qosDecrypt(boot[0]!, requireHex(ciphertext)))) as ServiceRequest;
         expect(request.operation).toMatchObject({ type: "Decrypt", signature: "01".repeat(64) });
-        return new Response(null, { status: 503 });
+        return failure === "http" ? new Response(null, { status: 503 }) : signedReply(request, replacementBoot, {
+          type: "Decrypt", nullifier_secret: "00".repeat(31), plaintexts: [],
+        });
       }
       return lookupReply(init, boot);
     });
     vi.stubGlobal("fetch", fetch);
     signMessages.mockResolvedValueOnce([{ [signer.address]: signatureBytes(new Uint8Array(64).fill(1)) }]);
     const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
-    await expect(client.open(signer, proofs)).rejects.toMatchObject({ code: "OperationUnavailable", status: 503 });
+    await expect(client.open(signer, proofs)).rejects.toMatchObject(failure === "http"
+      ? { code: "OperationUnavailable", status: 503 } : { code: "BootProofUnverified" });
     expect(requests).toBe(2);
     expect(signMessages).toHaveBeenCalledOnce();
     await expect(client.address(signer.address)).resolves.toBeDefined();

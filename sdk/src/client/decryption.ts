@@ -73,13 +73,12 @@ export function decryptionServiceFromSession(
       try {
         return await executeServiceCall(context, operation, signal);
       } catch (error) {
-        if ((error instanceof DecryptionServiceHttpError && error.status !== 429) ||
-            (error instanceof DecryptionServiceError && [
-              "EndpointUnavailable", "ReleasePolicySuperseded", "BootProofUnverified", "ReleaseBindingMismatch",
-            ].includes(error.code))) {
+        const recoverable = retryableReplicaFailure(error);
+        if (recoverable || (error instanceof DecryptionServiceHttpError && error.status !== 429) ||
+            (error instanceof DecryptionServiceError && error.code === "ReleasePolicySuperseded")) {
           session.forget(context);
         }
-        if (!retry || !retryableLookupFailure(error)) throw error;
+        if (!retry || !recoverable) throw error;
         signal.throwIfAborted();
         retry = false;
       }
@@ -140,10 +139,12 @@ export function decryptionServiceFromSession(
   };
 }
 
-function retryableLookupFailure(error: unknown): boolean {
+function retryableReplicaFailure(error: unknown): boolean {
   // A restarted boot rejects requests sealed to the old key with a generic 400.
   if (error instanceof DecryptionServiceHttpError) return error.status === 400 || error.status === 408 || error.status >= 500;
-  return error instanceof DecryptionServiceError && error.code === "EndpointUnavailable";
+  return error instanceof DecryptionServiceError && [
+    "EndpointUnavailable", "BootProofUnverified", "ReleaseBindingMismatch",
+  ].includes(error.code);
 }
 
 /** A client of the decryption service at `config.endpoint`, verified against its release. */

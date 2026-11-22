@@ -37,6 +37,7 @@ type ExampleSetup = {
   readonly sender: OwnerSigner;
   readonly recipient: OwnerSigner;
   readonly service: DecryptionService;
+  readonly localnet?: true;
   readonly nitro?: Awaited<ReturnType<typeof import("./nitro.js")["nativeDevnet"]>>;
 };
 
@@ -105,6 +106,7 @@ export async function setup(): Promise<ExampleSetup> {
       zolana,
       sender: await filePayer(),
       recipient: await generateKeyPairSigner(),
+      localnet: true,
       service: createLocalDecryptionService({ network, endpoint: new URL(localEndpoint) }),
     };
   }

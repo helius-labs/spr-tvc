@@ -10,7 +10,10 @@ Use a sibling `../zolana` checkout, or set `ZOLANA_DIR`. CI builds
 `c5297afa13e8bfb6edadf6408304ef3fc2f8c676`, which includes the process
 ownership support used for cleanup. The run owns its ledger and service
 processes. The loopback enclave binds an ephemeral port and publishes it to
-the test. Pass a port offset to run another Solana localnet.
+the test. The sender registers before paying an unregistered recipient. The
+recipient then registers wallet-local keys, opens the earlier note with the
+service, and sweeps it. The payer funds the transactions and the recipient
+keeps no public SOL. Pass a port offset to run another Solana localnet.
 
 ## Live Nitro upgrade
 

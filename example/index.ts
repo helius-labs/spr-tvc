@@ -5,42 +5,47 @@ import {
   buildTransferTransaction,
   syncWallet,
 } from "@heliuslabs/spr";
-import { isWalletRegistered } from "@heliuslabs/spr/wallet";
-import type { DecryptionServiceKeys } from "@heliuslabs/spr-decryption-service";
+import { buildRegistrationTransaction, isWalletRegistered } from "@heliuslabs/spr/wallet";
+import { resolvePaymentAddress, type DecryptionServiceKeys } from "@heliuslabs/spr-decryption-service";
 
 import { expectBalance, localWalletKeys, sendAndConfirmFactory, setup } from "./setup.js";
 
 const AMOUNT = 3_000_000n;
 
 async function main(): Promise<void> {
-  const { zolana, service, sender, recipient, nitro } = await setup();
+  const { zolana, service, sender, recipient, nitro, localnet } = await setup();
   let serviceKeys: DecryptionServiceKeys | undefined;
   let keys: Awaited<ReturnType<typeof localWalletKeys>> | undefined;
   let ownKeys: typeof keys;
   try {
-    async function checkRecipient() {
-      if (await isWalletRegistered({ rpc: zolana, owner: recipient.address })) {
-        throw new Error("the example requires a recipient without a registry record");
+    async function checkRecipient(registered: boolean) {
+      if (await isWalletRegistered({ rpc: zolana, owner: recipient.address }) !== registered) {
+        throw new Error(`expected recipient registration to be ${registered}`);
       }
       if (sender.address !== recipient.address && (await zolana.solanaRpc.getBalance(recipient.address).send()).value !== 0n) {
         throw new Error("the fresh recipient must remain unfunded");
       }
     }
-    await checkRecipient();
-    const recipientAddress = await service.address(recipient.address);
+    await checkRecipient(false);
     keys = await localWalletKeys(sender, zolana.proofService);
     const send = sendAndConfirmFactory(zolana, sender);
+    if (localnet) {
+      const registration = await buildRegistrationTransaction({ client: zolana, owner: sender.address, address: keys.address() });
+      if (registration) await send(registration);
+      if (!await isWalletRegistered({ rpc: zolana, owner: sender.address })) throw new Error("sender did not register");
+    }
 
     const wallet = new Wallet({ identity: keys.address() });
     const deposit = await buildDepositTransaction({
       client: zolana,
       feePayer: sender.address,
-      recipient: keys.address(),
+      recipient: localnet ? sender.address : keys.address(),
       amount: AMOUNT,
     });
     const depositTx = await send(deposit);
     await syncWallet({ client: zolana, wallet, keys, config: { requireSlot: depositTx.slot } });
 
+    const recipientAddress = await resolvePaymentAddress({ rpc: zolana, owner: recipient.address, service });
     const transfer = await buildTransferTransaction({
       client: zolana,
       wallet,
@@ -53,9 +58,27 @@ async function main(): Promise<void> {
     const transferTx = await send(transfer);
     if (nitro) console.log(`transfer recipient=${recipient.address} tx=${transferTx.signature} awaiting ${nitro.seedChanged ? "the seed cutover" : "the replacement custody epoch"}`);
     const reader = nitro ? await nitro.afterTransfer(recipientAddress) : service;
-    serviceKeys = await reader.open(recipient, zolana.proofService);
+    await checkRecipient(false);
+    ownKeys = sender.address === recipient.address
+      ? keys
+      : await localWalletKeys(recipient, zolana.proofService);
+    const sweepSend = sender.address === recipient.address ? send : sendAndConfirmFactory(zolana, sender, recipient);
+    if (localnet) {
+      const registration = await buildRegistrationTransaction({
+        client: zolana, owner: recipient.address, address: ownKeys.address(), payer: sender.address,
+      });
+      if (!registration) throw new Error("expected a new recipient registration");
+      await sweepSend(registration);
+      await checkRecipient(true);
+      const registered = await resolvePaymentAddress({ rpc: zolana, owner: recipient.address, service: {
+        async address() { throw new Error("a registered owner must use its registry address"); },
+      } });
+      if (!Buffer.from(registered.toBytes()).equals(ownKeys.address().toBytes())) {
+        throw new Error("the new recipient payment keys do not match the registry");
+      }
+    }
 
-    // The recipient signs, the service decrypts, the SDK keeps what matches its commitment.
+    serviceKeys = await reader.open(recipient, zolana.proofService);
     const received = new Wallet({ identity: serviceKeys.address() });
     await syncWallet({
       client: zolana,
@@ -65,18 +88,14 @@ async function main(): Promise<void> {
     });
     expectBalance("receive", received.balance(SOL_MINT), AMOUNT, 1);
 
-    ownKeys = sender.address === recipient.address
-      ? keys
-      : await localWalletKeys(recipient, zolana.proofService);
     const sweep = await buildTransferTransaction({
       client: zolana,
       wallet: received,
       keys: serviceKeys,
       feePayer: sender.address,
-      recipient: ownKeys.address(),
+      recipient: localnet ? recipient.address : ownKeys.address(),
       amount: AMOUNT,
     });
-    const sweepSend = sender.address === recipient.address ? send : sendAndConfirmFactory(zolana, sender, recipient);
     const sweepTx = await sweepSend(sweep);
     const own = new Wallet({ identity: ownKeys.address() });
     await syncWallet({
@@ -86,7 +105,7 @@ async function main(): Promise<void> {
       config: { requireSlot: sweepTx.slot },
     });
     expectBalance("sweep", own.balance(SOL_MINT), AMOUNT, 1);
-    await checkRecipient();
+    await checkRecipient(localnet === true);
     console.log(`sweep recipient=${recipient.address} private_balance=${AMOUNT} tx=${sweepTx.signature}`);
   } finally {
     serviceKeys?.destroy();
