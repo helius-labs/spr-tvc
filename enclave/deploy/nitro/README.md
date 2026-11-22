@@ -59,9 +59,10 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    Each recipient is the lowercase-hex DER SPKI of its RSA recovery key, in roster order.
    Dispatch `publish-enclave-image.yml` with the public configuration. For
    devnet, use the reviewed branch and record its full Git ref and commit SHA
-   independently of the build. Mainnet builds require protected `main` and use
-   the `image-publish` environment's required reviewers. Download the run's
-   `native-eif-<network>-<commit>` artifact. Keep the application, configuration,
+   independently of the build. Dispatch mainnet builds from protected `main`.
+   A different GitHub user reviews the artifact linked in the run summary and
+   approves `image-publish`. Dispatch a new run if the build needs another attempt.
+   Download the run's `native-eif-<network>-<commit>` artifact. Keep the application, configuration,
    EIF, measurements and attestation bundle together. Start the measured EIF in
    normal mode.
 

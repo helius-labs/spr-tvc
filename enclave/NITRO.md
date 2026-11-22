@@ -19,11 +19,13 @@ Commissioning requires two approvals of the exact target and three custodian sha
 
 Custody and target signers require GitHub build provenance from the designated
 native EIF workflow at the exact ref and commit approved in review. Devnet can
-use an explicit branch in this repository. Mainnet requires protected `main`
-and approval through the `image-publish` environment. The workflow attests a
-manifest that hashes the executable, configuration, EIF and PCR0–PCR2. Signers
-check those inputs before authorizing the target. The KMS wrapping policy also
-pins PCR3 to the parent role.
+use an explicit branch in this repository. Mainnet requires a fresh dispatch
+from protected `main` and an `image-publish` approval from a GitHub user other
+than the dispatcher. The build shows the immutable artifact and its hashes
+before review. The workflow attests the executable, configuration, EIF and
+PCR0–PCR2 hashes after verifying the approval. Signers check those inputs
+before authorizing the target. The KMS wrapping policy also pins PCR3 to the
+parent role.
 
 ## Custody and startup
 

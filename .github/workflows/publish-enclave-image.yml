@@ -103,6 +103,7 @@ jobs:
     if: inputs.native_configuration != ''
     uses: ./.github/workflows/native-eif.yml
     permissions:
+      actions: read
       contents: read
       id-token: write
       attestations: write

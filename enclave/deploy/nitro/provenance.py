@@ -3,9 +3,10 @@
 import argparse
 import re
 import subprocess
+import sys
 from pathlib import Path
 
-from approval import canonical, file_digest, hex_digest, read_json
+from approval import MAX_DOCUMENT_BYTES, canonical, file_digest, hex_digest, parse_json, read_json
 
 REPO = "helius-labs/spr-tvc"
 WORKFLOW = f"{REPO}/.github/workflows/native-eif.yml"
@@ -40,10 +41,41 @@ def verify(build, network, source_commit, source_ref=MAIN_REF):
     ], check=True, timeout=30, stdout=subprocess.DEVNULL)
 
 
-if __name__ == "__main__":
+def require_independent_review(reviews, actor_id, attempt):
+    if attempt != "1":
+        raise ValueError("dispatch a new mainnet build so its artifact gets a new review")
+    if not re.fullmatch(r"[1-9][0-9]{0,19}", actor_id) or not isinstance(reviews, list):
+        raise ValueError("invalid GitHub release review evidence")
+    actor = int(actor_id)
+    for review in reviews:
+        reviewer = review["user"]
+        if (review["state"] == "approved" and reviewer["type"] == "User" and
+                type(reviewer["id"]) is int and reviewer["id"] > 0 and reviewer["id"] != actor and
+                any(environment["name"] == "image-publish" for environment in review["environments"])):
+            return
+    raise ValueError("mainnet build requires an image-publish approval from another GitHub user")
+
+
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("build", type=Path)
-    parser.add_argument("network", choices=("devnet", "mainnet"))
-    parser.add_argument("source_commit")
+    commands = parser.add_subparsers(dest="command", required=True)
+    emit = commands.add_parser("describe")
+    emit.add_argument("build", type=Path)
+    emit.add_argument("network", choices=("devnet", "mainnet"))
+    emit.add_argument("source_commit")
+    review = commands.add_parser("check-review")
+    review.add_argument("actor_id")
+    review.add_argument("attempt")
     args = parser.parse_args()
-    print(canonical(describe(args.build, args.network, args.source_commit)).decode())
+    try:
+        if args.command == "describe":
+            print(canonical(describe(args.build, args.network, args.source_commit)).decode())
+        else:
+            reviews = parse_json(sys.stdin.buffer.read(MAX_DOCUMENT_BYTES + 1))
+            require_independent_review(reviews, args.actor_id, args.attempt)
+    except (OSError, TypeError, ValueError, KeyError) as error:
+        raise SystemExit(str(error)) from None
+
+
+if __name__ == "__main__":
+    main()

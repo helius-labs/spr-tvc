@@ -8,9 +8,31 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import canonical
-from provenance import WORKFLOW, describe, verify
+from provenance import WORKFLOW, describe, require_independent_review, verify
 
 COMMIT = "ab" * 20
+
+
+class IndependentReleaseReviewTests(unittest.TestCase):
+    review = {"state": "approved", "user": {"id": 2, "type": "User"},
+              "environments": [{"name": "image-publish"}]}
+
+    def test_requires_an_independent_approval_of_the_production_environment(self):
+        require_independent_review([self.review], "1", "1")
+        for reviews in ([], [{**self.review, "state": "rejected"}],
+                        [{**self.review, "environments": [{"name": "native-eif-devnet"}]}],
+                        [{**self.review, "user": {"id": 1, "type": "User"}}],
+                        [{**self.review, "user": {"id": 2, "type": "Bot"}}],
+                        [{**self.review, "user": {"id": True, "type": "User"}}]):
+            with self.subTest(reviews=reviews), self.assertRaisesRegex(ValueError, "from another GitHub user"):
+                require_independent_review(reviews, "1", "1")
+
+    def test_rejects_old_run_attempts_and_missing_dispatch_identity(self):
+        with self.assertRaisesRegex(ValueError, "dispatch a new mainnet build"):
+            require_independent_review([self.review], "1", "2")
+        for actor in ("", "0", "invalid"):
+            with self.subTest(actor=actor), self.assertRaisesRegex(ValueError, "invalid GitHub release review evidence"):
+                require_independent_review([self.review], actor, "1")
 
 
 class ProvenanceTests(unittest.TestCase):
