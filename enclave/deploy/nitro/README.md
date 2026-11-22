@@ -78,9 +78,18 @@ configured, check its retirement index first and the source last. The epoch
 is usable only if both listings show no retirement record. A replica-only
 record blocks use of the epoch. Key deletion still requires the authenticated
 source record and matching replicated evidence. Grant operators who register
-targets, sign or release shares, or activate policies access to list the
-retirement prefix in both buckets. Listings must match the pinned bucket and
-prefix and account for every result page. The tools use AWS service endpoints and ignore CLI endpoint
+targets, sign or release shares, or activate policies permission to list
+versions under the retirement prefix in both buckets. Before a write, check
+the exact slot's version history in both buckets. A delete marker or an
+older version blocks admission. S3's create-only condition can succeed if
+a delete marker is current. If the replica holds a current record, confirm
+that both buckets hold the same original version and that the source
+authenticates the requested retry. Restore a missing source through ledger
+recovery. Give ledger publishers scoped version-list and record-read access
+in both buckets. [S3 conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html#conditional-write-behavior)
+
+Listings must match the pinned bucket and prefix and account for every
+result page. The tools use AWS service endpoints and ignore CLI endpoint
 overrides. [AWS CLI endpoint settings](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html)
 
 Before creating the recovery keys, build the epoch's relay EIF with
@@ -216,7 +225,9 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    `publish` verifies the Nitro evidence, two approvals and all six
    acknowledgements on the same candidate. The first successful conditional write fixes the receipt for that
    epoch and its recovery relay. A rotated receipt pins the previous receipt
-   and the registered rotation approval. Drafting and signing check the measured configuration.
+   and the registered rotation approval. After checking the slot histories,
+   a first write requires the new epoch and any predecessor to remain open. An authenticated retry can confirm an already committed receipt
+   after retirement. Drafting and signing check the measured configuration.
    Acknowledgement, publication and online reads verify the same image, host
    role and successor roster. The seed commitment stays stable.
 
@@ -314,8 +325,9 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    uncommitted epoch and set a cutover time. Distribute the updated trust file
    independently before cutover. Custody receipts use the roster for their
    epoch. Target and retirement approvals use the roster active when S3
-   committed the record. The tools pause new writes during the final 30
-   seconds before cutover. Re-sign unpublished targets and requalify and sign
+   committed the record. After slot inspection, the tools leave 30 seconds
+   before an approval deadline or roster cutover to submit a target or
+   retirement write. Re-sign unpublished targets and requalify and sign
    unpublished retirements under the new roster after cutover. If a target
    registration response was lost, rerun `register` with the original signed
    file and build. The command confirms an exact recorded approval under

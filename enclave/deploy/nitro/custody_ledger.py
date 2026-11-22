@@ -250,20 +250,35 @@ def require_publication_roster(trust, start):
         raise ValueError("custody approval cutover is too close for a ledger write")
 
 
-def write_once(trust, name, document, confirm):
+def write_once(trust, name, document, confirm, *, before_write=None):
     _, prefix = ledger_prefix(trust)
     payload = canonical(document) + b"\n"
     if len(payload) > MAX_DOCUMENT_BYTES:
         raise ValueError("record exceeds the ledger size limit")
-    encryption = ["--server-side-encryption", "AES256"] if ledger_replica(trust) is not None else []
+    replica = ledger_replica(trust)
+    if replica is not None:
+        destination = replica_with_record(trust, replica, name)
+        if destination is not None:
+            try:
+                read_replicated_record(trust, destination, name)
+                confirm()
+            except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+                raise ValueError(f"custody ledger slot {name} exists in the pinned replica: {error}") from error
+            return
+    if name in list_ledger_versions(trust, exact=name):
+        confirm()
+        return
+    encryption = ["--server-side-encryption", "AES256"] if replica is not None else []
     write_error = None
-    try:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "record.json"
-            path.write_bytes(payload)
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "record.json"
+        path.write_bytes(payload)
+        if before_write is not None:
+            before_write()
+        try:
             storage(trust, "put-object", ["--key", prefix + name, "--if-none-match", "*", "--body", str(path), *encryption])
-    except (ValueError, subprocess.TimeoutExpired) as error:
-        write_error = error
+        except (ValueError, subprocess.TimeoutExpired) as error:
+            write_error = error
     try:
         confirm()
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as read_error:
@@ -309,26 +324,38 @@ def list_objects(trust, name, **options):
             return
 
 
-def list_ledger_versions(trust, **options):
+def list_ledger_versions(trust, *, exact=None, **options):
     ledger, prefix = ledger_prefix(trust)
+    scope = prefix if exact is None else prefix + exact
     page_size = 32
-    args = ["--prefix", prefix, "--max-keys", str(page_size), "--no-paginate"]
+    args = ["--prefix", scope, "--max-keys", str(page_size), "--no-paginate"]
     continuation = []
     seen_markers = set()
     versions = {}
     while True:
         page = storage(trust, "list-object-versions", [*args, *continuation], **options)
-        entries = page.get("Versions", [])
-        truncated = page.get("IsTruncated")
-        if (page.get("Name") != ledger["bucket"] or page.get("Prefix") != prefix or
-                type(truncated) is not bool or not isinstance(entries, list) or len(entries) > page_size or
-                page.get("CommonPrefixes", []) != []):
+        if not isinstance(page, dict):
             raise ValueError("invalid custody ledger version listing")
-        if page.get("DeleteMarkers", []) != []:
-            raise ValueError("custody ledger contains delete markers")
+        entries = page.get("Versions", [])
+        deletes = page.get("DeleteMarkers", [])
+        truncated = page.get("IsTruncated")
+        if (page.get("Name") != ledger["bucket"] or page.get("Prefix") != scope or
+                type(truncated) is not bool or not isinstance(entries, list) or not isinstance(deletes, list) or
+                len(entries) + len(deletes) > page_size or page.get("CommonPrefixes", []) != []):
+            raise ValueError("invalid custody ledger version listing")
+        for entry in deletes:
+            key = entry.get("Key") if isinstance(entry, dict) else None
+            if not isinstance(key, str) or not key.startswith(scope):
+                raise ValueError("invalid custody ledger delete marker")
+            if exact is None or key == scope:
+                raise ValueError("custody ledger contains delete markers")
         for entry in entries:
             key = entry.get("Key") if isinstance(entry, dict) else None
-            if not isinstance(key, str) or not key.startswith(prefix) or entry.get("IsLatest") is not True:
+            if not isinstance(key, str) or not key.startswith(scope):
+                raise ValueError("custody ledger requires one current version per record")
+            if exact is not None and key != scope:
+                continue
+            if entry.get("IsLatest") is not True:
                 raise ValueError("custody ledger requires one current version per record")
             name = key[len(prefix):]
             if name in versions:
@@ -339,7 +366,7 @@ def list_ledger_versions(trust, **options):
                 raise ValueError("invalid custody ledger version continuation")
             return versions
         key, version = page.get("NextKeyMarker"), page.get("NextVersionIdMarker")
-        if (not entries or not isinstance(key, str) or not key.startswith(prefix) or
+        if (not (entries or deletes) or not isinstance(key, str) or not key.startswith(scope) or
                 not isinstance(version, str) or not version or version == "null" or (key, version) in seen_markers):
             raise ValueError("invalid custody ledger version continuation")
         seen_markers.add((key, version))
@@ -352,7 +379,7 @@ def ledger_reader_policy(trust):
     return {"Version": "2012-10-17", "Statement": [
         {"Sid": "ReadCustodyRecords", "Effect": "Allow", "Action": "s3:GetObject", "Resource": f"{bucket}/{prefix}*"},
         {"Sid": "ListCustodyRecords", "Effect": "Allow", "Action": ["s3:ListBucket", "s3:ListBucketVersions"], "Resource": bucket,
-         "Condition": {"StringLike": {"s3:prefix": [prefix, f"{prefix}targets/*", f"{prefix}retired/*"]}}},
+         "Condition": {"StringLike": {"s3:prefix": f"{prefix}*"}}},
     ]}
 
 
@@ -391,6 +418,11 @@ def ledger_replica(trust):
 def replica_trust(trust, replica):
     return {"network": trust["network"], "securityDomainId": trust["securityDomainId"],
             "ledger": {name: replica[name] for name in LEDGER_FIELDS}}
+
+
+def replica_with_record(trust, replica, name):
+    destination = replica_trust(trust, replica)
+    return destination if name in list_ledger_versions(destination, exact=name) else None
 
 
 def replication_configuration(trust, replica):
@@ -749,7 +781,7 @@ def load_retirement(trust, epoch, **options):
 
 def find_retirement(trust, epoch):
     name = retirement_object_name(epoch)
-    if name not in list_objects(trust, name):
+    if name not in list_ledger_versions(trust, exact=name):
         return None
     try:
         return load_retirement(trust, epoch)
@@ -757,17 +789,10 @@ def find_retirement(trust, epoch):
         raise ValueError(f"cannot verify retirement record for epoch {epoch}: {error}") from error
 
 
-def replica_has_retirement(trust, epoch):
-    replica = ledger_replica(trust)
-    if replica is None:
-        return False
-    name = retirement_object_name(epoch)
-    return name in list_objects(replica_trust(trust, replica), name)
-
-
 def require_active_epoch(trust, epoch):
     # Read the source last so a closure still replicating can block admission.
-    if replica_has_retirement(trust, epoch):
+    replica = ledger_replica(trust)
+    if replica is not None and replica_with_record(trust, replica, retirement_object_name(epoch)) is not None:
         raise ValueError("custody epoch has a retirement record in the pinned replica")
     if find_retirement(trust, epoch) is not None:
         raise ValueError("custody epoch is retired")
@@ -1126,7 +1151,12 @@ def publish(trust, document):
         if canonical(stored["authorization"]["manifest"]) != canonical(authorization):
             raise ValueError("a different custody receipt is already committed")
 
-    write_once(trust, ledger_object(trust, epoch), document, confirm)
+    def before_write():
+        require_active_epoch(trust, epoch)
+        if epoch != "1":
+            require_active_epoch(trust, str(epoch_number(epoch) - 1))
+
+    write_once(trust, ledger_object(trust, epoch), document, confirm, before_write=before_write)
 
 
 def main():

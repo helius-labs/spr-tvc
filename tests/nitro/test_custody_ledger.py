@@ -25,7 +25,7 @@ from custody_ledger import (
     check_custody_roster, check_installed_ledger, check_release_policy, draft, ledger_policy, ledger_reader_policy, ledger_replica_plan,
     list_ledger_versions, list_objects, load_epoch, publish, read_registered_target, read_stored_object, read_stored_payload,
     record, replication_configuration, require_active_epoch,
-    sign_epoch, target_attestation,
+    sign_epoch, storage, target_attestation,
     target_object_name, write_once,
 )
 from deployment import register_target, require_registered_target
@@ -147,14 +147,16 @@ class CustodyLedgerTests(unittest.TestCase):
     def aws(self, region, service, operation, args, **options):
         replica = self.trust.get("ledgerReplica")
         bucket = args[args.index("--bucket") + 1]
-        if replica and bucket == replica["bucket"] and operation == "list-objects-v2":
+        if replica and bucket == replica["bucket"] and operation == "list-object-versions":
             self.assertEqual((region, service), (replica["region"], "s3api"))
             self.assertEqual(args[args.index("--expected-bucket-owner") + 1], replica["account"])
             prefix = args[args.index("--prefix") + 1]
-            self.assertTrue(prefix.startswith(f"spr-custody/{self.trust['network']}/{DOMAIN}/retired/"))
+            self.assertTrue(prefix.startswith(f"spr-custody/{self.trust['network']}/{DOMAIN}/"))
             with self.lock:
                 names = [name for name in sorted(self.replica_objects) if name.startswith(prefix)]
-            return listing(prefix, names, Name=bucket)
+            entries = [{"Key": name, "IsLatest": True, "VersionId": hashlib.sha256(name.encode()).hexdigest()}
+                       for name in names]
+            return {"Name": bucket, "Prefix": prefix, "Versions": entries, "IsTruncated": False}
         self.assertEqual((region, service), ("eu-north-1", "s3api"))
         self.assertEqual(args[args.index("--expected-bucket-owner") + 1], "000000000008")
         if operation == "get-bucket-policy":
@@ -248,7 +250,8 @@ class CustodyLedgerTests(unittest.TestCase):
                 record({**self.trust, "recoveryRelays": {"1": substituted}}, document)
 
     def test_reports_both_failures_when_a_ledger_write_cannot_be_confirmed(self):
-        with patch("custody_ledger.storage", side_effect=[ValueError("write timed out"), ValueError("read denied")]):
+        empty = {"Name": "custody-journal", "Prefix": f"spr-custody/devnet/{DOMAIN}/1.json", "IsTruncated": False}
+        with patch("custody_ledger.storage", side_effect=[empty, ValueError("write timed out"), ValueError("read denied")]):
             with self.assertRaisesRegex(ValueError, r"could not confirm ledger write \(write timed out\).*\(read denied\)"):
                 write_once(self.trust, "1.json", {}, lambda: read_stored_object(self.trust, "1.json"))
 
@@ -268,7 +271,7 @@ class CustodyLedgerTests(unittest.TestCase):
 
         with patch.dict(self.objects, {name: canonical({**document, "acknowledgements": []})}):
             with patch("custody_ledger.aws", side_effect=lost_response):
-                with self.assertRaisesRegex(ValueError, r"could not confirm ledger write .*precondition failed.*signing quorum"):
+                with self.assertRaisesRegex(ValueError, "signing quorum"):
                     publish(self.trust, document)
         for version in (None, "", "null"):
             with self.subTest(version=version), patch.dict(self.versions, {name: version}):
@@ -285,20 +288,65 @@ class CustodyLedgerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "object missing"):
                 publish(self.trust, self.sign(self.document(1)))
 
+    def test_publish_cannot_replace_a_replica_only_custody_receipt(self):
+        original = self.sign(self.document(1))
+        publish(self.trust, original)
+        name = f"spr-custody/devnet/{DOMAIN}/1.json"
+        self.trust["ledgerReplica"] = {
+            "bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1",
+            **RECOVERY_ROLES, "role": "arn:aws:iam::000000000008:role/replication",
+        }
+        self.replica_objects[name] = self.objects.pop(name)
+        alternative = self.sign(self.document(1, variant="ce"))
+        with patch("custody_ledger.storage", wraps=storage) as access:
+            for candidate in (original, alternative):
+                with self.assertRaisesRegex(ValueError, "slot 1.json exists in the pinned replica"):
+                    publish(self.trust, candidate)
+            self.assertNotIn("put-object", [entry.args[1] for entry in access.call_args_list])
+        self.assertNotIn(name, self.objects)
+
+    def test_new_rotation_write_rechecks_the_predecessor_after_slot_inspection(self):
+        publish(self.trust, self.sign(self.document(1)))
+        rotated, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
+        document = self.sign(rotated)
+        prefix = f"spr-custody/devnet/{DOMAIN}/"
+        marker = prefix + "retired/1.json"
+
+        def close_during_inspection(trust, operation, args=(), **options):
+            result = storage(trust, operation, args, **options)
+            if operation == "list-object-versions" and prefix + "2.json" in args:
+                self.objects[marker] = b"{}"
+            return result
+
+        with patch("custody_ledger.storage", side_effect=close_during_inspection) as access:
+            with self.assertRaisesRegex(ValueError, "cannot verify retirement record"):
+                publish(self.trust, document)
+            self.assertNotIn("put-object", [entry.args[1] for entry in access.call_args_list])
+        del self.objects[marker]
+        self.assertNotIn(prefix + "2.json", self.objects)
+        publish(self.trust, document)
+        self.objects[marker] = b"{}"
+        with patch("custody_ledger.storage", wraps=storage) as access:
+            publish(self.trust, document)
+            self.assertNotIn("put-object", [entry.args[1] for entry in access.call_args_list])
+
     def test_retirement_requires_an_explicit_complete_listing_from_the_pinned_bucket(self):
         prefix = f"spr-custody/devnet/{DOMAIN}/retired/1.json"
-        empty = listing(prefix)
+        empty = {"Name": "custody-journal", "Prefix": prefix, "IsTruncated": False}
         with patch("custody_ledger.storage", return_value=empty):
             require_active_epoch(self.trust, "1")
+        with patch("custody_ledger.storage", return_value={**empty, "DeleteMarkers": [{"Key": prefix}]}):
+            with self.assertRaisesRegex(ValueError, "custody ledger contains delete markers"):
+                require_active_epoch(self.trust, "1")
         for invalid in (
             {},
             {name: value for name, value in empty.items() if name != "IsTruncated"},
             {**empty, "IsTruncated": "false"},
             {**empty, "Name": "wrong-bucket"},
             {**empty, "Prefix": prefix + ".wrong"},
-            {**empty, "KeyCount": 1},
+            {**empty, "Versions": None},
             {**empty, "IsTruncated": True},
-            {**empty, "NextContinuationToken": "next"},
+            {**empty, "NextKeyMarker": prefix},
         ):
             with (self.subTest(listing=invalid), patch("custody_ledger.storage", return_value=invalid),
                   self.assertRaisesRegex(ValueError, "invalid custody ledger")):
@@ -314,10 +362,15 @@ class CustodyLedgerTests(unittest.TestCase):
         with patch.dict(self.replica_objects, {marker: b"{}"}):
             with self.assertRaisesRegex(ValueError, "retirement record in the pinned replica"):
                 require_active_epoch(self.trust, "1")
+        hidden = {"Name": replica["bucket"], "Prefix": marker, "IsTruncated": False,
+                  "DeleteMarkers": [{"Key": marker, "IsLatest": True}]}
+        with patch("custody_ledger.storage", return_value=hidden):
+            with self.assertRaisesRegex(ValueError, "custody ledger contains delete markers"):
+                require_active_epoch(self.trust, "1")
 
         def aws(region, service, operation, args, **options):
             result = self.aws(region, service, operation, args, **options)
-            if region == replica["region"] and operation == "list-objects-v2":
+            if region == replica["region"] and operation == "list-object-versions":
                 self.objects[marker] = b"{}"
             return result
 
@@ -923,7 +976,7 @@ class CustodyLedgerTests(unittest.TestCase):
                     name = args[args.index("--key") + 1]
                     reply["ReplicationStatus"] = source_status.get(name, "COMPLETED")
                 return reply
-            if operation == "list-objects-v2":
+            if operation == "list-object-versions":
                 return self.aws(region, service, operation, args, **options)
             self.assertEqual((region, service, operation), ("eu-west-1", "s3api", "get-object"))
             self.assertEqual(args[:4], ["--bucket", "custody-recovery", "--expected-bucket-owner", "000000000010"])
@@ -961,17 +1014,19 @@ class CustodyLedgerTests(unittest.TestCase):
                                  replica_profile="recovery-read")
                 kms.assert_not_called()
 
-                with (patch("retirement.verify_qualification") as qualify, patch("retirement.write_once") as write):
-                    with self.assertRaisesRegex(ValueError, "retirement record in the pinned replica"):
+                with (patch("retirement.verify_qualification") as qualify,
+                      patch("custody_ledger.storage", wraps=storage) as access):
+                    with self.assertRaisesRegex(ValueError, "slot retired/1.json exists in the pinned replica"):
                         commit_retirement(self.trust, None, retirement)
                     self.assertNotIn(marker_key, self.objects)
 
                     def concurrent_commit(*_args):
                         self.objects[marker_key] = saved
+                        return LiveBoot({"boot": "replacement"}, (self.now + 60) * 1000)
 
                     qualify.side_effect = concurrent_commit
                     commit_retirement(self.trust, None, retirement)
-                    write.assert_not_called()
+                    self.assertNotIn("put-object", [entry.args[1] for entry in access.call_args_list])
             _, _, keys, _, _ = retirement_inventory(self.trust, "1", 1)
             self.assertIn(original_target["wrappingKeys"][0], keys)
             self.assertEqual(copied, set(self.objects))
@@ -1160,9 +1215,7 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertEqual(statements[statement["Sid"]], {**statement, "Principal": {"AWS": [READ_ROLE, PUBLISHER]}})
         self.assertEqual(readers[0]["Resource"], f"arn:aws:s3:::custody-journal/spr-custody/devnet/{DOMAIN}/*")
         self.assertEqual(readers[1]["Condition"], {
-            "StringLike": {"s3:prefix": [f"spr-custody/devnet/{DOMAIN}/",
-                                        f"spr-custody/devnet/{DOMAIN}/targets/*",
-                                        f"spr-custody/devnet/{DOMAIN}/retired/*"]},
+            "StringLike": {"s3:prefix": f"spr-custody/devnet/{DOMAIN}/*"},
         })
         guard = statements["RestrictBucketAdministration"]
         self.assertEqual(guard["Resource"], "arn:aws:s3:::custody-journal")
@@ -2308,12 +2361,21 @@ class CustodyLedgerTests(unittest.TestCase):
         publish(self.trust, self.sign(self.document(1)))
         draft, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
         publish(self.trust, self.sign(draft))
-        candidate = self.replacement_target(expiresAt=self.now + 30)
+        candidate = self.replacement_target(expiresAt=self.now + 60)
         approval = self.signed_subject(TARGET_APPROVAL, candidate)
-        with patch("deployment.write_once") as write:
+        name = f"spr-custody/devnet/{DOMAIN}/{target_object_name(candidate)}"
+
+        def slow_inspection(trust, operation, args=(), **options):
+            result = storage(trust, operation, args, **options)
+            if operation == "list-object-versions" and name in args:
+                self.now = candidate["expiresAt"] - 30
+            return result
+
+        with patch("custody_ledger.storage", side_effect=slow_inspection) as access:
             with self.assertRaisesRegex(ValueError, "target approval deadline is too close"):
                 register_target(self.trust, approval)
-            write.assert_not_called()
+            self.assertNotIn("put-object", [entry.args[1] for entry in access.call_args_list])
+        self.assertNotIn(name, self.objects)
 
     def test_target_registration_checks_domain_and_committed_receipt_before_writing(self):
         publish(self.trust, self.sign(self.document(1)))
@@ -2455,10 +2517,10 @@ class CustodyLedgerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "no longer matches the qualified replacement"):
                 commit_retirement(self.trust, None, retirement)
             qualification.return_value = LiveBoot(self.qualification(replacement), (self.now + 1) * 1000)
-            with patch("retirement.write_once") as write:
+            with patch("custody_ledger.storage", wraps=storage) as access:
                 with self.assertRaisesRegex(ValueError, "replacement evidence expired or has insufficient time"):
                     commit_retirement(self.trust, None, retirement)
-                write.assert_not_called()
+                self.assertNotIn("put-object", [entry.args[1] for entry in access.call_args_list])
             qualification.return_value = self.live_qualification(replacement)
             commit_retirement(self.trust, None, retirement)
 

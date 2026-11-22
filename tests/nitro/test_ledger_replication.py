@@ -4,7 +4,7 @@ import json
 import pathlib
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from custody_archive import ledger_checkpoint, verify_promotion
@@ -74,8 +74,12 @@ class LedgerReplicationTests(unittest.TestCase):
         self.assertEqual(source_policy["RequireSseS3"]["Condition"], {
             "StringNotEquals": {"s3:x-amz-server-side-encryption": "AES256"},
         })
-        with patch("custody_ledger.storage") as storage:
+        empty = {"Name": DESTINATION_BUCKET, "Prefix": PREFIX + "1.json", "IsTruncated": False}
+        with patch("custody_ledger.storage", side_effect=[empty, {**empty, "Name": SOURCE_BUCKET}, {}]) as storage:
             write_once(TRUST, "1.json", {"fixture": True}, lambda: None)
+            self.assertEqual([call.args[1] for call in storage.call_args_list],
+                             ["list-object-versions", "list-object-versions", "put-object"])
+            self.assertEqual(storage.call_args.args[1], "put-object")
             args = storage.call_args.args[2]
             self.assertEqual(args[args.index("--if-none-match") + 1], "*")
             self.assertEqual(args[args.index("--server-side-encryption") + 1], "AES256")
@@ -85,6 +89,58 @@ class LedgerReplicationTests(unittest.TestCase):
         with patch("custody_ledger.installed_ledger_policy", return_value=plan["destinationPolicy"]):
             with self.assertRaisesRegex(ValueError, "requires the frozen bucket policy"):
                 require_frozen_ledger(replica_trust)
+
+    def test_replicated_slots_allow_only_confirmed_retries(self):
+        record = b'{"fixture":true}'
+        source = {"VersionId": "record-version", "ReplicationStatus": "COMPLETED", "LastModified": "2026-11-01T00:00:00Z"}
+        replica = {**source, "ReplicationStatus": "REPLICA"}
+        for name in ("1.json", "targets/1/example.json", "retired/1.json"):
+            with (self.subTest(slot=name), patch("custody_ledger.list_ledger_versions", return_value={name: "record-version"}) as listing,
+                  patch("custody_ledger.storage") as write, patch("custody_ledger.read_stored_payload") as read):
+                confirm = Mock()
+                for different in (
+                    OSError("missing source"),
+                    [(record, source), (record, {**replica, "VersionId": "other-version"})],
+                    [(record, source), (b'{"fixture":false}', replica)],
+                ):
+                    read.side_effect = different
+                    with self.assertRaisesRegex(ValueError, "exists in the pinned replica"):
+                        write_once(TRUST, name, {"fixture": True}, confirm)
+                    confirm.assert_not_called()
+
+                read.side_effect = [(record, source), (record, replica)]
+                confirm.side_effect = ValueError("another canonical record")
+                with self.assertRaisesRegex(ValueError, "another canonical record"):
+                    write_once(TRUST, name, {"fixture": True}, confirm)
+
+                read.side_effect = [(record, source), (record, replica)]
+                confirm.reset_mock(side_effect=True)
+                write_once(TRUST, name, {"fixture": True}, confirm)
+                listing.assert_called_with(replica_trust(TRUST, REPLICA), exact=name)
+                confirm.assert_called_once_with()
+                write.assert_not_called()
+
+    def test_delete_markers_or_noncurrent_versions_in_either_bucket_block_writes(self):
+        name = "1.json"
+        key = PREFIX + name
+        empty = {"Prefix": key, "IsTruncated": False}
+        old = {"Key": key, "IsLatest": False, "VersionId": "old"}
+        for history, message in (
+            ({"DeleteMarkers": [{"Key": key, "IsLatest": True}]}, "contains delete markers"),
+            ({"Versions": [old]}, "requires one current version per record"),
+        ):
+            for bucket in (DESTINATION_BUCKET, SOURCE_BUCKET):
+                with self.subTest(bucket=bucket, history=history):
+                    def listing(trust, operation, *_args):
+                        self.assertEqual(operation, "list-object-versions")
+                        current = trust["ledger"]["bucket"]
+                        return {**empty, "Name": current, **(history if current == bucket else {})}
+
+                    confirm = Mock()
+                    with patch("custody_ledger.storage", side_effect=listing):
+                        with self.assertRaisesRegex(ValueError, message):
+                            write_once(TRUST, name, {"fixture": True}, confirm)
+                    confirm.assert_not_called()
 
     def test_replication_needs_a_separate_bucket_account_region_and_role(self):
         for field in ("bucket", "account", "region"):

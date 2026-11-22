@@ -103,14 +103,19 @@ def register_target(trust, document, *, build=None):
     verify_target_approval(trust, document, at=published_at)
     if build is not None:
         target(trust, document, receipt, custodians, build, at=published_at)
-    require_active_epoch(trust, epoch)
     if published_at is not None:
+        require_active_epoch(trust, epoch)
         if published_at < receipt_at:
             raise ValueError("target registration precedes its custody receipt")
         return
-    require_target_approval_window(manifest, time.time(), remaining=LEDGER_WRITE_MARGIN_SECONDS)
-    require_publication_roster(trust, manifest["approvalFromEpoch"])
-    write_once(trust, name, document, lambda: require_registered_target(trust, manifest, receipt_at=receipt_at))
+
+    def before_write():
+        require_active_epoch(trust, epoch)
+        require_target_approval_window(manifest, time.time(), remaining=LEDGER_WRITE_MARGIN_SECONDS)
+        require_publication_roster(trust, manifest["approvalFromEpoch"])
+
+    write_once(trust, name, document, lambda: require_registered_target(trust, manifest, receipt_at=receipt_at),
+               before_write=before_write)
 
 
 def require_registered_target(trust, manifest, *, receipt_at=None):
