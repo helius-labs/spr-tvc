@@ -1,6 +1,6 @@
 //! Release a recovered share only to an independently approved public key.
 
-use std::io;
+use std::{io, num::NonZeroU64};
 
 use openssl::{
     cms::CmsContentInfo,
@@ -68,6 +68,27 @@ pub(crate) struct RecoveryProof {
     pub(crate) nonce: [u8; 32],
 }
 
+pub(crate) struct RelayAuthorities([VerifyingKey; 3]);
+
+impl RelayAuthorities {
+    pub(crate) fn parse(pins: [[u8; 65]; 3]) -> io::Result<Self> {
+        if pins.iter().any(|key| key[0] != 4)
+            || pins[0] == pins[1]
+            || pins[1] == pins[2]
+            || pins[0] == pins[2]
+        {
+            return Err(io::Error::other(
+                "expected three distinct uncompressed relay authorities",
+            ));
+        }
+        let [a, b, c] = pins.map(|key| {
+            VerifyingKey::from_sec1_bytes(&key)
+                .map_err(|_| io::Error::other("invalid relay authority"))
+        });
+        Ok(Self([a?, b?, c?]))
+    }
+}
+
 pub(crate) struct Relay {
     recipient: PKey<Private>,
     relay_key_id: [u8; 32],
@@ -82,32 +103,20 @@ impl Relay {
         recipient: PKey<Private>,
         network: Network,
         domain: [u8; 32],
-        epoch: u64,
-        pins: [[u8; 65]; 3],
+        epoch: NonZeroU64,
+        authorities: RelayAuthorities,
     ) -> io::Result<Self> {
-        if epoch == 0
-            || domain == [0; 32]
-            || pins.iter().any(|key| key[0] != 4)
-            || pins[0] == pins[1]
-            || pins[1] == pins[2]
-            || pins[0] == pins[2]
-        {
-            return Err(io::Error::other(
-                "invalid relay scope or duplicate authority",
-            ));
+        if domain == [0; 32] {
+            return Err(io::Error::other("invalid relay domain"));
         }
-        let [a, b, c] = pins.map(|key| {
-            VerifyingKey::from_sec1_bytes(&key)
-                .map_err(|_| io::Error::other("invalid relay authority"))
-        });
         let relay_key_id = sha256(&recipient.public_key_to_der().map_err(io::Error::other)?);
         Ok(Self {
             recipient,
             relay_key_id,
             domain,
-            epoch,
+            epoch: epoch.get(),
             network,
-            authorities: [a?, b?, c?],
+            authorities: authorities.0,
         })
     }
 

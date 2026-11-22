@@ -35,8 +35,16 @@ impl Fixture {
                 .try_into()
                 .unwrap()
         });
-        assert!(Relay::new(rsa(), Network::Devnet, DOMAIN, EPOCH, [pins[0]; 3]).is_err());
-        let relay = Relay::new(rsa(), Network::Devnet, DOMAIN, EPOCH, pins).unwrap();
+        assert!(RelayAuthorities::parse([pins[0]; 3]).is_err());
+        let authorities = RelayAuthorities::parse(pins).unwrap();
+        let relay = Relay::new(
+            rsa(),
+            Network::Devnet,
+            DOMAIN,
+            NonZeroU64::new(EPOCH).unwrap(),
+            authorities,
+        )
+        .unwrap();
         let share = [EPOCH.to_be_bytes().as_slice(), &[4], &[0x6c; 32]].concat();
         Self {
             relay,

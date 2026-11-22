@@ -103,8 +103,14 @@ class ProvenanceTests(unittest.TestCase):
     def test_packaging_requires_the_written_eif_to_match_build_measurements(self):
         command_dir = self.build / "bin"
         command_dir.mkdir()
+        binary = self.build / "tvc_app"
+        binary.write_text(
+            '#!/bin/sh\n'
+            'test "$1" = --check-configuration && test "$2" = "${0%/*}/configuration.json" && '
+            'test "$CHECK_CONFIGURATION" = ready\n'
+        )
         docker = command_dir / "docker"
-        docker.write_text("#!/bin/sh\nexit 0\n")
+        docker.write_text('#!/bin/sh\ntouch "$DOCKER_CALLED"\n')
         cli = command_dir / "nitro-cli"
         cli.write_text(
             '#!/bin/sh\n'
@@ -120,7 +126,13 @@ class ProvenanceTests(unittest.TestCase):
         mismatched.write_bytes((self.build / "measurements.json").read_bytes().replace(b"07", b"ef"))
         script = pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro/build-eif.sh"
         command = ["bash", str(script), str(self.build / "tvc_app"), str(self.build / "configuration.json")]
-        env = {**os.environ, "PATH": f"{command_dir}:{os.environ['PATH']}", "BUILD_PINS": str(self.build / "measurements.json")}
+        docker_called = self.build / "docker-called"
+        env = {**os.environ, "PATH": f"{command_dir}:{os.environ['PATH']}", "BUILD_PINS": str(self.build / "measurements.json"),
+               "CHECK_CONFIGURATION": "ready", "DOCKER_CALLED": str(docker_called)}
+        invalid = subprocess.run([*command, str(self.build / "invalid")], cwd=self.build,
+                                 env={**env, "CHECK_CONFIGURATION": "invalid"}, capture_output=True, timeout=10)
+        self.assertNotEqual(invalid.returncode, 0)
+        self.assertFalse(docker_called.exists())
         good = subprocess.run([*command, str(self.build / "good")], cwd=self.build,
                               env={**env, "EIF_PINS": env["BUILD_PINS"]}, capture_output=True, timeout=10)
         self.assertEqual(good.returncode, 0, good.stderr.decode())

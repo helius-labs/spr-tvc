@@ -1,10 +1,9 @@
 //! Native Nitro startup. The parent forwards KMS ciphertext over vsock.
 
 use std::{
-    fs::File,
     future::pending,
-    io::{self, Read},
-    path::PathBuf,
+    io,
+    num::NonZeroU64,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -22,14 +21,13 @@ use axum::{
     routing::{get, post},
     Extension, Router,
 };
-use clap::Parser;
 use openssl::{
     cms::CmsContentInfo,
     pkey::{PKey, Private},
     rand::rand_bytes,
     rsa::Rsa,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use spr_tvc_protocol::{
     digest::sha256,
     encoding::{decimal_u64, hex, jcs_serialize, parse_strict_json},
@@ -42,7 +40,9 @@ use zeroize::Zeroizing;
 
 use crate::{
     custody::{CustodianPackage, Custody, Recipients, SHARE_COUNT, THRESHOLD},
-    custody_relay::{RecoveryProof, Relay, Request as RelayRequest, MAX_CMS_BYTES},
+    custody_relay::{
+        RecoveryProof, Relay, RelayAuthorities, Request as RelayRequest, MAX_CMS_BYTES,
+    },
     keys::NoteSeed,
     native_crypto::NativePair,
     nitro_http,
@@ -61,110 +61,41 @@ const MAX_SERVING_CONNECTIONS: usize = 64;
 const MAX_CUSTODY_CONNECTIONS: usize = 4;
 const SERVING_DEADLINE: Duration = Duration::from_secs(5);
 
-#[derive(Parser)]
-pub struct Config {
-    #[arg(default_value = "/configuration.json")]
-    configuration: PathBuf,
-}
+mod configuration;
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Configuration {
-    #[serde(with = "hex")]
-    security_domain_id: [u8; 32],
-    release_id: String,
-    deployment: Deployment,
-}
-
-#[derive(Deserialize)]
-#[serde(
-    tag = "mode",
-    rename_all = "lowercase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-enum Deployment {
-    Serve {
-        custody: Custody,
-    },
-    Relay {
-        #[serde(with = "decimal_u64")]
-        custody_epoch: u64,
-        #[serde(with = "hex")]
-        approval_keys: Vec<[u8; 65]>,
-    },
-    Initialize {
-        #[serde(with = "hex")]
-        recipient_public_keys: Vec<Vec<u8>>,
-    },
-    Rotate {
-        previous: Custody,
-        #[serde(with = "hex")]
-        recipient_public_keys: Vec<Vec<u8>>,
-    },
-}
+pub use configuration::Config;
+use configuration::{read_configuration, Deployment};
 
 pub async fn run(config: Config) -> io::Result<()> {
-    const MAX_CONFIG: u64 = 24 * 1024;
-    let mut json = String::new();
-    File::open(config.configuration)?
-        .take(MAX_CONFIG + 1)
-        .read_to_string(&mut json)?;
-    if json.len() as u64 > MAX_CONFIG {
-        return Err(io::Error::other("configuration exceeds size limit"));
+    let configuration = read_configuration(config.configuration)?;
+    if config.check_configuration {
+        return Ok(());
     }
-    let config: Configuration = parse_strict_json(&json).map_err(io::Error::other)?;
-    let domain = config.security_domain_id;
-    let release_id = config.release_id;
-    if domain == [0; 32]
-        || release_id.is_empty()
-        || release_id.len() > 64
-        || !release_id.as_bytes()[0].is_ascii_alphanumeric()
-        || !release_id
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-    {
-        return Err(io::Error::other("invalid security domain or release ID"));
-    }
-    match config.deployment {
+    let domain = configuration.security_domain_id;
+    let release_id = configuration.release_id;
+    match configuration.deployment {
         Deployment::Serve { custody } => {
-            custody.validate()?;
             let (note_seed, slots) = provision(domain, custody.clone()).await?;
             serve(domain, release_id, custody, note_seed, slots).await
         }
         Deployment::Relay {
             custody_epoch,
             approval_keys,
-        } => {
-            run_relay(
-                domain,
-                custody_epoch,
-                approval_keys
-                    .try_into()
-                    .map_err(|_| io::Error::other("expected three recovery relay authorities"))?,
-            )
-            .await
-        }
+        } => run_relay(domain, custody_epoch, approval_keys).await,
         Deployment::Initialize {
             recipient_public_keys,
         } => {
-            let recipients = Recipients::parse(&recipient_public_keys)?;
             let mut seed = Zeroizing::new([0; 32]);
             rand_bytes(seed.as_mut()).map_err(io::Error::other)?;
-            publish_custody(domain, release_id, recipients, 1, NoteSeed(seed)).await
+            publish_custody(domain, release_id, recipient_public_keys, 1, NoteSeed(seed)).await
         }
         Deployment::Rotate {
             previous,
             recipient_public_keys,
         } => {
-            previous.validate()?;
-            let recipients = Recipients::parse(&recipient_public_keys)?;
-            let epoch = previous
-                .epoch
-                .checked_add(1)
-                .ok_or_else(|| io::Error::other("custody epoch exhausted"))?;
+            let epoch = previous.epoch + 1;
             let (note_seed, _) = provision(domain, previous).await?;
-            publish_custody(domain, release_id, recipients, epoch, note_seed).await
+            publish_custody(domain, release_id, recipient_public_keys, epoch, note_seed).await
         }
     }
 }
@@ -315,10 +246,14 @@ async fn provision(domain: [u8; 32], custody: Custody) -> io::Result<RestoredSee
     Ok(seed)
 }
 
-async fn run_relay(domain: [u8; 32], epoch: u64, pins: [[u8; 65]; 3]) -> io::Result<()> {
+async fn run_relay(
+    domain: [u8; 32],
+    epoch: NonZeroU64,
+    authorities: RelayAuthorities,
+) -> io::Result<()> {
     let recipient =
         PKey::from_rsa(Rsa::generate(2048).map_err(io::Error::other)?).map_err(io::Error::other)?;
-    let relay = Arc::new(Relay::new(recipient, NETWORK, domain, epoch, pins)?);
+    let relay = Arc::new(Relay::new(recipient, NETWORK, domain, epoch, authorities)?);
     let app = Router::new()
         .route("/recipient", post(relay_recipient))
         .route("/rewrap", post(relay_rewrap))

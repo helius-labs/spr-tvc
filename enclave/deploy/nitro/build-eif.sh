@@ -12,6 +12,7 @@ output=$3
 mkdir "$output"
 install -m 0755 "$binary" "$output/tvc_app"
 install -m 0644 "$config" "$output/configuration.json"
+"$output/tvc_app" --check-configuration "$output/configuration.json"
 cat > "$output/Dockerfile" <<'DOCKER'
 FROM scratch
 COPY tvc_app /tvc_app
