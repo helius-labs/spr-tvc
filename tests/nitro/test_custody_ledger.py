@@ -694,6 +694,13 @@ class CustodyLedgerTests(unittest.TestCase):
                 with patch("retirement.time.time", return_value=self.now + RECOVERY_WINDOW_SECONDS):
                     with self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
                         qualified_policy(self.trust, wallet_trust, scope, seed)
+                sibling = {**registered, "instanceId": "i-1234567890abcdef4", "wrappingKeys": [key(i, 24) for i in range(1, 7)]}
+                register_target(self.trust, self.signed_subject(TARGET_APPROVAL, sibling))
+                other = {**target_attestation(sibling), "bootstrap": observed["bootstrap"]}
+                query.return_value.stdout = json.dumps({**evidence, "targets": [other, observed]}).encode()
+                self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, seed), self.qualification(sibling))
+                self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, seed, expected=self.qualification(registered)),
+                                 self.qualification(registered))
                 self.assertEqual(query.call_args.kwargs["input"], body)
                 self.assertNotIn(str(wallet_trust), query.call_args.args[0])
                 query.reset_mock()
@@ -767,16 +774,32 @@ class CustodyLedgerTests(unittest.TestCase):
                     verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
             query.assert_not_called()
             visited.clear()
-            with patch("retirement.time.monotonic", side_effect=[0, 6]):
-                query.return_value.stdout = stale
+            with patch("retirement.time.monotonic", side_effect=[0, 0, 6, 6]):
+                query.return_value.stdout = ready
                 with self.assertRaisesRegex(ValueError, "no replacement boot observed"):
                     verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
+                self.assertEqual(query.call_args.kwargs["timeout"], 5)
             quorum.assert_not_called()
+            for changed in ({"policyDigest": "ad" * 32, "targets": [{**observed, "bootstrap": fresh}]},
+                            {"policyDigest": "fe" * 32, "targets": [{**observed, "bootstrap": {**fresh, "bootKeyId": "da" * 32}}]}):
+                with self.subTest(changed=changed):
+                    query.side_effect = [SimpleNamespace(stdout=body) for body in (ready, json.dumps(changed).encode())]
+                    with self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
+                        verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
             visited.clear()
             host_state.reset_mock()
             query.reset_mock()
-            query.side_effect = [SimpleNamespace(stdout=body) for body in (stale, ready)]
+            quorum.reset_mock()
+
+            def attest(*_args, **_options):
+                if query.call_count == 3:
+                    self.assertEqual(host_state.call_count, 4)
+                    self.assertEqual(len(visited), 2 * len(inventory))
+                return SimpleNamespace(stdout=stale if query.call_count == 1 else ready)
+
+            query.side_effect = attest
             report = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
+            self.assertEqual(query.call_count, 3)
             self.assertEqual(set(inventory), set(visited))
             self.assertEqual(len(visited), 2 * len(inventory))
             self.assertEqual(report["retirementSha256"], sha256(retired))

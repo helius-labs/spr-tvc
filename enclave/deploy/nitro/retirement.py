@@ -67,7 +67,7 @@ class ReplacementNotReady(ValueError):
     pass
 
 
-def qualified_policy(trust, wallet_trust, scope, seed, *, after_ms=0):
+def qualified_policy(trust, wallet_trust, scope, seed, *, after_ms=0, deadline=None, expected=None):
     with wallet_trust.open("rb") as source:
         pinned_trust = source.read(MAX_DOCUMENT_BYTES + 1)
     if (len(pinned_trust) > MAX_DOCUMENT_BYTES or
@@ -80,11 +80,14 @@ def qualified_policy(trust, wallet_trust, scope, seed, *, after_ms=0):
                   if target["mode"] == "serve" and target["instanceId"] not in old_instances]
     if not candidates:
         raise ValueError("no registered serving target on a separate replacement instance")
+    timeout = 25 if deadline is None else min(25, deadline - time.monotonic())
+    if timeout <= 0:
+        raise ReplacementNotReady("replacement boot wait expired")
     root = Path(__file__).resolve().parents[3]
     reply = run_command([
         "pnpm", "--dir", str(root / "example"), "exec", "tsx", str(root / "xtask/nitro-retirement.ts"),
         scope["network"], scope["securityDomainId"], seed, epoch, scope["replacementCustodyDigest"],
-    ], input=pinned_trust, stdout=subprocess.PIPE, check=True, timeout=25)
+    ], input=pinned_trust, stdout=subprocess.PIPE, check=True, timeout=timeout)
     evidence = parse_json(reply.stdout)
     fields(evidence, "policyDigest", "targets")
     by_identity = {sha256(target_attestation(target)): target for target in candidates}
@@ -97,9 +100,14 @@ def qualified_policy(trust, wallet_trust, scope, seed, *, after_ms=0):
             booted_at = epoch_number(bootstrap["bootedAtMs"])
             if booted_at <= after_ms or booted_at // 1000 + RECOVERY_WINDOW_SECONDS <= time.time():
                 continue
-            return {"walletPolicyDigest": hex_digest(evidence["policyDigest"]),
-                    "replacementTargetIdentity": identity, "replacementTargetSha256": sha256(by_identity[identity]),
-                    "replacementBootstrap": bootstrap}
+            qualification = {"walletPolicyDigest": hex_digest(evidence["policyDigest"]),
+                             "replacementTargetIdentity": identity, "replacementTargetSha256": sha256(by_identity[identity]),
+                             "replacementBootstrap": bootstrap}
+            if expected is not None and any(expected[field] != value for field, value in qualification.items()):
+                continue
+            if deadline is not None and time.monotonic() >= deadline:
+                raise ReplacementNotReady("replacement boot wait expired")
+            return qualification
     raise ReplacementNotReady("no fresh attested serving boot matches the registered replacement")
 
 
@@ -142,7 +150,7 @@ def verify_qualification(trust, wallet_trust, document):
     manifest = document["manifest"]
     scope, receipt, custodians = checked_scope(trust, manifest)
     proven = retirement_recovery(document, custodians)
-    policy = qualified_policy(trust, wallet_trust, scope, receipt["custody"]["noteSeedCommitment"])
+    policy = qualified_policy(trust, wallet_trust, scope, receipt["custody"]["noteSeedCommitment"], expected=manifest)
     if manifest != {**scope, **policy, "recoveryDeadline": manifest["recoveryDeadline"]}:
         raise ValueError("retirement no longer matches the qualified replacement and wallet policy")
     require_recovery_quorum(trust, manifest, proven)
@@ -266,11 +274,11 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
     inspect_all()
     after_ms = int(time.time() * 1000)
     deadline = time.monotonic() + wait_seconds
+    seed = replacement["custody"]["noteSeedCommitment"]
     print("All old keys are inactive and registered parents terminated. Waiting for a newer replacement boot.", file=sys.stderr, flush=True)
     while True:
         try:
-            evidence = qualified_policy(trust, wallet_trust, marker, replacement["custody"]["noteSeedCommitment"],
-                                        after_ms=after_ms)
+            evidence = qualified_policy(trust, wallet_trust, marker, seed, after_ms=after_ms, deadline=deadline)
             break
         except (ReplacementNotReady, subprocess.SubprocessError) as error:
             remaining = deadline - time.monotonic()
@@ -278,10 +286,11 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
                 raise ValueError("no replacement boot observed after verifying the old keys") from error
             time.sleep(min(2, remaining))
 
-    slots = retirement_bootstrap(evidence["replacementBootstrap"])
-    require_recovery_quorum(trust, {**marker, **evidence}, [replacement_custodians[slot - 1] for slot in slots])
-    require_active_epoch(trust, marker["replacementEpoch"])
     slots, parents = inspect_all()
+    recovered = retirement_bootstrap(evidence["replacementBootstrap"])
+    require_recovery_quorum(trust, {**marker, **evidence}, [replacement_custodians[slot - 1] for slot in recovered])
+    qualified_policy(trust, wallet_trust, marker, seed, after_ms=after_ms, expected=evidence)
+    require_active_epoch(trust, marker["replacementEpoch"])
     return {"retirementSha256": sha256(document), "retirementObservedAtMs": str(after_ms),
             "replacement": evidence, "slots": slots, "terminatedParents": parents}
 

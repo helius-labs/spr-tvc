@@ -285,9 +285,11 @@ accounts. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
 
    After it verifies that the old keys are inactive and the registered
    parents terminated, cold-boot a registered replacement with exactly three
-   slots. The verifier waits for that later attested boot, checks the six keys
-   used by its slots, then checks the old keys and parents again. AWS
-   usually lists terminated instances for less than an hour. When EC2 cannot
+   slots. The verifier waits up to `--wait-seconds` to accept that later
+   attested boot. It checks the old keys and parents again, checks the six
+   keys used by the new boot, and verifies the same boot and wallet policy
+   before writing the report. AWS usually lists terminated instances for less
+   than an hour. When EC2 cannot
    report a parent, the verifier requires that the latest AWS Config record
    for that exact managed EC2 instance is `ResourceDeleted`. Archive the
    result with the on-chain canary, old signed receipt and public trust pins.
