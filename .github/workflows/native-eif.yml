@@ -88,15 +88,19 @@ jobs:
           name: unsigned-native-eif-${{ env.SPR_NETWORK }}-${{ github.sha }}
           path: dist/native/
           if-no-files-found: error
-      - name: Show mainnet artifact for review
-        if: inputs.network == 'mainnet'
+      - name: Show artifact for review
+        if: github.event_name == 'workflow_dispatch'
         env:
           ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
         run: |
           {
-            printf '### Native Nitro artifact for review\n\n[Unsigned EIF and configuration](%s)\n\n```json\n' "$ARTIFACT_URL"
+            printf '### Native Nitro artifact for review\n\n[Unsigned EIF and configuration](%s)\n\n~~~json\n' "$ARTIFACT_URL"
             jq . dist/native/provenance.json
-            printf '```\n'
+            printf '~~~\n\n### Build review pins\n\n~~~json\n'
+            jq -n --arg commit "$GITHUB_SHA" --arg ref "$GITHUB_REF" \
+              --arg digest "$(sha256sum dist/native/provenance.json | cut -d ' ' -f 1)" \
+              '{sourceCommit:$commit, sourceRef:$ref, provenanceSha256:$digest}'
+            printf '~~~\n'
           } >> "$GITHUB_STEP_SUMMARY"
 
   attest:

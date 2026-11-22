@@ -17,7 +17,7 @@ from custody_ledger import (
     target_attestation, target_object_name, validate_target, verify_target_approval, write_once,
 )
 from kms_policy import decrypt_conditions, key_policy, target_boot_pins
-from provenance import MAIN_REF, verify as verify_build
+from provenance import verify as verify_build
 from relay import relay_pins, sealed_rsa_key
 
 def host_policy(manifest):
@@ -155,8 +155,8 @@ def target(trust, document, receipt, custodians, build):
     return roster["keys"], policies, next_keys
 
 
-def require_reviewed_target(build, manifest, source_commit, source_ref):
-    reviewed = verify_build(build, manifest["network"], source_commit, source_ref)
+def require_reviewed_target(build, manifest, review):
+    reviewed = verify_build(build, manifest["network"], review)
     if any(manifest[field] != reviewed[field] for field in (
         "configurationSha256", "eifSha256", "executableSha256", "pcrs",
     )):
@@ -181,10 +181,9 @@ def main():
     sign.add_argument("output", type=Path)
     sign.add_argument("--host-inspection-profile", required=True)
     sign.add_argument("--inspection-profiles", nargs=6, required=True)
-    sign.add_argument("--source-commit", required=True)
-    sign.add_argument("--source-ref", default=MAIN_REF)
+    sign.add_argument("--review", type=Path, required=True)
     sign.add_argument("--next-inspection-profiles", nargs=6)
-    sign.add_argument("--next-relay-build", nargs=3, metavar=("BUILD", "COMMIT", "REF"))
+    sign.add_argument("--next-relay-build", nargs=2, type=Path, metavar=("BUILD", "REVIEW"))
     register = commands.add_parser("register")
     register.add_argument("target", type=Path)
     identity = commands.add_parser("host-policy")
@@ -230,7 +229,7 @@ def main():
             return
         require_active_epoch(trust, receipt["custody"]["epoch"])
         manifest = document["manifest"]
-        require_reviewed_target(args.build, manifest, args.source_commit, args.source_ref)
+        require_reviewed_target(args.build, manifest, args.review)
         if next_keys:
             successor = manifest["nextCustodians"]
             check_custody_roster(trust, str(int(manifest["custodyEpoch"]) + 1), successor, next_keys,

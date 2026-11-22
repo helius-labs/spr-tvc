@@ -1,13 +1,14 @@
 """Create and verify the release provenance for a native Nitro EIF."""
 
 import argparse
+import hashlib
 import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-from approval import MAX_DOCUMENT_BYTES, canonical, file_digest, hex_digest, parse_json, read_document, read_json
+from approval import MAX_DOCUMENT_BYTES, canonical, fields, file_digest, hex_digest, parse_json, read_document, read_json
 
 REPO = "helius-labs/spr-tvc"
 WORKFLOW = f"{REPO}/.github/workflows/native-eif.yml"
@@ -28,11 +29,16 @@ def describe(build, network, source_commit):
     }
 
 
-def verify(build, network, source_commit, source_ref=MAIN_REF):
+def verify(build, network, review_file):
+    review = read_json(review_file)
+    fields(review, "sourceCommit", "sourceRef", "provenanceSha256")
+    source_commit, source_ref = review["sourceCommit"], review["sourceRef"]
     if (not re.fullmatch(r"refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", source_ref) or
             (network == "mainnet" and source_ref != MAIN_REF)):
         raise ValueError("expected a reviewed branch ref; mainnet requires refs/heads/main")
     contents = read_document(build / "provenance.json")
+    if hashlib.sha256(contents).hexdigest() != hex_digest(review["provenanceSha256"]):
+        raise ValueError("provenance does not match the independently reviewed digest")
     manifest = parse_json(contents)
     if manifest != describe(build, network, source_commit):
         raise ValueError("artifact does not match the reviewed build attestation")
@@ -69,6 +75,10 @@ def main():
     emit.add_argument("build", type=Path)
     emit.add_argument("network", choices=("devnet", "mainnet"))
     emit.add_argument("source_commit")
+    check = commands.add_parser("verify")
+    check.add_argument("build", type=Path)
+    check.add_argument("network", choices=("devnet", "mainnet"))
+    check.add_argument("review", type=Path)
     review = commands.add_parser("check-review")
     review.add_argument("actor_id")
     review.add_argument("attempt")
@@ -76,10 +86,12 @@ def main():
     try:
         if args.command == "describe":
             print(canonical(describe(args.build, args.network, args.source_commit)).decode())
+        elif args.command == "verify":
+            print(canonical(verify(args.build, args.network, args.review)).decode())
         else:
             reviews = parse_json(sys.stdin.buffer.read(MAX_DOCUMENT_BYTES + 1))
             require_independent_review(reviews, args.actor_id, args.attempt)
-    except (OSError, TypeError, ValueError, KeyError) as error:
+    except (OSError, TypeError, ValueError, KeyError, subprocess.SubprocessError) as error:
         raise SystemExit(str(error)) from None
 
 

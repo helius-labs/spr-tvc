@@ -42,7 +42,11 @@ class RelayTests(unittest.TestCase):
             (build / "provenance.json").write_bytes(canonical(describe(build, "devnet", commit)))
 
         write_config(config)
-        verify_relay_build(trust, "1", build, commit, ref)
+        review = build / "review.json"
+        pins = {"sourceCommit": commit, "sourceRef": ref,
+                "provenanceSha256": hashlib.sha256((build / "provenance.json").read_bytes()).hexdigest()}
+        review.write_bytes(canonical(pins))
+        verify_relay_build(trust, "1", build, review)
         github.assert_called_once()
         github.reset_mock()
         for invalid in (
@@ -53,15 +57,17 @@ class RelayTests(unittest.TestCase):
         ):
             write_config(invalid)
             with self.assertRaisesRegex(ValueError, "pinned custody domain, epoch and approval roster"):
-                verify_relay_build(trust, "1", build, commit, ref)
+                verify_relay_build(trust, "1", build, review)
         github.assert_not_called()
 
         write_config(config)
+        review.write_bytes(canonical({**pins, "sourceCommit": "ef" * 20}))
         with self.assertRaisesRegex(ValueError, "reviewed build attestation"):
-            verify_relay_build(trust, "1", build, "ef" * 20, ref)
+            verify_relay_build(trust, "1", build, review)
+        review.write_bytes(canonical(pins))
         wrong_pins = {**SCOPE, "pcrs": {**SCOPE["pcrs"], "PCR2": "aa" * 48}}
         with self.assertRaisesRegex(ValueError, "relay pins or configuration"):
-            verify_relay_build({**trust, "recoveryRelays": {"1": wrong_pins}}, "1", build, commit, ref)
+            verify_relay_build({**trust, "recoveryRelays": {"1": wrong_pins}}, "1", build, review)
 
     @patch("relay_wrap.time", return_value=10)
     @patch("relay_wrap.live_recipient", return_value=("ab" * 32, b"evidence"))
@@ -165,7 +171,7 @@ class RelayTests(unittest.TestCase):
         signatures = [sign(LABEL, statement, pin["keyArn"]) for pin in KEYS[:2]]
         approved = {"manifest": statement, "signatures": signatures}
         source = (TRUST, {"manifest": {}}, pathlib.Path("build"), 1, 7443)
-        review = {"source_commit": "ab" * 20, "source_ref": "refs/heads/reviewed"}
+        review = {"review": pathlib.Path("review.json")}
         for edited in [
             {**approved, "manifest": {**statement, "relayKeyId": "ef" * 32}},
             {**approved, "signatures": signatures[:1]},

@@ -110,7 +110,7 @@ class TargetApprovalTests(unittest.TestCase):
 
     def wrap(self):
         return release(self.trust, self.approval, self.build, 1, 7443, self.authorization,
-                       source_commit="ab" * 20, source_ref="refs/heads/reviewed")
+                       review=self.build / "review.json")
 
     def test_quorum_and_installed_policy_checked_before_opening_one_share(self):
         self.assertEqual(self.wrap(), b"c" * 256)
@@ -123,7 +123,7 @@ class TargetApprovalTests(unittest.TestCase):
         self.reviewed.side_effect = ValueError("target does not match the verified build provenance")
         with self.assertRaisesRegex(ValueError, "verified build provenance"):
             self.wrap()
-        self.reviewed.assert_called_once_with(self.build, self.manifest, "ab" * 20, "refs/heads/reviewed")
+        self.reviewed.assert_called_once_with(self.build, self.manifest, self.build / "review.json")
         self.assertNotIn("decrypt", self.calls)
         self.relay.assert_not_called()
 
@@ -156,7 +156,7 @@ class TargetApprovalTests(unittest.TestCase):
         signing_key = self.trust["approvalKeys"][0]["keys"][2]["keyArn"]
         profiles = [f"slot-{index}-reader" for index in range(1, 7)]
         argv = ["deployment.py", str(trust_path), str(self.build), "sign", str(target_path),
-                signing_key, str(output), "--source-commit", commit, "--host-inspection-profile", "host-reader",
+                signing_key, str(output), "--review", str(self.build / "review.json"), "--host-inspection-profile", "host-reader",
                 "--inspection-profiles", *profiles]
         reviewed = describe(self.build, "devnet", commit)
         with (patch("sys.argv", argv), patch("deployment.load_epoch", side_effect=self.load_epoch),

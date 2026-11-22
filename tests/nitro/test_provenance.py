@@ -1,3 +1,4 @@
+import hashlib
 import os
 import pathlib
 import subprocess
@@ -46,11 +47,18 @@ class ProvenanceTests(unittest.TestCase):
         }))
         self.manifest = self.build / "provenance.json"
         self.manifest.write_bytes(canonical(describe(self.build, "mainnet", COMMIT)))
+        self.review = self.build / "review.json"
+        self.pin_review()
+
+    def pin_review(self, ref="refs/heads/main"):
+        self.review.write_bytes(canonical({"sourceCommit": COMMIT, "sourceRef": ref,
+                                           "provenanceSha256": hashlib.sha256(self.manifest.read_bytes()).hexdigest()}))
 
     @patch("provenance.subprocess.run")
     def test_matches_the_exact_source_network_and_artifacts_before_github_verification(self, run):
         contents = self.manifest.read_bytes() + b"\n"
         self.manifest.write_bytes(contents)
+        self.pin_review()
 
         def verify_subject(args, **_options):
             subject = pathlib.Path(args[3])
@@ -58,7 +66,7 @@ class ProvenanceTests(unittest.TestCase):
             self.assertEqual(subject.read_bytes(), contents)
 
         run.side_effect = verify_subject
-        self.assertEqual(verify(self.build, "mainnet", COMMIT), describe(self.build, "mainnet", COMMIT))
+        self.assertEqual(verify(self.build, "mainnet", self.review), describe(self.build, "mainnet", COMMIT))
         run.assert_called_once()
         args = run.call_args.args[0]
         self.assertIn(str(self.build / "provenance.intoto.jsonl"), args)
@@ -71,11 +79,13 @@ class ProvenanceTests(unittest.TestCase):
     @patch("provenance.subprocess.run")
     def test_devnet_accepts_an_explicit_reviewed_branch_and_mainnet_rejects_it(self, run):
         branch = "refs/heads/review/nitro-devnet"
+        self.pin_review(branch)
         with self.assertRaisesRegex(ValueError, "mainnet requires"):
-            verify(self.build, "mainnet", COMMIT, branch)
+            verify(self.build, "mainnet", self.review)
         run.assert_not_called()
         self.manifest.write_bytes(canonical(describe(self.build, "devnet", COMMIT)))
-        verify(self.build, "devnet", COMMIT, branch)
+        self.pin_review(branch)
+        verify(self.build, "devnet", self.review)
         args = run.call_args.args[0]
         self.assertEqual(args[args.index("--source-ref") + 1], branch)
 
@@ -83,8 +93,9 @@ class ProvenanceTests(unittest.TestCase):
     def test_rejects_pr_merge_refs_and_tags_for_devnet_commissioning(self, run):
         self.manifest.write_bytes(canonical(describe(self.build, "devnet", COMMIT)))
         for ref in ("refs/pull/61/merge", "refs/tags/v1", "main", "https://example.com/ref"):
+            self.pin_review(ref)
             with self.subTest(ref=ref), self.assertRaisesRegex(ValueError, "reviewed branch ref"):
-                verify(self.build, "devnet", COMMIT, ref)
+                verify(self.build, "devnet", self.review)
         run.assert_not_called()
 
     @patch("provenance.subprocess.run")
@@ -94,12 +105,25 @@ class ProvenanceTests(unittest.TestCase):
             original = artifact.read_bytes()
             artifact.write_bytes(original.replace(b"07", b"ee") if file == "measurements.json" else b"unreviewed")
             with self.subTest(file=file), self.assertRaisesRegex(ValueError, "reviewed build"):
-                verify(self.build, "mainnet", COMMIT)
+                verify(self.build, "mainnet", self.review)
             artifact.write_bytes(original)
-        for network, commit in [("devnet", COMMIT), ("mainnet", "cd" * 20)]:
-            with self.assertRaisesRegex(ValueError, "reviewed build"):
-                verify(self.build, network, commit)
+        with self.assertRaisesRegex(ValueError, "reviewed build"):
+            verify(self.build, "devnet", self.review)
+        self.review.write_bytes(self.review.read_bytes().replace(COMMIT.encode(), b"cd" * 20))
+        with self.assertRaisesRegex(ValueError, "reviewed build"):
+            verify(self.build, "mainnet", self.review)
         run.assert_not_called()
+
+    @patch("provenance.subprocess.run")
+    def test_rejects_a_different_build_from_the_same_commit_before_accepting_its_attestation(self, run):
+        (self.build / "configuration.json").write_bytes(b'{"releaseId":"different"}')
+        self.manifest.write_bytes(canonical(describe(self.build, "mainnet", COMMIT)))
+        with self.assertRaisesRegex(ValueError, "independently reviewed digest"):
+            verify(self.build, "mainnet", self.review)
+        run.assert_not_called()
+        self.pin_review()
+        verify(self.build, "mainnet", self.review)
+        run.assert_called_once()
 
     def test_packaging_requires_valid_checksum_and_matching_build_measurements(self):
         command_dir = self.build / "bin"

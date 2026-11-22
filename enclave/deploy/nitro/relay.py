@@ -34,7 +34,7 @@ def relay_pins(trust, epoch):
     return scope
 
 
-def verify_relay_build(trust, epoch, build, source_commit, source_ref):
+def verify_relay_build(trust, epoch, build, review):
     scope = relay_pins(trust, epoch)
     build = Path(build)
     configuration = read_document(build / "configuration.json")
@@ -46,7 +46,7 @@ def verify_relay_build(trust, epoch, build, source_commit, source_ref):
     }
     if config["securityDomainId"] != trust["securityDomainId"] or config["deployment"] != expected:
         raise ValueError("relay configuration does not match the pinned custody domain, epoch and approval roster")
-    reviewed = verify_build(build, trust["network"], source_commit, source_ref)
+    reviewed = verify_build(build, trust["network"], review)
     if (reviewed["pcrs"] != scope["pcrs"] or
             reviewed["configurationSha256"] != hashlib.sha256(configuration).hexdigest()):
         raise ValueError("relay pins or configuration do not match the reviewed build provenance")

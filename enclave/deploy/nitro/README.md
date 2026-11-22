@@ -131,19 +131,22 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    the linked version, and runs the measured binary against the exact
    configuration before packaging.
    Dispatch `publish-enclave-image.yml` with the public configuration. For
-   devnet, use the reviewed branch and record its full Git ref and commit SHA
-   independently of the build. Dispatch mainnet builds from protected `main`.
+   devnet, use the reviewed branch. Dispatch mainnet builds from protected `main`.
    A different GitHub user reviews the artifact linked in the run summary and
    approves `image-publish`. Dispatch a new run if the build needs another attempt.
-   Download the run's `native-eif-<network>-<commit>` artifact. Keep the application, configuration,
-   EIF, measurements and attestation bundle together. Start the measured EIF in
-   normal mode.
+   The reviewer records the summary's **Build review pins** as `review.json`
+   after checking the unsigned artifact. The file pins the full ref, commit
+   and SHA-256 of that run's `provenance.json`. Distribute it independently of
+   the signed build download. Each ceremony, target and recovery relay build
+   has its own review file.
+   Download the run's `native-eif-<network>-<commit>` artifact. Verify it
+   against the review before starting the enclave in normal mode.
 
    ```sh
-   source_ref="refs/heads/$reviewed_branch"
    gh workflow run publish-enclave-image.yml --ref "$reviewed_branch" -f network=devnet \
      -F native_configuration=@configuration.json
    gh run download "$build_run" --name "native-eif-devnet-$reviewed_commit" --dir "$build_dir"
+   python3 "$nitro/provenance.py" verify "$build_dir" devnet review.json
    nitro-cli run-enclave --enclave-name spr-decrypt --eif-path "$build_dir/enclave.eif" \
      --enclave-cid 16 --cpu-count 2 --memory 512
    ```
@@ -159,13 +162,13 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
      "$host_role" roster.json > epoch-draft.json
    ```
 
-3. Two approval signers each run `sign` with the measured build, Git ref and
-   full commit SHA from review. The command verifies the GitHub build
+3. Two approval signers each run `sign` with the measured build and review
+   file. The command verifies the GitHub build
    attestation, archived AWS evidence, and the attested relay's build, PCRs
    and ordered signer keys. Each approver checks both installed policies and
    public keys in all six slots. Pass each updated document to the next
    signer. Each custodian independently verifies the ceremony build and Nitro
-   evidence using the reviewed commit and ref, then acknowledges in its own
+   evidence using the same review file, then acknowledges in its own
    account after the measured relay proves possession of its committed share.
    Forward the relay's vsock
    port 44031 through SSM to a loopback port. It serves for ten minutes.
@@ -173,11 +176,10 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
 
    ```sh
    python3 "$nitro/custody_ledger.py" trust.json sign epoch-draft.json "$build_dir" "$approval_key" \
-     epoch-signed.json --source-commit "$reviewed_commit" --source-ref "$source_ref" \
-     --relay-build "$relay_build" "$relay_commit" "$relay_ref" \
+     epoch-signed.json --review review.json --relay-build "$relay_build" relay-review.json \
      --inspection-profiles "${inspection_profiles[@]}"
    python3 "$nitro/custody_ledger.py" trust.json acknowledge epoch-signed.json "$build_dir" "$share_index" epoch-ack.json \
-     --relay-port "$port" --source-commit "$reviewed_commit" --source-ref "$source_ref"
+     --relay-port "$port" --review review.json
    python3 "$nitro/custody_ledger.py" trust.json publish epoch-ack.json
    python3 "$nitro/custody_ledger.py" trust.json read 1 > receipt.json
    ```
@@ -291,13 +293,13 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    policies and RSA key metadata before signing. A rotation draft takes
    `--next-roster roster-next.json` and binds the successor relay from custody trust. Before authorizing a
    rotation, both signers verify the successor's build and keys with
-   `--next-relay-build BUILD COMMIT REF` and `--next-inspection-profiles`.
+   `--next-relay-build BUILD REVIEW` and `--next-inspection-profiles`.
 
    ```sh
    python3 "$nitro/deployment.py" trust.json "$build_dir" draft "$host_role" wrapping-keys.json \
      "$approval_deadline" --host-region "$host_region" --instance-id "$instance_id" > target-draft.json
    python3 "$nitro/deployment.py" trust.json "$build_dir" sign target-draft.json "$approval_key" \
-     target-signed.json --source-commit "$reviewed_commit" --source-ref "$source_ref" \
+     target-signed.json --review target-review.json \
      --host-inspection-profile "$host_read_profile" \
      --inspection-profiles "${inspection_profiles[@]}"
    python3 "$nitro/deployment.py" trust.json "$build_dir" register target-signed.json
@@ -469,8 +471,8 @@ For each slot, two epoch approval signers authorize the exact relay boot and
 sealed destination public key. Both use a read-only inspection profile in the
 slot account. Each command reattests the relay and checks the installed target
 policy. Collect both signatures against the same boot. Before opening a share,
-the custodian verifies GitHub provenance for the exact reviewed commit and
-ref they received independently. The custodian checks the installed recovery
+the custodian verifies GitHub provenance against the independently supplied
+target review file. The custodian checks the installed recovery
 policy, sends the recovery package and relay
 attestation to KMS, and passes the encrypted response to the relay. The relay
 checks the signatures, share commitment and authorization deadline, then
@@ -484,8 +486,7 @@ python3 "$nitro/relay_wrap.py" trust.json target-signed.json "$build_dir" "$slot
 python3 "$nitro/relay_wrap.py" trust.json target-signed.json "$build_dir" "$slot" --relay-port "$port" \
   sign relay-signed-1.json "$second_approval_key" --inspection-profile "$slot_read_profile" > relay-signed-2.json
 python3 "$nitro/relay_wrap.py" trust.json target-signed.json "$build_dir" "$slot" --relay-port "$port" \
-  wrap relay-signed-2.json "shares/$slot.kms" \
-  --source-commit "$reviewed_commit" --source-ref "$source_ref"
+  wrap relay-signed-2.json "shares/$slot.kms" --review target-review.json
 ```
 
 During an approval roster change, the active quorum registers the successor

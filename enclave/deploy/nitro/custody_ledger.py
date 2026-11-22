@@ -16,7 +16,7 @@ from approval import (
     read_json, require_inspection_profiles, require_profile_account, sha256, signing_key, signing_sec1,
 )
 from kms_policy import acknowledgement_policy, boot_pins, target_boot_pins, validate_custodian_roles, validate_scope
-from provenance import MAIN_REF, verify as verify_build
+from provenance import verify as verify_build
 from relay import custody_recovery_policy, prove_share, relay_pins, sealed_rsa_key, verify_relay_build
 
 LABEL = "custody-epoch"
@@ -756,7 +756,7 @@ def check_previous(trust, document, receipt):
 def check_custody_roster(trust, epoch, custodians, fingerprints, inspection_profiles, relay_build=None):
     require_inspection_profiles(inspection_profiles)
     if relay_build is None:
-        raise ValueError("provide the independently reviewed recovery relay build, commit and ref")
+        raise ValueError("provide the recovery relay build and independent review")
     verify_relay_build(trust, epoch, *relay_build)
     for custodian, fingerprint, profile in zip(custodians, fingerprints, inspection_profiles, strict=True):
         recovery_key = custodian["recoveryKeyArn"]
@@ -786,14 +786,14 @@ def verify_ceremony_capture(capture):
                    input=canonical(capture), timeout=25, check=True)
 
 
-def verify_reviewed_ceremony(manifest, target, build, source_commit, source_ref):
+def verify_reviewed_ceremony(manifest, target, build, review):
     capture = manifest["capture"]
     configuration = read_document(build / "configuration.json")
     config = parse_json(configuration)
     configuration_digest = hashlib.sha256(configuration).hexdigest()
     if target is not None and target["configurationSha256"] != configuration_digest:
         raise ValueError("ceremony build configuration does not match the registered rotation target")
-    reviewed = verify_build(build, capture["receipt"]["network"], source_commit, source_ref)
+    reviewed = verify_build(build, capture["receipt"]["network"], review)
     pins = target_attestation(target)["pcrs"] if target is not None else {
         name.removeprefix("PCR"): pin for name, pin in boot_pins(manifest["ceremonyHostRole"], reviewed["pcrs"]).items()
     }
@@ -805,11 +805,11 @@ def verify_reviewed_ceremony(manifest, target, build, source_commit, source_ref)
     verify_ceremony_capture(capture)
 
 
-def sign_epoch(trust, document, key, build, source_commit, source_ref, inspection_profiles=None, relay_build=None):
+def sign_epoch(trust, document, key, build, review, inspection_profiles=None, relay_build=None):
     receipt, custodians = record(trust, document)
     target = check_previous(trust, document, receipt)
     authorization = document["authorization"]
-    verify_reviewed_ceremony(authorization["manifest"], target, build, source_commit, source_ref)
+    verify_reviewed_ceremony(authorization["manifest"], target, build, review)
     epoch = receipt["custody"]["epoch"]
     check_custody_roster(trust, epoch, custodians, [package["recipientSha256"] for package in receipt["packages"]],
                          inspection_profiles, relay_build)
@@ -835,12 +835,12 @@ def sign_share_recovery(trust, custodians, receipt, index, label, approval, rela
     return add_approval(keys, label, approval, key)["signatures"]
 
 
-def acknowledge(trust, document, index, relay_port, build, source_commit, source_ref):
+def acknowledge(trust, document, index, relay_port, build, review):
     receipt, custodians = record(trust, document)
     authorization = document["authorization"]
     check_approvals(approval_keys(trust, receipt["custody"]["epoch"]), LABEL, authorization)
     target = check_previous(trust, document, receipt)
-    verify_reviewed_ceremony(authorization["manifest"], target, build, source_commit, source_ref)
+    verify_reviewed_ceremony(authorization["manifest"], target, build, review)
     signatures = sign_share_recovery(trust, custodians, receipt, index, ACKNOWLEDGEMENT, acknowledgements(document), relay_port)
     return {**document, "acknowledgements": signatures}
 
@@ -874,18 +874,16 @@ def main():
     sign.add_argument("build", type=Path)
     sign.add_argument("key")
     sign.add_argument("output", type=Path)
-    sign.add_argument("--source-commit", required=True)
-    sign.add_argument("--source-ref", default=MAIN_REF)
+    sign.add_argument("--review", type=Path, required=True)
     sign.add_argument("--inspection-profiles", nargs=6, required=True)
-    sign.add_argument("--relay-build", nargs=3, metavar=("BUILD", "COMMIT", "REF"), required=True)
+    sign.add_argument("--relay-build", nargs=2, type=Path, metavar=("BUILD", "REVIEW"), required=True)
     ack = commands.add_parser("acknowledge")
     ack.add_argument("candidate", type=Path)
     ack.add_argument("build", type=Path)
     ack.add_argument("share", type=int, choices=range(1, 7))
     ack.add_argument("output", type=Path)
     ack.add_argument("--relay-port", type=int, required=True)
-    ack.add_argument("--source-commit", required=True)
-    ack.add_argument("--source-ref", default=MAIN_REF)
+    ack.add_argument("--review", type=Path, required=True)
     post = commands.add_parser("publish")
     post.add_argument("candidate", type=Path)
     check = commands.add_parser("check-serving-policy")
@@ -951,11 +949,10 @@ def main():
         if args.command == "check-serving-policy":
             print(canonical(check_serving_policy(trust, document, args.custody_signer)).decode())
             return
-        signed = (sign_epoch(trust, document, args.key, args.build, args.source_commit, args.source_ref,
+        signed = (sign_epoch(trust, document, args.key, args.build, args.review,
                              args.inspection_profiles, args.relay_build)
                   if args.command == "sign"
-                  else acknowledge(trust, document, args.share, args.relay_port, args.build,
-                                   args.source_commit, args.source_ref))
+                  else acknowledge(trust, document, args.share, args.relay_port, args.build, args.review))
         with args.output.open("xb") as output:
             output.write(canonical(signed) + b"\n")
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:

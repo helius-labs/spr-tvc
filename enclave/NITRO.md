@@ -33,8 +33,10 @@ During roster rotation, the active quorum signs target registration and the
 epoch's measured quorum signs share releases. Retire the old source keys and
 stop their relay before switching rosters. See the [share-release procedure](deploy/nitro/README.md#share-release).
 
-Custody and target signers require GitHub build provenance from the designated
-native EIF workflow at the exact ref and commit approved in review. Devnet can
+Custody and target signers pin the exact provenance digest, Git ref and
+commit from independent release review. A single commit can build different
+EIFs from different configurations. Signers also verify the GitHub
+attestation came from the designated native EIF workflow. Devnet can
 use an explicit branch in this repository. Mainnet requires a fresh dispatch
 from protected `main` and an `image-publish` approval from a GitHub user other
 than the dispatcher. The build shows the immutable artifact and its hashes
