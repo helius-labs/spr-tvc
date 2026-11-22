@@ -768,7 +768,9 @@ each activation target. It uses `/v1/operations` to look up the same fresh
 synthetic owner on each target and sends an owner-signed `Decrypt` request
 for the same encrypted note. Each boot must return the same recipient keys
 and open that note. The probe checks the recovered plaintext and nullifier key
-without using a funded wallet. The publisher
+without using a funded wallet. The publisher includes outgoing targets from
+the signed predecessor in the comparison. An unreachable predecessor permits
+recovery. Authenticated disagreement stops activation. The publisher
 rereads the peer and custody ledger after the probes, checks the active
 roster and cutover window, and writes against its original ETag. New primary
 policies need more than 30 seconds before expiry to submit the write.

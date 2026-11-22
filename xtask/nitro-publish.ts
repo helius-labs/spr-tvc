@@ -12,7 +12,7 @@ import {
   type NitroPolicy, type NitroPolicyCheckpoint, type NitroTarget, type NitroTrust,
 } from "../sdk/src/attestation/nitro-policy.js";
 import { readNitroPolicy, readPublishedNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
-import { createDecryptionCanary, probeNitroTarget, type DecryptionCanary } from "../sdk/src/client/nitro-probe.js";
+import { createDecryptionCanary, probeNitroTarget, requireCanaryAgreement, type DecryptionCanary } from "../sdk/src/client/nitro-probe.js";
 import { remainingReleasePolicyMs } from "../sdk/src/connection/operations.js";
 import { decodeDecimalU64 } from "../sdk/src/protocol/decimal.js";
 import { DecryptionServiceError } from "../sdk/src/protocol/error.js";
@@ -46,11 +46,20 @@ type ReplicaProbe = {
   readonly window: Awaited<ReturnType<typeof probeNitroTarget>>["window"];
 };
 
-function probeActivationTargets(
+async function probeActivationTargets(
   targets: readonly NitroTarget[], trust: NitroTrust, probe: NonNullable<PublicationOptions["probe"]>,
+  previous: readonly NitroTarget[] = [],
 ): Promise<ReplicaProbe[]> {
   const canary = createDecryptionCanary();
-  return Promise.all(targets.map(target => probe(target, trust, { canary })));
+  const current = new Set(targets.map(target => canonicalizeJsonValue(target)));
+  const outgoing = previous.filter(target => !current.has(canonicalizeJsonValue(target)));
+  const [probes, predecessor] = await Promise.all([
+    Promise.all(targets.map(target => probe(target, trust, { canary }))),
+    // A predecessor may be gone during recovery. Authenticated disagreement still blocks publication.
+    Promise.allSettled(outgoing.map(target => probe(target, trust, { canary }))),
+  ]);
+  requireCanaryAgreement(predecessor);
+  return probes;
 }
 
 function requireFreshProbes(probes: readonly ReplicaProbe[], now: bigint, margin = 0): void {
@@ -315,7 +324,9 @@ export async function publish(
       const inspection = { sourceProfile, replicaProfile };
       const cutover = await checkActivationRoster(candidate, custodyTrust, custodyPins, run, inspection);
       requireCustodyWriteWindow(cutover, BigInt(Date.now()));
-      probes = await probeActivationTargets(policy.targets, trust, probe);
+      // nextNitroPublication authenticated the exact predecessor above.
+      const previous = head && parseStrictJson<{ policy: NitroPolicy }>(head.text).policy;
+      probes = await probeActivationTargets(policy.targets, trust, probe, previous?.targets);
       await checkMirror();
       [confirmedCutover] = await Promise.all([
         checkActivationRoster(candidate, custodyTrust, custodyPins, run, inspection, policy.recoveryOnly ? undefined : probes),

@@ -9,7 +9,7 @@ import {
   type NitroPolicy, type NitroTrust,
 } from "../../sdk/src/attestation/nitro-policy.js";
 import { signP256Prehash } from "../../sdk/src/crypto/p256.js";
-import type { DecryptionCanary } from "../../sdk/src/client/nitro-probe.js";
+import { CanaryRecipientMismatch, type DecryptionCanary } from "../../sdk/src/client/nitro-probe.js";
 import { encodeLowerHex } from "../../sdk/src/protocol/hex.js";
 import { bucketPolicy, publish, restorePublication, verifyDistributionPins } from "../../xtask/nitro-publish.js";
 
@@ -344,6 +344,57 @@ test("requires a successful operation probe on every target before writing an ac
   assert.equal(canaries[0], canaries[1]);
   assert.equal(canaries[2], canaries[3]);
   assert.notEqual(canaries[0], canaries[2]);
+});
+
+test("checks the outgoing boot during fleet replacement and can recover from its outage", async context => {
+  const predecessor: NitroPolicy = { ...first, action: "activate", targets: [target] };
+  const previous = signed(predecessor);
+  const pinned = pins(predecessor);
+  const replacement = { ...target, releaseId: "replacement", endpoint: "https://replacement.example.com/" };
+  const next: NitroPolicy = {
+    ...predecessor, sequence: "2", previousPolicyDigest: pinned.minimumPolicyDigest, targets: [replacement],
+  };
+  context.mock.method(globalThis, "fetch", async () => new Response(previous));
+  let state: "mismatch" | "offline" | "ready" = "mismatch";
+  let writes = 0;
+  const checked: { endpoint: string; canary: DecryptionCanary }[] = [];
+  const options = {
+    custodyTrust: "/pinned/custody.json",
+    async run(command: string, args: string[]) {
+      if (command === "python3") {
+        return { stdout: JSON.stringify({ custodyKeys: pinned.custodyKeys, nextCutover: null }) };
+      }
+      assert.equal(command, "aws");
+      if (args.includes("get-object")) {
+        await writeFile(args.at(-1)!, previous);
+        return { stdout: JSON.stringify({ ETag: '"predecessor"' }) };
+      }
+      assert.ok(args.includes("put-object"));
+      writes++;
+      return { stdout: "{}" };
+    },
+    async probe(replica: typeof target, _trust: NitroTrust, { canary }: { canary: DecryptionCanary }) {
+      checked.push({ endpoint: replica.endpoint, canary });
+      if (replica.endpoint === target.endpoint) {
+        if (state === "mismatch") throw new CanaryRecipientMismatch();
+        if (state === "offline") throw new Error("old replica unavailable");
+      }
+      return freshProbe();
+    },
+  };
+  const bucket = pinned.publications[0].bucket;
+  await assert.rejects(publish(pinned, bucket, signed(next), options), /canary recipient keys differ/);
+  assert.equal(writes, 0);
+  assert.deepEqual(checked.map(({ endpoint }) => endpoint), [replacement.endpoint, target.endpoint]);
+  assert.equal(checked[0]!.canary, checked[1]!.canary);
+  state = "offline";
+  await publish(pinned, bucket, signed(next), options);
+  assert.equal(writes, 1);
+  state = "ready";
+  checked.length = 0;
+  await publish(pinned, bucket, signed({ ...next, targets: [target, replacement] }), options);
+  assert.deepEqual(checked.map(({ endpoint }) => endpoint), [target.endpoint, replacement.endpoint]);
+  assert.equal(writes, 2);
 });
 
 test("activation rejects an incompatible peer or invalid custody state observed after the probe", async context => {

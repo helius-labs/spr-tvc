@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { verifyNativeNitroEvidence } from "../../src/attestation/boot-proof.js";
 import { indexedDbNitroPolicyStore } from "../../src/attestation/nitro-checkpoint.js";
 import { nitroCustodySigningDigest, nitroPolicySigningDigest, type NitroPolicy, type NitroPolicyCheckpoint, type NitroPolicyUpdate, type NitroTrust } from "../../src/attestation/nitro-policy.js";
-import { createDecryptionCanary, probeNitroTarget } from "../../src/client/nitro-probe.js";
+import { createDecryptionCanary, probeNitroTarget, requireCanaryAgreement } from "../../src/client/nitro-probe.js";
 import { createNitroDecryptionService } from "../../src/client/nitro.js";
 import { signP256Message, signP256Prehash } from "../../src/crypto/p256.js";
 import { qosDecrypt, qosEncrypt } from "../../src/crypto/qos.js";
@@ -281,15 +281,16 @@ describe("operator replica probe", () => {
       try {
         await probeNitroTarget(first!, trust, { canary });
         const replacementProbe = probeNitroTarget(second!, trust, { canary });
+        const results = await Promise.allSettled([replacementProbe]);
         if (outcome === "offline") {
           await expect(replacementProbe).rejects.toThrow("BootProofUnverified");
-          expect(() => canary.requireAgreement()).not.toThrow();
+          expect(() => requireCanaryAgreement(results)).not.toThrow();
           expect(requests).toHaveLength(1);
           return;
         }
         if (outcome === "agree") {
           await replacementProbe;
-          expect(() => canary.requireAgreement()).not.toThrow();
+          expect(() => requireCanaryAgreement(results)).not.toThrow();
           expect(requests).toHaveLength(2);
           const [original, duplicate] = requests;
           expect(duplicate!.items).toEqual(original!.items);
@@ -297,7 +298,7 @@ describe("operator replica probe", () => {
           expect(duplicate!.responseKey).not.toBe(original!.responseKey);
         } else {
           await expect(replacementProbe).rejects.toThrow("canary recipient keys differ");
-          expect(() => canary.requireAgreement()).toThrow("canary recipient keys differ");
+          expect(() => requireCanaryAgreement(results)).toThrow("canary recipient keys differ");
           expect(requests).toHaveLength(1);
         }
         expect(owners).toEqual([owners[0], owners[0]]);

@@ -301,8 +301,11 @@ boot. The operator authenticates both replies, checks the plaintext and
 derives the advertised nullifier key from the returned secret. Wallet trust
 distribution and retirement use the same probe. Retirement can qualify a
 healthy replacement while another endpoint is unavailable. Authenticated
-key disagreement blocks qualification. A planned transition matches the
-incoming pins. The publisher
+key disagreement blocks qualification. Before publishing an activation, the
+primary also checks outgoing targets from the authenticated predecessor with
+the same note. A predecessor outage permits recovery. Its authenticated key
+disagreement blocks publication. A planned transition matches the incoming
+pins. The publisher
 rechecks the peer's signed file, the registered targets, epoch closure and
 the active custody roster after probing. For mainnet payments, the publisher
 and wallet pin verifier require both keys to remain enabled in each slot

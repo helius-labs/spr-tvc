@@ -60,12 +60,24 @@ function makeCanaryNote(keys: ReturnType<typeof decodePublicKeys>) {
 
 export type DecryptionCanary = ReturnType<typeof createDecryptionCanary>;
 
+export class CanaryRecipientMismatch extends DecryptionServiceError {
+  constructor() {
+    super("ReleaseBindingMismatch", "canary recipient keys differ between replicas");
+  }
+}
+
+/** A missing replica supplies no comparison. A verified disagreement blocks the group. */
+export function requireCanaryAgreement(results: readonly PromiseSettledResult<unknown>[]): void {
+  for (const result of results) {
+    if (result.status === "rejected" && result.reason instanceof CanaryRecipientMismatch) throw result.reason;
+  }
+}
+
 /** Check the same owner and encrypted note across all replicas in a qualification. */
 export function createDecryptionCanary() {
   let signer: ReturnType<typeof generateKeyPairSigner> | undefined;
   let referenceKeys: ReturnType<typeof decodePublicKeys> | undefined;
   let note: ReturnType<typeof makeCanaryNote> | undefined;
-  let disagreement: DecryptionServiceError | undefined;
 
   return {
     async check(runtime: ConnectedTvcRuntime, signal: AbortSignal): Promise<void> {
@@ -78,17 +90,12 @@ export function createDecryptionCanary() {
       const expected = referenceKeys ??= keys;
       if (!bytesEqual(keys.viewingPublicKey.toBytes(), expected.viewingPublicKey.toBytes()) ||
           !bytesEqual(keys.nullifierPublicKey, expected.nullifierPublicKey)) {
-        disagreement ??= new DecryptionServiceError("ReleaseBindingMismatch", "canary recipient keys differ between replicas");
-        throw disagreement;
+        throw new CanaryRecipientMismatch();
       }
       await awaitWithSignal(initializePoseidon(), signal);
       signal.throwIfAborted();
       note ??= makeCanaryNote(expected);
       await openCanaryNote(runtime, owner, note, signal);
-    },
-
-    requireAgreement(): void {
-      if (disagreement) throw disagreement;
     },
   };
 }
