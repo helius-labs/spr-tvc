@@ -1,12 +1,17 @@
 import { p256 } from "@noble/curves/p256";
 import { describe, expect, it } from "vitest";
 import {
-  advancesNitroPolicy, nextNitroPublication, nitroCustodySigningDigest, nitroPolicySigningDigest, nitroPublication, validateNitroTrust, verifyNitroPolicy,
+  advancesNitroPolicy, nextNitroPublication as checkPredecessor, nitroCustodySigningDigest, nitroPolicySigningDigest,
+  nitroPublication, validateNitroTrust, verifyNitroMirrorPolicy, verifyNitroPolicy,
   requireRetirementPolicy, verifyPublishedNitroPolicy,
   type NitroPolicy, type NitroPolicyCheckpoint, type NitroTrust,
 } from "../../src/attestation/nitro-policy.js";
 import { signP256Prehash } from "../../src/crypto/p256.js";
 import { encodeLowerHex } from "../../src/protocol/hex.js";
+
+function nextNitroPublication(text: string, previous: string | undefined, trust: NitroTrust, time: bigint, previousTrust = trust) {
+  return checkPredecessor(verifyNitroPolicy(text, trust, time), previous, trust, previousTrust);
+}
 
 const privateKeys = Array.from({ length: 15 }, (_, index) => new Uint8Array(32).fill(index + 1));
 const keys = privateKeys.map(key => encodeLowerHex(p256.getPublicKey(key, false)));
@@ -75,6 +80,15 @@ function agreed(checkpoint: NitroPolicyCheckpoint, previousPolicyDigest: string 
 }
 
 describe("native Nitro release policy", () => {
+  it("allows mirror catch-up at expiry while wallets still require a current policy", () => {
+    const text = manifest(binding, 0, 1);
+    const expiry = BigInt(binding.expiresAtMs);
+    expect(verifyNitroMirrorPolicy(text, text, trust, expiry).policy).toEqual(binding);
+    expect(() => verifyNitroMirrorPolicy(text, text, trust, BigInt(binding.validFromMs) - 1n)).toThrow("ReleasePolicyInvalid");
+    expect(() => verifyNitroMirrorPolicy(text, manifest(binding, 1, 0), trust, expiry)).toThrow("exact signed policy");
+    expect(() => verifyNitroPolicy(text, trust, expiry)).toThrow("ReleasePolicyInvalid");
+  });
+
   it("matches the operator custody signing digest", () => {
     const policy = { sequence: "1", network: "devnet" } as NitroPolicy;
     expect(encodeLowerHex(nitroCustodySigningDigest(policy))).toBe("8ed7448f3867c9f0f322df52cbcf63866044c8b13032604a4d3f5cfc49547e8a");

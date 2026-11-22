@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { createECDH } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { test } from "node:test";
-import { nitroCustodySigningDigest, nitroPolicySigningDigest, type NitroPolicy, type NitroTrust } from "../../sdk/src/attestation/nitro-policy.js";
+import {
+  nitroCustodySigningDigest, nitroPolicySigningDigest, verifyPublishedNitroPolicy, type NitroPolicy, type NitroTrust,
+} from "../../sdk/src/attestation/nitro-policy.js";
 import { signP256Prehash } from "../../sdk/src/crypto/p256.js";
 import { encodeLowerHex } from "../../sdk/src/protocol/hex.js";
 import { bucketPolicy, publish, verifyDistributionPins } from "../../xtask/nitro-publish.js";
@@ -269,6 +271,59 @@ test("checks the second bucket holds the predecessor before advancing the first 
     await writeFile(args.at(-1)!, signed(second));
     return { stdout: JSON.stringify({ ETag: '"second"' }) };
   })), /same signed predecessor/);
+});
+
+test("an expired primary can catch up the mirror before an emergency revocation", async context => {
+  const [primary, mirror] = trust.publications;
+  const expired: NitroPolicy = {
+    ...first, action: "activate", targets: [target], validFromMs: String(now - 60_000), expiresAtMs: String(now - 1),
+  };
+  const oldPins = pins(expired);
+  const oldText = signed(expired);
+  const revoked = signed({ ...first, sequence: "2", previousPolicyDigest: oldPins.minimumPolicyDigest });
+  const heads = new Map([[primary.bucket, oldText]]);
+  context.mock.method(globalThis, "fetch", async (url: URL) => {
+    const text = heads.get(url.hostname.split(".")[0]!);
+    return text ? new Response(text) : new Response(null, { status: 404 });
+  });
+  const writes: string[] = [];
+  const runner = awsOnly(async args => {
+    const bucket = args[args.indexOf("--bucket") + 1]!;
+    if (args.includes("get-object")) {
+      await writeFile(args.at(-1)!, heads.get(bucket)!);
+      return { stdout: JSON.stringify({ ETag: '"current"' }) };
+    }
+    writes.push(bucket);
+    heads.set(bucket, await readFile(args.at(-1)!, "utf8"));
+    return { stdout: "{}" };
+  });
+
+  await assert.rejects(publish(oldPins, primary.bucket, revoked, runner));
+  await assert.rejects(publish(oldPins, primary.bucket, oldText, runner), /ReleasePolicyInvalid/);
+  await assert.rejects(publish(oldPins, mirror.bucket, signed(expired, [1, 0]), runner), /exact signed policy/);
+  await assert.rejects(publish({ ...oldPins, minimumCustodyEpoch: "2" }, mirror.bucket, oldText, runner), /ReleasePolicyInvalid/);
+  const live = { ...expired, expiresAtMs: first.expiresAtMs };
+  const liveText = signed(live);
+  heads.set(primary.bucket, liveText);
+  await assert.rejects(publish(pins(live), mirror.bucket, liveText, runner), /requires --custody-trust/);
+  heads.set(primary.bucket, oldText);
+  assert.deepEqual(writes, []);
+  await publish(oldPins, mirror.bucket, oldText, runner);
+  assert.throws(() => verifyPublishedNitroPolicy([oldText, heads.get(mirror.bucket)!], oldPins, BigInt(now)), /ReleasePolicyInvalid/);
+  await publish(oldPins, primary.bucket, revoked, runner);
+  await publish(oldPins, mirror.bucket, revoked, runner);
+  assert.deepEqual(writes, [mirror.bucket, primary.bucket, mirror.bucket]);
+  assert.equal(verifyPublishedNitroPolicy([revoked, heads.get(mirror.bucket)!], oldPins, BigInt(now)).policy.action, "revoke");
+});
+
+test("the mirror rechecks the primary before writing", async context => {
+  const original = signed(first);
+  let calls = 0;
+  context.mock.method(globalThis, "fetch", async () => new Response(++calls === 1 ? original : signed(first, [1, 0])));
+  await assert.rejects(publish(trust, trust.publications[1].bucket, original, awsOnly(async () => {
+    assert.fail("the mirror must refuse a changed primary");
+  })), /exact signed policy/);
+  assert.equal(calls, 2);
 });
 
 test("publishes a rollover revision with both quorums and mirrors its exact signatures", async context => {

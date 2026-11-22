@@ -620,6 +620,10 @@ roster and cutover window, and writes against its original ETag.
 Publish from the first listed bucket's AWS account, then mirror the exact signed
 file from the second account. The tool checks the full signed file at both
 buckets before advancing past it. Use a new revision to change its signatures.
+If the primary policy expires before the mirror catches up, rerun the mirror
+command with the exact signed file and its trust pins. This copy needs no
+custody ledger or enclave probe. Then publish the fresh successor, including
+an emergency revocation if needed.
 Wallets use the primary's signed policy when the mirror serves the same
 policy or its exact predecessor. A mirror ahead of the primary blocks new
 connections. Retirement requires agreement. Set alerts for mismatched heads

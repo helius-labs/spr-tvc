@@ -240,7 +240,10 @@ Revocation can proceed while the custody ledger and replicas are offline.
 S3 applies the predecessor's ETag condition to the bucket being written.
 Each publisher writes to its own bucket. The mirror copies the primary's signed file, including
 all signatures. The primary checks that the mirror holds the same file before
-advancing again. The enclave and ingress have no publication permission.
+advancing again. If a primary policy expired before the mirror copied it,
+the mirror can still verify and copy the exact signed file as the predecessor
+for the next revision. Wallets require a current primary policy. The enclave
+and ingress have no publication permission.
 
 Both quorums sign the ordered `publications` pair, including the bucket, region
 and AWS owner of each entry. Custody signers check the pair against their

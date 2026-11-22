@@ -251,15 +251,29 @@ function verifySignedPolicy(text: string, trust: NitroTrust) {
 
 type VerifiedPolicy = ReturnType<typeof verifySignedPolicy>;
 
-function requireCurrent({ policy, validFrom, expiresAt }: VerifiedPolicy, trust: NitroTrust, now: bigint): void {
+function requirePolicyPins({ policy }: VerifiedPolicy, trust: NitroTrust): void {
   if (decodeDecimalU64(policy.sequence) < decodeDecimalU64(trust.minimumSequence) ||
       decodeDecimalU64(policy.minimumCustodyEpoch) < decodeDecimalU64(trust.minimumCustodyEpoch) ||
-      (trust.recoveryOnly && !policy.recoveryOnly) || now < validFrom || now >= expiresAt) invalid();
+      (trust.recoveryOnly && !policy.recoveryOnly)) invalid();
+}
+
+function requireCurrent(verified: VerifiedPolicy, trust: NitroTrust, now: bigint): void {
+  requirePolicyPins(verified, trust);
+  if (now < verified.validFrom || now >= verified.expiresAt) invalid();
 }
 
 export function verifyNitroPolicy(text: string, trust: NitroTrust, now: bigint): VerifiedPolicy {
   const verified = verifySignedPolicy(text, trust);
   requireCurrent(verified, trust, now);
+  return verified;
+}
+
+/** Reconcile the mirror with the exact policy already published by the primary. */
+export function verifyNitroMirrorPolicy(text: string, primary: string, trust: NitroTrust, now: bigint): VerifiedPolicy {
+  if (text !== primary) throw new DecryptionServiceError("ReleasePolicyInvalid", "mirror the primary's exact signed policy file");
+  const verified = verifySignedPolicy(text, trust);
+  requirePolicyPins(verified, trust);
+  if (now < verified.validFrom) invalid();
   return verified;
 }
 
@@ -302,11 +316,10 @@ export function requireNitroTrustTransition(from: NitroTrust, to: NitroTrust, se
       (from.recoveryOnly && !to.recoveryOnly)) invalid();
 }
 
-/** Validate a publication before writing it against the exact observed S3 ETag. */
+/** Check an authenticated candidate against the predecessor before writing against its S3 ETag. */
 export function nextNitroPublication(
-  text: string, previous: string | undefined, trust: NitroTrust, now: bigint, previousTrust = trust,
+  next: VerifiedPolicy, previous: string | undefined, trust: NitroTrust, previousTrust = trust,
 ): boolean {
-  const next = verifyNitroPolicy(text, trust, now);
   if (!previous) {
     if (next.policy.sequence !== "1") invalid();
     return true;

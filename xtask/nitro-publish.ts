@@ -6,7 +6,8 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
 import {
-  nextNitroPublication, nitroPublication, requireNitroTrustTransition, validateNitroTrust, verifyNitroPolicy, type NitroTarget, type NitroTrust,
+  nextNitroPublication, nitroPublication, requireNitroTrustTransition, validateNitroTrust,
+  verifyNitroMirrorPolicy, verifyNitroPolicy, type NitroTarget, type NitroTrust,
 } from "../sdk/src/attestation/nitro-policy.js";
 import { readNitroPolicy, readPublishedNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
 import { probeNitroTarget } from "../sdk/src/client/nitro-probe.js";
@@ -101,14 +102,28 @@ export async function publish(
   trust: NitroTrust, name: string, text: string,
   { custodyTrust, nextTrust, emergencyFrom, run = runCommand, probe = probeNitroTarget }: PublicationOptions = {},
 ): Promise<void> {
+  validateNitroTrust(trust);
+  const { bucket, region, account, key } = publicationFor(trust, name);
+  const [first, second] = trust.publications;
+  const isSecond = bucket === second.bucket;
+  async function readPeer() {
+    const { url, account } = nitroPublication(trust, isSecond ? first : second);
+    return readNitroPolicy(url, AbortSignal.timeout(5_000), account);
+  }
+  const primary = isSecond ? await readPeer() : undefined;
   const now = BigInt(Date.now());
-  const { policy, signatures, custodySignatures } = verifyNitroPolicy(text, trust, now);
-  if (policy.action === "activate" && !custodyTrust) throw new Error("activation requires --custody-trust");
+  const verify = (pins: NitroTrust, at: bigint, witness: string | undefined) => witness === undefined
+    ? verifyNitroPolicy(text, pins, at)
+    : verifyNitroMirrorPolicy(text, witness, pins, at);
+  const verified = verify(trust, now, primary);
+  const { policy, signatures, custodySignatures } = verified;
+  const expiredMirror = isSecond && now >= verified.expiresAt;
+  if (policy.action === "activate" && !expiredMirror && !custodyTrust) throw new Error("activation requires --custody-trust");
   if (nextTrust && emergencyFrom) throw new Error("choose one signer transition");
   if (nextTrust) {
     validateNitroTrust(nextTrust);
     requireNitroTrustTransition(trust, nextTrust, policy.sequence);
-    verifyNitroPolicy(text, nextTrust, now);
+    verify(nextTrust, now, primary);
   }
   if (emergencyFrom) {
     validateNitroTrust(emergencyFrom);
@@ -119,7 +134,6 @@ export async function publish(
       custodySignatures.some(({ key }) => !trust.custodyKeys.includes(key) && !other?.custodyKeys.includes(key))) {
     throw new Error("publication includes signers outside the supplied trust bundles");
   }
-  const { bucket, region, account, key } = publicationFor(trust, name);
   const directory = await mkdtemp(join(tmpdir(), "spr-release-"));
   const candidate = join(directory, "candidate.json");
   const current = join(directory, "current.json");
@@ -139,34 +153,29 @@ export async function publish(
   try {
     await writeFile(candidate, text, { mode: 0o600, flag: "wx" });
     const head = policy.sequence === "1" ? undefined : await readHead();
-    const needsWrite = nextNitroPublication(text, head?.text, trust, now, emergencyFrom);
+    const needsWrite = nextNitroPublication(verified, head?.text, trust, emergencyFrom);
     if (!needsWrite && head?.text !== text) throw new Error("use a new revision to change published signatures");
-    const [first, second] = trust.publications;
-    const isSecond = bucket === second.bucket;
-    async function checkPeer() {
-      if (!isSecond && !head) return;
-      const { url, account } = nitroPublication(trust, isSecond ? first : second);
-      const peer = await readNitroPolicy(url, AbortSignal.timeout(5_000), account);
-      if (isSecond && peer !== text) {
-        throw new Error("mirror the primary's exact signed policy file");
-      }
-      if (!isSecond && peer !== head?.text && peer !== text) {
+    async function checkMirror() {
+      if (isSecond || !head) return;
+      const peer = await readPeer();
+      if (peer !== head.text && peer !== text) {
         throw new Error("the mirror must hold the same signed predecessor before the primary advances");
       }
     }
-    if (isSecond || needsWrite) await checkPeer();
     if (!needsWrite) return;
+    await checkMirror();
     let confirmedCutover: bigint | undefined;
-    if (policy.action === "activate" && custodyTrust) {
+    if (policy.action === "activate" && !expiredMirror && custodyTrust) {
       const custodyPins = nextTrust ?? trust;
       const cutover = await checkActivationRoster(candidate, custodyTrust, custodyPins, run);
       requireCustodyWriteWindow(cutover, BigInt(Date.now()));
       await Promise.all(policy.targets.map(target => probe(target, trust)));
-      await checkPeer();
+      await checkMirror();
       confirmedCutover = await checkActivationRoster(candidate, custodyTrust, custodyPins, run);
     }
+    const latestPrimary = isSecond ? await readPeer() : undefined;
     const beforeWrite = BigInt(Date.now());
-    verifyNitroPolicy(text, trust, beforeWrite);
+    verify(trust, beforeWrite, latestPrimary);
     requireCustodyWriteWindow(confirmedCutover, beforeWrite);
     const precondition = head ? ["--if-match", head.etag] : ["--if-none-match", "*"];
     try {
