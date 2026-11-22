@@ -288,10 +288,20 @@ def commit_retirement(trust, wallet_trust, document):
     boot = verify_qualification(trust, wallet_trust, document)
 
     def before_write():
-        require_active_epoch(trust, manifest["replacementEpoch"])
+        require_recovery_window(manifest, remaining=LEDGER_WRITE_MARGIN_SECONDS)
+        boot.require_current(remaining=LEDGER_WRITE_MARGIN_SECONDS)
+        _, receipt, custodians, receipt_at = load_epoch_with_time(trust, manifest["replacementEpoch"])
+        if sha256(receipt) != manifest["replacementReceiptSha256"]:
+            raise ValueError("replacement custody receipt changed before retirement")
+        proven = retirement_recovery(document, custodians)
+        require_recovery_quorum(trust, manifest, proven, receipt_at=receipt_at)
+        # The ledger and key checks can outlast a policy. Reattest the signed replacement after them.
+        confirmed = qualified_policy(trust, wallet_trust, manifest, receipt["custody"], expected=boot.evidence)
+        if confirmed.evidence != boot.evidence:
+            raise ValueError("replacement boot or wallet policy changed before retirement")
         require_recovery_window(manifest, remaining=LEDGER_WRITE_MARGIN_SECONDS)
         require_publication_roster(trust, manifest["approvalFromEpoch"])
-        boot.require_current(remaining=LEDGER_WRITE_MARGIN_SECONDS)
+        confirmed.require_current(remaining=LEDGER_WRITE_MARGIN_SECONDS)
 
     write_once(trust, retirement_object_name(epoch), document, lambda: require_same_record(load_retirement(trust, epoch)[0]),
                before_write=before_write)

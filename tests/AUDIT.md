@@ -196,6 +196,7 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-188 | A stalled publisher, checkpoint read or replica could hold a signed decrypt beyond its approval deadline. | Apply the same deadline to policy reads, owner approval and replica I/O. Cancel outstanding waits and discard late results. [Deadline tests](../sdk/tests/client/decryption.test.ts) · [Rust wallet tests](https://github.com/helius-labs/privacy-rings/pull/652) · SPR-NITRO-97 |
 | N-189 | A slow recipient refresh could outlast an earlier blockhash check. After an uncertain send, the recorded height was the only expiry check. | Recheck the exact blockhash at the send boundary. Save the blockhash and the slot where it was valid. Require finalized invalidity at or above that slot and scan nullifiers through the returned slot before releasing unresolved inputs. [Wallet tests](https://github.com/helius-labs/privacy-rings/pull/652) · SPR-NITRO-94 |
 | N-190 | A stalled Solana RPC transport could retain the wallet sync lock past caller cancellation. | Enforce cancellation and timeout at the RPC wrapper and discard late results. [Wallet tests](https://github.com/helius-labs/privacy-rings/pull/652) |
+| N-191 | Retirement could close the old epoch after the replacement lost an approved key, or its policy or boot changed during ledger inspection. | Recheck the exact recovery and wrapping keys, signed boot and both policy heads after inspecting the ledger slot. [Retirement tests](nitro/test_custody_ledger.py) · SPR-NITRO-89 |
 
 ## Remaining qualification and review
 

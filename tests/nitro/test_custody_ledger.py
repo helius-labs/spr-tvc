@@ -1619,6 +1619,59 @@ class CustodyLedgerTests(unittest.TestCase):
                     check_release_policy(self.trust, {**document, "policy": {**policy, "publications": alternate}})
 
     @patch("retirement.require_recovery_quorum")
+    def test_retirement_checks_the_signed_replacement_after_the_write_inventory(self, quorum):
+        publish(self.trust, self.sign(self.document(1)))
+        rotated, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
+        publish(self.trust, self.sign(rotated))
+        target = self.replacement_target()
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, target))
+        old = self.live_qualification(target)
+        marker = f"spr-custody/devnet/{DOMAIN}/retired/1.json"
+        with patch("retirement.qualified_policy", return_value=old):
+            document = self.signed_retirement(qualified_manifest(self.trust, None, "1", "2"))
+
+        for change in ("revocation", "policy", "new boot", "key loss", "stable"):
+            with self.subTest(change=change):
+                after_inventory = False
+
+                def inspect_then_publish(trust, name, record, confirm, *, before_write):
+                    def checked_write():
+                        nonlocal after_inventory
+                        after_inventory = True
+                        before_write()
+                    return write_once(trust, name, record, confirm, before_write=checked_write)
+
+                def qualified(*_args, **_kwargs):
+                    if not after_inventory or change == "stable":
+                        return old
+                    if change == "revocation":
+                        raise ValueError("wallet policy revoked")
+                    evidence = copy.deepcopy(old.evidence)
+                    if change == "policy":
+                        evidence["walletPolicyDigest"] = "f0" * 32
+                    else:
+                        evidence["replacementBootstrap"]["bootKeyId"] = "f1" * 32
+                    return LiveBoot(evidence, old.valid_until_ms)
+
+                def check_keys(*_args, **_kwargs):
+                    if after_inventory and change == "key loss":
+                        raise ValueError("proven replacement key is unavailable")
+
+                quorum.side_effect = check_keys
+
+                with (patch("retirement.qualified_policy", side_effect=qualified),
+                      patch("retirement.write_once", side_effect=inspect_then_publish),
+                      patch("custody_ledger.storage", wraps=storage) as storage_call):
+                    if change == "stable":
+                        commit_retirement(self.trust, None, document)
+                        self.assertIn(marker, self.objects)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "wallet policy (revoked|changed before retirement)|key is unavailable"):
+                            commit_retirement(self.trust, None, document)
+                        self.assertNotIn("put-object", [entry.args[1] for entry in storage_call.call_args_list])
+                        self.assertNotIn(marker, self.objects)
+
+    @patch("retirement.require_recovery_quorum")
     @patch("retirement.qualified_policy")
     def test_closing_an_epoch_freezes_share_release_and_preserves_the_full_key_inventory(self, qualification, _):
         first = self.sign(self.document(1))

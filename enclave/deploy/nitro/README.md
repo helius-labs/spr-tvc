@@ -511,7 +511,9 @@ pinned history and excluded versions.
    after attestation and match the replacement to its registered serving
    target. Draft selects an attested target with enabled keys and a replicated
    registration when a replica is configured. Sign and publish recheck those
-   conditions for the exact signed boot. The live evidence expires at the
+   conditions for the exact signed boot. After inspecting the ledger slot, the
+   publisher rechecks the three recovery and wrapping pairs, then confirms the
+   same boot and agreed policy before writing. The live evidence expires at the
    earliest of the wallet policy, Nitro proof freshness window, certificate
    path, or 24-hour recovery window. Publication needs 30 seconds left to
    submit the ledger write. If the attested boot key or slots
