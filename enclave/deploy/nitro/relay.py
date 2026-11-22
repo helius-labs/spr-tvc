@@ -5,6 +5,7 @@ import hashlib
 import http.client
 import json
 import secrets
+import socket
 import subprocess
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from approval import (
     require_kms_key, signing_sec1,
 )
 from kms_policy import RSA_KEYS, RSA_OAEP, boot_pins, recovery_policy
+from operator_http import request_bytes
 from provenance import verify as verify_build
 
 MAX_EVIDENCE = 16_384
@@ -53,16 +55,13 @@ def verify_relay_build(trust, epoch, build, source_commit, source_ref):
 def relay_request(port, path, body, limit):
     if not 1 <= port <= 65535:
         raise ValueError("invalid local relay port")
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=8)
     try:
-        connection.request("POST", path, body, headers={"Content-Type": "application/octet-stream"})
-        with connection.getresponse() as response:
-            data = response.read(limit + 1)
-            if response.status != 200 or not 1 <= len(data) <= limit:
-                raise ValueError(f"relay refused {path} or returned an invalid body (HTTP {response.status})")
-            return data
-    finally:
-        connection.close()
+        status, data = request_bytes(socket.AF_INET, ("127.0.0.1", port), "POST", path, body, limit)
+    except http.client.HTTPException as error:
+        raise ValueError(f"invalid HTTP response from relay {path}") from error
+    if status != 200 or not 1 <= len(data) <= limit:
+        raise ValueError(f"relay refused {path} or returned an invalid body (HTTP {status})")
+    return data
 
 
 def verify_evidence(nonce, evidence, scope, binding=None):

@@ -232,8 +232,10 @@ The enclave accepts connections from the EC2 parent. It caps active vsock
 connections at 64 for serving and four for provisioning or custody. Each
 connection carries one HTTP/1 request. Headers have a 16 KiB buffer limit and
 a three-second read deadline. The connection has a ten-second deadline that
-covers writes to a slow parent. Successful provisioning drains its reply
-for up to five seconds before closing the listener's remaining connections.
+covers writes to a slow parent. Operator HTTP exchanges have an eight-second
+absolute deadline. Provisioning looks for a recipient for up to twenty seconds.
+Successful provisioning drains its reply for up to five seconds before
+closing the listener's remaining connections.
 The serving router admits two attestation requests and 32 other requests
 with a five-second request deadline. Each listener runs at most one Nitro
 Security Module call on a blocking worker. The worker retains its permit

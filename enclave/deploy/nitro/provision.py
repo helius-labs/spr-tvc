@@ -13,6 +13,7 @@ from time import monotonic, sleep
 
 from approval import KEY_ARN, MAX_DOCUMENT_BYTES, ROLE_ARN, arn, fields, hex_digest, parse_json
 from custody_ledger import target_fields
+from operator_http import HTTP_TIMEOUT, request_bytes
 from relay import MAX_EVIDENCE, decrypt_recipient
 
 THRESHOLD = 3
@@ -20,44 +21,31 @@ SHARE_COUNT = 6
 RECIPIENT_WAIT_SECONDS = 20
 
 
-class BootstrapConnection(http.client.HTTPConnection):
-    def __init__(self, cid):
-        super().__init__("localhost", timeout=8)
-        self.cid = cid
-
-    def connect(self):
-        self.sock = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
-        self.sock.settimeout(self.timeout)
-        self.sock.connect((self.cid, 44031))
-
-
-def request(cid, method, path, body=None, limit=MAX_EVIDENCE):
-    conn = BootstrapConnection(cid)
-    try:
-        conn.request(method, path, body)
-        with conn.getresponse() as response:
-            return response.status, response.read(limit + 1)
-    finally:
-        conn.close()
+def request(cid, method, path, body=None, limit=MAX_EVIDENCE, *, deadline=None):
+    return request_bytes(socket.AF_VSOCK, (cid, 44031), method, path, body, limit, deadline=deadline)
 
 
 def recipient_for(cid):
     deadline = monotonic() + RECIPIENT_WAIT_SECONDS
-    while True:
+    while (now := monotonic()) < deadline:
         try:
-            status, evidence = request(cid, "GET", "/recipient")
+            status, evidence = request(cid, "GET", "/recipient", deadline=min(deadline, now + HTTP_TIMEOUT))
         except OSError as error:
             if not isinstance(error, (ConnectionError, TimeoutError)) and error.errno not in {errno.ENODEV, errno.ENOTCONN}:
                 raise
+        except http.client.HTTPException as error:
+            raise ValueError("invalid HTTP response from the enclave recipient") from error
         else:
+            if monotonic() >= deadline:
+                break
             if status == 200 and 1 <= len(evidence) <= MAX_EVIDENCE:
                 return evidence
             if status not in {429, 503}:
                 raise ValueError(f"invalid recipient evidence from HTTP {status}")
         remaining = deadline - monotonic()
-        if remaining <= 0:
-            raise ValueError("enclave recipient did not become ready")
-        sleep(min(0.25, remaining))
+        if remaining > 0:
+            sleep(min(0.25, remaining))
+    raise ValueError("enclave recipient did not become ready within its deadline")
 
 
 def read_target(path, expected_digest):
@@ -69,6 +57,12 @@ def read_target(path, expected_digest):
     fields(document, "manifest", "signatures")
     target_fields(document["manifest"])
     return document["manifest"]
+
+
+class UnconfirmedBootstrap(ValueError):
+    def __init__(self, reason):
+        super().__init__(f"could not confirm seed restoration ({reason}). "
+                         "Verify serving attestation or the rotation receipt before restarting")
 
 
 def provision(cid, manifest, directory, slots=None):
@@ -103,13 +97,14 @@ def provision(cid, manifest, directory, slots=None):
     try:
         status, body = request(cid, "POST", "/shares", frame, limit=THRESHOLD)
     except (OSError, http.client.HTTPException) as error:
-        raise ValueError("could not confirm seed restoration. Check serving attestation or the rotation receipt "
-                         "before restarting") from error
+        raise UnconfirmedBootstrap("no complete acknowledgement") from error
+    if status == 400:
+        raise ValueError("enclave refused the shares with HTTP 400")
     if status != 200:
-        raise ValueError(f"enclave refused the shares with HTTP {status}")
+        raise UnconfirmedBootstrap(f"HTTP {status}")
     accepted = set(body)
     if len(body) != THRESHOLD or len(accepted) != THRESHOLD or not accepted.issubset(submitted):
-        raise ValueError("invalid enclave acknowledgement of custody slots")
+        raise UnconfirmedBootstrap("invalid enclave acknowledgement of custody slots")
     return list(body)
 
 

@@ -14,7 +14,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/de
 from approval import aws
 from deployment import host_policy
 from kms_policy import RSA_OAEP, acknowledgement_policy, key_policy, recovery_policy, validate_scope
-from provision import provision, read_target, recipient_for
+from provision import UnconfirmedBootstrap, provision, read_target, recipient_for
 from relay import decrypt_recipient
 
 HOST = "arn:aws:iam::111111111111:role/host"
@@ -115,7 +115,8 @@ class KeyPolicyTests(unittest.TestCase):
         decrypt.side_effect = [b"one", b"two", *[ValueError("unavailable")] * 4]
         with self.assertRaisesRegex(ValueError, "fewer than three"):
             provision(16, TARGET, SHARES)
-        request.assert_called_once_with(16, "GET", "/recipient")
+        request.assert_called_once()
+        self.assertEqual(request.call_args.args, (16, "GET", "/recipient"))
 
     @patch("provision.decrypt_recipient", return_value=b"envelope")
     @patch("provision.request", side_effect=[(200, b"evidence"), (200, bytes([2, 4, 6]))])
@@ -131,7 +132,8 @@ class KeyPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fewer than three"):
             provision(16, TARGET, SHARES, [2, 4, 6])
         self.assertEqual(decrypt.call_count, 3)
-        request.assert_called_once_with(16, "GET", "/recipient")
+        request.assert_called_once()
+        self.assertEqual(request.call_args.args, (16, "GET", "/recipient"))
 
     @patch("provision.decrypt_recipient", return_value=b"envelope")
     @patch("provision.request")
@@ -140,14 +142,15 @@ class KeyPolicyTests(unittest.TestCase):
         self.assertEqual(provision(16, TARGET, SHARES), [2, 4, 6])
         for ack in (b"", bytes([2, 4]), bytes([2, 2, 6]), bytes([2, 4, 5]), bytes([2, 4, 6, 7])):
             request.side_effect = [(200, b"evidence"), (200, ack)]
-            with self.subTest(ack=ack), self.assertRaisesRegex(ValueError, "invalid enclave acknowledgement"):
+            with self.subTest(ack=ack), self.assertRaisesRegex(UnconfirmedBootstrap, "invalid enclave acknowledgement"):
                 provision(16, TARGET, SHARES, [2, 4, 6])
         request.side_effect = [(200, b"evidence"), (400, b"")]
         with self.assertRaisesRegex(ValueError, "refused the shares with HTTP 400"):
             provision(16, TARGET, SHARES, [2, 4, 6])
-        request.side_effect = [(200, b"evidence"), TimeoutError("lost response")]
-        with self.assertRaisesRegex(ValueError, "could not confirm seed restoration"):
-            provision(16, TARGET, SHARES, [2, 4, 6])
+        for result in (TimeoutError("lost response"), (404, b""), (410, b""), (503, b"")):
+            request.side_effect = [(200, b"evidence"), result]
+            with self.subTest(result=result), self.assertRaisesRegex(UnconfirmedBootstrap, "could not confirm"):
+                provision(16, TARGET, SHARES, [2, 4, 6])
 
     @patch("provision.request")
     def test_refuses_keys_or_slot_selections_outside_the_approved_custody_set(self, request):
@@ -182,18 +185,27 @@ class KeyPolicyTests(unittest.TestCase):
         self.assertEqual(request.call_count, 4)
         self.assertEqual(sleep.call_count, 3)
 
-    @patch("provision.monotonic", side_effect=[0, 21])
+    @patch("provision.monotonic", side_effect=[0, 0, 21, 21])
     @patch("provision.request", side_effect=ConnectionRefusedError)
     def test_recipient_startup_has_a_deadline(self, request, _):
         with self.assertRaisesRegex(ValueError, "did not become ready"):
             recipient_for(16)
-        request.assert_called_once_with(16, "GET", "/recipient")
+        request.assert_called_once()
+        self.assertEqual(request.call_args.args, (16, "GET", "/recipient"))
+
+    @patch("provision.monotonic", side_effect=[0, 19, 20])
+    @patch("provision.request", return_value=(200, b"evidence"))
+    def test_rejects_a_late_valid_recipient_and_caps_the_last_probe(self, request, _):
+        with self.assertRaisesRegex(ValueError, "did not become ready"):
+            recipient_for(16)
+        request.assert_called_once_with(16, "GET", "/recipient", deadline=20)
 
     @patch("provision.request", return_value=(200, b""))
     def test_refuses_invalid_recipient_evidence(self, request):
         with self.assertRaisesRegex(ValueError, "invalid recipient evidence"):
             recipient_for(16)
-        request.assert_called_once_with(16, "GET", "/recipient")
+        request.assert_called_once()
+        self.assertEqual(request.call_args.args, (16, "GET", "/recipient"))
 
     @patch("approval.subprocess.run")
     def test_decrypt_accepts_only_ciphertext_for_the_requested_recipient(self, run):

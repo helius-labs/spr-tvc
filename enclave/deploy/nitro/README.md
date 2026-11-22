@@ -242,8 +242,11 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
 2. Commission serving slots from the new receipt on separate EC2 parents. On a fresh enclave run,
    pass `--slots 2 4 6` to `provision.py` to use only those three current slots.
    Provisioning fails if any selected slot fails. Save the three slots that
-   the enclave reports using to restore the seed. If the response is lost,
-   check the serving attestation or rotation receipt before restarting.
+   the enclave reports using to restore the seed. Readiness has a 20-second
+   deadline. Each provisioning and relay HTTP exchange has an eight-second
+   deadline for connection, request and reply. If the submission result is
+   unconfirmed, verify serving attestation or the rotation receipt before
+   restarting.
    Through the real ingress, use the wallet to open a note
    addressed before rotation. Keep healthy old slots during qualification.
 3. Allow overlap while the wallet policy floor covers both epochs. After a

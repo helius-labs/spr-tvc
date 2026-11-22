@@ -2,7 +2,6 @@
 
 import argparse
 import base64
-import http.client
 import subprocess
 from pathlib import Path
 from time import time
@@ -115,7 +114,7 @@ def main():
                 require_active_epoch(trust, statement["custodyEpoch"])
                 document = add_approval(keys, LABEL, document, args.key)
             print(canonical(document).decode())
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, http.client.HTTPException) as error:
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         raise SystemExit(str(error)) from None
 
 
