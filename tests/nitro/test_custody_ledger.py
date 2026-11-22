@@ -899,9 +899,15 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertEqual(check(custody_signer=(next_pin["keyArn"], base64.b64decode(next_pin["publicKey"])[-65:].hex())),
                          {"custodyKeys": [base64.b64decode(pin["publicKey"])[-65:].hex() for pin in incoming["keys"]],
                           "nextCutover": None})
-        self.objects[f"spr-custody/devnet/{DOMAIN}/retired/2.json"] = b"{}"
-        with self.assertRaisesRegex(ValueError, "cannot verify retirement"):
-            check()
+        def close_during_target_read(*args):
+            subject = read_registered_target(*args)
+            if subject["mode"] == "serve":
+                self.objects[f"spr-custody/devnet/{DOMAIN}/retired/2.json"] = b"{}"
+            return subject
+
+        with patch("custody_ledger.read_registered_target", side_effect=close_during_target_read):
+            with self.assertRaisesRegex(ValueError, "cannot verify retirement"):
+                check()
 
     @patch("retirement.require_recovery_quorum")
     @patch("retirement.qualified_policy")

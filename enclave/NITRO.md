@@ -217,12 +217,14 @@ the active operator roster. For each target it attests the boot and sends an
 encrypted `PublicKeys` request through the wallet route. The reply must carry
 a proof from that same boot. Wallet trust distribution and retirement use
 the same probe. A planned transition matches the incoming pins. The publisher
-checks for a scheduled cutover before qualification and before the write. A revocation
+rechecks the peer's signed file, the registered targets, epoch closure and
+the active custody roster after probing. It checks the candidate's deadline
+and the roster cutover before submitting the conditional write. A revocation
 has no targets. Its sequence, custody floor and recovery flag can permanently
 change wallet state, so it also requires both quorums.
 Revocation can proceed while the custody ledger and replicas are offline.
-S3 accepts a write against the checked predecessor's ETag. Each publisher
-writes to its own bucket. The mirror copies the primary's signed file, including
+S3 applies the predecessor's ETag condition to the bucket being written.
+Each publisher writes to its own bucket. The mirror copies the primary's signed file, including
 all signatures. The primary checks that the mirror holds the same file before
 advancing again. The enclave and ingress have no publication permission.
 

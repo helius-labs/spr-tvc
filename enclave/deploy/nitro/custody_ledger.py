@@ -661,7 +661,6 @@ def check_serving_policy(trust, document, custody_signer=None):
 
     def check_epoch(item):
         epoch, replicas = item
-        require_active_epoch(trust, epoch)
         _, receipt, _ = load_epoch(trust, epoch)
         custody = receipt["custody"]
         if policy["noteSeedCommitment"] != custody["noteSeedCommitment"]:
@@ -678,6 +677,8 @@ def check_serving_policy(trust, document, custody_signer=None):
 
     with ThreadPoolExecutor(max_workers=len(by_epoch)) as workers:
         list(workers.map(check_epoch, by_epoch.items()))
+        # Check retirement after all of the immutable receipt and target reads.
+        list(workers.map(lambda epoch: require_active_epoch(trust, epoch), by_epoch))
     now = time.time()
     roster = approval_roster(trust, at=now)
     keys = [(pin["keyArn"], signing_sec1(pin)) for pin in roster["keys"]]

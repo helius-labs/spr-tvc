@@ -143,7 +143,8 @@ export async function publish(
     if (!needsWrite && head?.text !== text) throw new Error("use a new revision to change published signatures");
     const [first, second] = trust.publications;
     const isSecond = bucket === second.bucket;
-    if (isSecond || (needsWrite && head)) {
+    async function checkPeer() {
+      if (!isSecond && !head) return;
       const { url, account } = nitroPublication(trust, isSecond ? first : second);
       const peer = await readNitroPolicy(url, AbortSignal.timeout(5_000), account);
       if (isSecond && peer !== text) {
@@ -153,15 +154,20 @@ export async function publish(
         throw new Error("the mirror must hold the same signed predecessor before the primary advances");
       }
     }
+    if (isSecond || needsWrite) await checkPeer();
     if (!needsWrite) return;
-    const nextCutover = policy.action === "activate" && custodyTrust
-      ? await checkActivationRoster(candidate, custodyTrust, nextTrust ?? trust, run)
-      : undefined;
-    requireCustodyWriteWindow(nextCutover, BigInt(Date.now()));
-    await Promise.all(policy.targets.map(target => probe(target, trust)));
+    let confirmedCutover: bigint | undefined;
+    if (policy.action === "activate" && custodyTrust) {
+      const custodyPins = nextTrust ?? trust;
+      const cutover = await checkActivationRoster(candidate, custodyTrust, custodyPins, run);
+      requireCustodyWriteWindow(cutover, BigInt(Date.now()));
+      await Promise.all(policy.targets.map(target => probe(target, trust)));
+      await checkPeer();
+      confirmedCutover = await checkActivationRoster(candidate, custodyTrust, custodyPins, run);
+    }
     const beforeWrite = BigInt(Date.now());
     verifyNitroPolicy(text, trust, beforeWrite);
-    requireCustodyWriteWindow(nextCutover, beforeWrite);
+    requireCustodyWriteWindow(confirmedCutover, beforeWrite);
     const precondition = head ? ["--if-match", head.etag] : ["--if-none-match", "*"];
     try {
       await call("put-object", [...precondition, "--content-type", "application/json", "--cache-control", "no-store", "--body", candidate]);
@@ -201,8 +207,9 @@ export async function verifyDistributionPins(
   try {
     const candidate = join(directory, "published.json");
     await writeFile(candidate, published.text, { mode: 0o600, flag: "wx" });
-    const nextCutover = await checkActivationRoster(candidate, custodyTrust, trust, run);
+    await checkActivationRoster(candidate, custodyTrust, trust, run);
     await Promise.all(published.policy.targets.map(target => probe(target, trust)));
+    const nextCutover = await checkActivationRoster(candidate, custodyTrust, trust, run);
     const confirmed = await pinnedPublication(trust);
     if (confirmed.text !== published.text) throw new Error("signed policy changed during wallet trust verification");
     if (nextCutover !== undefined && BigInt(Date.now()) >= nextCutover) {

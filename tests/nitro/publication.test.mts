@@ -190,6 +190,52 @@ test("requires a successful operation probe on every target before writing an ac
   assert.deepEqual(checked, [target.endpoint, other.endpoint, target.endpoint, other.endpoint]);
 });
 
+test("activation rejects an incompatible peer or invalid custody state observed after the probe", async context => {
+  const activate: NitroPolicy = {
+    ...first, action: "activate", targets: [target], sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest,
+  };
+  const text = signed(activate);
+  const predecessor = signed(first);
+  let peer = predecessor;
+  let retired = false;
+  let activeKeys = trust.custodyKeys;
+  let cutover: string | null = null;
+  context.mock.method(globalThis, "fetch", async () => new Response(peer));
+  let writes = 0;
+  const run = async (command: string, args: string[]) => {
+    if (command === "python3") {
+      assert.equal(await readFile(args.at(-1)!, "utf8"), text);
+      if (retired) throw new Error("custody epoch is retired");
+      return { stdout: JSON.stringify({ custodyKeys: activeKeys, nextCutover: cutover }) };
+    }
+    assert.equal(command, "aws");
+    if (args.includes("get-object")) {
+      await writeFile(args.at(-1)!, predecessor);
+      return { stdout: JSON.stringify({ ETag: '"predecessor"' }) };
+    }
+    writes += 1;
+    return { stdout: "{}" };
+  };
+  const options = { run, custodyTrust: "/pinned/custody.json" };
+  const bucket = trust.publications[0].bucket;
+  await assert.rejects(publish(trust, bucket, text, {
+    ...options, async probe() { retired = true; },
+  }), /custody epoch is retired/);
+  retired = false;
+  await assert.rejects(publish(trust, bucket, text, {
+    ...options, async probe() { activeKeys = custodyKeys.slice(3); },
+  }), /active custody approval roster/);
+  activeKeys = trust.custodyKeys;
+  await assert.rejects(publish(trust, bucket, text, {
+    ...options, async probe() { cutover = String(Math.floor(Date.now() / 1_000) + 10); },
+  }), /cutover is too close/);
+  cutover = null;
+  await assert.rejects(publish(trust, bucket, text, {
+    ...options, async probe() { peer = signed(first, [1, 0]); },
+  }), /same signed predecessor/);
+  assert.equal(writes, 0);
+});
+
 test("mirrors the first publisher's policy into only the selected pinned bucket", async context => {
   const [primary, peer] = trust.publications;
   context.mock.method(globalThis, "fetch", async (url: URL, options: RequestInit) => {
@@ -349,10 +395,12 @@ test("wallet activation pins require the active custody roster and a stable publ
   const custodyTrust = "/pinned/custody.json";
   let nextCutover: string | null = null;
   let changedEnvelope: string | undefined;
+  let retired = false;
   const run = async (command: string, args: string[]) => {
     assert.equal(command, "python3");
     assert.deepEqual(args.slice(2, 4), [custodyTrust, "check-serving-policy"]);
     assert.equal(await readFile(args.at(-1)!, "utf8"), text);
+    if (retired) throw new Error("custody epoch is retired");
     if (changedEnvelope) head = changedEnvelope;
     return { stdout: JSON.stringify({ custodyKeys: incoming.custodyKeys, nextCutover }) };
   };
@@ -371,6 +419,10 @@ test("wallet activation pins require the active custody roster and a stable publ
   await assert.rejects(verifyDistributionPins(incoming, options), /operation probe failed/);
   failing = false;
   assert.equal((await verifyDistributionPins(incoming, options)).sequence, "2");
+  await assert.rejects(verifyDistributionPins(incoming, {
+    ...options, async probe() { retired = true; },
+  }), /custody epoch is retired/);
+  retired = false;
   changedEnvelope = signed(activate, [1, 0], [0, 1, 3, 4]);
   await assert.rejects(verifyDistributionPins(incoming, options), /signed policy changed/);
 });
