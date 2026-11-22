@@ -15,7 +15,10 @@ const execute = promisify(execFile);
 const MAX_BYTES = 32_768;
 const custodyLedger = fileURLToPath(new URL("../enclave/deploy/nitro/custody_ledger.py", import.meta.url));
 type Run = (command: string, args: string[], timeout: number) => Promise<{ stdout: string }>;
-const runCommand: Run = (command, args, timeout) => execute(command, args, { timeout, maxBuffer: 64 * 1024 });
+const runCommand: Run = (command, args, timeout) => execute(command, args, {
+  timeout, maxBuffer: 64 * 1024,
+  env: { ...process.env, AWS_IGNORE_CONFIGURED_ENDPOINT_URLS: "true" },
+});
 
 type PublicationOptions = {
   custodyTrust?: string;

@@ -154,6 +154,7 @@ pub(crate) fn sign(args: Args) -> Result<()> {
 
     let digest = digest(&manifest.policy)?;
     let mut command = Command::new("aws");
+    command.env("AWS_IGNORE_CONFIGURED_ENDPOINT_URLS", "true");
     command.args([
         "--region",
         region,

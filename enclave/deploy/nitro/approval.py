@@ -4,6 +4,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -70,10 +71,14 @@ def arn(pattern, value):
     return match
 
 
+def aws_environment():
+    return {**os.environ, "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS": "true"}
+
+
 def aws(region, service, operation, arguments, body=None):
     reply = subprocess.run([
         "aws", "--region", region, "--no-cli-pager", "--output", "json", service, operation, *arguments,
-    ], input=body, capture_output=True, timeout=25, check=False)
+    ], input=body, capture_output=True, timeout=25, check=False, env=aws_environment())
     if reply.returncode:
         raise ValueError(f"AWS {service} {operation} failed")
     return parse_json(reply.stdout)

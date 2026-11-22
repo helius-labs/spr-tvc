@@ -35,7 +35,7 @@ python3 "$nitro/custody_ledger.py" trust.json acknowledgement-policy "$custodian
 
 Supply every ledger reader role to `policy`, and attach the generated read
 policy to each cross-account reader role in its own account. Install the bucket
-policy on a private versioned bucket with bucket-owner-enforced ownership,
+policy on a private, versioned general-purpose bucket with bucket-owner-enforced ownership,
 public access blocked, and lifecycle expiration and replication off. The bucket
 policy restricts administration to a separate role and permits the publisher
 to create objects conditionally. Protect account root and keep the publisher
@@ -45,7 +45,11 @@ S3. If a canonical record fails verification, halt the affected operation and
 compare the record with the current trust schedule and signed archives. The
 independent bucket administrator investigates and preserves the versions and
 audit logs before any repair. A valid retirement record permanently closes its
-epoch. Install each custodian's two policies at key creation
+epoch. Custody listings must name the pinned bucket and prefix and account for
+every result page. The tools use AWS service endpoints and ignore CLI endpoint
+overrides. [AWS CLI endpoint settings](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html)
+
+Install each custodian's two policies at key creation
 with `--bypass-policy-lockout-safety-check`. Only the custodian role can decrypt
 with the recovery key or sign with the acknowledgement key. The recovery
 policy is sealed under its assigned epoch. Operators use six fresh recovery

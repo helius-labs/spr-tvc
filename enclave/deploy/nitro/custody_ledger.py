@@ -158,18 +158,40 @@ def write_once(trust, name, document, subject):
 
 
 def list_objects(trust, name):
-    _, prefix = ledger_prefix(trust)
-    args = ["--prefix", prefix + name, "--max-keys", "100", "--no-paginate"]
+    ledger, prefix = ledger_prefix(trust)
+    scope = prefix + name
+    args = ["--prefix", scope, "--max-keys", "100", "--no-paginate"]
+    continuation = []
+    last_key = ""
+    seen_tokens = set()
     while True:
-        page = storage(trust, "list-objects-v2", args)
-        for entry in page.get("Contents", []):
-            object_key = entry["Key"]
-            if not object_key.startswith(prefix + name):
-                raise ValueError("ledger listed an object outside its prefix")
-            yield object_key[len(prefix):]
-        if not page.get("IsTruncated"):
+        page = storage(trust, "list-objects-v2", [*args, *continuation])
+        if not isinstance(page, dict):
+            raise ValueError("invalid custody ledger listing")
+        entries = page.get("Contents", [])
+        truncated = page.get("IsTruncated")
+        if (page.get("Name") != ledger["bucket"] or page.get("Prefix") != scope or
+                type(truncated) is not bool or type(page.get("KeyCount")) is not int or
+                not isinstance(entries, list) or page["KeyCount"] != len(entries) or len(entries) > 100):
+            raise ValueError("invalid custody ledger listing")
+        keys = []
+        for entry in entries:
+            object_key = entry.get("Key") if isinstance(entry, dict) else None
+            if not isinstance(object_key, str) or not object_key.startswith(scope) or object_key <= last_key:
+                raise ValueError("invalid or out-of-order custody ledger key")
+            last_key = object_key
+            keys.append(object_key[len(prefix):])
+        if truncated:
+            token = page.get("NextContinuationToken")
+            if not keys or not isinstance(token, str) or not token or token in seen_tokens:
+                raise ValueError("invalid custody ledger continuation token")
+            seen_tokens.add(token)
+            continuation = ["--continuation-token", token]
+        elif "NextContinuationToken" in page:
+            raise ValueError("invalid custody ledger continuation token")
+        yield from keys
+        if not truncated:
             return
-        args = [*args[:5], "--continuation-token", page["NextContinuationToken"]]
 
 
 def ledger_reader_policy(trust):

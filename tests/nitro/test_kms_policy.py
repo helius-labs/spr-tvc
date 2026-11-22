@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import os
 import pathlib
 import struct
 import subprocess
@@ -10,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
+from approval import aws
 from deployment import host_policy
 from kms_policy import context, key_policy
 from provision import decrypt_share, provision, read_target, recipient_for
@@ -198,6 +200,13 @@ class KeyPolicyTests(unittest.TestCase):
                     decrypt_share(*args)
             else:
                 self.assertEqual(decrypt_share(*args), expected)
+        self.assertEqual(run.call_args.kwargs["env"]["AWS_IGNORE_CONFIGURED_ENDPOINT_URLS"], "true")
+
+    @patch("approval.subprocess.run", return_value=subprocess.CompletedProcess([], 0, b"{}", b""))
+    def test_custody_commands_ignore_configured_aws_endpoint_overrides(self, run):
+        with patch.dict(os.environ, {"AWS_IGNORE_CONFIGURED_ENDPOINT_URLS": "false"}):
+            self.assertEqual(aws("eu-north-1", "s3api", "list-objects-v2", []), {})
+        self.assertEqual(run.call_args.kwargs["env"]["AWS_IGNORE_CONFIGURED_ENDPOINT_URLS"], "true")
 
 if __name__ == "__main__":
     unittest.main()

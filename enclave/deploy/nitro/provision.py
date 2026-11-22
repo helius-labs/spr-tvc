@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import monotonic, sleep
 
-from approval import KEY_ARN, MAX_DOCUMENT_BYTES, ROLE_ARN, arn, fields, hex_digest, parse_json
+from approval import KEY_ARN, MAX_DOCUMENT_BYTES, ROLE_ARN, arn, aws_environment, fields, hex_digest, parse_json
 from kms_policy import target_context
 
 MAX_ENVELOPE = 6144
@@ -75,7 +75,7 @@ def decrypt_share(arn, wrapped_share, recipient, ctx):
         "--ciphertext-blob", f"fileb://{wrapped_share}",
         "--encryption-context", json.dumps(ctx), "--recipient", recipient,
         "--cli-binary-format", "base64", "--output", "json", "--no-cli-pager",
-    ], capture_output=True, text=True, timeout=25)
+    ], capture_output=True, text=True, timeout=25, env=aws_environment())
     if result.returncode:
         if "AccessDeniedException" in result.stderr:
             raise ValueError("KMS denied the attested recipient")

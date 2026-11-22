@@ -15,7 +15,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/de
 from approval import approval_keys, canonical, sha256
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
-    check_serving_policy, draft, ledger_policy, ledger_reader_policy, load_epoch, publish, record, require_active_epoch,
+    check_serving_policy, draft, ledger_policy, ledger_reader_policy, list_objects, load_epoch, publish, record, require_active_epoch,
     sign_epoch, target_attestation,
     target_object_name, verify_archive, write_once,
 )
@@ -30,6 +30,13 @@ READ_ROLE = "arn:aws:iam::000000000001:role/custodian"
 PUBLISHER = "arn:aws:iam::000000000008:role/publisher"
 ADMIN = "arn:aws:iam::000000000008:role/ledger-admin"
 PINS = {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)}
+
+
+def listing(prefix, keys=(), **metadata):
+    page = {"Name": "custody-journal", "Prefix": prefix, "KeyCount": len(keys), "IsTruncated": False}
+    if keys:
+        page["Contents"] = [{"Key": key} for key in keys]
+    return {**page, **metadata}
 
 
 class CustodyLedgerTests(unittest.TestCase):
@@ -101,7 +108,7 @@ class CustodyLedgerTests(unittest.TestCase):
             prefix = args[args.index("--prefix") + 1]
             self.assertTrue(prefix.startswith(f"spr-custody/devnet/{DOMAIN}/"))
             with self.lock:
-                return {"Contents": [{"Key": name} for name in sorted(self.objects) if name.startswith(prefix)]}
+                return listing(prefix, [name for name in sorted(self.objects) if name.startswith(prefix)])
         name = args[args.index("--key") + 1]
         self.assertTrue(name.startswith(f"spr-custody/devnet/{DOMAIN}/"))
         with self.lock:
@@ -139,6 +146,41 @@ class CustodyLedgerTests(unittest.TestCase):
         with patch("custody_ledger.storage", side_effect=[ValueError("write timed out"), ValueError("read denied")]):
             with self.assertRaisesRegex(ValueError, r"could not confirm ledger write \(write timed out\).*\(read denied\)"):
                 write_once(self.trust, "1.json", {}, lambda document: document)
+
+    def test_retirement_requires_an_explicit_complete_listing_from_the_pinned_bucket(self):
+        prefix = f"spr-custody/devnet/{DOMAIN}/retired/1.json"
+        empty = listing(prefix)
+        with patch("custody_ledger.storage", return_value=empty):
+            require_active_epoch(self.trust, "1")
+        for invalid in (
+            {},
+            {name: value for name, value in empty.items() if name != "IsTruncated"},
+            {**empty, "IsTruncated": "false"},
+            {**empty, "Name": "wrong-bucket"},
+            {**empty, "Prefix": prefix + ".wrong"},
+            {**empty, "KeyCount": 1},
+            {**empty, "IsTruncated": True},
+            {**empty, "NextContinuationToken": "next"},
+        ):
+            with (self.subTest(listing=invalid), patch("custody_ledger.storage", return_value=invalid),
+                  self.assertRaisesRegex(ValueError, "invalid custody ledger")):
+                require_active_epoch(self.trust, "1")
+
+    def test_target_inventory_follows_only_advancing_pages_in_the_requested_prefix(self):
+        prefix = f"spr-custody/devnet/{DOMAIN}/targets/1/"
+        first = listing(prefix, [prefix + "a.json"], IsTruncated=True, NextContinuationToken="next")
+        last = listing(prefix, [prefix + "b.json"])
+        with patch("custody_ledger.storage", side_effect=[first, last]) as storage:
+            self.assertEqual(list(list_objects(self.trust, "targets/1/")), ["targets/1/a.json", "targets/1/b.json"])
+            self.assertEqual(storage.call_args.args[2][-2:], ["--continuation-token", "next"])
+        for invalid in (
+            listing(prefix, [prefix + "a.json"]),
+            listing(prefix, [prefix.removesuffix("1/") + "2/foreign.json"]),
+            {**last, "IsTruncated": True, "NextContinuationToken": "next"},
+        ):
+            with (self.subTest(listing=invalid), patch("custody_ledger.storage", side_effect=[first, invalid]),
+                  self.assertRaisesRegex(ValueError, "invalid")):
+                list(list_objects(self.trust, "targets/1/"))
 
     def test_rotated_receipt_requires_current_predecessor_and_new_recovery_keys(self):
         first = self.sign(self.document(1))
