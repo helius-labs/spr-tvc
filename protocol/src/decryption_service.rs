@@ -1,9 +1,12 @@
 //! The decryption service: requests, results and the messages an owner signs.
 
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use std::fmt;
 
+use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
+use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+
+use crate::constants::MAX_ENCRYPTED_RESPONSE_BYTES;
 use crate::digest::domain_separated_hash;
 use crate::encoding::{self, canonicalize_json_value, decimal_u64, encode_lower_hex, hex};
 use crate::error::{ErrorCode, TvcError};
@@ -76,6 +79,81 @@ pub enum ServiceResult {
     Decrypt(DecryptedOutputs),
 }
 
+struct CanonicalResult<'a>(&'a ServiceResult);
+
+impl Serialize for CanonicalResult<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Field names are ASCII and emitted in JCS order. Values are hex and fixed tags.
+        let mut fields = serializer.serialize_struct("ServiceResult", 3)?;
+        match self.0 {
+            ServiceResult::PublicKeys {
+                viewing_public_key,
+                nullifier_public_key,
+            } => {
+                fields.serialize_field("nullifier_public_key", &HexBytes(nullifier_public_key))?;
+                fields.serialize_field("type", "PublicKeys")?;
+                fields.serialize_field("viewing_public_key", &HexBytes(viewing_public_key))?;
+            }
+            ServiceResult::Decrypt(result) => {
+                fields.serialize_field("nullifier_secret", &HexBytes(&result.nullifier_secret))?;
+                fields.serialize_field("plaintexts", &HexPlaintexts(&result.plaintexts))?;
+                fields.serialize_field("type", "Decrypt")?;
+            }
+        }
+        fields.end()
+    }
+}
+
+struct HexBytes<'a>(&'a [u8]);
+
+impl fmt::Display for HexBytes<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut scratch = Zeroizing::new([0; 128]);
+        for chunk in self.0.chunks(64) {
+            let hex = &mut scratch[..2 * chunk.len()];
+            ::hex::encode_to_slice(chunk, &mut *hex).map_err(|_| fmt::Error)?;
+            formatter.write_str(std::str::from_utf8(hex).map_err(|_| fmt::Error)?)?;
+        }
+        Ok(())
+    }
+}
+
+impl Serialize for HexBytes<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+struct HexPlaintexts<'a>(&'a [Vec<u8>]);
+
+impl Serialize for HexPlaintexts<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(|bytes| HexBytes(bytes)))
+    }
+}
+
+impl ServiceResult {
+    /// Writes canonical JSON directly into a zeroizing allocation that cannot grow.
+    pub fn encode_for_encryption(&self) -> Result<Zeroizing<Vec<u8>>, TvcError> {
+        let capacity = match self {
+            // Two public keys as hex, plus field names and the operation tag.
+            Self::PublicKeys { .. } => 256,
+            // Base fields, plus two hex digits, quotes and a separator per entry.
+            Self::Decrypt(result) => result.plaintexts.iter().fold(128usize, |size, item| {
+                size.saturating_add(item.len().saturating_mul(2).saturating_add(3))
+            }),
+        }
+        .min(MAX_ENCRYPTED_RESPONSE_BYTES as usize);
+        let mut bytes = Zeroizing::new(vec![0; capacity]);
+        let mut tail = bytes.as_mut_slice();
+        serde_json::to_writer(&mut tail, &CanonicalResult(self))
+            .map_err(|_| TvcError::new(ErrorCode::InvalidCanonicalJson))?;
+        let length = capacity - tail.len();
+        bytes.truncate(length);
+        Ok(bytes)
+    }
+}
+
 /// Ordered plaintexts and the recipient's service nullifier secret.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]
@@ -137,3 +215,7 @@ pub fn decrypt_message(
 #[cfg(test)]
 #[path = "../tests/unit/decryption_request_binding.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/decryption_result_encoding.rs"]
+mod result_tests;

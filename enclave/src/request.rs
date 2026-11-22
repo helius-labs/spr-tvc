@@ -67,10 +67,13 @@ pub(crate) fn respond(
     response_key: &ResponseKey,
     result: &ServiceResult,
 ) -> Result<String, Failure> {
-    let plaintext = Zeroizing::new(jcs_serialize(result).map_err(|_| Failure::Unavailable)?);
-    let encrypted_result = response_key
-        .encrypt(plaintext.as_bytes())
+    let plaintext = result
+        .encode_for_encryption()
         .map_err(|_| Failure::Unavailable)?;
+    let encrypted_result = response_key
+        .encrypt(&plaintext)
+        .map_err(|_| Failure::Unavailable)?;
+    drop(plaintext);
     if encrypted_result.len() as u64 > MAX_ENCRYPTED_RESPONSE_BYTES {
         return Err(Failure::Unavailable);
     }

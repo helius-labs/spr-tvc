@@ -66,10 +66,11 @@ signs the request.
    is the sender's X25519 input. The enclave accepts up to 256 items. Any
    malformed item fails the entire batch.
 5. **Return and verify.** The enclave seals the ordered plaintexts and the
-   recipient's nullifier secret to the signed response public key. The
-   replica signs an App Proof binding the request ID, operation, request
-   digest, and encrypted result digest. The SDK verifies the proof before
-   opening the reply. The SDK binds the handle to the owner and verifies the
+   recipient's nullifier secret to the signed response public key. It writes
+   canonical JSON directly into a fixed-capacity buffer and wipes that buffer
+   after encryption. The replica signs an App Proof binding the request ID,
+   operation, request digest, and encrypted result digest. The SDK verifies
+   the proof before opening the reply. It binds the handle to the owner and verifies the
    nullifier secret against the discovered public key. Later replies must
    carry the same secret and one plaintext of the expected length per item.
    The SPR wallet recomputes each candidate's commitment before accepting it.
