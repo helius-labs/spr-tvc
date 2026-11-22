@@ -763,11 +763,13 @@ Also pass `--publication-profile "$primary_read_profile" --publication-profile
 `--check-wallet-trust`. Each read-only profile belongs to its bucket owner's
 account and needs `s3:GetBucketPolicy`, `s3:GetBucketVersioning`,
 `s3:GetBucketOwnershipControls` and `s3:GetLifecycleConfiguration`.
-Wallet pin verification also needs `s3:GetObject` on the policy key to check
-the current version ID. Both checks compare the installed bucket policy
-with the policy generated from the exact roles in the independent custody
-trust file. They also require versioning so a damaged publication can be
-restored. Pass the same profiles on devnet to rehearse these checks.
+Both checks compare the installed bucket policy with the policy generated
+from the exact roles in the independent custody trust file. They also
+require versioning so a damaged publication can be restored. Wallet pin
+verification reads each version ID from the S3 response that carried the
+signed policy and requires both IDs to stay the same through verification.
+Pass the same profiles on devnet to rehearse these checks.
+[S3 GetObject response](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html#API_GetObject_ResponseSyntax)
 Recovery-only activation can proceed during a key or replica inspection outage
 while the required records remain readable.
 [Cross-account KMS permissions](https://docs.aws.amazon.com/kms/latest/developerguide/key-policy-modifying-external-accounts.html) · [S3 bucket policy permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketPolicy.html)
@@ -788,10 +790,11 @@ policy or its exact predecessor. A mirror ahead of the primary blocks new
 connections. Retirement requires agreement. Set alerts for mismatched heads
 and approaching expiration.
 
-Retain the S3 version ID of each verified policy outside its publication
-bucket. Read it with `head-object` using the pinned bucket owner and the key
-`spr-release/<network>/<securityDomainId>/policy.json`. Record it with the
-signed policy and wallet trust in the release record.
+Retain each policy's S3 version ID outside its publication bucket. Save
+`publicationVersions` from the payment pin check in the release record
+alongside the signed policy and wallet trust. For a recovery-only policy
+or revocation, read the version ID with `head-object` using the pinned
+bucket owner and the key `spr-release/<network>/<securityDomainId>/policy.json`.
 
 If one current policy is unreadable, suspend other writes to the affected
 bucket. Use its publisher role and the independently retained version ID.

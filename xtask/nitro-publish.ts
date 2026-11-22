@@ -8,7 +8,8 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
 import {
   authenticateNitroPolicy, nextNitroPublication, nitroPublication, requireNitroTrustTransition, validateNitroTrust,
-  verifyNitroMirrorPolicy, verifyNitroPolicy, verifyStoredNitroPolicy, type NitroPolicy, type NitroTarget, type NitroTrust,
+  verifyNitroMirrorPolicy, verifyNitroPolicy, verifyStoredNitroPolicy,
+  type NitroPolicy, type NitroPolicyCheckpoint, type NitroTarget, type NitroTrust,
 } from "../sdk/src/attestation/nitro-policy.js";
 import { readNitroPolicy, readPublishedNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
 import { probeNitroTarget } from "../sdk/src/client/nitro-probe.js";
@@ -176,11 +177,11 @@ async function paymentPublicationChecks(
 }
 
 async function checkPublicationBuckets(
-  checks: Awaited<ReturnType<typeof paymentPublicationChecks>>, run: Run, requireHeadVersions = false,
+  checks: Awaited<ReturnType<typeof paymentPublicationChecks>>, run: Run,
 ) {
   if (checks === undefined) return;
   await Promise.all(checks.map(async ({ publication, policy, profile }) => {
-    const { bucket, key } = publication;
+    const { bucket } = publication;
     const storage = publicationStorage(publication, run, profile);
     async function read<T>(operation: string) {
       return parseStrictJson<T>((await storage(operation, [])).stdout);
@@ -212,10 +213,6 @@ async function checkPublicationBuckets(
     const installed = parseStrictJson(response.Policy);
     if (canonicalizeJsonValue(installed) !== canonicalizeJsonValue(policy)) {
       throw new Error(`publication bucket ${bucket} differs from the custody-pinned bucket policy`);
-    }
-    if (requireHeadVersions) {
-      const { stdout } = await storage("head-object", ["--key", key]);
-      versionId(parseStrictJson<{ VersionId?: string }>(stdout).VersionId);
     }
   }));
 }
@@ -476,12 +473,15 @@ export async function verifyDistributionPins(
   trust: NitroTrust,
   { custodyTrust, replicaProfile, publicationProfiles, run = runCommand, probe = probeNitroTarget }:
   Pick<PublicationOptions, "custodyTrust" | "replicaProfile" | "publicationProfiles" | "run" | "probe"> = {},
-) {
+): Promise<NitroPolicyCheckpoint & { publicationVersions?: readonly { bucket: string; versionId: string }[] }> {
   validateNitroTrust(trust);
   const published = await pinnedPublication(trust);
   if (published.policy.action === "revoke") return published.checkpoint;
   if (!custodyTrust) throw new Error("activation requires --custody-trust");
   const bucketChecks = await paymentPublicationChecks(trust, published.policy, custodyTrust, publicationProfiles);
+  const publicationVersions = bucketChecks?.map(({ publication: { bucket } }, index) => ({
+    bucket, versionId: versionId(published.versionIds[index]),
+  }));
 
   const directory = await mkdtemp(join(tmpdir(), "spr-wallet-trust-"));
   try {
@@ -491,16 +491,19 @@ export async function verifyDistributionPins(
     const probes = await Promise.all(published.policy.targets.map(target => probe(target, trust)));
     const [nextCutover] = await Promise.all([
       checkActivationRoster(candidate, custodyTrust, trust, run, replicaProfile, published.policy.recoveryOnly ? undefined : probes),
-      checkPublicationBuckets(bucketChecks, run, true),
+      checkPublicationBuckets(bucketChecks, run),
     ]);
     const confirmed = await pinnedPublication(trust);
     if (confirmed.text !== published.text) throw new Error("signed policy changed during wallet trust verification");
+    if (publicationVersions?.some((publication, index) => versionId(confirmed.versionIds[index]) !== publication.versionId)) {
+      throw new Error("S3 policy version changed during wallet trust verification");
+    }
     const now = BigInt(Date.now());
     if (nextCutover !== undefined && now >= nextCutover) {
       throw new Error("custody approval roster changed during wallet trust verification");
     }
     requireFreshProbes(probes, now);
-    return confirmed.checkpoint;
+    return { ...confirmed.checkpoint, ...(publicationVersions ? { publicationVersions } : {}) };
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -712,7 +712,11 @@ test("mainnet checks both installed publication buckets before enabling payments
   const text = signed(activation);
   const [primary, mirror] = mainnet.publications;
   let peer = text;
-  context.mock.method(globalThis, "fetch", async () => new Response(peer));
+  const versions = new Map(mainnet.publications.map(({ bucket, account }) => [bucket, `version-${account}`]));
+  context.mock.method(globalThis, "fetch", async (url: URL) => {
+    const version = versions.get(url.hostname.split(".")[0]!);
+    return new Response(peer, { headers: version === undefined ? {} : { "x-amz-version-id": version } });
+  });
   const inspected = new Set<string>();
   const dir = await mkdtemp(join(tmpdir(), "spr-publication-roles-"));
   context.after(() => rm(dir, { force: true, recursive: true }));
@@ -765,10 +769,6 @@ test("mainnet checks both installed publication buckets before enabling payments
         const ObjectOwnership = hazard === "ownership" ? "ObjectWriter" : "BucketOwnerEnforced";
         return { stdout: JSON.stringify({ OwnershipControls: { Rules: [{ ObjectOwnership }] } }) };
       }
-      if (args.includes("head-object")) {
-        assert.equal(args[args.indexOf("--key") + 1], nitroPublication(mainnet, pin).key);
-        return { stdout: JSON.stringify({ VersionId: hazard === "version-id" ? "null" : `version-${pin.account}` }) };
-      }
       assert.ok(args.includes("get-bucket-policy"));
       const policy = bucketPolicy(
         mainnet, pin.bucket,
@@ -809,11 +809,28 @@ test("mainnet checks both installed publication buckets before enabling payments
   }
   assert.equal(writes, 0);
   assert.deepEqual(inspected, new Set([primary.bucket, mirror.bucket]));
-  unsafe = "version-id";
-  await assert.rejects(verifyDistributionPins(mainnet, options), /expected an original S3 policy version/);
   unsafe = "";
+  versions.delete(mirror.bucket);
+  await assert.rejects(verifyDistributionPins(mainnet, options), /expected an original S3 policy version/);
+  versions.set(mirror.bucket, "null");
+  await assert.rejects(verifyDistributionPins(mainnet, options), /expected an original S3 policy version/);
+  versions.set(mirror.bucket, `version-${mirror.account}`);
+  for (const { bucket, account } of mainnet.publications) {
+    await assert.rejects(verifyDistributionPins(mainnet, {
+      ...options, async probe() {
+        versions.set(bucket, "new-version-with-the-same-bytes");
+        return options.probe();
+      },
+    }), /S3 policy version changed during wallet trust verification/);
+    versions.set(bucket, `version-${account}`);
+  }
   await publish(mainnet, primary.bucket, text, options);
-  assert.equal((await verifyDistributionPins(mainnet, options)).sequence, "1");
+  const verified = await verifyDistributionPins(mainnet, options);
+  assert.equal(verified.sequence, "1");
+  assert.deepEqual(verified.publicationVersions, [
+    { bucket: primary.bucket, versionId: `version-${primary.account}` },
+    { bucket: mirror.bucket, versionId: `version-${mirror.account}` },
+  ]);
   assert.equal(writes, 1);
 
   inspected.clear();
