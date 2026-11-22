@@ -922,11 +922,13 @@ class CustodyLedgerTests(unittest.TestCase):
             retirement = self.signed_retirement(marker)
             with self.assertRaisesRegex(ValueError, recovery_keys[2]):
                 commit_retirement(self.trust, None, retirement)
-            self.assertEqual(inspected, proven)
+            self.assertIn(recovery_keys[2], inspected)
             states[recovery_keys[2]] = "Enabled"
+            inspected.clear()
             with patch("retirement.add_approval", return_value={"signatures": retirement["signatures"]}):
                 self.assertEqual(sign_retirement(self.trust, None, {**retirement, "signatures": []},
                                                  approval_keys(self.trust)[0]["keyArn"]), retirement)
+            self.assertEqual(inspected, proven)
             states[wrapping_keys[1]] = "PendingDeletion"
             with self.assertRaisesRegex(ValueError, wrapping_keys[1]):
                 commit_retirement(self.trust, None, retirement)
