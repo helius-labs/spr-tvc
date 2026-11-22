@@ -56,13 +56,13 @@ export function checkpointStore(path: string, trust: Pick<NitroTrust, "network" 
 
 const RETRYABLE_POLICY_ERRORS = new Set(["ReleasePolicyInvalid", "BootProofUnverified", "EndpointUnavailable", "ExpiredRequest"]);
 
-type VerifiedPublication = Pick<Awaited<ReturnType<typeof readPublishedNitroPolicy>>, "agreed" | "checkpoint" | "policy">;
+type VerifiedPublication = Pick<Awaited<ReturnType<typeof readPublishedNitroPolicy>>, "sameEnvelope" | "checkpoint" | "policy">;
 
 function acceptedPolicy(
   published: VerifiedPublication,
   accepted: NitroPolicyCheckpoint | undefined,
 ): boolean {
-  return published.agreed && sameCheckpoint(accepted, published.checkpoint);
+  return published.sameEnvelope && sameCheckpoint(accepted, published.checkpoint);
 }
 
 function sameCheckpoint(accepted: NitroPolicyCheckpoint | undefined, checkpoint: NitroPolicyCheckpoint): boolean {

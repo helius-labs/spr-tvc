@@ -110,10 +110,11 @@ Those exact three custodians reopen their
 committed recovery packages and sign the retirement candidate with their
 acknowledgement keys. Their proofs bind the boot, both receipts, the wallet
 policy, the registered serving target and the deadline 24 hours after its
-bootstrap. Signers and the publisher reattest the same boot and confirm
-that both the recovery and target wrapping keys for its three slots remain
-enabled. Restarting the replacement before publication requires a new
-candidate.
+bootstrap. Both publication buckets must serve the same signed policy file
+before and after attestation. Signers and the publisher reattest the same
+boot and confirm that both the recovery and target wrapping keys for its
+three slots remain enabled. Restarting the replacement before publication
+requires a new candidate.
 The ledger checks the S3 write time against the proof window and verifies
 both receipts, the signatures and the target before producing the key
 inventory. An unverifiable record halts new wraps and requires ledger recovery.

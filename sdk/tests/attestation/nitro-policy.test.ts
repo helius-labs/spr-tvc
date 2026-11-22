@@ -332,11 +332,12 @@ describe("native Nitro release policy", () => {
     expect(() => verifyPublishedNitroPolicy([newHead, dual], original, now)).toThrow();
   });
 
-  it("requires a current activation that has already raised the floor to the retiring epoch's replacement", () => {
+  it("requires the same current signed activation at both buckets before retirement", () => {
     const replacement = { ...binding.targets[0]!, custodyEpoch: "2", custodyDigest: "77".repeat(32) };
     const policy = { ...binding, minimumCustodyEpoch: "2", targets: [replacement] };
     const retire = (candidate: NitroPolicy, time = now) => {
-      const published = verifyPublishedNitroPolicy([manifest(candidate, 0, 1), manifest(candidate, 1, 2)], pinned(candidate), time);
+      const envelope = manifest(candidate, 0, 1);
+      const published = verifyPublishedNitroPolicy([envelope, envelope], pinned(candidate), time);
       requireRetirementPolicy(published, "2", replacement.custodyDigest);
     };
     expect(() => retire(policy)).not.toThrow();
@@ -347,6 +348,9 @@ describe("native Nitro release policy", () => {
       { ...policy, targets: [{ ...replacement, custodyDigest: "88".repeat(32) }] },
     ]) expect(() => retire(unsafe)).toThrow();
     expect(() => retire(policy, now + 100n)).toThrow();
+    const mismatched = verifyPublishedNitroPolicy([manifest(policy, 0, 1), manifest(policy, 1, 2)], pinned(policy), now);
+    expect(mismatched.agreed).toBe(true);
+    expect(() => requireRetirementPolicy(mismatched, "2", replacement.custodyDigest)).toThrow();
     const successor = { ...policy, sequence: "10", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(binding)) };
     const split = verifyPublishedNitroPolicy([manifest(successor, 0, 1), manifest(binding, 0, 1)], trust, now);
     expect(split.policy).toEqual(successor);

@@ -25,7 +25,7 @@ async function main() {
   signal.throwIfAborted();
   const after = await readPublishedNitroPolicy(trust, signal);
   requireRetirementPolicy(after, epoch, custodyDigest);
-  if (before.checkpoint.digest !== after.checkpoint.digest) throw new Error("wallet policy changed during qualification");
+  if (before.text !== after.text) throw new Error("signed wallet policy changed during qualification");
   const matching = targets.flatMap(result => {
     if (result.status === "rejected") return [];
     const { target: { releaseId, pcrs }, bootstrap } = result.value;

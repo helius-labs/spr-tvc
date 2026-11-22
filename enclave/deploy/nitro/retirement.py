@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from subprocess import run as run_command
+from tempfile import TemporaryDirectory
 
 from approval import (
     KEY_ARN, MAX_DOCUMENT_BYTES, ROLE_ARN, add_approval, approval_keys, approval_roster, arn, aws, canonical, check_approvals,
@@ -365,6 +366,13 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
             "replacement": evidence, "slots": slots, "terminatedParents": parents}
 
 
+def write_report(path, report):
+    with TemporaryDirectory(dir=path.parent) as directory:
+        staged = Path(directory) / "report.json"
+        staged.write_bytes(canonical(report) + b"\n")
+        path.hardlink_to(staged)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("trust", type=Path)
@@ -394,12 +402,15 @@ def main():
     verify.add_argument("--inspection-profiles", nargs=6, required=True)
     verify.add_argument("--host-inspection-profile", metavar="ACCOUNT=PROFILE", action="append", default=[])
     verify.add_argument("--wait-seconds", type=int, default=300)
+    verify.add_argument("--output", type=Path, help="publish the report atomically at a new path")
     args = parser.parse_args()
     try:
         trust = read_json(args.trust)
         if args.command == "inspect":
             result = inspect_keys(trust, args.epoch, args.share, args.check_inactive)
         elif args.command == "verify-retired":
+            if args.output is not None and args.output.exists():
+                raise ValueError("retirement report already exists")
             profiles = {}
             for mapping in args.host_inspection_profile:
                 account, _, profile = mapping.partition("=")
@@ -407,6 +418,9 @@ def main():
                     raise ValueError("provide distinct host inspection profiles as ACCOUNT=PROFILE")
                 profiles[account] = profile
             result = verify_retired(trust, args.wallet_trust, args.epoch, args.inspection_profiles, profiles, args.wait_seconds)
+            if args.output is not None:
+                write_report(args.output, result)
+                return
         elif args.command == "draft":
             result = {"manifest": qualified_manifest(trust, args.wallet_trust, args.epoch, args.replacement),
                       "signatures": [], "recoveryProofs": []}

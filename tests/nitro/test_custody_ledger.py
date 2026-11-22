@@ -30,7 +30,7 @@ from kms_policy import acknowledgement_policy, boot_pins
 from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, schedule, sign
 from provenance import describe
 from retirement import (commit_retirement, inspect_keys, key_inventory, prove_recovery, qualified_manifest, qualified_policy,
-                        replacement_targets, retirement_scope, sign_retirement, verify_retired)
+                        main as retirement_main, replacement_targets, retirement_scope, sign_retirement, verify_retired)
 
 READ_ROLE = "arn:aws:iam::000000000001:role/custodian"
 PUBLISHER = "arn:aws:iam::000000000008:role/publisher"
@@ -1009,6 +1009,40 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertEqual(report["replacement"]["replacementBootstrap"], fresh)
             self.assertEqual({row["keyArn"] for slot in report["slots"] for row in slot["keys"]}, set(inventory))
             quorum.assert_called_once()
+
+    def test_retirement_cli_publishes_the_completed_report_without_overwriting(self):
+        directory = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        trust, wallet, report = (directory / name for name in ("trust.json", "wallet.json", "report.json"))
+        trust.write_bytes(canonical(self.trust))
+        profiles = [f"slot-{index}" for index in range(1, 7)]
+        argv = ["retirement.py", str(trust), "verify-retired", str(wallet), "1",
+                "--inspection-profiles", *profiles, "--output", str(report)]
+        result = {"retirementObservedAtMs": "100"}
+
+        def verify(*_args):
+            self.assertFalse(report.exists())
+            return result
+
+        with patch("sys.argv", argv), patch("retirement.verify_retired", side_effect=verify) as verify_retired:
+            retirement_main()
+            verify_retired.assert_called_once_with(self.trust, wallet, "1", profiles, {}, 300)
+            self.assertEqual(report.read_bytes(), canonical(result) + b"\n")
+            with self.assertRaisesRegex(SystemExit, "retirement report already exists"):
+                retirement_main()
+            verify_retired.assert_called_once()
+            self.assertEqual(report.read_bytes(), canonical(result) + b"\n")
+
+            concurrent = report.with_name("concurrent.json")
+            argv[-1] = str(concurrent)
+
+            def concurrent_writer(*_args):
+                concurrent.write_bytes(b"another operator's report")
+                return result
+
+            verify_retired.side_effect = concurrent_writer
+            with self.assertRaises(SystemExit):
+                retirement_main()
+            self.assertEqual(concurrent.read_bytes(), b"another operator's report")
 
     def test_one_wrapping_set_per_attested_identity_and_reauthorizing_keeps_the_registration(self):
         publish(self.trust, self.sign(self.document(1)))

@@ -82,6 +82,8 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-74 | The packager compared PCRs without checking the written EIF's checksum result. | Require Nitro CLI to report a valid checksum before accepting the measurements. [Packaging tests](nitro/test_provenance.py) |
 | N-75 | The installed ledger controls were unchecked. A lifecycle rule can expire custody records despite the policy's delete deny. | Read and verify the policy, versioning, ownership, public access, lifecycle and replication settings on the pinned bucket. [Ledger controls tests](nitro/test_custody_ledger.py) · [AWS error tests](nitro/test_kms_policy.py) |
 | N-76 | A retirement poll reread the custody ledger before checking the remaining cold-boot wait, so a slow ledger could overrun the wait. | Read the pinned trust and candidate registrations before the wait. Poll for attestation within the deadline and recheck the live ledger and the same boot before reporting. [Retirement tests](nitro/test_custody_ledger.py) |
+| N-77 | Retirement accepted two different signature sets for the same policy digest. During signer handoff, the mirror could lack the incoming signatures that some wallets require. | Require the same signed policy file in both buckets before and after replacement attestation and in the rehearsal checks. [Policy tests](../sdk/tests/attestation/nitro-policy.test.ts) · [Rehearsal](../example/tests/nitro.test.ts) |
+| N-78 | Shell redirection exposed an empty report while the retirement verifier was still running. | Publish the complete report on success with `--output`. An existing report is preserved. [Report test](nitro/test_custody_ledger.py) |
 
 ## Remaining qualification and review
 

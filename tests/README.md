@@ -47,8 +47,8 @@ To tie the claim to the post-retirement cold boot, set
 canary logs its confirmed transfer, follow the
 [retirement procedure](../enclave/deploy/nitro/README.md#rotate-custody-and-activate-releases).
 Use a separate canary transfer for the check before scheduling key deletion.
-Write the successful report to a temporary file and rename it to the
-canary's path. The canary waits up to one hour for the report. It recovers
+Pass the canary's path to `verify-retired --output`. The complete report
+appears after verification. The canary waits up to one hour and recovers
 the note only through the report's attested boot key and policy, and logs the
 boot key ID alongside the transfer and sweep signatures.
 

@@ -268,7 +268,7 @@ export function verifyPublishedNitroPolicy([primaryText, mirrorText]: readonly [
   requireCurrent(primary, trust, now);
   const { policy, checkpoint, validFrom, expiresAt } = primary;
   const update: NitroPolicyUpdate = Object.freeze([revision(primary), revision(mirror)] as const);
-  return { policy, checkpoint, validFrom, expiresAt, agreed, update };
+  return { policy, checkpoint, validFrom, expiresAt, agreed, update, sameEnvelope: primaryText === mirrorText };
 }
 
 function requireSameTrustDomain(first: NitroTrust, second: NitroTrust): void {
@@ -305,9 +305,10 @@ export function nextNitroPublication(
 }
 
 export function requireRetirementPolicy(
-  { policy, agreed }: ReturnType<typeof verifyPublishedNitroPolicy>, replacementEpoch: string, custodyDigest: string,
+  { policy, sameEnvelope }: ReturnType<typeof verifyPublishedNitroPolicy>, replacementEpoch: string, custodyDigest: string,
 ) {
-  if (!agreed || policy.action !== "activate" || decodeDecimalU64(policy.minimumCustodyEpoch) < decodeDecimalU64(replacementEpoch) ||
+  if (!sameEnvelope || policy.action !== "activate" ||
+      decodeDecimalU64(policy.minimumCustodyEpoch) < decodeDecimalU64(replacementEpoch) ||
       !policy.targets.some(target => target.custodyEpoch === replacementEpoch && target.custodyDigest === custodyDigest)) invalid();
 }
 

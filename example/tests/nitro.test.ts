@@ -39,10 +39,10 @@ test("native rotation rehearsal checks both published policies and the exact ser
     validFromMs: "1", expiresAtMs: "10", targets: [target, { ...target, endpoint: "https://original-b.example/" }],
   };
   const checkpoint = { sequence: "1", digest: "55".repeat(32), recoveryOnly: false, minimumCustodyEpoch: "1" };
-  const published = { agreed: true, checkpoint, policy, validFrom: 1n, expiresAt: 10n };
+  const published = { sameEnvelope: true, checkpoint, policy, validFrom: 1n, expiresAt: 10n };
   requireOriginalPolicy(published, checkpoint, 2n);
   for (const candidate of [
-    { ...published, agreed: false },
+    { ...published, sameEnvelope: false },
     { ...published, policy: { ...policy, recoveryOnly: true } },
     { ...published, checkpoint: { ...checkpoint, digest: "66".repeat(32) } },
     { ...published, policy: { ...policy, targets: [target, replacement] } },
@@ -61,7 +61,7 @@ test("native rotation rehearsal checks both published policies and the exact ser
   const later = { ...replacement, endpoint: "https://later.example/", custodyEpoch: "3" };
   assert.equal(acceptedReplacementPolicy(next, nextCheckpoint, "2"), true);
   assert.equal(acceptedReplacementPolicy(next, checkpoint, "2"), false);
-  assert.equal(acceptedReplacementPolicy({ ...next, agreed: false }, nextCheckpoint, "2"), false);
+  assert.equal(acceptedReplacementPolicy({ ...next, sameEnvelope: false }, nextCheckpoint, "2"), false);
   for (const targets of [[later], [replacement, later]]) {
     assert.equal(acceptedReplacementPolicy({ ...next, policy: { ...replacementPolicy, targets } }, nextCheckpoint, "2"), false);
   }

@@ -283,9 +283,10 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    Two custody approval signers then sign, and the ledger publisher commits
    the record within 24 hours of the replacement boot. Signers and the
    publisher need `kms:DescribeKey` on the recovery and target wrapping keys
-   for those exact three slots. All six keys must still be enabled. Draft, sign and publish check that both public buckets
-   agree before and after attestation and that the replacement matches the
-   registered serving target. If the attested boot key or slots change, draft
+   for those exact three slots. All six keys must still be enabled. Draft, sign
+   and publish require the same signed policy file in both buckets before and
+   after attestation and match the replacement to its registered serving
+   target. If the attested boot key or slots change, draft
    a new candidate and collect proofs for those slots. After a timeout, retry the same signed
    document. The tool verifies a committed record against its historical
    roster and S3 timestamp, even after the recovery window closes. If the
@@ -326,7 +327,8 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    ```sh
    python3 "$nitro/retirement.py" trust.json verify-retired wallet-trust.json 1 \
      --inspection-profiles "${old_inspection_profiles[@]}" \
-     --host-inspection-profile "$old_host_account=$old_host_read_profile" > retirement-report.json
+     --host-inspection-profile "$old_host_account=$old_host_read_profile" \
+     --output "$retirement_report"
    ```
 
    When the verifier reports it is waiting, cold-boot a registered replacement
@@ -334,9 +336,10 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    before starting the `--wait-seconds` timer and polls for a later attested
    boot. Before writing the report it checks the old keys and parents again,
    checks the six keys used by the new boot, and verifies the same registered
-   boot and wallet policy. AWS usually lists terminated instances for less
-   than an hour. When EC2 cannot
-   report a parent, the verifier requires that the latest AWS Config record
+   boot and wallet policy. Pass a new report path. The complete file appears
+   only after verification succeeds. AWS usually lists terminated instances
+   for less than an hour. When EC2 cannot report a parent, the verifier
+   requires that the latest AWS Config record
    for that exact managed EC2 instance is `ResourceDeleted`. Archive the
    result with the [on-chain canary](../../../tests/README.md#live-nitro-upgrade),
    old signed receipt and public trust pins.
