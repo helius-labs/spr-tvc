@@ -328,9 +328,10 @@ export function requireNitroTrustTransition(from: NitroTrust, to: NitroTrust, se
       (from.recoveryOnly && !to.recoveryOnly)) invalid();
 }
 
-/** Check an authenticated candidate against the predecessor before writing against its S3 ETag. */
+/** Check the predecessor before the conditional S3 write. Revocation catch-up requires a witnessed primary. */
 export function nextNitroPublication(
   next: VerifiedPolicy, previous: string | undefined, trust: NitroTrust, previousTrust = trust,
+  mode: "contiguous" | "revocation-catchup" = "contiguous",
 ): boolean {
   if (previous === undefined) {
     if (next.policy.sequence !== "1") invalid();
@@ -341,6 +342,9 @@ export function nextNitroPublication(
   const priorTrust = encodeLowerHex(nitroPolicySigningDigest(policy)) === next.checkpoint.digest ? trust : previousTrust;
   const prior = verifySignedPolicy(previous, priorTrust);
   if (prior.checkpoint.digest === next.checkpoint.digest) return false;
+  if (mode === "revocation-catchup" && next.policy.action === "revoke" &&
+      decodeDecimalU64(next.policy.sequence) > decodeDecimalU64(prior.policy.sequence) + 1n &&
+      followsCheckpoint(prior.checkpoint, revision(next))) return true;
   requireSuccessor(prior, next);
   return true;
 }

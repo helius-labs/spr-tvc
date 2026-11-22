@@ -342,6 +342,13 @@ This copy can proceed during custody or replica outages, including after
 the primary file expires. A new activation requires the same signed file
 in both buckets. A revocation can advance from different signature files
 when both quorums authenticate the same predecessor policy in each bucket.
+If the peer is temporarily unreachable, either publisher can record a
+current, target-free revocation signed by both quorums against its immediate
+authenticated predecessor. When the primary returns after a mirror-first
+revocation, publish the exact same signed file to the primary. When the
+mirror returns behind a primary revocation, it can copy that exact file from
+an older authenticated head if the custody floor and recovery-only flag
+remain monotonic. Only this witnessed revocation can skip a mirror revision.
 The mirror can repair its copy of the same revision if the primary's file
 retains every release and custody signer already on the mirror. Changing
 signatures on the primary requires a new revision. Wallets require a current

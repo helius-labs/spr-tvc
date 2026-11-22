@@ -606,6 +606,103 @@ test("copies the live primary during a custody or replica outage so emergency re
   assert.equal(verifyPublishedNitroPolicy([heads.get(primary.bucket)!, heads.get(mirror.bucket)!], trust, BigInt(now)).policy.action, "revoke");
 });
 
+test("records emergency revocation during a mirror outage and repairs a lagging mirror", async context => {
+  const [primary, mirror] = trust.publications;
+  const active: NitroPolicy = {
+    ...first, action: "activate", targets: [target], sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest,
+  };
+  const successor = {
+    ...first, sequence: "3", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(active)),
+  };
+  const revoked = signed(successor);
+  const activation = signed({ ...successor, action: "activate", targets: [target] });
+  const heads = new Map([[primary.bucket, signed(active)], [mirror.bucket, signed(first)]]);
+  let mirrorOffline = true;
+  context.mock.method(globalThis, "fetch", async (url: URL) => {
+    const bucket = url.hostname.split(".")[0]!;
+    if (bucket === mirror.bucket && mirrorOffline) return new Response(null, { status: 503 });
+    return new Response(heads.get(bucket));
+  });
+  const writes: string[] = [];
+  const options = {
+    ...awsOnly(async args => {
+      const bucket = args[args.indexOf("--bucket") + 1]!;
+      if (args.includes("get-object")) {
+        await writeFile(args.at(-1)!, heads.get(bucket)!);
+        return { stdout: JSON.stringify({ ETag: '"previous"' }) };
+      }
+      assert.ok(args.includes("put-object"));
+      assert.equal(args[args.indexOf("--if-match") + 1], '"previous"');
+      writes.push(bucket);
+      heads.set(bucket, await readFile(args.at(-1)!, "utf8"));
+      if (bucket === primary.bucket) throw new Error("lost write acknowledgement");
+      return { stdout: "{}" };
+    }),
+    probe: async () => assert.fail("a revocation does not contact any enclave"),
+  };
+  await assert.rejects(publish(trust, primary.bucket, activation, { ...options, custodyTrust: "custody.json" }), /HTTP 503/);
+  await publish(trust, primary.bucket, revoked, options);
+  await publish(trust, primary.bucket, revoked, options);
+  assert.deepEqual(writes, [primary.bucket]);
+  const oldMirror = heads.get(mirror.bucket)!;
+  assert.throws(() => verifyPublishedNitroPolicy([revoked, oldMirror], trust, BigInt(now)), /ReleasePolicyInvalid/);
+  mirrorOffline = false;
+  heads.set(primary.bucket, activation);
+  await assert.rejects(publish(trust, mirror.bucket, activation, options), /ReleasePolicyInvalid/);
+  heads.set(primary.bucket, revoked);
+  for (const previous of [{ ...first, minimumCustodyEpoch: "2" }, { ...first, recoveryOnly: true }]) {
+    heads.set(mirror.bucket, signed(previous));
+    await assert.rejects(publish(trust, mirror.bucket, revoked, options), /ReleasePolicyInvalid/);
+  }
+  heads.set(mirror.bucket, oldMirror);
+  await publish(trust, mirror.bucket, revoked, options);
+  assert.deepEqual(writes, [primary.bucket, mirror.bucket]);
+  assert.equal(verifyPublishedNitroPolicy([revoked, heads.get(mirror.bucket)!], trust, BigInt(now)).policy.action, "revoke");
+});
+
+test("records a revocation on the mirror during a primary outage only with its immediate predecessor", async context => {
+  const [primary, mirror] = trust.publications;
+  const active: NitroPolicy = {
+    ...first, action: "activate", targets: [target], sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest,
+  };
+  const predecessor = signed(active);
+  const successor = { ...first, sequence: "3", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(active)) };
+  const revoked = signed(successor);
+  const activation = signed({ ...successor, action: "activate", targets: [target] });
+  const heads = new Map([[primary.bucket, predecessor], [mirror.bucket, signed(first)]]);
+  let primaryOffline = true;
+  context.mock.method(globalThis, "fetch", async (url: URL) => {
+    const bucket = url.hostname.split(".")[0]!;
+    if (primaryOffline && bucket === primary.bucket) throw new TypeError("failed to fetch");
+    return new Response(heads.get(bucket));
+  });
+  const writes: string[] = [];
+  const options = awsOnly(async args => {
+    const bucket = args[args.indexOf("--bucket") + 1]!;
+    if (args.includes("get-object")) {
+      await writeFile(args.at(-1)!, heads.get(bucket)!);
+      return { stdout: JSON.stringify({ ETag: '"previous"' }) };
+    }
+    assert.ok(args.includes("put-object"));
+    assert.equal(args[args.indexOf("--if-match") + 1], '"previous"');
+    writes.push(bucket);
+    heads.set(bucket, await readFile(args.at(-1)!, "utf8"));
+    return { stdout: "{}" };
+  });
+  await assert.rejects(publish(trust, mirror.bucket, activation, options), /requires the primary's exact signed policy/);
+  await assert.rejects(publish(trust, mirror.bucket, revoked, options), /ReleasePolicyInvalid/);
+  heads.set(mirror.bucket, predecessor);
+  await assert.rejects(publish(trust, mirror.bucket, signed({ ...successor, expiresAtMs: String(now + 10_000) }), options), /expires too soon/);
+  await publish(trust, mirror.bucket, revoked, options);
+  assert.deepEqual(writes, [mirror.bucket]);
+  primaryOffline = false;
+  assert.throws(() => verifyPublishedNitroPolicy([predecessor, revoked], trust, BigInt(now)), /ReleasePolicyInvalid/);
+  await assert.rejects(publish(trust, primary.bucket, activation, { ...options, custodyTrust: "custody.json" }), /same signed predecessor/);
+  await publish(trust, primary.bucket, revoked, options);
+  assert.deepEqual(writes, [mirror.bucket, primary.bucket]);
+  assert.equal(verifyPublishedNitroPolicy([revoked, revoked], trust, BigInt(now)).policy.action, "revoke");
+});
+
 test("the mirror rechecks the primary before writing", async context => {
   const original = signed(first);
   let calls = 0;

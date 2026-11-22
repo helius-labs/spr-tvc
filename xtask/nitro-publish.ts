@@ -15,7 +15,7 @@ import { readNitroPolicy, readPublishedNitroPolicy } from "../sdk/src/attestatio
 import { createDecryptionCanary, probeNitroTarget, requireCanaryAgreement, type DecryptionCanary } from "../sdk/src/client/nitro-probe.js";
 import { remainingReleasePolicyMs } from "../sdk/src/connection/operations.js";
 import { decodeDecimalU64 } from "../sdk/src/protocol/decimal.js";
-import { DecryptionServiceError } from "../sdk/src/protocol/error.js";
+import { DecryptionServiceError, DecryptionServiceHttpError } from "../sdk/src/protocol/error.js";
 import { requireHex } from "../sdk/src/protocol/hex.js";
 import { canonicalizeJsonValue } from "../sdk/src/protocol/jcs.js";
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
@@ -103,6 +103,13 @@ function publicationStorage({ bucket, region, account }: ReturnType<typeof publi
 function etag(value: unknown): string {
   if (typeof value !== "string" || !/^"[^"\s]{1,128}"$/.test(value)) throw new Error("invalid S3 revision");
   return value;
+}
+
+function publicationUnavailable(error: unknown): boolean {
+  return (error instanceof DecryptionServiceError && error.code === "EndpointUnavailable") ||
+    (error instanceof DOMException && error.name === "TimeoutError") ||
+    (error instanceof DecryptionServiceHttpError &&
+      (error.status === 408 || error.status === 429 || error.status >= 500));
 }
 
 function requireCustodyWriteWindow(nextCutover: bigint | undefined, now: bigint): void {
@@ -255,17 +262,26 @@ export async function publish(
   const { bucket, key } = publication;
   const [first, second] = trust.publications;
   const isSecond = bucket === second.bucket;
-  async function readPeer() {
+  async function readPeer(allowOutage = false) {
     const { url, account } = nitroPublication(trust, isSecond ? first : second);
-    return readNitroPolicy(url, AbortSignal.timeout(5_000), account);
+    try {
+      return await readNitroPolicy(url, AbortSignal.timeout(5_000), account);
+    } catch (error) {
+      if (allowOutage && publicationUnavailable(error)) return undefined;
+      throw error;
+    }
   }
-  const primary = isSecond ? await readPeer() : undefined;
+  const primary = isSecond ? await readPeer(true) : undefined;
   const now = BigInt(Date.now());
   const verify = (pins: NitroTrust, at: bigint, witness: string | undefined) => witness === undefined
     ? verifyNitroPolicy(text, pins, at)
     : verifyNitroMirrorPolicy(text, witness, pins, at);
   const verified = verify(trust, now, primary);
   const { policy, signatures, custodySignatures } = verified;
+  const mirrorDuringOutage = isSecond && primary === undefined;
+  if (mirrorDuringOutage && policy.action !== "revoke") {
+    throw new Error("activation requires the primary's exact signed policy file");
+  }
   const activatesPrimary = !isSecond && policy.action === "activate";
   if (activatesPrimary && !custodyTrust) throw new Error("activation requires --custody-trust");
   const bucketChecks = activatesPrimary && custodyTrust
@@ -308,7 +324,8 @@ export async function publish(
       head = await readHead().catch(() => undefined);
     }
     if (head?.text === text) return;
-    if (!nextNitroPublication(verified, head?.text, trust, emergencyFrom)) {
+    const publicationMode = primary === undefined ? "contiguous" : "revocation-catchup";
+    if (!nextNitroPublication(verified, head?.text, trust, emergencyFrom, publicationMode)) {
       if (!isSecond || !head) throw new Error("use a new revision to change published signatures");
       const previous = parseStrictJson<Pick<typeof verified, "signatures" | "custodySignatures">>(head.text);
       for (const scope of ["signatures", "custodySignatures"] as const) {
@@ -320,7 +337,8 @@ export async function publish(
     }
     async function checkMirror() {
       if (isSecond || !head) return;
-      const peer = await readPeer();
+      const peer = await readPeer(policy.action === "revoke");
+      if (peer === undefined) return;
       if (peer === head.text || peer === text) return;
       if (policy.action === "revoke" && nextNitroPublication(verified, peer, trust, emergencyFrom)) return;
       throw new Error("the mirror must hold the same signed predecessor before the primary advances");
@@ -344,10 +362,10 @@ export async function publish(
       ]);
       confirmedCutover = confirmed.cutover;
     }
-    const latestPrimary = isSecond ? await readPeer() : undefined;
+    const latestPrimary = isSecond ? await readPeer(mirrorDuringOutage) : undefined;
     const beforeWrite = BigInt(Date.now());
     verify(trust, beforeWrite, latestPrimary);
-    if (!isSecond && verified.expiresAt <= beforeWrite + WRITE_MARGIN_MS) {
+    if ((!isSecond || mirrorDuringOutage) && verified.expiresAt <= beforeWrite + WRITE_MARGIN_MS) {
       throw new Error("the signed policy expires too soon for conditional publication");
     }
     requireCustodyWriteWindow(confirmedCutover, beforeWrite);

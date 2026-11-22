@@ -817,6 +817,11 @@ this during a custody outage, a replica outage, or after primary policy
 expiry. If the mirror holds the same policy with additional valid signers,
 an emergency revocation can advance once both quorums authenticate each
 predecessor file. Mirror the new revocation to restore exact agreement.
+If one publisher is temporarily unreachable, publish the target-free
+revocation to the available bucket as the immediate successor to its
+authenticated head. When both return, publish that exact file to
+the remaining bucket. A lagging mirror can catch up directly to the primary's
+revocation while preserving its custody floor and recovery-only flag.
 Wallets use the primary's signed policy when the mirror serves the same
 policy or its exact predecessor. A mirror ahead of the primary blocks new
 connections. Retirement requires agreement. Set alerts for mismatched heads
