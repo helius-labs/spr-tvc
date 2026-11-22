@@ -17,6 +17,8 @@ mod custody;
 mod custody_relay;
 mod http;
 mod keys;
+#[cfg(all(feature = "native-nitro", target_os = "linux"))]
+mod kms_recipient;
 #[cfg(feature = "local-dev")]
 mod local;
 #[cfg(all(feature = "native-nitro", target_os = "linux"))]

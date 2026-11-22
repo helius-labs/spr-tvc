@@ -22,7 +22,6 @@ use axum::{
     Extension, Router,
 };
 use openssl::{
-    cms::CmsContentInfo,
     pkey::{PKey, Private},
     rand::rand_bytes,
     rsa::Rsa,
@@ -43,10 +42,9 @@ use zeroize::Zeroizing;
 
 use crate::{
     custody::{CustodianPackage, Custody, Recipients, SHARE_COUNT, THRESHOLD},
-    custody_relay::{
-        RecoveryProof, Relay, RelayAuthorities, Request as RelayRequest, MAX_CMS_BYTES,
-    },
+    custody_relay::{RecoveryProof, Relay, RelayAuthorities, Request as RelayRequest},
     keys::NoteSeed,
+    kms_recipient::{open_share, MAX_CMS_BYTES},
     native_crypto::NativePair,
     nitro_http,
     release::NETWORK,
@@ -424,10 +422,8 @@ fn open_shares(
             return None;
         }
         let (envelope, rest) = rest.split_at_checked(length)?;
-        if let Ok(share) = CmsContentInfo::from_der(envelope)
-            .and_then(|cms| cms.decrypt_without_cert_check(private))
-        {
-            shares.push((slot, Zeroizing::new(share)));
+        if let Some(share) = open_share(private, envelope) {
+            shares.push((slot, share));
         }
         frame = rest;
     }

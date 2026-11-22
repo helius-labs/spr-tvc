@@ -2,10 +2,7 @@
 
 use std::{io, num::NonZeroU64};
 
-use openssl::{
-    cms::CmsContentInfo,
-    pkey::{PKey, Private},
-};
+use openssl::pkey::{PKey, Private};
 use p256::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use spr_tvc_protocol::{
@@ -15,9 +12,10 @@ use spr_tvc_protocol::{
 };
 use zeroize::Zeroizing;
 
-use crate::custody::{encrypt_share, parse_recipient, valid_share, SHARE_COUNT};
-
-pub(crate) const MAX_CMS_BYTES: usize = 6_144;
+use crate::{
+    custody::{encrypt_share, parse_recipient, valid_share, SHARE_COUNT},
+    kms_recipient,
+};
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -192,13 +190,10 @@ impl Relay {
         commitment: &[u8; 32],
         envelope: &[u8],
     ) -> Option<Zeroizing<Vec<u8>>> {
-        if !(1..=SHARE_COUNT).contains(&usize::from(slot))
-            || !(1..=MAX_CMS_BYTES).contains(&envelope.len())
-        {
+        if !(1..=SHARE_COUNT).contains(&usize::from(slot)) {
             return None;
         }
-        let cms = CmsContentInfo::from_der(envelope).ok()?;
-        let share = Zeroizing::new(cms.decrypt_without_cert_check(&self.recipient).ok()?);
+        let share = kms_recipient::open_share(&self.recipient, envelope)?;
         valid_share(&self.domain, self.epoch, slot, &share, commitment).then_some(share)
     }
 }

@@ -140,9 +140,12 @@ custody record. Both serving and rotation use the same bootstrap:
    domain, epoch and slot against the measured share commitments.
 2. KMS encrypts its response for that temporary recipient. The parent sends up
    to six CMS records. Each starts with a one-byte slot and a two-byte
-   big-endian length, followed by up to 6,144 bytes of ciphertext. A share
-   contributes only if its decrypted slot matches the frame and its epoch
-   and commitment match the measured configuration. The enclave restores
+   big-endian length, followed by up to 6,144 bytes of ciphertext. Bootstrap
+   and the relay accept CMS EnvelopedData with one RSA-2048 OAEP recipient,
+   SHA-256 for both OAEP and MGF1, an empty OAEP label and AES-256-CBC content
+   encryption. The decrypted share is exactly 41 bytes. It contributes only
+   if its slot matches the frame and its epoch and commitment match the
+   measured configuration. The enclave restores
    the seed from three distinct slots and verifies the seed commitment. It
    replies with HTTP 200 and the three slot numbers as raw bytes. A serving
    enclave keeps those same slot numbers for wallet attestation. Invalid
@@ -153,7 +156,8 @@ custody record. Both serving and rotation use the same bootstrap:
    is SHA-256 of the public pair. The native wire epoch names the custody epoch.
 
 See [Shamir secret sharing](https://doi.org/10.1145/359168.359176),
-[KMS recipient handling](https://docs.aws.amazon.com/kms/latest/developerguide/attested-calls.html)
+[KMS recipient handling](https://docs.aws.amazon.com/kms/latest/developerguide/attested-calls.html),
+[KMS CMS algorithms](https://github.com/aws/aws-nitro-enclaves-sdk-c/blob/main/include/aws/nitro_enclaves/internal/cms.h)
 and [attestation conditions](https://docs.aws.amazon.com/kms/latest/developerguide/conditions-nitro-enclave.html).
 
 ## Proposal and publication

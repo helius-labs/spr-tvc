@@ -5,7 +5,7 @@ use openssl::{
 };
 use p256::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};
 
-use crate::nitro::tests::envelope;
+use crate::kms_recipient::tests::envelope;
 
 use super::*;
 

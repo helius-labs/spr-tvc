@@ -21,7 +21,7 @@ use crate::keys::NoteSeed;
 pub(crate) const SHARE_COUNT: usize = 6;
 pub(crate) const THRESHOLD: usize = 3;
 const EPOCH_BYTES: usize = 8;
-const SHARE_BYTES: usize = EPOCH_BYTES + 1 + 32;
+pub(crate) const SHARE_BYTES: usize = EPOCH_BYTES + 1 + 32;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
