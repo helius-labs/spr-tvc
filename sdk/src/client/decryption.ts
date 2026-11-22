@@ -5,7 +5,7 @@ import { getAddressEncoder, type Address, type MessagePartialSigner } from "@sol
 
 import type { BootProofResolver } from "../connection/backend.js";
 import type { ConnectedTvcRuntime } from "../connection/connect.js";
-import { requestScope, type DecryptionServiceRequestOptions } from "../connection/request.js";
+import { awaitWithSignal, requestScope, type DecryptionServiceRequestOptions } from "../connection/request.js";
 import { createDecryptionServiceSession, type DecryptionServiceSession } from "../connection/session.js";
 import type { DecryptionServiceTransport } from "../connection/http.js";
 import { DecryptionServiceError, DecryptionServiceHttpError } from "../protocol/error.js";
@@ -79,7 +79,12 @@ export function decryptionServiceFromSession(
           await context.requireCurrentCheckpoint?.(signal);
           throw new DecryptionServiceError("ReleasePolicyRecoveryOnly");
         }
-        return await executeServiceCall(context, operation, signal);
+        const result = await executeServiceCall(context, operation, signal);
+        if (forPayment && context.requirePublishedPolicy) {
+          await awaitWithSignal(context.requirePublishedPolicy(signal, true), signal);
+        }
+        signal.throwIfAborted();
+        return result;
       } catch (error) {
         const recoverable = context ? retryableExchangeFailure(error)
           : error instanceof DecryptionServiceError && error.code === "ReleasePolicySuperseded";
@@ -94,9 +99,9 @@ export function decryptionServiceFromSession(
   }
 
   async function address(owner: Address, signal: AbortSignal, forPayment: boolean): Promise<ShieldedAddress> {
-    const { nullifierPublicKey, viewingPublicKey } = decodePublicKeys(
-      await call({ type: "PublicKeys", address: owner }, signal, forPayment),
-    );
+    const result = await call({ type: "PublicKeys", address: owner }, signal, forPayment);
+    signal.throwIfAborted();
+    const { nullifierPublicKey, viewingPublicKey } = decodePublicKeys(result);
     return ShieldedAddress.fromPublicKeys(
       ShieldedPublicKey.fromEd25519(new Uint8Array(addressEncoder.encode(owner)) as Bytes32),
       nullifierPublicKey,

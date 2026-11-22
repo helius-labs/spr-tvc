@@ -448,6 +448,7 @@ describe("native client trust gate", () => {
     const fetch = policyHeads(vi.fn(), policy).mockResolvedValueOnce(attestedDiscovery())
       .mockImplementationOnce((_url, init) => response(init, nullifierModulus));
     policyHeads(fetch, policy).mockImplementationOnce((_url, init) => response(init, lastFieldElement));
+    policyHeads(fetch, policy);
     vi.stubGlobal("fetch", fetch);
     const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
     await expect(client.open(signer, proofs)).rejects.toMatchObject({ code: "InvalidPublicKey" });
@@ -462,6 +463,7 @@ describe("native client trust gate", () => {
     const fetch = policyHeads().mockResolvedValueOnce(Response.json(discovery));
     policyHeads(fetch).mockResolvedValueOnce(Response.json(discovery))
       .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    policyHeads(fetch);
     vi.stubGlobal("fetch", fetch);
     const blocked = createNitroDecryptionService({ trust, policyStore: checkpointStore(), requiredBootKeyId: "42".repeat(32) });
     await expect(blocked.open(signer, proofs)).rejects.toThrow("no authorized Nitro replica");
@@ -486,6 +488,7 @@ describe("native client trust gate", () => {
     }));
     policyHeads(fetch, policy).mockResolvedValueOnce(Response.json(response))
       .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    policyHeads(fetch, policy);
     vi.stubGlobal("fetch", fetch);
     const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
     await expect(client.address(signer.address)).rejects.toThrow("no authorized Nitro replica");
@@ -576,6 +579,7 @@ describe("native client trust gate", () => {
     const recovery = signedPolicy({ sequence: "3", previousPolicyDigest, recoveryOnly: true });
     const fetch = policyHeads(vi.fn(), old).mockResolvedValueOnce(attestedDiscovery())
       .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    policyHeads(fetch, old);
     policyHeads(fetch, recovery, old);
     vi.stubGlobal("fetch", fetch);
     const store = checkpointStore();
@@ -586,12 +590,39 @@ describe("native client trust gate", () => {
     expect(fetch.mock.calls.filter(([url]) => url.pathname === "/v1/operations")).toHaveLength(1);
   });
 
+  it.each([
+    ["revocation", { action: "revoke", targets: [] }, { code: "ReleasePolicyRevoked" }],
+    ["recovery-only activation", { recoveryOnly: true }, { code: "ReleasePolicyRecoveryOnly" }],
+    ["publication outage", undefined, { code: "ReleasePolicyInvalid", status: 503 }],
+  ] as const)("discards a valid payment lookup reply after %s", async (_event, update, error) => {
+    const old = signedPolicy();
+    const fetch = policyHeads(vi.fn(), old).mockResolvedValueOnce(attestedDiscovery())
+      .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    if (update) {
+      const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(old).policy));
+      policyHeads(fetch, signedPolicy({ sequence: "3", previousPolicyDigest, ...update }), old);
+    } else {
+      fetch.mockImplementation(async (url: URL) => {
+        expect(url.pathname).toMatch(/\/policy\.json$/);
+        return url.hostname.startsWith("release-peer.") ? new Response(null, { status: 503 }) : new Response(old);
+      });
+    }
+    vi.stubGlobal("fetch", fetch);
+    const store = checkpointStore();
+    const client = createNitroDecryptionService({ trust, policyStore: store });
+    await expect(client.address(signer.address)).rejects.toMatchObject(error);
+    expect(await store.current()).toMatchObject({ sequence: update ? "3" : "2" });
+    expect(fetch.mock.calls.filter(([url]) => url.pathname === "/v1/operations")).toHaveLength(1);
+  });
+
   it("blocks a cached payment while a publisher is unavailable and retains the attested boot", async () => {
     const policy = signedPolicy();
     const fetch = policyHeads(vi.fn(), policy).mockResolvedValueOnce(attestedDiscovery())
       .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    policyHeads(fetch, policy);
     fetch.mockResolvedValueOnce(new Response(policy)).mockResolvedValueOnce(new Response(null, { status: 503 }));
     policyHeads(fetch, policy).mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    policyHeads(fetch, policy);
     vi.stubGlobal("fetch", fetch);
     const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
     await client.address(signer.address);
@@ -624,8 +655,10 @@ describe("native client trust gate", () => {
       const fetch = policyHeads(vi.fn(), policy)
         .mockResolvedValueOnce(initialDiscovery)
         .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+      policyHeads(fetch, policy);
       policyHeads(fetch, policy).mockImplementationOnce(() => attestedDiscovery(undefined, replacementBoot))
         .mockImplementationOnce((_url, init) => lookupReply(init, replacementBoot));
+      policyHeads(fetch, policy);
       vi.stubGlobal("fetch", fetch);
       const requiredBootKeyId = encodeLowerHex(sha256(requireHex(publicPair(secrets), 130)));
       const client = createNitroDecryptionService({
@@ -798,7 +831,8 @@ describe("native client trust gate", () => {
     expect(requests).toBe(2);
     expect(signMessages).toHaveBeenCalledOnce();
     await expect(client.address(signer.address)).resolves.toBeDefined();
-    expect(fetch.mock.calls.at(-1)?.[0].href).toBe(`${replacement}v1/operations`);
+    expect(fetch.mock.calls.filter(([url]) => url.pathname === "/v1/operations").at(-1)?.[0].href)
+      .toBe(`${replacement}v1/operations`);
     expect(requests).toBe(3);
     expect(signMessages).toHaveBeenCalledOnce();
   });
@@ -947,7 +981,7 @@ describe("native client trust gate", () => {
       else await expect(lookup).rejects.toMatchObject({
         code: change === "revoke" ? "ReleasePolicyRevoked" : "ReleasePolicyInvalid",
       });
-      expect(fetch.mock.calls.filter(([url]) => url.pathname.endsWith("/policy.json"))).toHaveLength(2);
+      expect(fetch.mock.calls.filter(([url]) => url.pathname.endsWith("/policy.json"))).toHaveLength(change === "activate" ? 4 : 2);
       const contacts = fetch.mock.calls.filter(([url]) => !url.pathname.endsWith("/policy.json")).map(([url]) => url.href);
       expect(contacts).toEqual(change === "activate" ? [
         `${replacement}v1/nitro/attestation`, `${replacement}v1/operations`,

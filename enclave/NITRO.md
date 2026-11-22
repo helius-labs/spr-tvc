@@ -424,8 +424,9 @@ The old client rejects `address()` and still supports the owner's signed
 wallet-local privacy keys under their own signatures. Stopping destination
 lookup protects supported wallets after they observe the cutover. On use, a
 wallet refreshes its attestation session after 60 seconds from the start of
-its policy fetch. Payment lookups also read both policy heads before reusing
-a cached session. The TypeScript wallet builders repeat the lookup after
+its policy fetch. Payment lookups read both signed heads before reusing a
+cached session and again after authenticating the key reply. The TypeScript
+wallet builders repeat the lookup after
 assembling a transfer or preparing a deposit and require the same recipient
 keys. Rust Nitro payment submissions bind the resolved keys to their outputs
 and repeat the lookup after signing and before broadcast. A permissionless
