@@ -111,9 +111,9 @@ and a custody-approved serving executable, release ID and PCR0–PCR3. Each
 publisher also checks the predecessor and attests every activation target.
 Revocation has no targets and can proceed during a custody ledger outage.
 S3 accepts a write against the checked predecessor's ETag. Each publisher
-writes to its own bucket. The mirror copies the primary's signed revision.
-The primary checks the mirror before advancing again. The enclave and
-ingress have no publication permission.
+writes to its own bucket. The mirror copies the primary's signed file, including
+all signatures. The primary checks that the mirror holds the same file before
+advancing again. The enclave and ingress have no publication permission.
 
 Wallets pin both buckets, regions and AWS owners. They read directly from both
 without caching or redirects and authenticate both policies. Equal digests
@@ -125,6 +125,11 @@ connections. A policy is fully published when both buckets agree. Custody
 retirement rechecks agreement after attesting the replacement. If both
 publishers replay the same old policy, the independent wallet pins, policy
 lifetime and local checkpoint bound acceptance.
+
+Each policy can carry up to eight distinct valid signatures. Wallets count only
+keys in their pinned roster. A revision signed by both the outgoing and incoming
+quorums lets each wallet verify it during a signing-key rotation. Publish that
+file to both buckets before distributing the incoming pins.
 
 ## Wallet connection and operations
 

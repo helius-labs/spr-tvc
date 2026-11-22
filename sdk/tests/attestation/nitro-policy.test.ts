@@ -8,7 +8,7 @@ import {
 import { signP256Prehash } from "../../src/crypto/p256.js";
 import { encodeLowerHex } from "../../src/protocol/hex.js";
 
-const privateKeys = [1, 2, 3, 4].map(byte => new Uint8Array(32).fill(byte));
+const privateKeys = Array.from({ length: 9 }, (_, index) => new Uint8Array(32).fill(index + 1));
 const keys = privateKeys.map(key => encodeLowerHex(p256.getPublicKey(key, false)));
 const now = 1_750_000_000_000n;
 const trust: NitroTrust = {
@@ -66,7 +66,7 @@ describe("native Nitro release policy", () => {
     expect(verifyNitroPolicy(manifest(binding, 2, 0), trust, now).checkpoint).toEqual(verified.checkpoint);
   });
 
-  it("rejects too few, duplicate, untrusted, invalid or stale signatures", () => {
+  it("requires a pinned quorum and rejects duplicate, malformed or stale signatures", () => {
     for (const invalid of [manifest(binding, 0), manifest(binding, 0, 0), manifest(binding, 0, 3)]) {
       expect(() => verifyNitroPolicy(invalid, trust, now)).toThrow();
     }
@@ -78,6 +78,17 @@ describe("native Nitro release policy", () => {
     expect(() => validateNitroTrust({ ...trust, keys: [keys[0]!, keys[0]!] })).toThrow();
     expect(() => validateNitroTrust({ ...trust, threshold: 1 })).toThrow();
     expect(() => validateNitroTrust({ ...trust, keys: ["00", keys[1]!] })).toThrow();
+  });
+
+  it("bounds rollover signatures and refuses duplicate or invalid signatures outside the pinned roster", () => {
+    const signers = [0, 1, 2, 3, 4, 5, 6, 7];
+    expect(() => verifyNitroPolicy(manifest(binding, ...signers), trust, now)).not.toThrow();
+    expect(() => verifyNitroPolicy(manifest(binding, ...signers, 8), trust, now)).toThrow();
+    expect(() => verifyNitroPolicy(manifest(binding, 0, 1, 3, 3), trust, now)).toThrow();
+    const [first, second, other] = signatures(binding, 0, 1, 3);
+    expect(() => verifyNitroPolicy(JSON.stringify({ policy: binding, signatures: [first, second, {
+      ...other, signature: first!.signature,
+    }] }), trust, now)).toThrow("InvalidSignature");
   });
 
   it("rejects a conflicting trust domain, seed, network or version, even with valid signatures", () => {
@@ -189,7 +200,7 @@ describe("native Nitro release policy", () => {
   it("rotates signer pins without resetting the publication or its sequence", () => {
     const successor = { ...binding, sequence: "10", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(binding)) };
     const previous = manifest(binding, 0, 1);
-    const rotated = { ...trust, keys: keys.slice(2) };
+    const rotated = { ...trust, keys: keys.slice(2, 4) };
     const next = manifest(successor, 2, 3);
     expect(() => nextNitroPublication(next, previous, rotated, now)).toThrow();
     expect(nextNitroPublication(next, previous, rotated, now, trust)).toBe(true);
@@ -197,6 +208,32 @@ describe("native Nitro release policy", () => {
     expect(() => nextNitroPublication(next, previous, rotated, now, {
       ...trust, publications: [trust.publications[0], { ...trust.publications[1], account: "000000000003" }],
     })).toThrow();
+  });
+
+  it("rolls disjoint signer rosters through a dual-signed revision on both buckets", () => {
+    const original = { ...trust, keys: keys.slice(0, 2) };
+    const rotated = { ...trust, keys: keys.slice(2, 4), minimumSequence: "10" };
+    const head = manifest(binding, 0, 1);
+    const bridge: NitroPolicy = {
+      ...binding, sequence: "10", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(binding)),
+    };
+    const dual = manifest(bridge, 0, 1, 2, 3);
+    expect(nextNitroPublication(dual, head, original, now)).toBe(true);
+    expect(verifyPublishedNitroPolicy([dual, head], original, now)).toMatchObject({ policy: bridge, agreed: false });
+    expect(() => verifyPublishedNitroPolicy([dual, head], rotated, now)).toThrow();
+
+    const oldView = verifyPublishedNitroPolicy([dual, dual], original, now);
+    const newView = verifyPublishedNitroPolicy([dual, dual], rotated, now);
+    expect(newView.checkpoint).toEqual(oldView.checkpoint);
+    expect(newView.agreed).toBe(true);
+    expect(() => verifyNitroPolicy(manifest(bridge, 0, 2, 3), original, now)).toThrow();
+    expect(() => verifyNitroPolicy(manifest(bridge, 0, 1, 2), rotated, now)).toThrow();
+
+    const next: NitroPolicy = { ...bridge, sequence: "11", previousPolicyDigest: newView.checkpoint.digest };
+    const newHead = manifest(next, 2, 3);
+    expect(nextNitroPublication(newHead, dual, rotated, now)).toBe(true);
+    expect(verifyPublishedNitroPolicy([newHead, dual], rotated, now)).toMatchObject({ policy: next, agreed: false });
+    expect(() => verifyPublishedNitroPolicy([newHead, dual], original, now)).toThrow();
   });
 
   it("requires a current activation that has already raised the floor to the retiring epoch's replacement", () => {

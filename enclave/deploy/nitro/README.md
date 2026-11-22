@@ -270,9 +270,9 @@ replica before the wallet advances the checkpoint. An emergency `revoke`
 requires an empty target list and advances the checkpoint as soon as the wallet
 verifies both signed heads. Each publisher checks the predecessor, verifies
 that every activation target attests, and writes against its observed ETag.
-Publish from the first listed bucket's AWS account, then mirror the same file
-from the second account. The tool requires the first bucket's signed revision
-before mirroring and checks the second bucket before advancing the first again.
+Publish from the first listed bucket's AWS account, then mirror the exact signed
+file from the second account. The tool checks the full signed file at both
+buckets before advancing past it. Use a new revision to change its signatures.
 Wallets use the primary's signed policy when the mirror serves the same
 policy or its exact predecessor. A mirror ahead of the primary blocks new
 connections. Retirement requires agreement. Set alerts for mismatched heads
@@ -285,10 +285,22 @@ pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" 
 ```
 
 Wrap-key replacements for a new EIF use the existing receipt and new sealed key
-ARNs. Custodian replacements use a measured rotation. For wallet signing-key
-rotation, distribute the updated trust bundle independently. Keep a common
-signing quorum during rollout so both wallet versions can verify both signed
-heads. Use `--previous-trust` when validating a predecessor signed under old
-pins. The domain, buckets, sequence and custody floor carry through the transition.
+ARNs. Custodian replacements use a measured rotation.
+
+### Rotate wallet signing keys
+
+1. Have the outgoing and incoming quorums sign the same next revision. Keep
+   the domain, bucket pins and custody floor. The file can carry up to eight
+   distinct signatures.
+2. Publish that signed file to both buckets using the outgoing trust. Confirm
+   both copies verify under the incoming trust before distributing the new pins.
+   Pin the transition revision as the minimum sequence in the new trust bundle.
+3. After wallets adopt the new trust, publish the next revision with the incoming
+   quorum and retire the outgoing keys.
+
+If the outgoing quorum is unavailable or compromised, distribute new wallet
+trust independently and publish a successor signed by the incoming quorum. Use
+`--previous-trust` to verify the published predecessor. Wallets need the new
+pins and both updated bucket heads to resume using the service.
 
 [Security model](../../NITRO.md) · [Test invariants](../../../tests/INVARIANTS.md) · [Audit handoff](../../../tests/AUDIT.md)

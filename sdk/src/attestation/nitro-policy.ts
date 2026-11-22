@@ -163,16 +163,19 @@ function verifySignedPolicy(text: string, trust: NitroTrust) {
     for (const pcr of Object.values(target.pcrs)) checkDigest(pcr, 48);
   }
   if (!Array.isArray(signatures) || signatures.length < trust.threshold ||
-      signatures.length > trust.keys.length) invalid();
+      signatures.length > MAX_AUTHORITIES) invalid();
   const digest = nitroPolicySigningDigest(policy);
-  const accepted = new Set<string>();
+  const seen = new Set<string>();
+  let approvals = 0;
   for (const signature of signatures) {
     assertExactObjectKeys(signature, ["key", "signature"], "ReleasePolicyInvalid");
     const { key } = signature;
-    if (!trust.keys.includes(key) || accepted.has(key)) invalid();
+    if (seen.has(key)) invalid();
     verifyP256Prehash(requireHex(key, 65), digest, requireHex(signature.signature, 64));
-    accepted.add(key);
+    seen.add(key);
+    if (trust.keys.includes(key)) approvals++;
   }
+  if (approvals < trust.threshold) invalid();
   return {
     policy, validFrom, expiresAt,
     checkpoint: { sequence: policy.sequence, digest: encodeLowerHex(digest), minimumCustodyEpoch: policy.minimumCustodyEpoch },

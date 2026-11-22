@@ -98,16 +98,21 @@ export async function publish(
   try {
     await writeFile(candidate, text, { mode: 0o600, flag: "wx" });
     const head = policy.sequence === "1" ? undefined : await readHead();
-    if (!nextNitroPublication(text, head?.text, trust, now, previousTrust)) return;
+    const needsWrite = nextNitroPublication(text, head?.text, trust, now, previousTrust);
+    if (!needsWrite && head?.text !== text) throw new Error("use a new revision to change published signatures");
     const [first, second] = trust.publications;
     const isSecond = bucket === second.bucket;
-    if (isSecond || head) {
+    if (isSecond || (needsWrite && head)) {
       const { url, account } = nitroPublication(trust, isSecond ? first : second);
       const peer = await readNitroPolicy(url, AbortSignal.timeout(5_000), account);
-      if (nextNitroPublication(text, peer, trust, now, previousTrust) && isSecond) {
-        throw new Error("publish the exact policy to the first bucket before mirroring it");
+      if (isSecond && peer !== text) {
+        throw new Error("mirror the primary's exact signed policy file");
+      }
+      if (!isSecond && peer !== head?.text && peer !== text) {
+        throw new Error("the mirror must hold the same signed predecessor before the primary advances");
       }
     }
+    if (!needsWrite) return;
     if (policy.action === "activate" && custodyTrust) {
       await run("python3", ["-B", custodyLedger, custodyTrust, "check-serving-policy", candidate], 60_000);
     }
@@ -119,7 +124,7 @@ export async function publish(
     } catch (error) {
       // A retry is successful only if S3 already holds this exact signed policy.
       const observed = await readHead();
-      if (nextNitroPublication(text, observed.text, trust, now, previousTrust)) throw error;
+      if (observed.text !== text) throw error;
     }
   } finally {
     await rm(directory, { recursive: true, force: true });

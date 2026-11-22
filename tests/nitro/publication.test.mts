@@ -7,7 +7,12 @@ import { signP256Prehash } from "../../sdk/src/crypto/p256.js";
 import { encodeLowerHex } from "../../sdk/src/protocol/hex.js";
 import { bucketPolicy, publish } from "../../xtask/nitro-publish.js";
 
-const secrets = [1, 2].map(byte => Buffer.alloc(32, byte));
+const secrets = [1, 2, 3, 4].map(byte => Buffer.alloc(32, byte));
+const keys = secrets.map(secret => {
+  const key = createECDH("prime256v1");
+  key.setPrivateKey(secret);
+  return key.getPublicKey("hex", "uncompressed");
+});
 const trust: NitroTrust = {
   network: "devnet", securityDomainId: "ab".repeat(32), noteSeedCommitment: "de".repeat(32),
   minimumSequence: "1", minimumCustodyEpoch: "1", threshold: 2,
@@ -15,11 +20,7 @@ const trust: NitroTrust = {
     { bucket: "release-test", account: "000000000001", region: "eu-north-1" },
     { bucket: "release-peer", account: "000000000002", region: "eu-west-1" },
   ],
-  keys: secrets.map(secret => {
-    const key = createECDH("prime256v1");
-    key.setPrivateKey(secret);
-    return key.getPublicKey("hex", "uncompressed");
-  }),
+  keys: keys.slice(0, 2),
 };
 const now = Date.now();
 const first: NitroPolicy = {
@@ -28,10 +29,10 @@ const first: NitroPolicy = {
   validFromMs: String(now - 1000), expiresAtMs: String(now + 60_000), targets: [],
 };
 
-function signed(policy: NitroPolicy) {
+function signed(policy: NitroPolicy, signers = [0, 1]) {
   const digest = nitroPolicySigningDigest(policy);
-  return JSON.stringify({ policy, signatures: secrets.map((secret, index) => ({
-    key: trust.keys[index], signature: encodeLowerHex(signP256Prehash(secret, digest)),
+  return JSON.stringify({ policy, signatures: signers.map(index => ({
+    key: keys[index], signature: encodeLowerHex(signP256Prehash(secrets[index]!, digest)),
   })) });
 }
 
@@ -128,7 +129,7 @@ test("mirrors the first publisher's policy into only the selected pinned bucket"
   }
   await publish(trust, peer.bucket, signed(first), awsOnly(aws));
   await assert.rejects(publish(trust, "unexpected-bucket", signed(first), awsOnly(aws)), /pinned publication buckets/);
-  await assert.rejects(publish(trust, peer.bucket, signed({ ...first, minimumCustodyEpoch: "2" }), awsOnly(aws)), /ReleasePolicyInvalid/);
+  await assert.rejects(publish(trust, peer.bucket, signed({ ...first, minimumCustodyEpoch: "2" }), awsOnly(aws)), /exact signed policy/);
   assert.equal(writes, 1);
 });
 
@@ -141,7 +142,43 @@ test("checks the second bucket holds the predecessor before advancing the first 
     assert.ok(args.includes("get-object"));
     await writeFile(args.at(-1)!, signed(second));
     return { stdout: JSON.stringify({ ETag: '"second"' }) };
-  })), /ReleasePolicyInvalid/);
+  })), /same signed predecessor/);
+});
+
+test("publishes a rollover revision with both quorums and mirrors its exact signatures", async context => {
+  const [primary, mirror] = trust.publications;
+  const heads = new Map([[primary.bucket, signed(first)], [mirror.bucket, signed(first)]]);
+  const bridge = { ...first, sequence: "2", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(first)) };
+  const dual = signed(bridge, [0, 1, 2, 3]);
+  const partial = signed(bridge);
+  const successor = { ...bridge, sequence: "3", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(bridge)) };
+  context.mock.method(globalThis, "fetch", async (url: URL) => new Response(heads.get(url.hostname.split(".")[0]!)));
+  const runner = awsOnly(async args => {
+    const bucket = args[args.indexOf("--bucket") + 1]!;
+    if (args.includes("get-object")) {
+      await writeFile(args.at(-1)!, heads.get(bucket)!);
+      return { stdout: JSON.stringify({ ETag: '"current"' }) };
+    }
+    assert.ok(args.includes("put-object"));
+    heads.set(bucket, await readFile(args.at(-1)!, "utf8"));
+    return { stdout: "{}" };
+  });
+  await publish(trust, primary.bucket, dual, runner);
+  await assert.rejects(publish(trust, primary.bucket, partial, runner), /new revision/);
+  await assert.rejects(publish(trust, mirror.bucket, partial, runner), /exact signed policy/);
+  assert.equal(heads.get(mirror.bucket), signed(first));
+  await publish(trust, mirror.bucket, dual, runner);
+  assert.equal(heads.get(mirror.bucket), heads.get(primary.bucket));
+
+  heads.set(mirror.bucket, partial);
+  await assert.rejects(publish(trust, primary.bucket, signed(successor), runner), /same signed predecessor/);
+  heads.set(mirror.bucket, dual);
+  const rotated = { ...trust, keys: keys.slice(2) };
+  const latest = signed(successor, [2, 3]);
+  await publish(rotated, primary.bucket, latest, runner);
+  await publish(rotated, mirror.bucket, latest, runner);
+  assert.equal(heads.get(primary.bucket), latest);
+  assert.equal(heads.get(mirror.bucket), latest);
 });
 
 test("each wallet policy bucket separates control-plane administration from publishing", () => {
