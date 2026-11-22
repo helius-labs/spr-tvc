@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createECDH } from "node:crypto";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import type { NitroPolicy, NitroTarget, NitroPolicyCheckpoint } from "@heliuslabs/spr-decryption-service/nitro";
+import type { NitroPolicy, NitroTarget, NitroPolicyCheckpoint, NitroTrust } from "@heliuslabs/spr-decryption-service/nitro";
 import {
   acceptedReplacementPolicy, checkpointStore, nativeDevnet, parseRetirementReport,
   requireCurrentPolicy, requireOriginalPolicy, requireRetirementPolicy, waitForRetirement,
@@ -176,12 +177,23 @@ test("native rehearsal refuses to replace a corrupt checkpoint", async () => {
   }
 });
 
-test("seed cutover refuses a reused domain or seed commitment", async () => {
+test("seed cutover validates both trust files before opening the checkpoint", async () => {
   const directory = await mkdtemp(join(tmpdir(), "spr-nitro-cutover-"));
   try {
     const original = join(directory, "old.json");
     const next = join(directory, "new.json");
-    const trust = { network: "devnet", securityDomainId: "11".repeat(32), noteSeedCommitment: "22".repeat(32) };
+    const checkpoint = join(directory, "wallet.sqlite");
+    const [a, b, c, d, e] = Array.from({ length: 5 }, () => createECDH("prime256v1").generateKeys("hex"));
+    const trust: NitroTrust = {
+      network: "devnet", securityDomainId: "11".repeat(32), noteSeedCommitment: "22".repeat(32),
+      minimumSequence: "1", minimumCustodyEpoch: "1", minimumPolicyDigest: "77".repeat(32), threshold: 2,
+      keys: [a!, b!], custodyKeys: [c!, d!, e!],
+      publications: [
+        { bucket: "release-primary", region: "eu-north-1", account: "000000000001" },
+        { bucket: "release-mirror", region: "eu-west-1", account: "000000000002" },
+      ],
+    };
+    const replacement = { ...trust, securityDomainId: "44".repeat(32), noteSeedCommitment: "33".repeat(32) };
     await writeFile(original, JSON.stringify(trust));
     for (const candidate of [
       { ...trust, noteSeedCommitment: "33".repeat(32) },
@@ -189,8 +201,18 @@ test("seed cutover refuses a reused domain or seed commitment", async () => {
       { ...trust, securityDomainId: "44".repeat(32), noteSeedCommitment: "33".repeat(32), recoveryOnly: true },
     ]) {
       await writeFile(next, JSON.stringify(candidate));
-      await assert.rejects(nativeDevnet(original, join(directory, "wallet.sqlite"), { walletTrust: next }), /different domain and seed commitment/);
+      await assert.rejects(nativeDevnet(original, checkpoint, { walletTrust: next }), /different domain and seed commitment/);
     }
+    const makeRehearsal = () => nativeDevnet(original, checkpoint, { walletTrust: next });
+    await writeFile(next, JSON.stringify({ ...replacement, keys: [] }));
+    await assert.rejects(makeRehearsal(), { code: "ReleasePolicyInvalid" });
+    await writeFile(next, JSON.stringify(replacement).replace('"network":', '"network":"mainnet","network":'));
+    await assert.rejects(makeRehearsal(), { code: "DuplicateJsonField" });
+    await assert.rejects(access(checkpoint), { code: "ENOENT" });
+    await writeFile(next, JSON.stringify(replacement));
+    const rehearsal = await makeRehearsal();
+    assert.equal(rehearsal.seedChanged, true);
+    rehearsal.close();
   } finally {
     await rm(directory, { recursive: true });
   }

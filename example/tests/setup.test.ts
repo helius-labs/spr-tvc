@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 
 import {
@@ -95,3 +99,33 @@ for (const { name, genesis, local, nitro, error } of cases) {
     assert.equal(fetch.mock.callCount(), 1);
   });
 }
+
+test("a native rehearsal requires a persisted recipient keypair distinct from the payer", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "spr-nitro-recipient-"));
+  t.after(() => rm(directory, { recursive: true }));
+  const keypair = join(directory, "payer.json");
+  const jwk = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" });
+  await writeFile(keypair, JSON.stringify([
+    ...Buffer.from(jwk.d!, "base64url"), ...Buffer.from(jwk.x!, "base64url"),
+  ]), { mode: 0o600 });
+  setEnv(t, {
+    SPR_NETWORK: "devnet",
+    EXAMPLE_ACCEPT_PUBLIC_RECIPIENT: "1",
+    ZOLANA_ENDPOINT: "https://rpc.example/",
+    ZOLANA_INDEXER_URL: "http://127.0.0.1:8080/",
+    ZOLANA_PROVER_URL: "http://127.0.0.1:8081/",
+    DECRYPTION_SERVICE_LOCAL_ENDPOINT: undefined,
+    NITRO_WALLET_TRUST: join(directory, "trust.json"),
+    TVC_SOLANA_KEYPAIR_PATH: keypair,
+    NITRO_RECIPIENT_KEYPAIR_PATH: undefined,
+  });
+  t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    assert.equal(String(input), "https://rpc.example/");
+    const body = JSON.parse(String(init?.body)) as { method: string; id: unknown };
+    assert.equal(body.method, "getGenesisHash");
+    return Response.json({ jsonrpc: "2.0", id: body.id, result: DEVNET });
+  });
+  await assert.rejects(setup(), /set NITRO_RECIPIENT_KEYPAIR_PATH/);
+  process.env["NITRO_RECIPIENT_KEYPAIR_PATH"] = keypair;
+  await assert.rejects(setup(), /separate unfunded rehearsal recipient/);
+});

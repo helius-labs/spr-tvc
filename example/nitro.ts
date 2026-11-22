@@ -1,4 +1,4 @@
-import { lstat, readFile } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout } from "node:timers/promises";
 import type { ShieldedAddress } from "@heliuslabs/spr";
@@ -6,7 +6,7 @@ import { DecryptionServiceError } from "@heliuslabs/spr-decryption-service";
 import {
   advancesNitroPolicy, createNitroDecryptionService, type NitroPolicyCheckpoint, type NitroPolicyStore, type NitroTrust,
 } from "@heliuslabs/spr-decryption-service/nitro";
-import { isValidNitroPolicyCheckpoint } from "../sdk/src/attestation/nitro-policy.js";
+import { isValidNitroPolicyCheckpoint, validateNitroTrust } from "../sdk/src/attestation/nitro-policy.js";
 import { readPublishedNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
 import { decodeDecimalU64 } from "../sdk/src/protocol/decimal.js";
 import { DecryptionServiceError as PolicyReadError } from "../sdk/src/protocol/error.js";
@@ -164,8 +164,9 @@ export async function waitForRetirement(path: string, scope: RetirementScope) {
 }
 
 async function devnetTrust(path: string): Promise<NitroTrust> {
-  const trust = JSON.parse(await readFile(path, "utf8")) as NitroTrust;
-  if (trust.network !== "devnet") throw new Error("the Nitro rehearsal requires devnet wallet trust");
+  const trust = parseStrictJson<NitroTrust>(await readBoundedDocument(path, 32 * 1024));
+  if (trust?.network !== "devnet") throw new Error("the Nitro rehearsal requires devnet wallet trust");
+  validateNitroTrust(trust);
   return trust;
 }
 

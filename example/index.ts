@@ -34,6 +34,9 @@ async function main(): Promise<void> {
       if (registration) await send(registration);
       if (!await isWalletRegistered({ rpc: zolana, owner: sender.address })) throw new Error("sender did not register");
     }
+    const payment = { rpc: zolana, owner: recipient.address, service };
+    const recipientAddress = await resolvePaymentAddress(payment);
+    const requireOriginalPaymentPolicy = await nitro?.prepareTransfer();
 
     const wallet = new Wallet({ identity: keys.address() });
     const deposit = await buildDepositTransaction({
@@ -45,9 +48,6 @@ async function main(): Promise<void> {
     const depositTx = await send(deposit);
     await syncWallet({ client: zolana, wallet, keys, config: { requireSlot: depositTx.slot } });
 
-    const payment = { rpc: zolana, owner: recipient.address, service };
-    const recipientAddress = await resolvePaymentAddress(payment);
-    const requireOriginalPaymentPolicy = await nitro?.prepareTransfer();
     const transfer = await buildTransferTransaction({
       client: zolana,
       wallet,

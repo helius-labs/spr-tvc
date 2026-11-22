@@ -1,6 +1,5 @@
 import "dotenv/config";
 
-import { readFile } from "node:fs/promises";
 import {
   assertIsFullySignedTransaction,
   assertIsTransactionWithinSizeLimit,
@@ -28,6 +27,7 @@ import type { AssetBalance } from "@heliuslabs/spr/transaction";
 import { createDecryptionService, type DecryptionService, type Network } from "@heliuslabs/spr-decryption-service";
 import { genesisHashForNetwork } from "@heliuslabs/spr-decryption-service/protocol";
 import { createLocalDecryptionService } from "@heliuslabs/spr-decryption-service/testing";
+import { readBoundedDocument } from "../xtask/read-document.js";
 
 import { turnkeyClient, turnkeySigner, type OwnerSigner } from "./turnkey.js";
 
@@ -70,8 +70,12 @@ function clientConfig(network: Network): SprClientConfig {
   };
 }
 
-async function filePayer() {
-  const secret = JSON.parse(await readFile(env("TVC_SOLANA_KEYPAIR_PATH"), "utf8")) as number[];
+async function fileSigner(variable: string) {
+  const secret: unknown = JSON.parse(await readBoundedDocument(env(variable), 1024));
+  if (!Array.isArray(secret) || secret.length !== 64 ||
+      secret.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)) {
+    throw new Error(`expected a Solana keypair file at ${variable}`);
+  }
   const bytes = Uint8Array.from(secret);
   try {
     return await createKeyPairSignerFromBytes(bytes);
@@ -105,15 +109,16 @@ export async function setup(): Promise<ExampleSetup> {
   if (localEndpoint) {
     return {
       zolana,
-      sender: await filePayer(),
+      sender: await fileSigner("TVC_SOLANA_KEYPAIR_PATH"),
       recipient: await generateKeyPairSigner(),
       localnet: true,
       service: createLocalDecryptionService({ network, endpoint: new URL(localEndpoint), genesisHash: genesis }),
     };
   }
   if (nitroTrust) {
-    const sender = await filePayer();
-    const recipient = await generateKeyPairSigner();
+    const sender = await fileSigner("TVC_SOLANA_KEYPAIR_PATH");
+    const recipient = await fileSigner("NITRO_RECIPIENT_KEYPAIR_PATH");
+    if (sender.address === recipient.address) throw new Error("use a separate unfunded rehearsal recipient");
     const { nativeDevnet } = await import("./nitro.js");
     const nextTrust = process.env["NITRO_REPLACEMENT_TRUST"]?.trim();
     const epoch = process.env["NITRO_REPLACEMENT_EPOCH"]?.trim();

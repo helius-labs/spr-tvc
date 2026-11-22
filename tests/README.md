@@ -18,22 +18,27 @@ keeps no public SOL. Pass a port offset to run another Solana localnet.
 ## Live Nitro upgrade
 
 For an on-chain rehearsal, start with a canonical devnet policy containing
-only the old epoch. Use a funded devnet fee payer and the approved native
-wallet trust bundle. The example creates a fresh recipient and looks up its
-public keys before the recipient authorizes anything.
+only the old epoch. Use a funded devnet fee payer, the approved native
+wallet trust bundle and a fresh devnet keypair for the recipient. Keep the
+recipient keypair in a private directory outside the checkout. The same signer
+can authorize recovery of the note if the rehearsal process exits after the
+transfer. Leave this account unfunded and unregistered.
 
 ```sh
+solana-keygen new --silent --no-bip39-passphrase --outfile "$recipient_keypair"
 pnpm build:ts
 API_KEY="$devnet_api_key" EXAMPLE_ACCEPT_PUBLIC_RECIPIENT=1 \
-TVC_SOLANA_KEYPAIR_PATH="$payer" NITRO_WALLET_TRUST="$wallet_trust" \
+TVC_SOLANA_KEYPAIR_PATH="$payer" NITRO_RECIPIENT_KEYPAIR_PATH="$recipient_keypair" \
+NITRO_WALLET_TRUST="$wallet_trust" \
 NITRO_CHECKPOINT_PATH="$checkpoint" NITRO_REPLACEMENT_EPOCH=2 \
 pnpm --filter spr-tvc-typescript-client-example example
 ```
 
 Use absolute file paths and a new checkpoint file for each rehearsal. The
-example checks that both buckets serve the policy it accepted for the original
-epoch after resolving the address. It rechecks the recipient and signed policy
-after signing, before sending. Wait for the
+example validates both trust files when testing a seed cutover. Before
+depositing, it resolves the recipient without their signature and checks that
+both buckets serve the policy it accepted for the original epoch. It rechecks
+the recipient and signed policy after signing, before sending. Wait for the
 confirmed transfer, stop the old replica, then publish the replacement custody
 floor to both buckets. The example waits up to five minutes for both buckets
 to serve the accepted policy with targets only at the requested replacement
