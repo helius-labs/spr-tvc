@@ -797,11 +797,8 @@ account and needs `s3:GetBucketPolicy`, `s3:GetBucketVersioning`,
 `s3:GetBucketOwnershipControls` and `s3:GetLifecycleConfiguration`.
 Both checks compare the installed bucket policy with the policy generated
 from the exact roles in the independent custody trust file. They also
-require versioning so a damaged publication can be restored. Wallet pin
-verification reads each version ID from the S3 response that carried the
-signed policy and requires both IDs to stay the same through verification.
+require versioning so a damaged publication can be restored.
 Pass the same profiles on devnet to rehearse these checks.
-[S3 GetObject response](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html#API_GetObject_ResponseSyntax)
 Recovery-only activation can proceed during a key or replica inspection outage
 while the required records remain readable.
 [Cross-account KMS permissions](https://docs.aws.amazon.com/kms/latest/developerguide/key-policy-modifying-external-accounts.html) · [S3 bucket policy permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketPolicy.html)
@@ -827,11 +824,12 @@ policy or its exact predecessor. A mirror ahead of the primary blocks new
 connections. Retirement requires agreement. Set alerts for mismatched heads
 and approaching expiration.
 
-Retain each policy's S3 version ID outside its publication bucket. Save
-`publicationVersions` from the payment pin check in the release record
-alongside the signed policy and wallet trust. For a recovery-only policy
-or revocation, read the version ID with `head-object` using the pinned
-bucket owner and the key `spr-release/<network>/<securityDomainId>/policy.json`.
+Retain `publicationVersions` from `--check-wallet-trust` in the release
+record alongside the signed policy and wallet trust. Enable versioning in
+both buckets. The check takes each version ID from the same S3 response as
+the signed policy, including recovery-only policies and revocations. For an
+activation, both IDs must stay the same through verification.
+[S3 GetObject response](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html#API_GetObject_ResponseSyntax)
 
 If one current policy is unreadable, suspend other writes to the affected
 bucket. Use its publisher role and the independently retained version ID.

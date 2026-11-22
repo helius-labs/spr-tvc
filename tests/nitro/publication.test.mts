@@ -457,7 +457,9 @@ test("rechecks live replica evidence after the final custody read", async contex
   const text = signed(activation);
   const predecessor = signed(first);
   let peer = predecessor;
-  context.mock.method(globalThis, "fetch", async () => new Response(peer));
+  context.mock.method(globalThis, "fetch", async (url: URL) => new Response(peer, {
+    headers: { "x-amz-version-id": url.hostname },
+  }));
   let remaining = 0;
   let remainingAfterCustody = 30_000;
   let unavailableBootstrap = false;
@@ -1001,7 +1003,15 @@ test("mainnet checks both installed publication buckets before enabling payments
   peer = signed(recovery);
   const recoveryPins = { ...pins(recovery), network: recovery.network, recoveryOnly: true };
   await publish(recoveryPins, primary.bucket, peer, missingProfiles);
-  assert.equal((await verifyDistributionPins(recoveryPins, missingProfiles)).recoveryOnly, true);
+  const recoveryCheckpoint = await verifyDistributionPins(recoveryPins, missingProfiles);
+  assert.equal(recoveryCheckpoint.recoveryOnly, true);
+  assert.deepEqual(recoveryCheckpoint.publicationVersions, verified.publicationVersions);
+  await assert.rejects(verifyDistributionPins(recoveryPins, {
+    ...missingProfiles, async probe() {
+      versions.set(mirror.bucket, "different-recovery-version");
+      return options.probe();
+    },
+  }), /S3 policy version changed during wallet trust verification/);
   assert.equal(inspected.size, 0);
 });
 
@@ -1009,11 +1019,15 @@ test("ships only the exact current policy agreed by the two pinned buckets", asy
   let current = { ...first, sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest };
   let peer = first;
   let mirrorEnvelope: string | undefined;
+  let mirrorVersion: string | undefined = "mirror-revocation";
   context.mock.method(globalThis, "fetch", async (url: URL, options: RequestInit) => {
     const isPrimary = url.hostname.startsWith(trust.publications[0].bucket + ".");
     const account = trust.publications[isPrimary ? 0 : 1].account;
     assert.equal(new Headers(options.headers).get("x-amz-expected-bucket-owner"), account);
-    return new Response(isPrimary ? signed(current) : mirrorEnvelope ?? signed(peer));
+    const version = isPrimary ? "primary-revocation" : mirrorVersion;
+    return new Response(isPrimary ? signed(current) : mirrorEnvelope ?? signed(peer), {
+      headers: version === undefined ? {} : { "x-amz-version-id": version },
+    });
   });
   await assert.rejects(verifyDistributionPins(pins(current)), /same signed policy file/);
   peer = current;
@@ -1024,7 +1038,17 @@ test("ships only the exact current policy agreed by the two pinned buckets", asy
   mirrorEnvelope = undefined;
   await assert.rejects(verifyDistributionPins(trust), /match the current policy/);
   await assert.rejects(verifyDistributionPins({ ...pins(current), minimumPolicyDigest: "99".repeat(32) }), /ReleasePolicyInvalid/);
-  assert.equal((await verifyDistributionPins(pins(current))).sequence, current.sequence);
+  for (const version of [undefined, "null"]) {
+    mirrorVersion = version;
+    await assert.rejects(verifyDistributionPins(pins(current)), /expected an original S3 policy version/);
+  }
+  mirrorVersion = "mirror-revocation";
+  const verified = await verifyDistributionPins(pins(current));
+  assert.equal(verified.sequence, current.sequence);
+  assert.deepEqual(verified.publicationVersions, [
+    { bucket: trust.publications[0].bucket, versionId: "primary-revocation" },
+    { bucket: trust.publications[1].bucket, versionId: "mirror-revocation" },
+  ]);
   current = peer = { ...current, minimumCustodyEpoch: "2", recoveryOnly: true };
   await assert.rejects(verifyDistributionPins(pins(current)), /match the current policy/);
   assert.equal((await verifyDistributionPins({ ...pins(current), minimumCustodyEpoch: "2", recoveryOnly: true })).sequence, "2");
@@ -1037,7 +1061,9 @@ test("wallet activation pins require the active custody roster and a stable publ
   const text = signed(activate, [0, 1], [0, 1, 3, 4]);
   const incoming = { ...pins(activate), custodyKeys: custodyKeys.slice(3) };
   let head = text;
-  context.mock.method(globalThis, "fetch", async () => new Response(head));
+  context.mock.method(globalThis, "fetch", async (url: URL) => new Response(head, {
+    headers: { "x-amz-version-id": url.hostname },
+  }));
   const custodyTrust = "/pinned/custody.json";
   let nextCutover: string | null = null;
   let changedEnvelope: string | undefined;

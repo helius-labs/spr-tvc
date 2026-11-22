@@ -394,7 +394,10 @@ async function pinnedPublication(trust: NitroTrust) {
       checkpoint.recoveryOnly !== (trust.recoveryOnly ?? false)) {
     throw new Error("wallet pins must match the current policy agreed by both buckets");
   }
-  return published;
+  const publicationVersions = trust.publications.map(({ bucket }, index) => ({
+    bucket, versionId: versionId(published.versionIds[index]),
+  }));
+  return { ...published, publicationVersions };
 }
 
 type StoredVersion = { VersionId: string; Size: number };
@@ -525,15 +528,14 @@ export async function verifyDistributionPins(
   trust: NitroTrust,
   { custodyTrust, sourceProfile, replicaProfile, publicationProfiles, run = runCommand, probe = probeNitroTarget }:
   Pick<PublicationOptions, "custodyTrust" | "sourceProfile" | "replicaProfile" | "publicationProfiles" | "run" | "probe"> = {},
-): Promise<NitroPolicyCheckpoint & { publicationVersions?: readonly { bucket: string; versionId: string }[] }> {
+): Promise<NitroPolicyCheckpoint & { publicationVersions: readonly { bucket: string; versionId: string }[] }> {
   validateNitroTrust(trust);
   const published = await pinnedPublication(trust);
-  if (published.policy.action === "revoke") return published.checkpoint;
+  if (published.policy.action === "revoke") {
+    return { ...published.checkpoint, publicationVersions: published.publicationVersions };
+  }
   if (!custodyTrust) throw new Error("activation requires --custody-trust");
   const bucketChecks = await paymentPublicationChecks(trust, published.policy, custodyTrust, publicationProfiles);
-  const publicationVersions = bucketChecks?.map(({ publication: { bucket } }, index) => ({
-    bucket, versionId: versionId(published.versionIds[index]),
-  }));
 
   const directory = await mkdtemp(join(tmpdir(), "spr-wallet-trust-"));
   try {
@@ -549,7 +551,7 @@ export async function verifyDistributionPins(
     ]);
     const confirmed = await pinnedPublication(trust);
     if (confirmed.text !== published.text) throw new Error("signed policy changed during wallet trust verification");
-    if (publicationVersions?.some((publication, index) => versionId(confirmed.versionIds[index]) !== publication.versionId)) {
+    if (published.publicationVersions.some(({ versionId }, index) => confirmed.publicationVersions[index]?.versionId !== versionId)) {
       throw new Error("S3 policy version changed during wallet trust verification");
     }
     const now = BigInt(Date.now());
@@ -557,7 +559,7 @@ export async function verifyDistributionPins(
       throw new Error("custody approval roster changed during wallet trust verification");
     }
     requireFreshProbes(probes, now);
-    return { ...confirmed.checkpoint, ...(publicationVersions ? { publicationVersions } : {}) };
+    return { ...confirmed.checkpoint, publicationVersions: confirmed.publicationVersions };
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

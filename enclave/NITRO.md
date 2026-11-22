@@ -373,8 +373,9 @@ Wallet expiry and checkpoint checks still apply to the restored bytes.
 Mainnet payment publication and wallet pin verification inspect both
 publication buckets with read-only identities in the owning accounts.
 They require the generated policies, versioning, enforced bucket ownership
-and absence of lifecycle rules. Pin verification also requires both
-current policies to have original S3 version IDs.
+and absence of lifecycle rules. Every pin check records both original S3
+version IDs from the responses carrying the authenticated policy. For an
+activation, a change in either ID during verification blocks pin distribution.
 
 Shipped pins bind the minimum sequence to its exact policy digest. The
 immediate successor must name that digest as its predecessor. The checkpoint
