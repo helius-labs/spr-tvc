@@ -18,8 +18,9 @@ from approval import (
 )
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
-    check_recovery_bucket, find_retirement, ledger_replica, list_objects, load_epoch, load_retirement,
-    read_registered_target, recovery_deadline, require_active_epoch, require_pinned_publications,
+    check_recovery_bucket, check_registered_target, find_retirement, ledger_replica, list_objects, load_epoch, load_retirement,
+    publication_time, read_registered_target, read_replicated_record, recovery_deadline, replica_trust,
+    require_active_epoch, require_pinned_publications,
     require_publication_roster, require_replicated_custody, retirement_approval, retirement_bootstrap,
     retirement_object_name, retirement_recovery, retirement_target, sign_share_recovery,
     target_attestation, target_object_name, target_path, write_once,
@@ -216,7 +217,7 @@ def retirement_inventory(trust, epoch, index):
     targets = list(registered_targets(trust, epoch, marker["receiptSha256"]))
     require_retirement_replication(trust, marker, targets)
     role, keys = slot_inventory(trust, epoch, custodians[index - 1], targets, index)
-    return marker, role, keys, published_at
+    return marker, role, keys, published_at, targets
 
 
 def require_retirement_replication(trust, marker, targets):
@@ -230,6 +231,19 @@ def require_retirement_replication(trust, marker, targets):
         *(target_object_name(target) for target in targets),
     }
     require_replicated_custody(trust, replica, replacement, registrations)
+
+
+def require_observed_target_replication(trust, marker, evidence):
+    replica = ledger_replica(trust)
+    if replica is None or evidence["replacementTargetIdentity"] == marker["replacementTargetIdentity"]:
+        return
+    epoch = marker["replacementEpoch"]
+    name = target_path(epoch, evidence["replacementTargetIdentity"])
+    payload, (_, published_at, _) = read_replicated_record(trust, replica_trust(trust, replica), name)
+    target = check_registered_target(trust, name, epoch, marker["replacementReceiptSha256"], parse_json(payload),
+                                     publication_time({"LastModified": published_at}))
+    if sha256(target) != evidence["replacementTargetSha256"]:
+        raise ValueError("replicated target does not match the attested replacement")
 
 
 def slot_inventory(trust, epoch, member, targets, index):
@@ -247,16 +261,15 @@ def qualify_key_retirement(trust, wallet_trust, marker, published_at):
     pinned_trust = pinned_wallet_trust(trust, wallet_trust)
     replacement = marker["replacementEpoch"]
     _, receipt, custodians = load_epoch(trust, replacement)
-    identity = marker["replacementTargetIdentity"]
-    target = replacement_targets(trust, marker).get(identity)
-    if target is None or sha256(target) != marker["replacementTargetSha256"]:
-        raise ValueError("retirement requires the originally approved replacement target")
+    candidates = replacement_targets(trust, marker)
+    seed = receipt["custody"]["noteSeedCommitment"]
     slots = retirement_bootstrap(marker["replacementBootstrap"])
-    require_recovery_quorum(trust, marker, [custodians[slot - 1] for slot in slots])
     # S3 Last-Modified only resolves to a second. Require a boot after that second.
     after_ms = (int(published_at) + 1) * 1000 - 1
-    evidence = qualified_boot(pinned_trust, {identity: target}, marker, receipt["custody"]["noteSeedCommitment"],
-                              after_ms=after_ms, required_slots=slots)
+    evidence = qualified_boot(pinned_trust, candidates, marker, seed, after_ms=after_ms, required_slots=slots)
+    require_observed_target_replication(trust, marker, evidence)
+    require_recovery_quorum(trust, {**marker, **evidence}, [custodians[slot - 1] for slot in slots])
+    qualified_boot(pinned_trust, candidates, marker, seed, after_ms=after_ms, expected=evidence)
     require_active_epoch(trust, replacement)
     return evidence
 
@@ -270,16 +283,17 @@ def retirement_replica(trust, profile):
     return replica
 
 
-def inspect_keys(trust, epoch, index, check_inactive, *, wallet_trust=None, replica_profile=None):
+def inspect_keys(trust, epoch, index, check_inactive, *, wallet_trust=None, replica_profile=None, host_profiles=None):
     if not check_inactive:
         if wallet_trust is None:
             raise ValueError("provide --wallet-trust before scheduling key deletion")
         replica = retirement_replica(trust, replica_profile)
         if replica is not None:
             check_recovery_bucket(trust, replica, replica_profile)
-    marker, role, keys, published_at = retirement_inventory(trust, epoch, index)
+    marker, role, keys, published_at, targets = retirement_inventory(trust, epoch, index)
     result = inspect_inventory((role, keys), check_inactive)
     if not check_inactive:
+        result["terminatedParents"] = inspect_old_parents(targets, host_profiles or {})
         result["replacement"] = qualify_key_retirement(trust, wallet_trust, marker, published_at)
     return result
 
@@ -371,6 +385,18 @@ def require_terminated_parent(target, profile):
             "source": "aws-config", "capturedAt": capture_time}
 
 
+def inspect_old_parents(targets, profiles, *, check_profiles=True):
+    parents = {(arn(ROLE_ARN, target["hostRole"])[1], target["hostRegion"], target["instanceId"]): target
+               for target in targets}
+    if profiles.keys() != {account for account, _, _ in parents}:
+        raise ValueError("provide one host inspection profile for each old parent account")
+    if check_profiles:
+        for account, region in sorted({(account, region) for account, region, _ in parents}):
+            require_profile_account(profiles[account], region, account)
+    return [require_terminated_parent(target, profiles[account])
+            for (account, _, _), target in sorted(parents.items())]
+
+
 def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_seconds, *, replica_profile=None):
     require_inspection_profiles(profiles)
     if wait_seconds <= 0:
@@ -383,24 +409,17 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
     def inspect_all(*, check_profiles=False):
         targets = list(registered_targets(trust, epoch, marker["receiptSha256"]))
         require_retirement_replication(trust, marker, targets)
-        hosts = {(arn(ROLE_ARN, target["hostRole"])[1], target["hostRegion"], target["instanceId"]): target
-                 for target in targets}
-        host_regions = {account: region for account, region, _ in hosts}
-        if set(host_profiles) != host_regions.keys():
-            raise ValueError("provide one host inspection profile for each old parent account")
         with ThreadPoolExecutor(max_workers=6) as workers:
             if check_profiles:
                 accounts = [arn(KEY_ARN, member["recoveryKeyArn"]) for member in custodians]
                 checks = [(profile, key[1], key[2]) for profile, key in zip(profiles, accounts, strict=True)]
-                checks.extend((host_profiles[account], region, account) for account, region in host_regions.items())
                 list(workers.map(lambda check: require_profile_account(*check), checks))
             slots = list(workers.map(
                 lambda index, member, profile: inspect_inventory(
                     slot_inventory(trust, epoch, member, targets, index), True, profile=profile),
                 range(1, 7), custodians, profiles,
             ))
-        terminated = [require_terminated_parent(hosts[host], host_profiles[host[0]]) for host in sorted(hosts)]
-        return slots, terminated
+        return slots, inspect_old_parents(targets, host_profiles, check_profiles=check_profiles)
 
     inspect_all(check_profiles=True)
     pinned_trust = pinned_wallet_trust(trust, wallet_trust)
@@ -422,6 +441,7 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
     slots, parents = inspect_all()
     if replica is not None:
         check_recovery_bucket(trust, replica, replica_profile)
+    require_observed_target_replication(trust, marker, evidence)
     recovered = retirement_bootstrap(evidence["replacementBootstrap"])
     require_recovery_quorum(trust, {**marker, **evidence}, [replacement_custodians[slot - 1] for slot in recovered])
     qualified_policy(trust, wallet_trust, marker, seed, after_ms=after_ms, expected=evidence)
@@ -466,26 +486,27 @@ def main():
     verify.add_argument("wallet_trust", type=Path)
     verify.add_argument("epoch")
     verify.add_argument("--inspection-profiles", nargs=6, required=True)
-    verify.add_argument("--host-inspection-profile", metavar="ACCOUNT=PROFILE", action="append", default=[])
+    for command in (inspect, verify):
+        command.add_argument("--host-inspection-profile", metavar="ACCOUNT=PROFILE", action="append", default=[])
     verify.add_argument("--replica-profile", help="inspect the custody recovery bucket in its owner's AWS account")
     verify.add_argument("--wait-seconds", type=int, default=300)
     verify.add_argument("--output", type=Path, help="publish the report atomically at a new path")
     args = parser.parse_args()
     try:
         trust = read_json(args.trust)
+        host_profiles = {}
+        for mapping in getattr(args, "host_inspection_profile", ()):
+            account, _, profile = mapping.partition("=")
+            if not re.fullmatch(r"[0-9]{12}", account) or not profile or account in host_profiles:
+                raise ValueError("provide distinct host inspection profiles as ACCOUNT=PROFILE")
+            host_profiles[account] = profile
         if args.command == "inspect":
             result = inspect_keys(trust, args.epoch, args.share, args.check_inactive, wallet_trust=args.wallet_trust,
-                                  replica_profile=args.replica_profile)
+                                  replica_profile=args.replica_profile, host_profiles=host_profiles)
         elif args.command == "verify-retired":
             if args.output is not None and args.output.exists():
                 raise ValueError("retirement report already exists")
-            profiles = {}
-            for mapping in args.host_inspection_profile:
-                account, _, profile = mapping.partition("=")
-                if not re.fullmatch(r"[0-9]{12}", account) or not profile or account in profiles:
-                    raise ValueError("provide distinct host inspection profiles as ACCOUNT=PROFILE")
-                profiles[account] = profile
-            result = verify_retired(trust, args.wallet_trust, args.epoch, args.inspection_profiles, profiles,
+            result = verify_retired(trust, args.wallet_trust, args.epoch, args.inspection_profiles, host_profiles,
                                     args.wait_seconds, replica_profile=args.replica_profile)
             if args.output is not None:
                 write_report(args.output, result)

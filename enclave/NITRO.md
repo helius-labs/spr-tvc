@@ -156,12 +156,15 @@ content, version IDs and write times on the pinned replica.
 Mainnet pre-deletion inspection and final verification require a ledger replica.
 An identity in the recovery bucket owner's account verifies the write and
 delete denials, versioning, bucket ownership, public access blocks and
-absence of lifecycle rules. Pre-deletion inspection verifies current wallet policy and
-attests the original registered replacement using the three proven slots.
-Its bootstrap must be later than the S3 second that recorded retirement.
-All six recovery and wrapping keys for those slots must still be enabled.
-A reconstructed seed remains in enclave memory until the enclave stops.
-Use replacement parents separate from those registered for the old epoch.
+absence of lifecycle rules. Pre-deletion inspection verifies termination of
+every registered old parent because a reconstructed seed stays in enclave
+memory until the enclave stops. It attests a registered serving parent on
+the replacement receipt using the three proven slots. The parent can change
+after the marker commits. Its bootstrap must be later than the S3 write
+second, and all six recovery and wrapping keys for those slots must be
+enabled. The same boot and wallet policy must still be current after the key
+checks. Where replication is configured, the observed replacement's
+registration must also match its copy in the pinned replica.
 The read-only retirement verifier checks the old key inventory in all six
 accounts and requires each registered old serving or rotation parent to be
 terminated. It then checks for a later attested replacement boot and repeats

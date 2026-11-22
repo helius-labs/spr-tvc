@@ -653,7 +653,7 @@ class CustodyLedgerTests(unittest.TestCase):
             return {**reply, "ReplicationStatus": "REPLICA", **change}
 
         with patch("custody_ledger.aws", side_effect=aws):
-            _, _, keys, _ = retirement_inventory(self.trust, "1", 1)
+            _, _, keys, _, _ = retirement_inventory(self.trust, "1", 1)
             self.assertIn(original_target["wrappingKeys"][0], keys)
             self.assertEqual(copied, set(self.objects))
             source_status[prefix + "1.json"] = "REPLICA"
@@ -673,6 +673,7 @@ class CustodyLedgerTests(unittest.TestCase):
                     retirement_inventory(self.trust, "1", 1)
             with (patch("retirement.check_recovery_bucket") as check_bucket,
                   patch("retirement.inspect_inventory", return_value={"keys": []}) as inspect,
+                  patch("retirement.inspect_old_parents", return_value=[]),
                   patch("retirement.qualify_key_retirement", return_value={"boot": "replacement"})):
                 wallet = pathlib.Path("wallet-trust.json")
                 with self.assertRaisesRegex(ValueError, "provide --replica-profile"):
@@ -683,7 +684,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 inspect.assert_not_called()
                 check_bucket.side_effect = None
                 result = inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet, replica_profile="recovery-read")
-                self.assertEqual(result, {"keys": [], "replacement": {"boot": "replacement"}})
+                self.assertEqual(result, {"keys": [], "terminatedParents": [], "replacement": {"boot": "replacement"}})
                 check_bucket.assert_called_with(self.trust, self.trust["ledgerReplica"], "recovery-read")
             source_status[marker_key] = "PENDING"
             with self.assertRaisesRegex(ValueError, "has not completed S3 replication"):
@@ -1130,7 +1131,7 @@ class CustodyLedgerTests(unittest.TestCase):
             kms.assert_not_called()
 
         self.rotate_approvals("3")
-        _, role, inventory, _ = retirement_inventory(self.trust, "1", 1)
+        _, role, inventory, _, _ = retirement_inventory(self.trust, "1", 1)
         self.assertTrue(role.endswith(":role/retirement"))
         self.assertEqual(set(inventory), {key(1), key(1, 11), key(1, 12), key(1, 21)})
 
@@ -1209,23 +1210,44 @@ class CustodyLedgerTests(unittest.TestCase):
         observed = {**target_attestation(replacement), "bootstrap": boot}
         policy_digest = "bf" * 32
         expected = {**self.qualification(replacement, policy_digest), "replacementBootstrap": boot}
+        host_profiles = {"000000000007": "old-host-read"}
+        def inspect_slot():
+            return inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet, host_profiles=host_profiles)
 
         def evidence(target):
             return json.dumps({"policyDigest": policy_digest, "targets": [target]}).encode()
 
         with (patch("retirement.inspect_inventory", side_effect=lambda *_args: {"keys": []}) as inspect,
-              patch("retirement.require_recovery_quorum") as quorum, patch("retirement.run_command") as query):
+              patch("retirement.require_recovery_quorum") as quorum, patch("retirement.run_command") as query,
+              patch("retirement.require_profile_account") as identity, patch("retirement.require_terminated_parent") as parent):
             with self.assertRaisesRegex(ValueError, "provide --wallet-trust"):
                 inspect_keys(self.trust, "1", 1, False)
             with self.assertRaisesRegex(ValueError, "mainnet key retirement requires a pinned custody ledger replica"):
                 inspect_keys({**self.trust, "network": "mainnet"}, "1", 1, False, wallet_trust=wallet)
             inspect.assert_not_called()
 
+            with self.assertRaisesRegex(ValueError, "provide one host inspection profile"):
+                inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)
+            identity.side_effect = ValueError("host profile is in the wrong account")
+            with self.assertRaisesRegex(ValueError, "wrong account"):
+                inspect_slot()
+            identity.assert_called_once_with("old-host-read", REGION, "000000000007")
+            parent.assert_not_called()
+            identity.side_effect = None
+            parent.side_effect = ValueError("old parent is still running")
+            with self.assertRaisesRegex(ValueError, "old parent is still running"):
+                inspect_slot()
+            query.assert_not_called()
+            parent.side_effect = None
+            parent.return_value = {"instanceId": INSTANCE, "state": "terminated"}
             query.return_value.stdout = evidence(observed)
-            self.assertEqual(inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)["replacement"], expected)
+            result = inspect_slot()
+            self.assertEqual(result["terminatedParents"], [parent.return_value])
+            self.assertEqual(result["replacement"], expected)
+            self.assertEqual(query.call_count, 2)
             self.assertEqual(query.call_args.kwargs["input"], self.wallet_pins)
             _, _, members = load_epoch(self.trust, "2")
-            quorum.assert_called_once_with(self.trust, marker, [members[slot - 1] for slot in boot["slots"]])
+            quorum.assert_called_once_with(self.trust, {**marker, **expected}, [members[slot - 1] for slot in boot["slots"]])
 
             different_slots = [4, 5, 6] if boot["slots"] != [4, 5, 6] else [1, 2, 3]
             for other in (
@@ -1237,18 +1259,52 @@ class CustodyLedgerTests(unittest.TestCase):
             ):
                 query.return_value.stdout = evidence(other)
                 with self.subTest(other=other), self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
-                    inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)
+                    inspect_slot()
             query.return_value.stdout = evidence(observed)
             with patch("retirement.require_active_epoch", side_effect=[None, ValueError("custody epoch is retired")]):
                 with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
-                    inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)
+                    inspect_slot()
             query.reset_mock()
             quorum.side_effect = ValueError("proven replacement key is unavailable")
             with self.assertRaisesRegex(ValueError, "replacement key is unavailable"):
-                inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)
-            query.assert_not_called()
+                inspect_slot()
+            query.assert_called_once()
+            quorum.side_effect = None
+            query.reset_mock()
             self.assertEqual(inspect_keys(self.trust, "1", 1, True), {"keys": []})
             query.assert_not_called()
+
+            standby = {**replacement, "instanceId": "i-1234567890abcdefc", "releaseId": "standby",
+                       "wrappingKeys": [key(slot, 39) for slot in range(1, 7)]}
+            standby_observed = {**target_attestation(standby), "bootstrap": boot}
+            query.return_value.stdout = evidence(standby_observed)
+            with self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
+                inspect_slot()
+            standby_approval = self.signed_subject(TARGET_APPROVAL, standby)
+            register_target(self.trust, standby_approval)
+            standby_expected = {**self.qualification(standby, policy_digest), "replacementBootstrap": boot}
+            self.assertEqual(inspect_slot()["replacement"], standby_expected)
+            quorum.assert_called_with(self.trust, {**marker, **standby_expected}, [members[slot - 1] for slot in boot["slots"]])
+
+            standby_restart = {**standby_observed, "bootstrap": {**boot, "bootKeyId": "ab" * 32}}
+            query.side_effect = [SimpleNamespace(stdout=evidence(target)) for target in (standby_observed, standby_restart)]
+            with self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
+                inspect_slot()
+            query.side_effect = None
+
+            replica = {"bucket": "custody-recovery", "account": "000000000011", "region": "eu-west-1",
+                       "role": "arn:aws:iam::000000000008:role/replication"}
+            with (patch.dict(self.trust, {"ledgerReplica": replica}), patch("retirement.require_retirement_replication"),
+                  patch("retirement.check_recovery_bucket"), patch("retirement.read_replicated_record") as read_replica):
+                options = {"wallet_trust": wallet, "host_profiles": host_profiles, "replica_profile": "recovery-read"}
+                read_replica.side_effect = ValueError("registered standby has not completed S3 replication")
+                with self.assertRaisesRegex(ValueError, "standby has not completed S3 replication"):
+                    inspect_keys(self.trust, "1", 1, False, **options)
+                read_replica.side_effect = None
+                timestamp = datetime.fromtimestamp(self.now, timezone.utc).isoformat()
+                read_replica.return_value = canonical(standby_approval), ("version", timestamp, "digest")
+                self.assertEqual(inspect_keys(self.trust, "1", 1, False, **options)["replacement"], standby_expected)
+                self.assertEqual(read_replica.call_args.args[-1], target_object_name(standby))
 
     def test_retirement_qualifies_only_a_live_registered_serving_replica_on_a_new_parent(self):
         publish(self.trust, self.sign(self.document(1)))
@@ -1439,6 +1495,9 @@ class CustodyLedgerTests(unittest.TestCase):
             quorum.assert_called_once()
             with self.assertRaisesRegex(ValueError, "mainnet key retirement requires a pinned custody ledger replica"):
                 verify_retired({**self.trust, "network": "mainnet"}, wallet, "1", profiles, host_profiles, 5)
+            standby = {**replacement, "instanceId": "i-1234567890abcdefc", "releaseId": "standby",
+                       "wrappingKeys": [key(slot, 39) for slot in range(1, 7)]}
+            register_target(self.trust, self.signed_subject(TARGET_APPROVAL, standby))
             replica = {"bucket": "custody-recovery", "account": "000000000011", "region": "eu-west-1",
                        "role": "arn:aws:iam::000000000008:role/replication"}
             query.side_effect = None
@@ -1461,6 +1520,14 @@ class CustodyLedgerTests(unittest.TestCase):
                 check_bucket.side_effect = None
                 verified = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5, replica_profile="recovery-read")
                 self.assertEqual(verified, report)
+
+                query.return_value.stdout = canonical({
+                    "policyDigest": "fe" * 32, "targets": [{**target_attestation(standby), "bootstrap": fresh}],
+                })
+                with patch("retirement.read_replicated_record", side_effect=ValueError("standby replication pending")) as read:
+                    with self.assertRaisesRegex(ValueError, "standby replication pending"):
+                        verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5, replica_profile="recovery-read")
+                    self.assertEqual(read.call_args.args[-1], target_object_name(standby))
 
     def test_retirement_cli_publishes_the_completed_report_without_overwriting(self):
         directory = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))

@@ -425,7 +425,9 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-signed-1.json "$second_approval_key" > retire-signed-2.json
    python3 "$nitro/retirement.py" trust.json publish wallet-trust.json retire-signed-2.json
    python3 "$nitro/retirement.py" trust.json inspect 1 "$share_index" \
-     --wallet-trust wallet-trust.json --replica-profile "$recovery_bucket_read_profile"
+     --wallet-trust wallet-trust.json \
+     --host-inspection-profile "$old_host_account=$old_host_read_profile" \
+     --replica-profile "$recovery_bucket_read_profile"
    ```
 
    Mainnet pre-deletion inspection and final retirement verification require
@@ -444,13 +446,17 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    marker closes the old epoch as soon as it commits on the source.
 
    After the retirement marker commits, wait until the next second and
-   cold-boot the pinned replacement with the three proved slots. Open a note
-   from before rotation. Each retirement role runs `inspect --wallet-trust`
-   immediately before scheduling deletion. It checks that the recovery and
-   wrapping keys are enabled, the replacement epoch is open, and the original
-   registered target attests under the current wallet policy. The attested
-   bootstrap must be later than the marker's S3 write second and use the
-   same three slots. The role
+   cold-boot a registered serving target for the replacement receipt with the
+   three proved slots. Use another registered target on that receipt if the
+   original parent fails. Its registration must also be present on the pinned
+   ledger replica when configured. Open a note from before rotation. Each
+   retirement role runs `inspect --wallet-trust` immediately before scheduling
+   deletion. Supply a read-only inspection profile for each old parent account.
+   The command verifies termination of every registered old parent and attests
+   the replacement under the current wallet policy before and after checking
+   its six recovery and wrapping keys. The replacement epoch must remain
+   open and the boot must use the three proved slots after the marker's S3
+   write second. The role
    needs `kms:DescribeKey` for the six replacement keys. Use
    `inspect --check-inactive` for the historical key state check after scheduling.
    Scheduling immediately disables cryptographic use. Canceling leaves the
@@ -480,8 +486,9 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    with exactly three slots. The verifier reads the candidate registrations
    before starting the `--wait-seconds` timer and polls for a later attested
    boot. Before writing the report it checks the old keys, parents and replica
-   records again. It verifies the replica's installed protections, the six
-   keys used by the new boot, and the same registered boot and wallet policy.
+   records again, including the observed replacement's registration. It
+   verifies the replica's installed protections, the six keys used by the
+   new boot, and the same registered boot and wallet policy.
    Pass a new report path. The complete file appears
    only after verification succeeds. AWS usually lists terminated instances
    for less than an hour. When EC2 cannot report a parent, the verifier
