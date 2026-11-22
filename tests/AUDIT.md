@@ -81,6 +81,7 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-73 | Distinct CLI profile names could hide wrong-account credentials during custody approval and retirement inspection. | Use STS to check each inspection profile against its pinned account before checking key or host state. [Account and inventory tests](nitro/test_kms_policy.py) · [Custody approval and retirement tests](nitro/test_custody_ledger.py) |
 | N-74 | The packager compared PCRs without checking the written EIF's checksum result. | Require Nitro CLI to report a valid checksum before accepting the measurements. [Packaging tests](nitro/test_provenance.py) |
 | N-75 | The installed ledger controls were unchecked. A lifecycle rule can expire custody records despite the policy's delete deny. | Read and verify the policy, versioning, ownership, public access, lifecycle and replication settings on the pinned bucket. [Ledger controls tests](nitro/test_custody_ledger.py) · [AWS error tests](nitro/test_kms_policy.py) |
+| N-76 | A retirement poll reread the custody ledger before checking the remaining cold-boot wait, so a slow ledger could overrun the wait. | Read the pinned trust and candidate registrations before the wait. Poll for attestation within the deadline and recheck the live ledger and the same boot before reporting. [Retirement tests](nitro/test_custody_ledger.py) |
 
 ## Remaining qualification and review
 

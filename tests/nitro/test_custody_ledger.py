@@ -30,7 +30,7 @@ from kms_policy import acknowledgement_policy, boot_pins
 from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, schedule, sign
 from provenance import describe
 from retirement import (commit_retirement, inspect_keys, key_inventory, prove_recovery, qualified_manifest, qualified_policy,
-                        retirement_scope, sign_retirement, verify_retired)
+                        replacement_targets, retirement_scope, sign_retirement, verify_retired)
 
 READ_ROLE = "arn:aws:iam::000000000001:role/custodian"
 PUBLISHER = "arn:aws:iam::000000000008:role/publisher"
@@ -986,13 +986,15 @@ class CustodyLedgerTests(unittest.TestCase):
             quorum.reset_mock()
 
             def attest(*_args, **_options):
+                self.assertEqual(registrations.call_count, 2 if query.call_count == 3 else 1)
                 if query.call_count == 3:
                     self.assertEqual(host_state.call_count, 4)
                     self.assertEqual(len(visited), 2 * len(inventory))
                 return SimpleNamespace(stdout=stale if query.call_count == 1 else ready)
 
             query.side_effect = attest
-            report = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
+            with patch("retirement.replacement_targets", wraps=replacement_targets) as registrations:
+                report = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
             self.assertEqual(query.call_count, 3)
             self.assertEqual(set(inventory), set(visited))
             self.assertEqual(len(visited), 2 * len(inventory))
