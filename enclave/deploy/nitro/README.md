@@ -844,7 +844,9 @@ Retain `publicationVersions` from `--check-wallet-trust` in the release
 record alongside the signed policy and wallet trust. Enable versioning in
 both buckets. The check takes each version ID from the same S3 response as
 the signed policy, including recovery-only policies and revocations. For an
-activation, both IDs must stay the same through verification.
+activation, both IDs must stay the same through verification. During an
+outage, record the version ID from an S3 response serving the exact signed
+revocation in the available bucket.
 [S3 GetObject response](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html#API_GetObject_ResponseSyntax)
 
 If one current policy is unreadable, suspend other writes to the affected
@@ -853,7 +855,11 @@ Grant the role `s3:ListBucketVersions` scoped to the policy key prefix and
 `s3:GetObjectVersion` on that key. The command checks both signature quorums,
 checks the intact peer agrees or forms the supported primary and predecessor
 pair, and refuses to replace a different later policy with two valid
-signatures in each role, including policies signed by another roster.
+signatures in each role, including policies signed by another roster. A
+retained primary revocation can be restored even when the mirror trails by
+multiple revisions, provided it preserves the mirror's custody floor and
+recovery-only flag. Copy the exact revocation to the mirror before publishing
+an activation.
 It checks the peer after rechecking the damaged head version, then restores
 the retained bytes against that head's ETag. Restoring an expired head keeps
 its expiry and lets the operator publish a successor. [S3 version listing](https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectVersions.html)

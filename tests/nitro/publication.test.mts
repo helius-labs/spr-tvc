@@ -78,7 +78,7 @@ function freshProbe(remaining = () => 60_000) {
 test("restores an exact signed historical policy without replacing a different authenticated head", async context => {
   const previous = { ...first, expiresAtMs: String(now - 1) };
   const next = { ...first, sequence: "2", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(previous)) };
-  const backup = signed(previous, [0, 1, 2, 3], [0, 1, 3, 4]);
+  let backup = signed(previous, [0, 1, 2, 3], [0, 1, 3, 4]);
   const [primary, mirror] = trust.publications;
   const restorePins = pins(previous);
   let selected = primary;
@@ -166,6 +166,30 @@ test("restores an exact signed historical policy without replacing a different a
   failedResponse = true;
   await restorePublication(restorePins, mirror.bucket, "backup", options);
   assert.equal(writes, 2);
+
+  selected = primary;
+  witness = mirror;
+  failedResponse = false;
+  head = "damaged";
+  const lagging = { ...next, expiresAtMs: previous.expiresAtMs, recoveryOnly: true };
+  const skipped = { ...next, sequence: "3", recoveryOnly: true, minimumCustodyEpoch: "2",
+    previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(lagging)) };
+  const retained = { ...skipped, sequence: "4", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(skipped)) };
+  peer = signed({ ...lagging, recoveryOnly: false });
+  held.set("backup", signed({ ...retained, recoveryOnly: false, action: "activate", targets: [{ ...target, custodyEpoch: "2" }] }));
+  await assert.rejects(restorePublication(restorePins, primary.bucket, "backup", options), /ReleasePolicyInvalid/);
+  held.set("backup", signed(retained));
+  peer = signed({ ...lagging, minimumCustodyEpoch: "3" });
+  await assert.rejects(restorePublication(restorePins, primary.bucket, "backup", options), /ReleasePolicyInvalid/);
+  peer = signed(lagging);
+  held.set("backup", signed({ ...retained, recoveryOnly: false }));
+  await assert.rejects(restorePublication(restorePins, primary.bucket, "backup", options), /ReleasePolicyInvalid/);
+  assert.equal(writes, 2);
+
+  backup = signed(retained);
+  held.set("backup", backup);
+  await restorePublication(restorePins, primary.bucket, "backup", options);
+  assert.equal(writes, 3);
 });
 
 test("one conditional publisher wins and replaying the exact policy is idempotent", async context => {

@@ -487,7 +487,7 @@ export async function restorePublication(trust: NitroTrust, name: string, retain
     const witness = await readNitroPolicy(peer.url, AbortSignal.timeout(5_000), peer.account);
     const primaryText = isPrimary ? text : witness;
     const primaryPolicy = verifyStoredNitroPolicy(primaryText, trust, BigInt(Date.now()));
-    nextNitroPublication(primaryPolicy, isPrimary ? witness : text, trust);
+    nextNitroPublication(primaryPolicy, isPrimary ? witness : text, trust, trust, "primary");
     if (alreadyRestored) return;
     try {
       await call("put-object", ["--key", key, "--if-match", damaged.etag, "--content-type", "application/json",
