@@ -7,7 +7,7 @@ SPR senders can encrypt an output for a wallet that has no registry entry. The s
 | Actor | Authority |
 | --- | --- |
 | Wallet owner | Signs a decrypt batch and the response public key. The matching response private key opens its reply. |
-| Six note-share custodians | Each controls one sealed RSA recovery key in its own AWS account. All six prove recovery before a custody epoch is committed. Three shares can then commission an approved target or rotate custody. |
+| Six note-share custodians | Each controls one sealed RSA recovery key in its own AWS account. All six sign recovery acknowledgements before a custody epoch is committed. Three shares can then commission an approved target or rotate custody. |
 | Custody approval signers | Two of three pinned KMS keys approve the custody record or authorize release of shares to one measured target. The custody ledger admits one record per epoch. |
 | Release signers | At least two distinct pinned P-256 keys authorize a policy. Use two of three separately controlled KMS signing keys. Each signed target names an HTTPS route, release ID, executable SHA-256 and PCR0–PCR4. |
 | EC2 parent and ingress | Can choose when and where to forward requests, and can deny service. See note ciphertexts, wrapped shares, TLS metadata, timings and sizes. Never receive note plaintext or a private key via the protocol. |
@@ -19,12 +19,15 @@ Commissioning requires two approvals of the exact target and three custodian sha
 
 Each custodian can ask KMS to release one share to the epoch's measured relay.
 The signed custody receipt pins the relay and its host role. Custody approvers
-verify its build, the ordered signer roster and all six installed KMS policies.
+verify its build, ordered signer roster and the installed recovery and
+acknowledgement key policies for each slot. The approval and acknowledgement
+keys are distinct.
 The relay checks the share commitment and requires two approvals of the exact
 target key, relay boot and deadline. It reads Nitro time before opening the
 share and again before returning ciphertext. The approved target obtains its
 share through a second attested KMS decrypt. Fresh relay evidence confirms
-recovery before a custodian signs an acknowledgement or retirement proof.
+recovery before the operator tool uses the custodian's acknowledgement key.
+The ledger verifies the custodian's signed assertion over the candidate.
 
 During roster rotation, the active quorum signs target registration and the
 epoch's measured quorum signs share releases. Retire the old source keys and
@@ -67,7 +70,8 @@ epoch. The capture retains the original evidence, challenge and verification
 time. Two approval signers reverify the proof and bind the record to the six
 recovery keys, measured relay and exact predecessor. A rotated receipt pins
 the registered rotation approval. It must match the approved rotation image,
-host role, successor roster and successor relay. All six custodians attest that their sealed key can open its share.
+host role, successor roster and successor relay. All six custodians sign an
+acknowledgement that their sealed key can open its share.
 A conditional S3 write commits one record for
 the epoch. Historical receipts verify with the public keys pinned for their
 epoch. Target approvals and retirement records verify under the roster
@@ -76,9 +80,10 @@ approval from the incoming roster. Retiring an approval or acknowledgement
 signing key leaves custody receipts verifiable offline.
 
 The custody ledger registers one wrapping-key set per epoch, release ID and
-PCR0–PCR4. It checks the domain and committed receipt before first
-registration. S3 must record the write within the approval window. A new
-quorum approval may renew the deadline for the same set. Each share release
+PCR0–PCR4. Before signing, each approver checks that all six RSA wrapping
+keys have the installed policy for the exact parent and measurements. At
+first registration the ledger checks the domain and committed receipt. S3
+must record the write within the approval window. A new quorum approval may renew the deadline for the same set. Each share release
 checks the registered target and both installed KMS key policies. The operator
 checks the epoch, roster and deadline around KMS and relay calls. The relay
 opens the share and wraps it to the approved RSA key inside Nitro.

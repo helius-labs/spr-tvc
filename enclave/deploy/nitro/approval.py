@@ -223,9 +223,14 @@ def add_approval(keys, label, document, key):
     return {"manifest": document["manifest"], "signatures": [*document["signatures"], signed]}
 
 
-def get_signing_key(key):
-    require_kms_key(kms(key, "describe-key")["KeyMetadata"], key, {"ECC_NIST_P256"}, "SIGN_VERIFY")
-    result = key_result(key, "get-public-key")
+def require_inspection_profiles(profiles):
+    if profiles is None or len(profiles) != 6 or len(set(profiles)) != 6 or not all(profiles):
+        raise ValueError("provide six distinct read-only inspection profiles in custody slot order")
+
+
+def get_signing_key(key, **options):
+    require_kms_key(kms(key, "describe-key", **options)["KeyMetadata"], key, {"ECC_NIST_P256"}, "SIGN_VERIFY")
+    result = key_result(key, "get-public-key", **options)
     if (result.get("KeySpec") != "ECC_NIST_P256" or result.get("KeyUsage") != "SIGN_VERIFY" or
             SIGNING_ALGORITHM not in result.get("SigningAlgorithms", [])):
         raise ValueError("expected a P-256 KMS signing key")

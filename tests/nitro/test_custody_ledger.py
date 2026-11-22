@@ -17,7 +17,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/de
 from approval import approval_keys, approval_roster, canonical, sha256
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
-    check_recovery_roster, check_serving_policy, draft, ledger_policy, ledger_reader_policy, list_objects, load_epoch, publish, read_registered_target,
+    check_custody_roster, check_serving_policy, draft, ledger_policy, ledger_reader_policy, list_objects, load_epoch, publish, read_registered_target,
     record, require_active_epoch,
     sign_epoch, target_attestation,
     target_object_name, verify_archive, write_once,
@@ -248,7 +248,7 @@ class CustodyLedgerTests(unittest.TestCase):
         commit = "ab" * 20
         reviewed = describe(build, "devnet", commit)
         with (patch("custody_ledger.verify_build") as verify_build, patch("custody_ledger.subprocess") as capture_verifier,
-              patch("custody_ledger.check_recovery_roster"), patch("custody_ledger.check_acknowledgement_key"),
+              patch("custody_ledger.check_custody_roster"),
               patch("custody_ledger.add_approval", return_value=document["authorization"]) as sign_record):
             for field in ("configurationSha256", "eifSha256", "executableSha256", "pcrs"):
                 value = {**PINS, "PCR0": "aa" * 48} if field == "pcrs" else "aa" * 32
@@ -345,6 +345,25 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertEqual(load_epoch(self.trust, "1")[1], previous)
         self.assertEqual(load_epoch(self.trust, "2")[1]["custody"]["epoch"], "2")
 
+    def test_custody_approval_keys_cannot_also_acknowledge_shares(self):
+        document = self.document(1)
+        member = document["authorization"]["manifest"]["custodians"][0]["acknowledgementKey"]
+        original = self.trust["approvalKeys"][0]["keys"][0]
+        for reused in (member, {**original, "publicKey": member["publicKey"]}):
+            self.trust["approvalKeys"][0]["keys"][0] = reused
+            with self.subTest(reused=reused["keyArn"]), self.assertRaisesRegex(ValueError, "separate signing keys"):
+                record(self.trust, document)
+
+        self.trust["approvalKeys"][0]["keys"][0] = original
+        publish(self.trust, self.sign(document))
+        rotated, target = self.rotation_document(load_epoch(self.trust, "1")[1], register=False)
+        member = rotated["authorization"]["manifest"]["custodians"][0]["acknowledgementKey"]
+        self.trust["approvalKeys"].append({
+            "fromEpoch": "2", "activeFrom": self.now + 60, "keys": [member, pin(key(9, 9)), pin(key(10, 9))],
+        })
+        with self.assertRaisesRegex(ValueError, "separate signing keys"):
+            register_target(self.trust, target)
+
     def test_archive_verifies_without_s3_or_kms_and_requires_the_exact_document_pin(self):
         document = self.sign(self.document(1))
         digest = sha256(document)
@@ -381,33 +400,66 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertEqual((args_member, slot, port), (member, 1, 7443))
         check()
 
+    @patch("custody_ledger.kms")
+    @patch("custody_ledger.get_signing_key")
     @patch("custody_ledger.sealed_rsa_key")
     @patch("custody_ledger.verify_relay_build")
-    def test_relay_receipt_requires_build_provenance_and_independent_slot_inspection(self, provenance, inspect):
+    def test_custody_approval_checks_the_relay_and_both_installed_keys_per_slot(self, provenance, inspect, signing, kms):
         roster = self.document(1)["authorization"]["manifest"]["custodians"]
         keys = [bytes([i]) * 264 for i in range(1, 7)]
         fingerprints = [hashlib.sha256(key).hexdigest() for key in keys]
         with self.assertRaisesRegex(ValueError, "six distinct read-only inspection profiles"):
-            check_recovery_roster(self.trust, "1", roster, fingerprints, ["same"] * 6)
+            check_custody_roster(self.trust, "1", roster, fingerprints, ["same"] * 6)
         inspect.assert_not_called()
         profiles = [f"slot-{i}-inspect" for i in range(1, 7)]
         with self.assertRaisesRegex(ValueError, "reviewed recovery relay build"):
-            check_recovery_roster(self.trust, "1", roster, fingerprints, profiles)
+            check_custody_roster(self.trust, "1", roster, fingerprints, profiles)
         reviewed = ("relay-build", "ad" * 20, "refs/heads/native")
         provenance.side_effect = ValueError("unreviewed relay build")
         with self.assertRaisesRegex(ValueError, "unreviewed relay build"):
-            check_recovery_roster(self.trust, "1", roster, fingerprints, profiles, reviewed)
+            check_custody_roster(self.trust, "1", roster, fingerprints, profiles, reviewed)
         inspect.assert_not_called()
         provenance.side_effect = None
+        acknowledgements = {member["acknowledgementKey"]["keyArn"]: member for member in roster}
+
+        def checked_member(key, profile):
+            member = acknowledgements[key]
+            self.assertEqual(profile, profiles[roster.index(member)])
+            return member
+
+        def signing_pin(key, *, profile):
+            return checked_member(key, profile)["acknowledgementKey"]
+
+        def policy(key, operation, args, *, profile):
+            member = checked_member(key, profile)
+            self.assertEqual((operation, args), ("get-key-policy", ["--policy-name", "default"]))
+            return {"Policy": json.dumps(acknowledgement_policy(member["custodianRole"], member["retirementRole"]))}
+
+        signing.side_effect = signing_pin
+        kms.side_effect = policy
         inspect.side_effect = keys[:-1] + [ValueError("unsealed source key")]
         with self.assertRaisesRegex(ValueError, "unsealed source key"):
-            check_recovery_roster(self.trust, "1", roster, fingerprints, profiles, reviewed)
-        inspect.reset_mock()
+            check_custody_roster(self.trust, "1", roster, fingerprints, profiles, reviewed)
         inspect.side_effect = keys
-        check_recovery_roster(self.trust, "1", roster, fingerprints, profiles, reviewed)
+        signing.side_effect = lambda key, profile: {**signing_pin(key, profile=profile), "publicKey": "wrong"}
+        with self.assertRaisesRegex(ValueError, "acknowledgement public key"):
+            check_custody_roster(self.trust, "1", roster, fingerprints, profiles, reviewed)
+
+        inspect.side_effect = keys
+        signing.side_effect = signing_pin
+        kms.side_effect = lambda *_args, **_options: {"Policy": "{}"}
+        with self.assertRaisesRegex(ValueError, "installed acknowledgement policy"):
+            check_custody_roster(self.trust, "1", roster, fingerprints, profiles, reviewed)
+
+        inspect.reset_mock()
+        kms.reset_mock()
+        inspect.side_effect = keys
+        kms.side_effect = policy
+        check_custody_roster(self.trust, "1", roster, fingerprints, profiles, reviewed)
         provenance.assert_called_with(self.trust, "1", *reviewed)
         self.assertEqual([call.kwargs["profile"] for call in inspect.call_args_list], profiles)
         self.assertEqual([call.args[0] for call in inspect.call_args_list], [member["recoveryKeyArn"] for member in roster])
+        self.assertEqual([call.args[0] for call in kms.call_args_list], list(acknowledgements))
 
     def test_bucket_policy_enforces_single_publisher_and_conditional_creation(self):
         statements = {item["Sid"]: item for item in ledger_policy(self.trust, ADMIN, PUBLISHER, [READ_ROLE])["Statement"]}

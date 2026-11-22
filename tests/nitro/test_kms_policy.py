@@ -13,7 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import aws
 from deployment import host_policy
-from kms_policy import RSA_OAEP, key_policy, recovery_policy, validate_scope
+from kms_policy import RSA_OAEP, acknowledgement_policy, key_policy, recovery_policy, validate_scope
 from provision import provision, read_target, recipient_for
 from relay import decrypt_recipient
 
@@ -74,6 +74,16 @@ class KeyPolicyTests(unittest.TestCase):
         ]:
             with self.assertRaises(ValueError):
                 validate_scope(*fields)
+
+    def test_acknowledgement_policy_delegates_inspection_without_signing(self):
+        policy = acknowledgement_policy(CUSTODIAN, RETIREMENT)
+        rules = {rule["Sid"]: rule for rule in policy["Statement"]}
+        inspector = rules["InspectAcknowledgementPolicy"]
+        self.assertEqual(inspector["Effect"], "Allow")
+        self.assertEqual(inspector["Principal"], {"AWS": "arn:aws:iam::222222222222:root"})
+        self.assertEqual(inspector["Action"], "kms:GetKeyPolicy")
+        self.assertEqual(rules["AcknowledgeShare"]["Principal"], {"AWS": CUSTODIAN})
+        self.assertEqual(rules["DenyOtherCustodian"]["Condition"], {"StringNotEquals": {"aws:PrincipalArn": CUSTODIAN}})
 
     def test_host_identity_policy_can_only_unwrap_its_exact_approved_slots(self):
         statement, = host_policy(TARGET)["Statement"]

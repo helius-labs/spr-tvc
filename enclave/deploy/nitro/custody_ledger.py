@@ -13,7 +13,7 @@ from pathlib import Path
 from approval import (
     KEY_ARN, ROLE_ARN, MAX_DOCUMENT_BYTES, add_approval, approval_keys, approval_roster, arn, aws, canonical, check_approvals,
     epoch_number, fields, file_digest, get_signing_key, hex_digest, kms, parse_json, read_document,
-    read_json, sha256, signing_key, signing_sec1,
+    read_json, require_inspection_profiles, sha256, signing_key, signing_sec1,
 )
 from kms_policy import acknowledgement_policy, boot_pins, target_boot_pins, validate_custodian_roles, validate_scope
 from provenance import MAIN_REF, verify as verify_build
@@ -61,14 +61,17 @@ def record(trust, document):
         hex_digest(previous)
         hex_digest(rotation)
     custodians = manifest["custodians"]
-    validate_roster(custodians, manifest["ceremonyHostRole"])
+    validate_roster(trust, custodians, manifest["ceremonyHostRole"])
     if not isinstance(receipt["packages"], list) or len(receipt["packages"]) != 6:
         raise ValueError("custody requires six recovery packages")
     return receipt, custodians
 
 
-def validate_roster(custodians, host):
+def validate_roster(trust, custodians, host):
     accounts = {arn(ROLE_ARN, host)[1]}
+    authorities = [key for entry in trust["approvalKeys"] for key in entry["keys"]]
+    approval_arns = {key["keyArn"] for key in authorities}
+    approval_public_keys = {key["publicKey"] for key in authorities}
     public_keys = set()
     if not isinstance(custodians, list) or len(custodians) != 6:
         raise ValueError("custody requires six recovery accounts")
@@ -77,6 +80,8 @@ def validate_roster(custodians, host):
         ack = custodian["acknowledgementKey"]
         public = signing_key(ack)
         recovery, acknowledgement = custodian["recoveryKeyArn"], ack["keyArn"]
+        if acknowledgement in approval_arns or public in approval_public_keys:
+            raise ValueError("custody approvals and share acknowledgements require separate signing keys")
         account = arn(KEY_ARN, recovery)[2]
         if (public in public_keys or account in accounts or recovery == acknowledgement or arn(KEY_ARN, acknowledgement)[2] != account or
                 arn(ROLE_ARN, custodian["custodianRole"])[1] != account):
@@ -314,7 +319,7 @@ def validate_target(trust, manifest):
     if manifest["mode"] == "rotate":
         if manifest["nextRelay"] != relay_pins(trust, str(int(epoch) + 1)):
             raise ValueError("rotation does not match the successor's pinned recovery relay")
-        validate_roster(manifest["nextCustodians"], manifest["hostRole"])
+        validate_roster(trust, manifest["nextCustodians"], manifest["hostRole"])
     elif manifest["mode"] != "serve" or manifest["nextRelay"] is not None or manifest["nextCustodians"] is not None:
         raise ValueError("expected a serving target with no successor or a rotation target")
 
@@ -541,9 +546,8 @@ def check_previous(trust, document, receipt):
     return target
 
 
-def check_recovery_roster(trust, epoch, custodians, fingerprints, inspection_profiles, relay_build=None):
-    if inspection_profiles is None or len(inspection_profiles) != 6 or len(set(inspection_profiles)) != 6:
-        raise ValueError("provide six distinct read-only inspection profiles in custody slot order")
+def check_custody_roster(trust, epoch, custodians, fingerprints, inspection_profiles, relay_build=None):
+    require_inspection_profiles(inspection_profiles)
     if relay_build is None:
         raise ValueError("provide the independently reviewed recovery relay build, commit and ref")
     verify_relay_build(trust, epoch, *relay_build)
@@ -552,12 +556,17 @@ def check_recovery_roster(trust, epoch, custodians, fingerprints, inspection_pro
         public = sealed_rsa_key(custodian["recoveryKeyArn"], expected, profile=profile)
         if hashlib.sha256(public).hexdigest() != fingerprint:
             raise ValueError("inspected recovery key does not match its recovery package")
+        ack = custodian["acknowledgementKey"]
+        if get_signing_key(ack["keyArn"], profile=profile) != ack:
+            raise ValueError("acknowledgement public key does not match the custodian KMS key")
+        check_acknowledgement_policy(custodian, profile=profile)
 
 
-def check_acknowledgement_key(custodian):
-    key = custodian["acknowledgementKey"]
-    if get_signing_key(key["keyArn"]) != key:
-        raise ValueError("acknowledgement public key does not match the custodian KMS key")
+def check_acknowledgement_policy(custodian, **options):
+    key = custodian["acknowledgementKey"]["keyArn"]
+    expected = acknowledgement_policy(custodian["custodianRole"], custodian["retirementRole"])
+    if parse_json(kms(key, "get-key-policy", ["--policy-name", "default"], **options)["Policy"]) != expected:
+        raise ValueError("installed acknowledgement policy does not match the custodian role")
 
 
 def sign_epoch(trust, document, key, build, source_commit, source_ref, inspection_profiles=None, relay_build=None):
@@ -585,10 +594,8 @@ def sign_epoch(trust, document, key, build, source_commit, source_ref, inspectio
                     str(root / "xtask/nitro-ceremony.ts"), "verify"],
                    input=canonical(capture), timeout=25, check=True)
     epoch = receipt["custody"]["epoch"]
-    check_recovery_roster(trust, epoch, custodians, [package["recipientSha256"] for package in receipt["packages"]],
-                          inspection_profiles, relay_build)
-    for custodian in custodians:
-        check_acknowledgement_key(custodian)
+    check_custody_roster(trust, epoch, custodians, [package["recipientSha256"] for package in receipt["packages"]],
+                         inspection_profiles, relay_build)
     keys = approval_keys(trust, epoch)
     return {**document, "authorization": add_approval(keys, LABEL, authorization, key)}
 
@@ -604,9 +611,7 @@ def sign_share_recovery(trust, custodians, receipt, index, label, approval, rela
     require_open_epoch()
     custodian = custodians[index - 1]
     key = custodian["acknowledgementKey"]["keyArn"]
-    expected = acknowledgement_policy(custodian["custodianRole"], custodian["retirementRole"])
-    if parse_json(kms(key, "get-key-policy", ["--policy-name", "default"])["Policy"]) != expected:
-        raise ValueError("installed acknowledgement policy does not match the custodian role")
+    check_acknowledgement_policy(custodian)
     prove_share(trust, receipt, custodian, index, relay_port, require_open_epoch)
     require_open_epoch()
     keys = [member["acknowledgementKey"] for member in custodians]

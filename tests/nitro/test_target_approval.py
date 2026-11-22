@@ -7,7 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import sha256
@@ -144,12 +144,14 @@ class TargetApprovalTests(unittest.TestCase):
         target_path.write_text(json.dumps(self.approval))
         commit = "ab" * 20
         signing_key = self.trust["approvalKeys"][0]["keys"][2]["keyArn"]
+        profiles = [f"slot-{index}-reader" for index in range(1, 7)]
         argv = ["deployment.py", str(trust_path), str(self.build), "sign", str(target_path),
-                signing_key, str(output), "--source-commit", commit, "--host-inspection-profile", "host-reader"]
+                signing_key, str(output), "--source-commit", commit, "--host-inspection-profile", "host-reader",
+                "--inspection-profiles", *profiles]
         reviewed = describe(self.build, "devnet", commit)
         with (patch("sys.argv", argv), patch("deployment.load_epoch", side_effect=self.load_epoch),
-              patch("deployment.require_active_epoch"), patch("deployment.verify_build") as verify_build,
-              patch("deployment.require_host_state") as inspect,
+              patch("deployment.require_active_epoch") as active, patch("deployment.verify_build") as verify_build,
+              patch("deployment.require_host_state") as inspect, patch("deployment.sealed_rsa_key") as inspect_key,
               patch("deployment.add_approval", return_value=self.approval) as sign_target):
             for field in ("configurationSha256", "eifSha256", "executableSha256", "pcrs"):
                 value = {**PINS, "PCR0": "aa" * 48} if field == "pcrs" else "aa" * 32
@@ -158,10 +160,32 @@ class TargetApprovalTests(unittest.TestCase):
                     main()
             sign_target.assert_not_called()
             self.assertFalse(output.exists())
+            inspect_key.assert_not_called()
             verify_build.return_value = reviewed
+            inspect_key.side_effect = [DESTINATION] * 5 + [ValueError("unsealed wrapping key")]
+            with self.assertRaisesRegex(SystemExit, "unsealed wrapping key"):
+                main()
+            sign_target.assert_not_called()
+            self.assertFalse(output.exists())
+
+            inspect_key.side_effect = None
+            active.side_effect = [None, ValueError("epoch retired during inspection")]
+            with self.assertRaisesRegex(SystemExit, "epoch retired during inspection"):
+                main()
+            sign_target.assert_not_called()
+            self.assertFalse(output.exists())
+
+            active.side_effect = None
+            inspect.reset_mock()
+            inspect_key.reset_mock()
             main()
             self.assertEqual(json.loads(output.read_bytes()), self.approval)
             inspect.assert_called_once_with(self.manifest, "running", "host-reader")
+            _, policies, _ = target(self.trust, self.approval, self.receipt, self.custodians, self.build)
+            self.assertEqual(inspect_key.call_args_list, [
+                call(key, policy, profile=profile)
+                for key, policy, profile in zip(self.manifest["wrappingKeys"], policies, profiles, strict=True)
+            ])
             sign_target.assert_called_once()
 
     @patch("deployment.aws")

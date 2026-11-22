@@ -12,8 +12,8 @@ account and a dedicated publisher role for the custody bucket. Each custodian
 uses distinct IAM roles for opening its share and retiring its keys. In each
 custody account provision a single-region, KMS-generated RSA `ENCRYPT_DECRYPT`
 key and a P-256 `SIGN_VERIFY` key. Only the custodian role signs acknowledgements.
-The three approval keys are P-256 KMS keys in three separately administered
-accounts. Sign with KMS and verify the signatures locally with OpenSSL.
+The three approval keys are separate P-256 KMS keys in three independently
+administered accounts. Sign with KMS and verify the signatures locally with OpenSSL.
 Export public keys as `{keyArn, publicKey}` with `python3 enclave/deploy/nitro/approval.py "$key_arn"`.
 
 Pin `trust.json` outside the host and artifact distributor. It contains
@@ -64,8 +64,10 @@ Render the recovery policies after pinning the relay. Install each custodian's
 two policies at key creation with `--bypass-policy-lockout-safety-check`.
 The recovery key permits only the custodian role and requires attestation from
 the measured relay. The acknowledgement key permits only the custodian role
-to sign. Give the approvers read-only inspection profiles in all six slot
-accounts. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
+to sign. Give the approvers read-only profiles in all six slot accounts with
+`kms:DescribeKey`, `kms:GetKeyPolicy` and `kms:GetPublicKey` on the keys they
+inspect. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
+[GetKeyPolicy permissions](https://docs.aws.amazon.com/kms/latest/APIReference/API_GetKeyPolicy.html)
 
 ## Commit a custody epoch
 
@@ -104,8 +106,8 @@ accounts. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
 3. Two approval signers each run `sign` with the measured build, Git ref and
    full commit SHA from review. The command verifies the GitHub build
    attestation, archived AWS evidence, and the attested relay's build, PCRs
-   and ordered signer keys. Each approver inspects the six installed recovery
-   key policies and public keys. Pass each updated document to the next
+   and ordered signer keys. Each approver checks both installed policies and
+   public keys in all six slots. Pass each updated document to the next
    signer. Each custodian acknowledges in its own account after the measured
    relay proves possession of its committed share. Forward the relay's vsock
    port 44031 through SSM to a loopback port. It serves for ten minutes.
@@ -157,8 +159,10 @@ accounts. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
    binds the canonical receipt, mode, EIF, configuration, measurements, parent
    account, EC2 region and instance ID, and six wrapping keys. Each signer uses
    a read-only profile with `ec2:DescribeInstances` in the host account to
-   confirm that exact parent is running with enclave support enabled. A rotation draft also takes `--next-roster roster-next.json`
-   and binds the successor relay from custody trust. Before authorizing a
+   confirm that exact parent is running with enclave support enabled. Supply
+   six read-only profiles in slot order to verify the installed wrapping
+   policies and RSA key metadata before signing. A rotation draft takes
+   `--next-roster roster-next.json` and binds the successor relay from custody trust. Before authorizing a
    rotation, both signers verify the successor's build and keys with
    `--next-relay-build BUILD COMMIT REF` and `--next-inspection-profiles`.
 
@@ -167,7 +171,8 @@ accounts. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
      "$approval_deadline" --host-region "$host_region" --instance-id "$instance_id" > target-draft.json
    python3 "$nitro/deployment.py" trust.json "$build_dir" sign target-draft.json "$approval_key" \
      target-signed.json --source-commit "$reviewed_commit" --source-ref "$source_ref" \
-     --host-inspection-profile "$host_read_profile"
+     --host-inspection-profile "$host_read_profile" \
+     --inspection-profiles "${inspection_profiles[@]}"
    python3 "$nitro/deployment.py" trust.json "$build_dir" register target-signed.json
    python3 "$nitro/deployment.py" trust.json "$build_dir" host-policy target-signed.json > host-kms-policy.json
    python3 "$nitro/deployment.py" trust.json "$build_dir" attestation-pins target-signed.json > pcrs.json

@@ -55,6 +55,7 @@ def acknowledgement_policy(custodian, key_admin):
         deny("DenyOtherCustodian", "kms:Sign", Condition={"StringNotEquals": {"aws:PrincipalArn": custodian}}),
         retirement(key_admin),
         statement("ReadAcknowledgementPublicKey", "Allow", "*", ["kms:DescribeKey", "kms:GetPublicKey"]),
+        allow("InspectAcknowledgementPolicy", f"arn:aws:iam::{arn(ROLE_ARN, custodian)[1]}:root", "kms:GetKeyPolicy"),
         allow("AcknowledgeShare", custodian, ["kms:GetKeyPolicy", "kms:Sign"]),
     ]}
 

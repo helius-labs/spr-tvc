@@ -9,16 +9,16 @@ from pathlib import Path
 
 from approval import (
     KEY_ARN, ROLE_ARN, add_approval, approval_roster, arn, aws, canonical, fields, file_digest, hex_digest,
-    parse_json, read_document, read_json, sha256,
+    parse_json, read_document, read_json, require_inspection_profiles, sha256,
 )
 from custody_ledger import (
-    LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_acknowledgement_key, check_recovery_roster, load_epoch,
+    LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_custody_roster, load_epoch,
     read_registered_target, require_active_epoch, require_publication_roster, require_target_approval_window,
     target_attestation, target_object_name, validate_target, verify_target_approval, write_once,
 )
 from kms_policy import decrypt_conditions, key_policy, target_boot_pins
 from provenance import MAIN_REF, verify as verify_build
-from relay import relay_pins
+from relay import relay_pins, sealed_rsa_key
 
 def host_policy(manifest):
     pins = target_boot_pins(manifest["hostRole"], manifest["pcrs"], manifest["instanceId"])
@@ -172,6 +172,7 @@ def main():
     sign.add_argument("key")
     sign.add_argument("output", type=Path)
     sign.add_argument("--host-inspection-profile", required=True)
+    sign.add_argument("--inspection-profiles", nargs=6, required=True)
     sign.add_argument("--source-commit", required=True)
     sign.add_argument("--source-ref", default=MAIN_REF)
     sign.add_argument("--next-inspection-profiles", nargs=6)
@@ -209,7 +210,7 @@ def main():
             return
         document = read_json(args.target)
         _, receipt, custodians = load_epoch(trust, document["manifest"]["custodyEpoch"])
-        keys, _, next_keys = target(trust, document, receipt, custodians, args.build)
+        keys, policies, next_keys = target(trust, document, receipt, custodians, args.build)
         if args.command == "register":
             register_target(trust, document)
             return
@@ -228,13 +229,17 @@ def main():
             raise ValueError("target does not match the verified build provenance")
         if next_keys:
             successor = manifest["nextCustodians"]
-            check_recovery_roster(trust, str(int(manifest["custodyEpoch"]) + 1), successor, next_keys,
-                                  args.next_inspection_profiles, args.next_relay_build)
-            for custodian in successor:
-                check_acknowledgement_key(custodian)
-        elif args.next_relay_build is not None:
-            raise ValueError("a successor relay build is only used for rotation")
+            check_custody_roster(trust, str(int(manifest["custodyEpoch"]) + 1), successor, next_keys,
+                                 args.next_inspection_profiles, args.next_relay_build)
+        elif args.next_relay_build is not None or args.next_inspection_profiles is not None:
+            raise ValueError("successor inspection is only used for rotation")
+        require_inspection_profiles(args.inspection_profiles)
+        for key, policy, profile in zip(manifest["wrappingKeys"], policies, args.inspection_profiles, strict=True):
+            sealed_rsa_key(key, policy, profile=profile)
         require_host_state(manifest, "running", args.host_inspection_profile)
+        require_active_epoch(trust, manifest["custodyEpoch"])
+        require_target_approval_window(manifest, time.time(), remaining=LEDGER_WRITE_MARGIN_SECONDS)
+        require_publication_roster(trust, manifest["approvalFromEpoch"])
         approved = add_approval(keys, TARGET_APPROVAL, document, args.key)
         with args.output.open("xb") as output:
             output.write(canonical(approved) + b"\n")
