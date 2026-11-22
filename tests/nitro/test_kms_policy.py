@@ -293,5 +293,24 @@ class KeyPolicyTests(unittest.TestCase):
             self.assertEqual(aws("eu-north-1", "s3api", "list-objects-v2", []), {})
         self.assertEqual(run.call_args.kwargs["env"]["AWS_IGNORE_CONFIGURED_ENDPOINT_URLS"], "true")
 
+    @patch("approval.subprocess.run")
+    def test_aws_configuration_absence_requires_the_expected_service_error(self, run):
+        absent = "NoSuchLifecycleConfiguration"
+        args = ("eu-north-1", "s3api", "get-bucket-lifecycle-configuration", [])
+        run.return_value = subprocess.CompletedProcess([], 254, b"", b'{"Code":"NoSuchLifecycleConfiguration"}')
+        self.assertIsNone(aws(*args, absent=absent))
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--cli-error-format") + 1], "json")
+
+        for stderr in (b'{"Code":"AccessDenied"}', b'{"Code":"NoSuchBucket"}', absent.encode()):
+            with self.subTest(stderr=stderr):
+                run.return_value = subprocess.CompletedProcess([], 254, b"", stderr)
+                with self.assertRaisesRegex(ValueError, "get-bucket-lifecycle-configuration failed"):
+                    aws(*args, absent=absent)
+
+        run.return_value = subprocess.CompletedProcess([], 0, b"null", b"")
+        with self.assertRaisesRegex(ValueError, "unexpected AWS"):
+            aws(*args, absent=absent)
+
 if __name__ == "__main__":
     unittest.main()

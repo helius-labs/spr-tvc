@@ -131,11 +131,11 @@ def target_object_name(manifest):
     return target_path(manifest["custodyEpoch"], sha256(target_attestation(manifest)))
 
 
-def storage(trust, operation, args):
+def storage(trust, operation, args=(), **options):
     ledger, _ = ledger_prefix(trust)
     return aws(ledger["region"], "s3api", operation, [
         "--bucket", ledger["bucket"], "--expected-bucket-owner", ledger["account"], *args,
-    ])
+    ], **options)
 
 
 def read_object(trust, name):
@@ -265,6 +265,26 @@ def ledger_policy(trust, administrator, publisher, readers):
         {**read, "Principal": principals},
         {**listing, "Principal": principals},
     ]}
+
+
+def check_installed_ledger(trust, expected_policy):
+    policy = storage(trust, "get-bucket-policy").get("Policy")
+    if not isinstance(policy, str) or parse_json(policy) != expected_policy:
+        raise ValueError("custody ledger bucket policy differs from the generated policy")
+    if storage(trust, "get-bucket-versioning").get("Status") != "Enabled":
+        raise ValueError("custody ledger bucket requires versioning")
+    ownership = storage(trust, "get-bucket-ownership-controls").get("OwnershipControls")
+    if ownership != {"Rules": [{"ObjectOwnership": "BucketOwnerEnforced"}]}:
+        raise ValueError("custody ledger bucket requires bucket-owner-enforced ownership")
+    public_access = storage(trust, "get-public-access-block").get("PublicAccessBlockConfiguration")
+    if not isinstance(public_access, dict) or any(public_access.get(flag) is not True for flag in (
+        "BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets",
+    )):
+        raise ValueError("custody ledger bucket requires all four public access blocks")
+    if storage(trust, "get-bucket-lifecycle-configuration", absent="NoSuchLifecycleConfiguration") is not None:
+        raise ValueError("custody ledger bucket must have no lifecycle configuration")
+    if storage(trust, "get-bucket-replication", absent="ReplicationConfigurationNotFoundError") is not None:
+        raise ValueError("custody ledger bucket must have no replication configuration")
 
 
 def read_epoch_record(trust, epoch):
@@ -709,6 +729,7 @@ def main():
     policy.add_argument("administrator")
     policy.add_argument("publisher")
     policy.add_argument("readers", nargs="+")
+    policy.add_argument("--check-installed", action="store_true")
     commands.add_parser("reader-policy")
     recovery = commands.add_parser("recovery-policy")
     recovery.add_argument("custodian_role")
@@ -721,7 +742,12 @@ def main():
     try:
         trust = read_json(args.trust)
         if args.command == "policy":
-            print(canonical(ledger_policy(trust, args.administrator, args.publisher, args.readers)).decode())
+            expected = ledger_policy(trust, args.administrator, args.publisher, args.readers)
+            if args.check_installed:
+                check_installed_ledger(trust, expected)
+                print("Custody ledger bucket controls verified")
+            else:
+                print(canonical(expected).decode())
             return
         if args.command == "reader-policy":
             print(canonical(ledger_reader_policy(trust)).decode())

@@ -80,6 +80,7 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-72 | The on-chain rotation canary could recover its note through a different boot from the one observed after retirement. | The retirement rehearsal waits for the report after sending and requires its exact attested boot and signed policy for the claim. Record the transfer and sweep with the boot ID. [Canary](../example/tests/nitro.test.ts) · [SDK boot restriction](../sdk/tests/client/nitro.test.ts) |
 | N-73 | Distinct CLI profile names could hide wrong-account credentials during custody approval and retirement inspection. | Use STS to check each inspection profile against its pinned account before checking key or host state. [Account and inventory tests](nitro/test_kms_policy.py) · [Custody approval and retirement tests](nitro/test_custody_ledger.py) |
 | N-74 | The packager compared PCRs without checking the written EIF's checksum result. | Require Nitro CLI to report a valid checksum before accepting the measurements. [Packaging tests](nitro/test_provenance.py) |
+| N-75 | The installed ledger controls were unchecked. A lifecycle rule can expire custody records despite the policy's delete deny. | Read and verify the policy, versioning, ownership, public access, lifecycle and replication settings on the pinned bucket. [Ledger controls tests](nitro/test_custody_ledger.py) · [AWS error tests](nitro/test_kms_policy.py) |
 
 ## Remaining qualification and review
 

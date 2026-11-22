@@ -76,14 +76,26 @@ def aws_environment():
     return {**os.environ, "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS": "true"}
 
 
-def aws(region, service, operation, arguments, body=None, *, profile=None):
+def aws(region, service, operation, arguments, body=None, *, profile=None, absent=None):
     credentials = ["--profile", profile] if profile is not None else []
+    error_format = ["--cli-error-format", "json"] if absent is not None else []
     reply = subprocess.run([
-        "aws", *credentials, "--region", region, "--no-cli-pager", "--output", "json", service, operation, *arguments,
+        "aws", *credentials, "--region", region, "--no-cli-pager", "--output", "json", *error_format,
+        service, operation, *arguments,
     ], input=body, capture_output=True, timeout=25, check=False, env=aws_environment())
     if reply.returncode:
+        if absent is not None:
+            try:
+                error = parse_json(reply.stderr)
+            except ValueError:
+                error = None
+            if isinstance(error, dict) and error.get("Code") == absent:
+                return None
         raise ValueError(f"AWS {service} {operation} failed")
-    return parse_json(reply.stdout)
+    result = parse_json(reply.stdout)
+    if not isinstance(result, dict):
+        raise ValueError(f"unexpected AWS {service} {operation} response")
+    return result
 
 
 def kms(key, operation, arguments=(), body=None, **options):

@@ -12,14 +12,15 @@ from datetime import datetime, timezone
 from io import BytesIO
 from threading import Lock
 from types import SimpleNamespace
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, call, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import approval_keys, approval_roster, canonical, sha256
 from custody_archive import MAX_ARCHIVE_ENTRY_BYTES, archive, verify_archive
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
-    check_custody_roster, check_serving_policy, draft, ledger_policy, ledger_reader_policy, list_objects, load_epoch, publish, read_registered_target,
+    check_custody_roster, check_installed_ledger, check_serving_policy, draft, ledger_policy, ledger_reader_policy,
+    list_objects, load_epoch, publish, read_registered_target,
     record, require_active_epoch,
     sign_epoch, target_attestation,
     target_object_name, write_once,
@@ -576,6 +577,44 @@ class CustodyLedgerTests(unittest.TestCase):
         for administrator, readers in ((PUBLISHER, [READ_ROLE]), (READ_ROLE, [READ_ROLE]), (ADMIN, [ADMIN])):
             with self.assertRaisesRegex(ValueError, "administrator must be a separate role"):
                 ledger_policy(self.trust, administrator, PUBLISHER, readers)
+
+    def test_installed_ledger_requires_each_control_on_the_pinned_bucket(self):
+        expected = ledger_policy(self.trust, ADMIN, PUBLISHER, [READ_ROLE])
+        responses = {
+            "get-bucket-policy": {"Policy": json.dumps(expected)},
+            "get-bucket-versioning": {"Status": "Enabled"},
+            "get-bucket-ownership-controls": {"OwnershipControls": {"Rules": [{"ObjectOwnership": "BucketOwnerEnforced"}]}},
+            "get-public-access-block": {"PublicAccessBlockConfiguration": {
+                "BlockPublicAcls": True, "IgnorePublicAcls": True, "BlockPublicPolicy": True, "RestrictPublicBuckets": True,
+            }},
+            "get-bucket-lifecycle-configuration": None,
+            "get-bucket-replication": None,
+        }
+        errors = {
+            "get-bucket-lifecycle-configuration": "NoSuchLifecycleConfiguration",
+            "get-bucket-replication": "ReplicationConfigurationNotFoundError",
+        }
+        bucket = ["--bucket", "custody-journal", "--expected-bucket-owner", "000000000008"]
+        with patch("custody_ledger.aws", side_effect=lambda _region, _service, operation, _args, **_options: responses[operation]) as aws:
+            check_installed_ledger(self.trust, expected)
+            self.assertEqual(aws.call_args_list, [
+                call("eu-north-1", "s3api", operation, bucket, **({"absent": errors[operation]} if operation in errors else {}))
+                for operation in responses
+            ])
+
+            drift = [
+                ("get-bucket-policy", {"Policy": "{}"}, "policy differs"),
+                ("get-bucket-versioning", {"Status": "Suspended"}, "requires versioning"),
+                ("get-bucket-ownership-controls", {"OwnershipControls": {"Rules": [{"ObjectOwnership": "ObjectWriter"}]}},
+                 "bucket-owner-enforced"),
+                ("get-public-access-block", {"PublicAccessBlockConfiguration": {}}, "public access blocks"),
+                ("get-bucket-lifecycle-configuration", {"Rules": [{"Expiration": {"Days": 1}}]}, "no lifecycle"),
+                ("get-bucket-replication", {"ReplicationConfiguration": {"Rules": []}}, "no replication"),
+            ]
+            for operation, value, message in drift:
+                with self.subTest(operation=operation), patch.dict(responses, {operation: value}):
+                    with self.assertRaisesRegex(ValueError, message):
+                        check_installed_ledger(self.trust, expected)
 
     def signed_subject(self, label, manifest):
         return {"manifest": manifest, "signatures": [sign(label, manifest, member["keyArn"])

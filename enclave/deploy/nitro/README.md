@@ -37,8 +37,23 @@ python3 "$nitro/custody_ledger.py" trust.json acknowledgement-policy "$custodian
 Supply every ledger reader role to `policy`, and attach the generated read
 policy to each cross-account reader role in its own account. Install the bucket
 policy on a private, versioned general-purpose bucket with bucket-owner-enforced
-ownership, public access blocked, and lifecycle expiration and replication
-off. The policy restricts administration to a separate role and allows
+ownership, all four bucket public access blocks enabled, and no lifecycle or
+replication configuration. Check the installed controls with the same role list
+before publishing custody records.
+
+```sh
+python3 "$nitro/custody_ledger.py" trust.json policy "$ledger_admin_role" "$publisher_role" "$reader_role" --check-installed
+```
+
+Run the check with AWS CLI v2 supporting `--cli-error-format json` and with
+credentials in the pinned bucket owner's account. The inspection identity
+needs `s3:GetBucketPolicy`, `s3:GetBucketVersioning`,
+`s3:GetBucketOwnershipControls`, `s3:GetBucketPublicAccessBlock`,
+`s3:GetLifecycleConfiguration`, and `s3:GetReplicationConfiguration` on
+the ledger bucket. S3 lifecycle rules can expire records independently of the
+delete permissions in the bucket policy. [S3 lifecycle documentation](https://docs.aws.amazon.com/AmazonS3/latest/userguide/troubleshoot-lifecycle.html)
+
+The policy restricts administration to a separate role and allows
 conditional single-request uploads. Keep multipart uploads and copies
 disallowed so S3's recorded write time can govern custody approvals. Protect
 account root and keep the publisher
