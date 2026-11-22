@@ -241,7 +241,16 @@ def ledger_reader_policy(trust):
     ]}
 
 
-def ledger_policy(trust, administrator, publisher, readers):
+def custody_history_statement(trust, *, frozen=False):
+    ledger, prefix = ledger_prefix(trust)
+    actions = ["s3:DeleteObject", "s3:DeleteObjectVersion", "s3:ReplicateObject", "s3:ReplicateDelete"]
+    if frozen:
+        actions.append("s3:PutObject")
+    return {"Sid": "PreserveCustodyHistory", "Effect": "Deny", "Principal": "*",
+            "Resource": f"arn:aws:s3:::{ledger['bucket']}/{prefix}*", "Action": actions}
+
+
+def ledger_policy(trust, administrator, publisher, readers, *, frozen=False):
     read, listing = ledger_reader_policy(trust)["Statement"]
     ledger = trust["ledger"]
     if arn(ROLE_ARN, publisher)[1] != ledger["account"]:
@@ -267,8 +276,7 @@ def ledger_policy(trust, administrator, publisher, readers):
          "Resource": resource, "Condition": {"StringNotEquals": {"s3:if-none-match": "*"}}},
         {"Sid": "RestrictPublisher", "Effect": "Deny", "Principal": "*", "Action": "s3:PutObject",
          "Resource": resource, "Condition": {"StringNotEquals": {"aws:PrincipalArn": publisher}}},
-        {"Sid": "PreserveCustodyHistory", "Effect": "Deny", "Principal": "*", "Resource": resource,
-         "Action": ["s3:DeleteObject", "s3:DeleteObjectVersion", "s3:ReplicateObject", "s3:ReplicateDelete"]},
+        custody_history_statement(trust, frozen=frozen),
         {"Sid": "AllowPublisher", "Effect": "Allow", "Principal": {"AWS": publisher},
          "Action": "s3:PutObject", "Resource": resource},
         {**read, "Principal": principals},
@@ -276,9 +284,28 @@ def ledger_policy(trust, administrator, publisher, readers):
     ]}
 
 
-def check_installed_ledger(trust, expected_policy):
+def installed_ledger_policy(trust):
     policy = storage(trust, "get-bucket-policy").get("Policy")
-    if not isinstance(policy, str) or parse_json(policy) != expected_policy:
+    if not isinstance(policy, str):
+        raise ValueError("custody ledger bucket did not return a policy")
+    return parse_json(policy)
+
+
+def require_no_ledger_lifecycle(trust):
+    if storage(trust, "get-bucket-lifecycle-configuration", absent="NoSuchLifecycleConfiguration") is not None:
+        raise ValueError("custody ledger bucket must have no lifecycle configuration")
+
+
+def require_frozen_ledger(trust):
+    policy = installed_ledger_policy(trust)
+    statements = policy.get("Statement") if isinstance(policy, dict) else None
+    if not isinstance(statements, list) or custody_history_statement(trust, frozen=True) not in statements:
+        raise ValueError("custody ledger checkpoint requires the frozen bucket policy")
+    require_no_ledger_lifecycle(trust)
+
+
+def check_installed_ledger(trust, expected_policy):
+    if installed_ledger_policy(trust) != expected_policy:
         raise ValueError("custody ledger bucket policy differs from the generated policy")
     if storage(trust, "get-bucket-versioning").get("Status") != "Enabled":
         raise ValueError("custody ledger bucket requires versioning")
@@ -290,8 +317,7 @@ def check_installed_ledger(trust, expected_policy):
         "BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets",
     )):
         raise ValueError("custody ledger bucket requires all four public access blocks")
-    if storage(trust, "get-bucket-lifecycle-configuration", absent="NoSuchLifecycleConfiguration") is not None:
-        raise ValueError("custody ledger bucket must have no lifecycle configuration")
+    require_no_ledger_lifecycle(trust)
     if storage(trust, "get-bucket-replication", absent="ReplicationConfigurationNotFoundError") is not None:
         raise ValueError("custody ledger bucket must have no replication configuration")
 
@@ -739,6 +765,7 @@ def main():
     policy.add_argument("publisher")
     policy.add_argument("readers", nargs="+")
     policy.add_argument("--check-installed", action="store_true")
+    policy.add_argument("--frozen", action="store_true", help="deny all object writes on this custody prefix")
     commands.add_parser("reader-policy")
     recovery = commands.add_parser("recovery-policy")
     recovery.add_argument("custodian_role")
@@ -751,7 +778,7 @@ def main():
     try:
         trust = read_json(args.trust)
         if args.command == "policy":
-            expected = ledger_policy(trust, args.administrator, args.publisher, args.readers)
+            expected = ledger_policy(trust, args.administrator, args.publisher, args.readers, frozen=args.frozen)
             if args.check_installed:
                 check_installed_ledger(trust, expected)
                 print("Custody ledger bucket controls verified")

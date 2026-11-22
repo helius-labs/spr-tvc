@@ -12,7 +12,7 @@ from approval import MAX_DOCUMENT_BYTES, canonical, epoch_number, fields, hex_di
 from custody_ledger import (
     check_commit, check_predecessor, check_registered_target, check_rotation_target, ledger_object, ledger_prefix,
     list_objects, publication_datetime, publication_time, read_object, read_stored_object, read_stored_payload, record,
-    rotation_target_name, verify_ceremony_capture,
+    require_frozen_ledger, rotation_target_name, verify_ceremony_capture,
 )
 
 MAX_ARCHIVE_ENTRY_BYTES = 2 * MAX_DOCUMENT_BYTES + 256
@@ -80,6 +80,7 @@ def verify_archive(trust, epoch, source, expected_digest):
 def ledger_checkpoint(trust, expected=None):
     if expected is not None:
         hex_digest(expected)
+    require_frozen_ledger(trust)
     _, prefix = ledger_prefix(trust)
     checksum = hashlib.sha256(b"SPR/native-nitro/ledger-checkpoint/v1\0" + prefix.encode())
     names = tuple(list_objects(trust, ""))
@@ -96,6 +97,7 @@ def ledger_checkpoint(trust, expected=None):
         checksum.update(canonical([name, version, published_at, hashlib.sha256(payload).hexdigest()]) + b"\n")
     if names != tuple(list_objects(trust, "")):
         raise ValueError("custody ledger changed during checkpoint")
+    require_frozen_ledger(trust)
     actual = checksum.hexdigest()
     if expected is not None and actual != expected:
         raise ValueError("custody ledger differs from the independently pinned checkpoint")

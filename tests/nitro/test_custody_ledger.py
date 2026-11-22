@@ -55,6 +55,8 @@ class CustodyLedgerTests(unittest.TestCase):
         self.objects = {}
         self.timestamps = {}
         self.versions = {}
+        self.bucket_policy = ledger_policy(self.trust, ADMIN, PUBLISHER, [READ_ROLE])
+        self.lifecycle = None
         self.lock = Lock()
         self.now = int(time.time())
         self.booted_at_ms = self.now * 1000
@@ -119,9 +121,14 @@ class CustodyLedgerTests(unittest.TestCase):
                                         for c in manifest["custodians"]]
         return document
 
-    def aws(self, region, service, operation, args):
+    def aws(self, region, service, operation, args, **options):
         self.assertEqual((region, service), ("eu-north-1", "s3api"))
         self.assertEqual(args[args.index("--expected-bucket-owner") + 1], "000000000008")
+        if operation == "get-bucket-policy":
+            return {"Policy": canonical(self.bucket_policy).decode()}
+        if operation == "get-bucket-lifecycle-configuration":
+            self.assertEqual(options, {"absent": "NoSuchLifecycleConfiguration"})
+            return self.lifecycle
         if operation == "list-objects-v2":
             prefix = args[args.index("--prefix") + 1]
             self.assertTrue(prefix.startswith(f"spr-custody/devnet/{DOMAIN}/"))
@@ -438,6 +445,7 @@ class CustodyLedgerTests(unittest.TestCase):
             marker = qualified_manifest(self.trust, None, "1", "2")
             commit_retirement(self.trust, None, self.signed_retirement(marker))
 
+        self.bucket_policy = ledger_policy(self.trust, ADMIN, PUBLISHER, [READ_ROLE], frozen=True)
         pinned = ledger_checkpoint(self.trust)
         self.now = max(marker["recoveryDeadline"], rotation["manifest"]["expiresAt"]) + 1
         prefix = f"spr-custody/devnet/{DOMAIN}/"
@@ -445,12 +453,16 @@ class CustodyLedgerTests(unittest.TestCase):
         retired = prefix + "retired/1.json"
         changed_time = datetime.fromtimestamp(self.now, timezone.utc).isoformat()
         replica = {**self.trust, "ledger": {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1"}}
+        replica_policy = ledger_policy(replica, ADMIN.replace("000000000008", "000000000010"),
+                                       PUBLISHER.replace("000000000008", "000000000010"), [READ_ROLE], frozen=True)
 
-        def replica_aws(region, service, operation, args):
+        def replica_aws(region, service, operation, args, **options):
             self.assertEqual(region, "eu-west-1")
             self.assertEqual(args[:4], ["--bucket", "custody-recovery", "--expected-bucket-owner", "000000000010"])
+            if operation == "get-bucket-policy":
+                return {"Policy": canonical(replica_policy).decode()}
             original = ["--bucket", "custody-journal", "--expected-bucket-owner", "000000000008", *args[4:]]
-            reply = self.aws("eu-north-1", service, operation, original)
+            reply = self.aws("eu-north-1", service, operation, original, **options)
             return {**reply, "Name": "custody-recovery"} if operation == "list-objects-v2" else reply
 
         with patch("custody_ledger.aws", side_effect=replica_aws):
@@ -480,6 +492,33 @@ class CustodyLedgerTests(unittest.TestCase):
         names = [name.removeprefix(prefix) for name in sorted(self.objects)]
         with patch("custody_archive.list_objects", side_effect=[iter(names), iter(names[:-1])]):
             with self.assertRaisesRegex(ValueError, "changed during checkpoint"):
+                ledger_checkpoint(self.trust, pinned)
+
+    def test_ledger_checkpoint_requires_the_frozen_policy_before_and_after_reading(self):
+        publish(self.trust, self.sign(self.document(1)))
+        live = self.bucket_policy
+        frozen = ledger_policy(self.trust, ADMIN, PUBLISHER, [READ_ROLE], frozen=True)
+        guarded, = [rule for rule in frozen["Statement"] if rule["Sid"] == "PreserveCustodyHistory"]
+        self.assertEqual(guarded["Principal"], "*")
+        self.assertEqual(guarded["Effect"], "Deny")
+        self.assertIn("s3:PutObject", guarded["Action"])
+        self.assertNotIn("Condition", guarded)
+        with self.assertRaisesRegex(ValueError, "requires the frozen bucket policy"):
+            ledger_checkpoint(self.trust)
+        self.bucket_policy = frozen
+        pinned = ledger_checkpoint(self.trust)
+        weakened = {**frozen, "Statement": [
+            {**rule, "Condition": {"StringNotEquals": {"aws:PrincipalArn": PUBLISHER}}} if rule is guarded else rule
+            for rule in frozen["Statement"]
+        ]}
+        with patch.object(self, "bucket_policy", weakened):
+            with self.assertRaisesRegex(ValueError, "requires the frozen bucket policy"):
+                ledger_checkpoint(self.trust, pinned)
+        with patch.object(self, "lifecycle", {"Rules": [{"Expiration": {"Days": 1}}]}):
+            with self.assertRaisesRegex(ValueError, "no lifecycle configuration"):
+                ledger_checkpoint(self.trust, pinned)
+        with patch("custody_ledger.installed_ledger_policy", side_effect=[frozen, live]):
+            with self.assertRaisesRegex(ValueError, "requires the frozen bucket policy"):
                 ledger_checkpoint(self.trust, pinned)
 
     def test_genesis_host_role_must_match_the_captured_identity_before_publication(self):

@@ -93,8 +93,9 @@ rotation approval, and each ceremony’s Nitro proof at its recorded
 verification time. Live admission also depends on the complete target and
 retirement history and the original S3 write times. An independently retained
 checkpoint of the paused ledger binds every key, version ID, write time and
-record body. Recovery verifies that checkpoint against the recovered bucket
-before any new admission.
+record body. The checkpoint verifier requires a frozen bucket policy and
+confirms that lifecycle rules are absent. Recovery compares the checkpoint
+against the frozen recovered bucket before any new admission.
 
 The custody ledger registers one wrapping-key set per epoch, release ID and
 PCR0–PCR4. Before signing, each approver checks that all six RSA wrapping

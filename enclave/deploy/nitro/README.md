@@ -171,9 +171,18 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    python3 "$nitro/custody_archive.py" trust.json verify "$epoch" custody.jsonl "$pinned_sha256"
    ```
 
-   Pause ledger publication and wait for in-flight writes before recording a
-   checkpoint. Use an inspection identity with `s3:ListBucket` on the full
-   custody prefix and `s3:GetObject` on its records. Retain the digest
+   Pause ledger publication and drain in-flight writes. Render and install the
+   bucket policy with `--frozen` to deny all writes in the custody prefix. Let
+   the policy propagate and verify the installed controls with
+   `--frozen --check-installed`. Keep that policy in place while recording and
+   comparing checkpoints. The checkpoint command verifies the write deny and
+   absence of lifecycle rules before and after reading the records.
+   [S3 consistency model](https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html)
+
+   Include the inspection role from the bucket owner's account in the reader
+   list. Give its IAM identity policy
+   `s3:GetBucketPolicy`, `s3:GetLifecycleConfiguration`, `s3:ListBucket` on the full
+   custody prefix, and `s3:GetObject` on its records. Retain the digest
    independently with evidence of the last committed write. The digest covers
    every receipt, target registration and retirement marker, including each
    object's original version ID, write time and exact bytes. Keep the pinned
@@ -181,14 +190,17 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    in the recovered trust file.
 
    ```sh
+   python3 "$nitro/custody_ledger.py" trust.json policy "$ledger_admin_role" "$publisher_role" "$reader_role" --frozen > ledger-frozen-policy.json
    python3 "$nitro/custody_archive.py" trust.json ledger-checkpoint
    python3 "$nitro/custody_archive.py" recovered-trust.json ledger-checkpoint --expect "$ledger_checkpoint_sha256"
    ```
 
    Suspend registration, share release and key retirement if the canonical
    ledger becomes unavailable or incomplete. Resume only after the recovered
-   bucket matches an independently retained checkpoint that covers all
-   committed writes, and passes the installed bucket controls check above.
+   bucket matches an independently retained checkpoint covering all committed
+   writes. Keep the original ledger's write fence in force while promoting
+   the recovered bucket. Install and verify the normal writable policy on the
+   recovered bucket before resuming.
    AWS Backup creates new object creation dates and version IDs on restore.
    [AWS Backup metadata](https://docs.aws.amazon.com/aws-backup/latest/devguide/s3-backups.html)
 
