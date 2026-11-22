@@ -10,7 +10,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/de
 from approval import canonical, signing_sec1
 from provenance import describe
 from relay import prove_share, recover_to_relay, verify_relay_build
-from relay_wrap import LABEL, prepare, release
+from relay_wrap import LABEL, prepare, release, sign_release
 from nitro_fixtures import DOMAIN, HOST, key, pin, sign
 
 SCOPE = {"hostRole": HOST, "pcrs": {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)}}
@@ -92,6 +92,15 @@ class RelayTests(unittest.TestCase):
         verify.return_value["expiresAt"] = 15
         statement, *_ = prepare(*source)
         self.assertEqual(statement["expiresAt"], 15)
+
+        def late_recipient(*_args):
+            now.return_value = 15
+            return "ab" * 32, b"evidence"
+
+        _recipient.side_effect = late_recipient
+        with self.assertRaisesRegex(ValueError, "relay authorization has expired"):
+            prepare(*source)
+        _recipient.side_effect = None
 
         now.return_value = 20
         verify.return_value.update(custodyEpoch="1", approvalFromEpoch="2", expiresAt=30)
@@ -177,6 +186,38 @@ class RelayTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "relay authorization has expired"):
             release(*source, approved, **review)
         request.assert_not_called()
+
+    @patch("relay_wrap.time", return_value=10)
+    @patch("relay_wrap.verify_target_approval")
+    @patch("relay_wrap.require_active_epoch")
+    @patch("relay_wrap.add_approval")
+    def test_signing_rechecks_the_ledger_and_cutoff_before_returning_the_signature(self, sign, active, _verify, now):
+        statement = {"custodyEpoch": "1", "expiresAt": 20}
+        draft = {"manifest": statement, "signatures": []}
+        args = (TRUST, {}, statement, KEYS, draft, KEYS[0]["keyArn"])
+        self.assertEqual(sign_release(*args), sign.return_value)
+        self.assertEqual(active.call_count, 2)
+
+        sign.reset_mock()
+        now.return_value = 20
+        with self.assertRaisesRegex(ValueError, "relay authorization has expired"):
+            sign_release(*args)
+        sign.assert_not_called()
+
+        now.return_value = 10
+        active.side_effect = [None, ValueError("custody epoch is retired")]
+        with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
+            sign_release(*args)
+        sign.assert_called_once()
+
+        def late_signature(*_args):
+            now.return_value = 20
+            return draft
+
+        active.side_effect = None
+        sign.side_effect = late_signature
+        with self.assertRaisesRegex(ValueError, "relay authorization has expired"):
+            sign_release(*args)
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,19 @@ from relay import live_recipient, recover_to_relay, relay_pins, relay_request, s
 LABEL = "relay-release"
 
 
+def require_release_window(expires_at):
+    if time() >= expires_at:
+        raise ValueError("relay authorization has expired")
+
+
+def require_release_scope(trust, approval, statement):
+    expires_at = statement["expiresAt"]
+    require_release_window(expires_at)
+    verify_target_approval(trust, approval)
+    require_active_epoch(trust, statement["custodyEpoch"])
+    require_release_window(expires_at)
+
+
 def prepare(trust, approval, build, index, port, inspection_profile=None):
     if not 1 <= index <= 6:
         raise ValueError("invalid custody slot")
@@ -34,6 +47,7 @@ def prepare(trust, approval, build, index, port, inspection_profile=None):
     ))
     destination = sealed_rsa_key(manifest["wrappingKeys"][index - 1], policies[index - 1], profile=inspection_profile)
     key_id, evidence = live_recipient(port, relay)
+    require_release_window(expires)
     statement = {
         "network": manifest["network"], "securityDomainId": manifest["securityDomainId"], "custodyEpoch": epoch,
         "slot": index, "shareCommitment": receipt["custody"]["shareCommitments"][index - 1],
@@ -41,6 +55,15 @@ def prepare(trust, approval, build, index, port, inspection_profile=None):
         "destinationPublicKey": destination.hex(),
     }
     return statement, roster["keys"], receipt, custodians[index - 1], evidence
+
+
+def sign_release(trust, approval, statement, keys, authorization, key):
+    if authorization["manifest"] != statement or len(authorization["signatures"]) >= 2:
+        raise ValueError("relay authorization changed or already has two signatures")
+    require_release_scope(trust, approval, statement)
+    signed = add_approval(keys, LABEL, authorization, key)
+    require_release_scope(trust, approval, statement)
+    return signed
 
 
 def release(trust, approval, build, index, port, authorization, *, source_commit, source_ref=MAIN_REF):
@@ -53,10 +76,7 @@ def release(trust, approval, build, index, port, authorization, *, source_commit
     require_reviewed_target(build, approval["manifest"], source_commit, source_ref)
 
     def still_authorized():
-        if time() >= statement["expiresAt"]:
-            raise ValueError("relay authorization has expired")
-        require_active_epoch(trust, statement["custodyEpoch"])
-        verify_target_approval(trust, approval)
+        require_release_scope(trust, approval, statement)
 
     envelope = recover_to_relay(trust, receipt, custodian, index, evidence, still_authorized)
     authorities = {key["keyArn"]: i for i, key in enumerate(keys, start=1)}
@@ -105,14 +125,7 @@ def main():
             statement, keys, _, _, _ = prepare(*source, inspection_profile=args.inspection_profile)
             document = {"manifest": statement, "signatures": []}
             if args.command == "sign":
-                document = read_json(args.authorization)
-                if document["manifest"] != statement or len(document["signatures"]) >= 2:
-                    raise ValueError("relay authorization changed or already has two signatures")
-                if time() >= statement["expiresAt"]:
-                    raise ValueError("relay authorization has expired")
-                verify_target_approval(trust, approval)
-                require_active_epoch(trust, statement["custodyEpoch"])
-                document = add_approval(keys, LABEL, document, args.key)
+                document = sign_release(trust, approval, statement, keys, read_json(args.authorization), args.key)
             print(canonical(document).decode())
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         raise SystemExit(str(error)) from None

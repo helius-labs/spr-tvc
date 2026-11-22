@@ -93,11 +93,13 @@ The custody ledger registers one wrapping-key set per epoch, release ID and
 PCR0–PCR4. Before signing, each approver checks that all six RSA wrapping
 keys have the installed policy for the exact parent and measurements. At
 first registration the ledger checks the domain and committed receipt. S3
-must record the write within the approval window. A new quorum approval may renew the deadline for the same set. Each share release
+must record the write within the approval window. A fresh quorum approval
+can extend the deadline for the same wrapping keys. Each share release
 checks the registered target and both installed KMS key policies. The
 custodian verifies build provenance against its independently reviewed ref
 and commit before requesting KMS recovery. The tool checks the epoch, roster
-and deadline around KMS and relay calls. The relay
+and deadline after potentially slow ledger reads, before returning signatures
+from KMS and before returning wrapped shares from the relay. The relay
 opens the share and wraps it to the approved RSA key inside Nitro.
 
 The wallet publishers raise the custody floor after the replacement attests.

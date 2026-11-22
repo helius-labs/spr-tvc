@@ -308,15 +308,16 @@ class TargetApprovalTests(unittest.TestCase):
 
     def test_rechecks_expiration_across_kms_calls(self):
         deadline = self.manifest["expiresAt"]
-        before = deadline - 1
-        for times, decrypts, wraps in (
-            ([before, deadline], 0, 0),
-            ([before, before, deadline], 1, 0),
-            ([before, before, before, deadline], 1, 1),
+        for boundary, crossed, decrypts, wraps in (
+            ("ledger read", lambda: self.active.called, 0, 0),
+            ("KMS unwrap", lambda: "decrypt" in self.calls, 1, 0),
+            ("relay wrap", lambda: self.relay.called, 1, 1),
         ):
-            with self.subTest(times=times), patch("relay_wrap.time", side_effect=times):
+            with (self.subTest(boundary=boundary),
+                  patch("relay_wrap.time", side_effect=lambda: deadline if crossed() else deadline - 1)):
                 self.calls.clear()
                 self.relay.reset_mock()
+                self.active.reset_mock()
                 with self.assertRaisesRegex(ValueError, "relay authorization has expired"):
                     self.wrap()
                 self.assertEqual(self.calls.count("decrypt"), decrypts)
