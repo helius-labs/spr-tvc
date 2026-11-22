@@ -56,10 +56,11 @@ export function indexedDbNitroPolicyStore(trust: Pick<NitroTrust, "network" | "s
 
   return {
     current: () => transact("readonly", current => current),
-    async accept(next) {
+    async accept(update) {
+      const next = update[0].checkpoint;
       validate(next);
       return transact("readwrite", (current, records) => {
-        if (!advancesNitroPolicy(current, next)) return false;
+        if (!advancesNitroPolicy(current, update)) return false;
         if (current?.sequence !== next.sequence) records.put(next, key);
         return true;
       });

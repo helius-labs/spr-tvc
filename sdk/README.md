@@ -49,21 +49,22 @@ Import `createNitroDecryptionService` from
 `@heliuslabs/spr-decryption-service/nitro`. Pin two policy publication buckets
 with independent AWS owners, plus their regions, the network, security domain,
 note seed commitment, minimum sequence and its policy digest, minimum custody
-epoch, release quorum and
-three independent `custodyKeys`. Both activation and revocation require the release quorum and two custody
-signatures over the exact policy. The SDK reads both policy heads. In browsers, it stores the
-checkpoint in IndexedDB. Other runtimes supply an atomic durable `policyStore`
-scoped to the network and domain. Its `accept` method persists the next
-checkpoint, including its `recoveryOnly` flag, before succeeding. Apply
-`advancesNitroPolicy` against the stored checkpoint inside the transaction. `current` reads the last committed
-checkpoint. The SDK checks it before sending an operation, after a wallet
-approval returns, and before opening the reply.
-Every authenticated policy advances the checkpoint before replica attestation.
-The client tries signed targets with staggered probes and uses the first
-verified boot. A recovery-only
-client refuses `address()` with `ReleasePolicyRecoveryOnly` and supports
-owner-signed `open()`. Use new domain pins for sending and retain separate
-recovery pins with `recoveryOnly: true` for old notes.
+epoch, release quorum and three independent `custodyKeys`. Both activation and
+revocation require the release quorum and two custody signatures over the
+exact policy. The SDK reads both heads. Browsers store the checkpoint in
+IndexedDB.
+Other runtimes supply a durable `policyStore` scoped to network and domain.
+Its `accept(update)` method applies `advancesNitroPolicy` to both authenticated
+heads inside the write transaction and saves `update[0].checkpoint`.
+The wallet requires an exact match at the checkpoint sequence and an exact
+predecessor link at the next sequence. It checks the saved revision before
+sending, after owner approval, and before opening a reply. Policy acceptance
+commits before replica attestation.
+
+The client uses the first verified boot from its staggered probes. A
+recovery-only client refuses `address()` with `ReleasePolicyRecoveryOnly` and
+supports owner-signed `open()`. Use new domain pins for sending and retain
+separate recovery pins with `recoveryOnly: true` for old notes.
 
 The same `address` and `open` APIs work with the attested client. Nitro allows
 12 seconds for an operation's HTTP response within the caller's overall

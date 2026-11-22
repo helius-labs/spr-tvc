@@ -61,14 +61,20 @@ export type NitroPolicyCheckpoint = {
   readonly recoveryOnly: boolean;
 };
 
+export type NitroPolicyRevision = Readonly<{
+  checkpoint: NitroPolicyCheckpoint;
+  previousPolicyDigest: string | null;
+}>;
+
+export type NitroPolicyUpdate = readonly [primary: NitroPolicyRevision, mirror: NitroPolicyRevision];
+
 /**
- * An atomic durable compare-and-set per pinned network and security domain.
- * Accept a higher sequence or the identical checkpoint. The custody floor
- * may only increase and recovery-only mode is permanent. Refuse writes which cannot persist.
+ * Atomic durable compare-and-set scoped to the pinned network and security domain.
+ * Run advancesNitroPolicy inside the write transaction and persist the primary checkpoint.
  */
 export type NitroPolicyStore = {
   current(): Promise<NitroPolicyCheckpoint | undefined>;
-  accept(checkpoint: NitroPolicyCheckpoint): Promise<boolean>;
+  accept(update: NitroPolicyUpdate): Promise<boolean>;
 };
 
 const MAX_TARGETS = 8;
@@ -220,10 +226,10 @@ function verifySignedPolicy(text: string, trust: NitroTrust) {
       (sequence === anchor + 1n && policy.previousPolicyDigest !== trust.minimumPolicyDigest)) invalid();
   return {
     policy, signatures, custodySignatures, validFrom, expiresAt,
-    checkpoint: {
+    checkpoint: Object.freeze({
       sequence: policy.sequence, digest: digestHex,
       minimumCustodyEpoch: policy.minimumCustodyEpoch, recoveryOnly: policy.recoveryOnly,
-    },
+    }),
   };
 }
 
@@ -241,10 +247,13 @@ export function verifyNitroPolicy(text: string, trust: NitroTrust, now: bigint):
   return verified;
 }
 
+function revision({ checkpoint, policy }: VerifiedPolicy): NitroPolicyRevision {
+  return Object.freeze({ checkpoint, previousPolicyDigest: policy.previousPolicyDigest });
+}
+
 function requireSuccessor(prior: VerifiedPolicy, next: VerifiedPolicy): void {
   if (decodeDecimalU64(next.policy.sequence) !== decodeDecimalU64(prior.policy.sequence) + 1n ||
-      next.policy.previousPolicyDigest !== prior.checkpoint.digest ||
-      !advancesNitroPolicy(prior.checkpoint, next.checkpoint)) invalid();
+      !followsCheckpoint(prior.checkpoint, revision(next))) invalid();
   const priorRecords = new Map(prior.policy.targets.map(target => [target.custodyEpoch, target.custodyDigest]));
   if (next.policy.targets.some(target => priorRecords.has(target.custodyEpoch) &&
       priorRecords.get(target.custodyEpoch) !== target.custodyDigest)) invalid();
@@ -258,7 +267,8 @@ export function verifyPublishedNitroPolicy([primaryText, mirrorText]: readonly [
   if (!agreed) requireSuccessor(mirror, primary);
   requireCurrent(primary, trust, now);
   const { policy, checkpoint, validFrom, expiresAt } = primary;
-  return { policy, checkpoint, validFrom, expiresAt, agreed };
+  const update: NitroPolicyUpdate = Object.freeze([revision(primary), revision(mirror)] as const);
+  return { policy, checkpoint, validFrom, expiresAt, agreed, update };
 }
 
 function requireSameTrustDomain(first: NitroTrust, second: NitroTrust): void {
@@ -301,15 +311,26 @@ export function requireRetirementPolicy(
       !policy.targets.some(target => target.custodyEpoch === replacementEpoch && target.custodyDigest === custodyDigest)) invalid();
 }
 
-/** Returns true for a new policy or a repeat of the exact same policy. */
-export function advancesNitroPolicy(current: NitroPolicyCheckpoint | undefined, next: NitroPolicyCheckpoint): boolean {
+function followsCheckpoint(
+  current: NitroPolicyCheckpoint | undefined, { checkpoint: next, previousPolicyDigest }: NitroPolicyRevision,
+): boolean {
   if (typeof next.recoveryOnly !== "boolean") return false;
   if (!current) return true;
   if (typeof current.recoveryOnly !== "boolean" || (current.recoveryOnly && !next.recoveryOnly)) return false;
   const nextSequence = decodeDecimalU64(next.sequence);
   const currentSequence = decodeDecimalU64(current.sequence);
-  return decodeDecimalU64(next.minimumCustodyEpoch) >= decodeDecimalU64(current.minimumCustodyEpoch) &&
-    (nextSequence > currentSequence || (nextSequence === currentSequence &&
-      next.digest === current.digest && next.minimumCustodyEpoch === current.minimumCustodyEpoch &&
-      next.recoveryOnly === current.recoveryOnly));
+  if (decodeDecimalU64(next.minimumCustodyEpoch) < decodeDecimalU64(current.minimumCustodyEpoch)) return false;
+  if (nextSequence === currentSequence) {
+    return next.digest === current.digest && next.minimumCustodyEpoch === current.minimumCustodyEpoch &&
+      next.recoveryOnly === current.recoveryOnly;
+  }
+  if (nextSequence === currentSequence + 1n) return previousPolicyDigest === current.digest;
+  return nextSequence > currentSequence;
+}
+
+/** Checks both authenticated heads against the checkpoint inside the atomic write. */
+export function advancesNitroPolicy(current: NitroPolicyCheckpoint | undefined, [primary, mirror]: NitroPolicyUpdate): boolean {
+  return followsCheckpoint(current, primary) &&
+    (!current || decodeDecimalU64(mirror.checkpoint.sequence) < decodeDecimalU64(current.sequence) ||
+      followsCheckpoint(current, mirror));
 }

@@ -98,9 +98,9 @@ const checkpoint: { value?: NitroPolicyCheckpoint } = {};
 function clientFor(state = checkpoint) {
   return createNitroDecryptionService({
     trust: { ...trust, minimumPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(JSON.parse(initial).policy)) },
-    policyStore: { async current() { return state.value; }, async accept(next) {
-      if (!advancesNitroPolicy(state.value, next)) return false;
-      state.value = next;
+    policyStore: { async current() { return state.value; }, async accept(update) {
+      if (!advancesNitroPolicy(state.value, update)) return false;
+      state.value = update[0].checkpoint;
       return true;
     } },
   });
@@ -205,7 +205,8 @@ const recoveredPin = target("b");
 heads[0] = signPolicy("1", [{ ...recoveredPin, pcrs: originalPin.pcrs }], "1");
 await assert.rejects(clientFor().address(owner.address), /ReleasePolicyInvalid/);
 heads[0] = signPolicy("2", [{ ...recoveredPin, pcrs: originalPin.pcrs }], "1", initial);
-await assert.rejects(clientFor().address(owner.address), /BootProofUnverified/);
+// This policy advances the checkpoint even though attestation fails.
+await assert.rejects(clientFor({}).address(owner.address), /BootProofUnverified/);
 const recovered = await checkEvidence(recoveredPin);
 assert.notEqual(recovered.info.quorum_public_key, original.info.quorum_public_key);
 assert.notEqual(recovered.proofKey, original.proofKey);

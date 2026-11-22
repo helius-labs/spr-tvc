@@ -31,11 +31,12 @@ export function checkpointStore(path: string, trust: Pick<NitroTrust, "network" 
   }
   const store: NitroPolicyStore = {
     async current() { return current(); },
-    async accept(next) {
+    async accept(update) {
+      const next = update[0].checkpoint;
       db.exec("BEGIN IMMEDIATE");
       try {
         const previous = current();
-        const accepted = advancesNitroPolicy(previous, next);
+        const accepted = advancesNitroPolicy(previous, update);
         if (accepted && previous?.sequence !== next.sequence) {
           save.run(scope, next.sequence, next.digest, next.minimumCustodyEpoch, Number(next.recoveryOnly));
         }
@@ -52,8 +53,10 @@ export function checkpointStore(path: string, trust: Pick<NitroTrust, "network" 
 
 const RETRYABLE_POLICY_ERRORS = new Set(["ReleasePolicyInvalid", "BootProofUnverified", "EndpointUnavailable", "ExpiredRequest"]);
 
+type VerifiedPublication = Pick<Awaited<ReturnType<typeof readPublishedNitroPolicy>>, "agreed" | "checkpoint" | "policy">;
+
 function acceptedPolicy(
-  published: Awaited<ReturnType<typeof readPublishedNitroPolicy>>,
+  published: VerifiedPublication,
   accepted: NitroPolicyCheckpoint | undefined,
 ): boolean {
   const { agreed, checkpoint } = published;
@@ -62,7 +65,7 @@ function acceptedPolicy(
 }
 
 export function requireOriginalPolicy(
-  published: Awaited<ReturnType<typeof readPublishedNitroPolicy>>,
+  published: VerifiedPublication,
   accepted: NitroPolicyCheckpoint | undefined,
   replacement?: bigint,
 ): void {

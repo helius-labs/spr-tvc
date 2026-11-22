@@ -7,7 +7,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { verifyNativeNitroEvidence } from "../../src/attestation/boot-proof.js";
 import { indexedDbNitroPolicyStore } from "../../src/attestation/nitro-checkpoint.js";
-import { nitroCustodySigningDigest, nitroPolicySigningDigest, type NitroPolicy, type NitroPolicyCheckpoint, type NitroTrust } from "../../src/attestation/nitro-policy.js";
+import { nitroCustodySigningDigest, nitroPolicySigningDigest, type NitroPolicy, type NitroPolicyCheckpoint, type NitroPolicyUpdate, type NitroTrust } from "../../src/attestation/nitro-policy.js";
 import { createNitroDecryptionService } from "../../src/client/nitro.js";
 import { signP256Message, signP256Prehash } from "../../src/crypto/p256.js";
 import { qosDecrypt, qosEncrypt } from "../../src/crypto/qos.js";
@@ -100,7 +100,7 @@ function checkpointStore() {
   let current: NitroPolicyCheckpoint | undefined;
   return {
     async current() { return current; },
-    async accept(next: NitroPolicyCheckpoint) { current = next; return true; },
+    async accept(update: NitroPolicyUpdate) { current = update[0].checkpoint; return true; },
   };
 }
 
@@ -285,9 +285,9 @@ describe("native client trust gate", () => {
       vi.stubGlobal("fetch", fetch);
       const client = createNitroDecryptionService({ trust, policyStore: {
         current: store.current,
-        async accept(checkpoint) {
+        async accept(update) {
           vi.setSystemTime(Number(validThrough + 1n));
-          return store.accept(checkpoint);
+          return store.accept(update);
         },
       } });
       await expect(client.address(signer.address)).rejects.toMatchObject({ code: "BootProofUnverified" });
@@ -579,5 +579,28 @@ it("refuses a fully signed direct successor of another bootstrap revision before
   await expect(client.open(signer, proofs)).rejects.toMatchObject({ code: "ReleasePolicyInvalid" });
   expect(fetch).toHaveBeenCalledTimes(2);
   expect(accept).not.toHaveBeenCalled();
+  expect(signMessages).not.toHaveBeenCalled();
+});
+
+it("refuses signed replacements that contradict a checkpoint after restart", async () => {
+  const policyDigest = (signed: string) => encodeLowerHex(nitroPolicySigningDigest(JSON.parse(signed).policy));
+  const committed = signedPolicy();
+  const other = signedPolicy({ targets: [], action: "revoke" });
+  const unrelated = signedPolicy({ sequence: "3", previousPolicyDigest: policyDigest(other) });
+  const next = signedPolicy({ sequence: "4", previousPolicyDigest: policyDigest(unrelated) });
+  const fetch = policyHeads(vi.fn(), committed).mockResolvedValueOnce(new Response(null, { status: 503 }));
+  policyHeads(fetch, unrelated);
+  policyHeads(fetch, next, unrelated);
+  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  await expect(createNitroDecryptionService({ trust }).address(signer.address)).rejects.toThrow("no authorized Nitro replica");
+  const stored = indexedDbNitroPolicyStore(trust);
+  const saved = await stored.current();
+  expect(saved).toMatchObject({ sequence: "2", digest: policyDigest(committed) });
+  const restored = createNitroDecryptionService({ trust });
+  await expect(restored.open(signer, proofs)).rejects.toThrow("policy rollback");
+  await expect(restored.open(signer, proofs)).rejects.toThrow("policy rollback");
+  expect(await stored.current()).toEqual(saved);
+  expect(fetch.mock.calls.filter(([url]) => !url.pathname.endsWith("/policy.json"))).toHaveLength(1);
   expect(signMessages).not.toHaveBeenCalled();
 });

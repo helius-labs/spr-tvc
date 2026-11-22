@@ -3,8 +3,13 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { NitroPolicy, NitroTarget } from "@heliuslabs/spr-decryption-service/nitro";
+import type { NitroPolicy, NitroTarget, NitroPolicyCheckpoint } from "@heliuslabs/spr-decryption-service/nitro";
 import { checkpointStore, nativeDevnet, requireOriginalPolicy } from "../nitro.js";
+
+function agreed(checkpoint: NitroPolicyCheckpoint, previousPolicyDigest: string | null) {
+  const revision = { checkpoint, previousPolicyDigest };
+  return [revision, revision] as const;
+}
 
 test("native rehearsal requires both buckets to agree on the accepted original-only policy", () => {
   const target: NitroTarget = {
@@ -41,16 +46,17 @@ test("native rehearsal checkpoints survive closing the database and exclude earl
     const first = { sequence: "3", digest: "33".repeat(32), recoveryOnly: true, minimumCustodyEpoch: "2" };
     const writer = checkpointStore(path, trust);
     try {
-      assert.equal(await writer.store.accept(first), true);
+      assert.equal(await writer.store.accept(agreed(first, "22".repeat(32))), true);
     } finally {
       writer.close();
     }
     const reader = checkpointStore(path, trust);
     try {
       assert.deepEqual({ ...await reader.store.current() }, first);
-      assert.equal(await reader.store.accept({ ...first, digest: "44".repeat(32) }), false);
-      assert.equal(await reader.store.accept({ ...first, sequence: "4", minimumCustodyEpoch: "1" }), false);
-      assert.equal(await reader.store.accept({ ...first, sequence: "4", recoveryOnly: false }), false);
+      assert.equal(await reader.store.accept(agreed({ ...first, digest: "44".repeat(32) }, "22".repeat(32))), false);
+      assert.equal(await reader.store.accept(agreed({ ...first, sequence: "4", minimumCustodyEpoch: "1" }, first.digest)), false);
+      assert.equal(await reader.store.accept(agreed({ ...first, sequence: "4", recoveryOnly: false }, first.digest)), false);
+      assert.equal(await reader.store.accept(agreed({ ...first, sequence: "4" }, "22".repeat(32))), false);
     } finally {
       reader.close();
     }

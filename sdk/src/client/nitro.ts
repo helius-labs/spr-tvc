@@ -2,7 +2,7 @@ import { connectNitroTarget, nitroTransport } from "../attestation/nitro-connect
 import { indexedDbNitroPolicyStore } from "../attestation/nitro-checkpoint.js";
 import {
   advancesNitroPolicy, validateNitroTrust,
-  type NitroPolicyCheckpoint, type NitroPolicyStore, type NitroTrust,
+  type NitroPolicyCheckpoint, type NitroPolicyStore, type NitroPolicyUpdate, type NitroTrust,
 } from "../attestation/nitro-policy.js";
 import { readPublishedNitroPolicy } from "../attestation/nitro-publication.js";
 import type { ConnectedTvcRuntime } from "../connection/connect.js";
@@ -14,7 +14,7 @@ import { genesisHashForNetwork } from "../protocol/network.js";
 import { decryptionServiceFromSession, type DecryptionService } from "./decryption.js";
 
 export { advancesNitroPolicy } from "../attestation/nitro-policy.js";
-export type { NitroPolicy, NitroPolicyCheckpoint, NitroPolicyStore, NitroTarget, NitroTrust } from "../attestation/nitro-policy.js";
+export type { NitroPolicy, NitroPolicyCheckpoint, NitroPolicyRevision, NitroPolicyStore, NitroPolicyUpdate, NitroTarget, NitroTrust } from "../attestation/nitro-policy.js";
 
 export type NitroDecryptionServiceConfig = {
   readonly trust: NitroTrust;
@@ -36,26 +36,26 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
   let latest: NitroPolicyCheckpoint | undefined;
   let next = 0;
 
-  async function accept(checkpoint: NitroPolicyCheckpoint, signal: AbortSignal): Promise<void> {
+  async function accept(update: NitroPolicyUpdate, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
-    if (!advancesNitroPolicy(latest, checkpoint) ||
-        !advancesNitroPolicy(await awaitWithSignal(store.current(), signal), checkpoint) ||
-        !await awaitWithSignal(store.accept(checkpoint), signal) ||
-        !advancesNitroPolicy(latest, checkpoint)) {
+    if (!advancesNitroPolicy(latest, update) ||
+        !advancesNitroPolicy(await awaitWithSignal(store.current(), signal), update) ||
+        !await awaitWithSignal(store.accept(update), signal) ||
+        !advancesNitroPolicy(latest, update)) {
       throw new DecryptionServiceError("ReleasePolicyInvalid", "policy rollback or checkpoint unavailable");
     }
-    latest = checkpoint;
+    latest = update[0].checkpoint;
   }
 
   const session = sessionFromConnector(async (signal): Promise<ConnectedTvcRuntime> => {
-    const { policy, checkpoint, validFrom, expiresAt } = await readPublishedNitroPolicy(trust, signal);
+    const { policy, checkpoint, validFrom, expiresAt, update } = await readPublishedNitroPolicy(trust, signal);
     function currentTime(): bigint {
       const now = clock();
       if (now < validFrom || now >= expiresAt) throw new DecryptionServiceError("ReleasePolicyInvalid");
       return now;
     }
     // The signed policy advances trust even if every listed replica is offline.
-    await accept(checkpoint, signal);
+    await accept(update, signal);
     currentTime();
     if (policy.action === "revoke") throw new DecryptionServiceError("ReleasePolicyRevoked");
     const count = policy.targets.length;

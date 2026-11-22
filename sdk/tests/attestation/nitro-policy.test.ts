@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   advancesNitroPolicy, nextNitroPublication, nitroCustodySigningDigest, nitroPolicySigningDigest, nitroPublication, validateNitroTrust, verifyNitroPolicy,
   requireRetirementPolicy, verifyPublishedNitroPolicy,
-  type NitroPolicy, type NitroTrust,
+  type NitroPolicy, type NitroPolicyCheckpoint, type NitroTrust,
 } from "../../src/attestation/nitro-policy.js";
 import { signP256Prehash } from "../../src/crypto/p256.js";
 import { encodeLowerHex } from "../../src/protocol/hex.js";
@@ -66,6 +66,11 @@ function custodySignatures(policy: NitroPolicy, signers = [9, 10]) {
 function manifest(policy: NitroPolicy, ...signers: number[]) {
   return JSON.stringify({ policy, signatures: signatures(policy, ...signers),
     custodySignatures: custodySignatures(policy) });
+}
+
+function agreed(checkpoint: NitroPolicyCheckpoint, previousPolicyDigest: string | null) {
+  const revision = { checkpoint, previousPolicyDigest };
+  return [revision, revision] as const;
 }
 
 describe("native Nitro release policy", () => {
@@ -229,7 +234,7 @@ describe("native Nitro release policy", () => {
     };
     const retired = verifyNitroPolicy(manifest(next, 0, 1), trust, now).checkpoint;
     const old = verifyNitroPolicy(manifest({ ...binding, sequence: "11" }, 0, 1), trust, now).checkpoint;
-    expect(advancesNitroPolicy(retired, old)).toBe(false);
+    expect(advancesNitroPolicy(retired, agreed(old, retired.digest))).toBe(false);
     expect(() => verifyNitroPolicy(manifest({ ...next, targets: [oldTarget] }, 0, 1), trust, now)).toThrow();
     expect(() => verifyNitroPolicy(manifest(binding, 0, 1), { ...trust, minimumCustodyEpoch: "2" }, now)).toThrow();
     expect(() => verifyNitroPolicy(manifest({ ...next, minimumCustodyEpoch: "02" }, 0, 1), trust, now)).toThrow();
@@ -237,11 +242,13 @@ describe("native Nitro release policy", () => {
 
   it("accepts identical checkpoints and forward sequences, refusing rollback and equivocation", () => {
     const first = verifyNitroPolicy(manifest(binding, 0, 1), trust, now).checkpoint;
-    expect(advancesNitroPolicy(undefined, first)).toBe(true);
-    expect(advancesNitroPolicy(first, first)).toBe(true);
-    expect(advancesNitroPolicy(first, { ...first, sequence: "10", digest: "ab" })).toBe(true);
-    expect(advancesNitroPolicy(first, { ...first, sequence: "8", digest: first.digest })).toBe(false);
-    expect(advancesNitroPolicy(first, { ...first, sequence: "9", digest: "ab" })).toBe(false);
+    expect(advancesNitroPolicy(undefined, agreed(first, binding.previousPolicyDigest))).toBe(true);
+    expect(advancesNitroPolicy(first, agreed(first, binding.previousPolicyDigest))).toBe(true);
+    const next = { ...first, sequence: "10", digest: "aa".repeat(32) };
+    expect(advancesNitroPolicy(first, agreed(next, first.digest))).toBe(true);
+    expect(advancesNitroPolicy(first, agreed(next, "bb".repeat(32)))).toBe(false);
+    expect(advancesNitroPolicy(first, agreed({ ...first, sequence: "8" }, "bb".repeat(32)))).toBe(false);
+    expect(advancesNitroPolicy(first, agreed({ ...first, digest: next.digest }, binding.previousPolicyDigest))).toBe(false);
   });
 
   it("rejects an independently signed fork at and directly after the shipped revision", () => {
