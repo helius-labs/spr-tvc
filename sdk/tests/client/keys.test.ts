@@ -154,4 +154,27 @@ describe("the keys of an address under the service", () => {
       nullifier.destroy();
     }
   });
+
+  it("discards plaintext when destruction lands after the callback resolves", async () => {
+    let finish!: (value: string[]) => void;
+    const reply = new Promise<string[]>(resolve => { finish = resolve; });
+    const { address, nullifier, keys: held } = keys(
+      bytes(5, 31) as Bytes31, vi.fn((_items: readonly DecryptItem[], _context?: RequestContext) => reply),
+    );
+    try {
+      const pending = held.decrypt([{
+        ciphertext: bytes(1), viewingPublicKey: address.viewingPublicKey,
+        txViewingPublicKey: address.viewingPublicKey, salt: bytes(0, 16) as never,
+        slotIndex: 0, label: "transfer",
+      }]);
+      const rejection = expect(pending).rejects.toMatchObject({ code: "KeyHandleDestroyed" });
+      finish(["01"]);
+      // Destroy after awaitWithSignal accepts the reply but before decrypt resumes.
+      queueMicrotask(() => queueMicrotask(() => held.destroy()));
+      await rejection;
+    } finally {
+      held.destroy();
+      nullifier.destroy();
+    }
+  });
 });

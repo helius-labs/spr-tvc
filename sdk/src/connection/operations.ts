@@ -16,7 +16,7 @@ import type { ConnectedTvcRuntime } from "./connect.js";
 import { awaitWithSignal } from "./request.js";
 
 const te = new TextEncoder();
-const td = new TextDecoder("utf-8", { fatal: true });
+const td = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const ENCRYPTED_RESPONSE_KEYS = [
   "version",
   "request_id",
@@ -72,12 +72,13 @@ export function requireCurrentReleasePolicy(window: ReleasePolicyWindow, nowMs: 
 export async function requireOperationPolicy(
   context: ConnectedTvcRuntime, operation: OperationKind, signal?: AbortSignal,
 ): Promise<void> {
+  signal?.throwIfAborted();
   requireCurrentReleasePolicy(context, context.nowMs());
-  if (operation === "ServiceDecrypt" && context.requirePublishedPolicy) {
-    await context.requirePublishedPolicy(signal);
-  } else {
-    await context.requireCurrentCheckpoint?.(signal);
-  }
+  const check = operation === "ServiceDecrypt" && context.requirePublishedPolicy
+    ? context.requirePublishedPolicy(signal)
+    : context.requireCurrentCheckpoint?.(signal);
+  if (check) await awaitWithSignal(check, signal);
+  signal?.throwIfAborted();
   requireCurrentReleasePolicy(context, context.nowMs());
 }
 
@@ -220,11 +221,16 @@ export async function sealedExchange(
   }
   await verifyOperationProof(context, exchange, response, encryptedResult, signal);
   await requireOperationPolicy(context, exchange.operation, signal);
+  signal?.throwIfAborted();
   let plaintext: string;
+  let opened: Uint8Array | undefined;
   try {
-    plaintext = td.decode(qosDecrypt(exchange.responseSecret, encryptedResult));
+    opened = qosDecrypt(exchange.responseSecret, encryptedResult);
+    plaintext = td.decode(opened);
   } catch {
     throw new AuthenticatedOperationError("InvalidEncryptedEnvelope");
+  } finally {
+    opened?.fill(0);
   }
   if (!isRfc8785(plaintext)) throw new AuthenticatedOperationError("InvalidCanonicalJson");
   return plaintext;

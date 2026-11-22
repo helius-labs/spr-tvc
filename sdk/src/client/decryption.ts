@@ -124,6 +124,7 @@ export function decryptionServiceFromSession(
         const signer = { address: owner.address, signMessages: owner.signMessages.bind(owner) };
         const shielded = await address(signer.address, signal, false);
         const bootstrap = await decrypt(signer, [], signal);
+        signal.throwIfAborted();
         const nullifierSecret = requireHex(bootstrap.nullifier_secret, 31) as Bytes31;
         try {
           const nullifierDigest = sha256(nullifierSecret);

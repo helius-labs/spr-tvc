@@ -31,26 +31,23 @@ export function parseQosP256Public(bytes: Uint8Array): QosP256Public {
   return { encryption, signing };
 }
 
-function sharedX(secret: Uint8Array, publicSec1: Uint8Array): Uint8Array {
-  const shared = p256.getSharedSecret(secret, publicSec1, false);
-  return shared.slice(1, 33);
-}
-
-function cipherKey(
+function keyMaterial(
   ephemeralPublic: Uint8Array,
   receiverPublic: Uint8Array,
-  sharedSecret: Uint8Array
+  secret: Uint8Array,
+  peer: Uint8Array,
 ): Uint8Array {
-  const preImage = new Uint8Array(
-    ephemeralPublic.length + receiverPublic.length + sharedSecret.length
-  );
-  preImage.set(ephemeralPublic, 0);
-  preImage.set(receiverPublic, ephemeralPublic.length);
-  preImage.set(sharedSecret, ephemeralPublic.length + receiverPublic.length);
-  return hmac(sha512, preImage, te.encode(QOS_ENCRYPTION_HMAC_MESSAGE)).slice(
-    0,
-    32
-  );
+  const preImage = new Uint8Array(ephemeralPublic.length + receiverPublic.length + 32);
+  const shared = p256.getSharedSecret(secret, peer, false);
+  try {
+    preImage.set(ephemeralPublic);
+    preImage.set(receiverPublic, ephemeralPublic.length);
+    preImage.set(shared.subarray(1, 33), ephemeralPublic.length + receiverPublic.length);
+    return hmac(sha512, preImage, te.encode(QOS_ENCRYPTION_HMAC_MESSAGE));
+  } finally {
+    shared.fill(0);
+    preImage.fill(0);
+  }
 }
 
 function aad(
@@ -120,24 +117,27 @@ export function qosEncryptWith(
   }
   const receiver = parseUncompressedSec1(receiverEncryptionSec1);
   const ephemeralPublic = p256.getPublicKey(ephemeralSecret, false);
-  const shared = sharedX(ephemeralSecret, receiver);
-  const key = cipherKey(ephemeralPublic, receiver, shared);
-  const associated = aad(ephemeralPublic, receiver);
-  const encryptedMessage = gcm(key, nonce, associated).encrypt(plaintext);
-  return encodeQosEnvelope(nonce, ephemeralPublic, encryptedMessage);
+  const material = keyMaterial(ephemeralPublic, receiver, ephemeralSecret, receiver);
+  try {
+    const associated = aad(ephemeralPublic, receiver);
+    const encryptedMessage = gcm(material.subarray(0, 32), nonce, associated).encrypt(plaintext);
+    return encodeQosEnvelope(nonce, ephemeralPublic, encryptedMessage);
+  } finally {
+    material.fill(0);
+  }
 }
 
 export function qosEncrypt(
   receiverEncryptionSec1: Uint8Array,
   plaintext: Uint8Array
 ): Uint8Array {
-  const nonce = crypto.getRandomValues(new Uint8Array(12));
-  return qosEncryptWith(
-    receiverEncryptionSec1,
-    plaintext,
-    p256.utils.randomPrivateKey(),
-    nonce
-  );
+  const nonce = crypto.getRandomValues(new Uint8Array(AES_GCM_NONCE_LEN));
+  const ephemeral = p256.utils.randomPrivateKey();
+  try {
+    return qosEncryptWith(receiverEncryptionSec1, plaintext, ephemeral, nonce);
+  } finally {
+    ephemeral.fill(0);
+  }
 }
 
 export function qosDecrypt(
@@ -147,14 +147,13 @@ export function qosDecrypt(
   const envelope = decodeQosEnvelope(envelopeBytes);
   parseUncompressedSec1(envelope.ephemeralSenderPublic);
   const receiverPublic = p256.getPublicKey(receiverSecret, false);
-  const shared = sharedX(receiverSecret, envelope.ephemeralSenderPublic);
-  const key = cipherKey(envelope.ephemeralSenderPublic, receiverPublic, shared);
-  const associated = aad(envelope.ephemeralSenderPublic, receiverPublic);
+  const material = keyMaterial(envelope.ephemeralSenderPublic, receiverPublic, receiverSecret, envelope.ephemeralSenderPublic);
   try {
-    return gcm(key, envelope.nonce, associated).decrypt(
-      envelope.encryptedMessage
-    );
+    const associated = aad(envelope.ephemeralSenderPublic, receiverPublic);
+    return gcm(material.subarray(0, 32), envelope.nonce, associated).decrypt(envelope.encryptedMessage);
   } catch {
     throw new DecryptionServiceError("InvalidEncryptedEnvelope");
+  } finally {
+    material.fill(0);
   }
 }

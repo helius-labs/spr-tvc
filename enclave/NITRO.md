@@ -443,6 +443,9 @@ is complete. [Cutover runbook](deploy/nitro/README.md#replace-a-compromised-seed
 
 The enclave opens request frames into a zeroizing buffer and passes plaintext
 to the request parser only after verifying the AES-GCM tag.
+The TypeScript wallet checks cancellation before opening an authenticated
+reply. It clears the ephemeral private keys, derived key material and the
+opened reply byte buffer it owns. JSON parsing uses runtime-managed strings.
 
 The SDK gives each operation's HTTP exchange 12 seconds within the caller's
 deadline. A timed-out replica is discarded. An unsigned key lookup can retry

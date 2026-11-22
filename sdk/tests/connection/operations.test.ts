@@ -2,6 +2,7 @@ import { p256 } from "@noble/curves/p256";
 import { describe, expect, it, vi } from "vitest";
 
 import { signP256Message } from "../../src/crypto/p256.js";
+import * as qos from "../../src/crypto/qos.js";
 import { qosEncrypt } from "../../src/crypto/qos.js";
 import { API_VERSION, TVC_APP_PROOF_SCHEME } from "../../src/protocol/constants.js";
 import { SERVICE_PROOF_TYPE } from "../../src/protocol/decryption.js";
@@ -21,14 +22,14 @@ const requestId = "aa".repeat(32);
 const manifest = "bb".repeat(32);
 const text = new TextEncoder();
 
-function fixture() {
+function fixture(operation: Exchange["operation"] = "ServicePublicKeys") {
   const exchange: Exchange = {
     request: { request_id: requestId },
     requestDigest: bytes(5),
     responseSecret: bytes(6),
-    operation: "ServicePublicKeys",
+    operation,
   };
-  const result = canonicalizeJsonValue({ type: "PublicKeys" });
+  const result = canonicalizeJsonValue({ type: operation === "ServiceDecrypt" ? "Decrypt" : "PublicKeys" });
   const receiver = p256.getPublicKey(exchange.responseSecret, false);
   const ciphertext = qosEncrypt(receiver, text.encode(result));
   const payload = {
@@ -83,6 +84,54 @@ describe("operation replies", () => {
     const f = fixture();
     await expect(sealedExchange(f.context, f.exchange)).resolves.toBe(f.result);
     expect(f.verifyOperationAppProof).toHaveBeenCalledWith(expect.objectContaining({ publicKey: ephemeral }), undefined);
+  });
+
+  it("never decrypts an authenticated reply cancelled during its final policy check", async () => {
+    const f = fixture("ServiceDecrypt");
+    const controller = new AbortController();
+    const cancellation = new Error("owner cancelled");
+    const decrypt = vi.spyOn(qos, "qosDecrypt");
+    const requirePublishedPolicy = vi.fn<() => Promise<void>>()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(async () => { controller.abort(cancellation); });
+    try {
+      await expect(sealedExchange({ ...f.context, requirePublishedPolicy }, f.exchange, controller.signal))
+        .rejects.toBe(cancellation);
+      expect(decrypt).not.toHaveBeenCalled();
+    } finally { decrypt.mockRestore(); }
+  });
+
+  it("stops waiting for a final policy check that ignores cancellation", async () => {
+    const f = fixture("ServiceDecrypt");
+    const controller = new AbortController();
+    let enter!: () => void;
+    let finish!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const finished = new Promise<void>(resolve => { finish = resolve; });
+    const requirePublishedPolicy = vi.fn<() => Promise<void>>()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(() => {
+        enter();
+        return finished;
+      });
+    const reply = sealedExchange({ ...f.context, requirePublishedPolicy }, f.exchange, controller.signal);
+    const cancelled = new Error("owner cancelled");
+    const rejection = expect(reply).rejects.toBe(cancelled);
+    await entered;
+    controller.abort(cancelled);
+    try { await rejection; } finally { finish(); }
+  });
+
+  it.each(["canonical UTF-8", "invalid UTF-8"])("wipes the opened reply bytes after decoding %s", async format => {
+    const f = fixture("ServiceDecrypt");
+    const bytes = format === "canonical UTF-8" ? text.encode(f.result) : Uint8Array.of(0xff);
+    const decrypt = vi.spyOn(qos, "qosDecrypt").mockReturnValueOnce(bytes);
+    try {
+      const reply = sealedExchange(f.context, f.exchange);
+      if (format === "canonical UTF-8") await expect(reply).resolves.toBe(f.result);
+      else await expect(reply).rejects.toMatchObject({ code: "InvalidEncryptedEnvelope" });
+      expect(bytes).toEqual(new Uint8Array(bytes.length));
+    } finally { decrypt.mockRestore(); }
   });
 
   it("refuses an authenticated reply if a newer checkpoint supersedes its session", async () => {
@@ -186,8 +235,11 @@ describe("operation replies", () => {
     wrongReceiver.replyWith(p256.getPublicKey(bytes(7), false), wrongReceiver.result);
     await expect(sealedExchange(wrongReceiver.context, wrongReceiver.exchange)).rejects.toMatchObject({ code: "InvalidEncryptedEnvelope" });
 
-    const noncanonical = fixture();
-    noncanonical.replyWith(noncanonical.receiver, " " + noncanonical.result);
-    await expect(sealedExchange(noncanonical.context, noncanonical.exchange)).rejects.toMatchObject({ code: "InvalidCanonicalJson" });
+    for (const leading of [" ", "\ufeff"]) {
+      const noncanonical = fixture();
+      noncanonical.replyWith(noncanonical.receiver, leading + noncanonical.result);
+      await expect(sealedExchange(noncanonical.context, noncanonical.exchange))
+        .rejects.toMatchObject({ code: "InvalidCanonicalJson" });
+    }
   });
 });

@@ -326,7 +326,7 @@ it.each(["caller", "client"])("uses one %s deadline across all decrypt batches",
   }
 });
 
-it("binds subsequent replies to the opened owner, nullifier secret and each requested ciphertext length", async () => {
+it("requires a live request to open a handle and binds subsequent replies to its owner and keys", async () => {
   await initializePoseidon();
   const { context } = fixture();
   const owner = { address: ownerAddress as Address, signMessages: vi.fn() };
@@ -341,12 +341,20 @@ it("binds subsequent replies to the opened owner, nullifier secret and each requ
     type: "PublicKeys" as const, viewing_public_key: encodeLowerHex(viewingPublicKey.toBytes()),
     nullifier_public_key: encodeLowerHex(nullifier.publicKey()),
   };
+  const controller = new AbortController();
+  const cancellation = new Error("owner cancelled before the handle was created");
   const operation = vi.spyOn(exchange, "executeServiceCall")
+    .mockResolvedValueOnce(publicKeys)
+    .mockImplementationOnce(async () => {
+      controller.abort(cancellation);
+      return bootstrap;
+    })
     .mockResolvedValueOnce(publicKeys)
     .mockResolvedValueOnce({ ...bootstrap, nullifier_secret: "06".repeat(31) })
     .mockResolvedValueOnce(publicKeys)
     .mockResolvedValueOnce(bootstrap);
   try {
+    await expect(service.open(owner, proofs, { signal: controller.signal })).rejects.toBe(cancellation);
     await expect(service.open(owner, proofs)).rejects.toMatchObject({ code: "TRANSACTION_KEYS_IDENTITY_MISMATCH" });
     const keys = await service.open(owner, proofs);
     try {

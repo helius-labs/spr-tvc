@@ -90,6 +90,7 @@ export class ServiceKeys implements DecryptionServiceKeys {
       return decryptItem(request);
     });
     const plaintexts = await awaitWithSignal(this.#decrypt(items, { ...context, signal }), signal);
+    signal.throwIfAborted();
     return plaintexts.map(decodeLowerHex);
   }
 
