@@ -41,6 +41,7 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
   let latest: NitroPolicyCheckpoint | undefined;
   let next = 0;
 
+  // An already-started cancelled commit may still advance the durable checkpoint.
   async function accept(update: NitroPolicyUpdate, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     if (!advancesNitroPolicy(latest, update) ||

@@ -18,7 +18,7 @@ export function requestScope(options: DecryptionServiceRequestOptions = {}, defa
   return { signal, dispose: () => clearTimeout(timer) };
 }
 
-/** Only race work whose late result cannot authorize, publish a connection, or write storage. */
+/** Race cancellation only when a late result cannot authorize the caller and late effects are safe. */
 export async function awaitWithSignal<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return work;
   let abort!: () => void;

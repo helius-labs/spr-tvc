@@ -56,59 +56,45 @@ export function decodePublicKeys(result: Extract<ServiceResult, { type: "PublicK
   return { nullifierPublicKey, viewingPublicKey };
 }
 
-function ownerApprovalContext(context: ConnectedTvcRuntime): ConnectedTvcRuntime {
+function ownerApprovalScope(context: ConnectedTvcRuntime, signal: AbortSignal) {
   const now = context.nowMs();
   const started = performance.now();
   const remaining = Math.floor(Math.min(OWNER_APPROVAL_MS, remainingReleasePolicyMs(context, now)));
   if (!(remaining > 0)) throw new DecryptionServiceError("ExpiredRequest");
-  return {
-    ...context,
-    releasePolicyExpiresAtMs: now + BigInt(remaining) - 1n,
-    policyFreshnessRemainingMs: () => Math.min(
-      started + remaining - performance.now(),
-      context.policyFreshnessRemainingMs?.() ?? Infinity,
-    ),
-  };
-}
-
-async function signBeforeApprovalExpires(
-  owner: MessagePartialSigner,
-  message: Uint8Array,
-  context: ConnectedTvcRuntime,
-  signal: AbortSignal,
-) {
-  const remaining = remainingReleasePolicyMs(context, context.nowMs());
-  if (!(remaining > 0)) throw new DecryptionServiceError("ExpiredRequest");
-  signal.throwIfAborted();
   const controller = new AbortController();
-  const approvalSignal = AbortSignal.any([signal, controller.signal]);
-  const timer = setTimeout(() => controller.abort(new DecryptionServiceError("ExpiredRequest")),
-    Math.ceil(remaining));
-  try {
-    return await awaitWithSignal(
-      owner.signMessages([createSignableMessage(message)], { abortSignal: approvalSignal }),
-      approvalSignal,
-    );
-  } finally {
-    clearTimeout(timer);
-  }
+  const timer = setTimeout(() => controller.abort(new DecryptionServiceError("ExpiredRequest")), remaining);
+  return {
+    context: {
+      ...context,
+      releasePolicyExpiresAtMs: now + BigInt(remaining) - 1n,
+      policyFreshnessRemainingMs: () => Math.min(
+        started + remaining - performance.now(),
+        context.policyFreshnessRemainingMs?.() ?? Infinity,
+      ),
+    },
+    signal: AbortSignal.any([signal, controller.signal]),
+    dispose: () => clearTimeout(timer),
+  };
 }
 
 /** Bind the release and response key before asking the owner to authorize a batch. */
 export async function executeServiceCall<T extends ServiceCall>(
   session: ConnectedTvcRuntime,
   call: T,
-  signal: AbortSignal,
+  callerSignal: AbortSignal,
 ): Promise<ServiceCallResult<T>> {
-  signal.throwIfAborted();
-  if (call.type === "Decrypt" && (session.requirePublishedPolicy || session.requireCurrentCheckpoint)) {
-    await requireOperationPolicy(session, "ServiceDecrypt", signal);
-  }
-  const context = call.type === "Decrypt" ? ownerApprovalContext(session) : session;
+  callerSignal.throwIfAborted();
+  const approval = call.type === "Decrypt" ? ownerApprovalScope(session, callerSignal) : undefined;
+  const context = approval?.context ?? session;
+  const signal = approval?.signal ?? callerSignal;
   const { info } = context;
-  requireCurrentReleasePolicy(context, context.nowMs());
-  const responseSecret = p256.utils.randomPrivateKey();
+  let responseSecret: Uint8Array | undefined;
   try {
+    if (approval && (context.requirePublishedPolicy || context.requireCurrentCheckpoint)) {
+      await requireOperationPolicy(context, "ServiceDecrypt", signal);
+    }
+    requireCurrentReleasePolicy(context, context.nowMs());
+    responseSecret = p256.utils.randomPrivateKey();
     const { owner, operation } = call.type === "Decrypt"
       ? {
           owner: call.owner,
@@ -141,7 +127,11 @@ export async function executeServiceCall<T extends ServiceCall>(
         info.network,
         requestDigest,
       );
-      const [signatures] = await signBeforeApprovalExpires(owner, message, context, signal);
+      requireCurrentReleasePolicy(context, context.nowMs());
+      signal.throwIfAborted();
+      const [signatures] = await awaitWithSignal(
+        owner.signMessages([createSignableMessage(message)], { abortSignal: signal }), signal,
+      );
       const signature = signatures?.[address];
       if (signature?.length !== ED25519_SIGNATURE_BYTES) {
         throw new DecryptionServiceError("InvalidSignature");
@@ -163,8 +153,11 @@ export async function executeServiceCall<T extends ServiceCall>(
       throw error;
     }
     if (result.type !== call.type) throw new AuthenticatedOperationError("ReleaseBindingMismatch");
+    signal.throwIfAborted();
+    requireCurrentReleasePolicy(context, context.nowMs());
     return result as ServiceCallResult<T>;
   } finally {
-    responseSecret.fill(0);
+    responseSecret?.fill(0);
+    approval?.dispose();
   }
 }

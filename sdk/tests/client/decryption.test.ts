@@ -170,6 +170,59 @@ it("aborts a stalled owner approval at the end of the release window", async () 
   }
 });
 
+it.each(["before signing", "after signing", "replica reply"] as const)(
+  "uses the approval deadline while waiting for %s", async phase => {
+    vi.useFakeTimers();
+    const responseKey = new Uint8Array(32).fill(9);
+    const random = vi.spyOn(p256.utils, "randomPrivateKey").mockReturnValueOnce(responseKey);
+    try {
+      const { context, fetch } = fixture();
+      let entered!: (signal: AbortSignal | undefined) => void;
+      const started = new Promise<AbortSignal | undefined>(resolve => { entered = resolve; });
+      let finish!: () => void;
+      const late = new Promise<void>(resolve => { finish = resolve; });
+      let checks = 0;
+      async function requirePublishedPolicy(signal?: AbortSignal) {
+        checks++;
+        if (checks === (phase === "before signing" ? 1 : phase === "after signing" ? 2 : 0)) {
+          entered(signal);
+          await awaitWithSignal(late, signal);
+        }
+      }
+      if (phase === "replica reply") {
+        fetch.mockImplementationOnce(async (_url, options) => {
+          entered(options?.signal ?? undefined);
+          await late;
+          return new Response(null, { status: 503 });
+        });
+      }
+      const signMessages = vi.fn<MessagePartialSigner["signMessages"]>(async () => [
+        { [ownerAddress]: signatureBytes(new Uint8Array(64).fill(1)) },
+      ]);
+      const caller = new AbortController();
+      const pending = exchange.executeServiceCall({ ...context, requirePublishedPolicy, releasePolicyExpiresAtMs: 1009n },
+        { type: "Decrypt", owner: { address: ownerAddress, signMessages }, items: [] }, caller.signal);
+      const rejected = expect(pending).rejects.toMatchObject({ code: "ExpiredRequest" });
+      const signal = await started;
+      await vi.advanceTimersByTimeAsync(9);
+      expect(signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await rejected;
+      expect(signal?.aborted).toBe(true);
+      finish();
+      await Promise.resolve();
+      expect(signMessages).toHaveBeenCalledTimes(phase === "before signing" ? 0 : 1);
+      expect(fetch).toHaveBeenCalledTimes(phase === "replica reply" ? 1 : 0);
+      if (phase !== "before signing") expect(responseKey).toEqual(new Uint8Array(32));
+      expect(caller.signal.aborted).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      random.mockRestore();
+      vi.useRealTimers();
+    }
+  },
+);
+
 it("refuses to send a request signed after the release expires", async () => {
   const { context, fetch } = fixture();
   let now = 1000n;
