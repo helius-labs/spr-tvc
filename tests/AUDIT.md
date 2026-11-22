@@ -186,6 +186,7 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-178 | An attested predecessor could return a malformed canary result that the publisher treated like an outage. | Mark payload errors after authenticating the operation reply. Publication and retirement block on these errors. [Probe tests](../sdk/tests/client/nitro.test.ts) · SPR-NITRO-91 |
 | N-179 | A TypeScript wallet could return a service-addressed transaction after the recipient registered different keys or its RPC changed networks during preparation. | Recheck genesis and resolve the recipient again, giving the registry priority. A failed transfer build releases its inputs. [Wallet tests](https://github.com/helius-labs/privacy-rings/pull/652) · SPR-NITRO-90 |
 | N-180 | The on-chain rehearsal checked its signed policy before asking the signer to authorize the transaction. | Check the recipient and policy after signing the transfer and check the qualified policy again after signing the sweep. A refusal prevents RPC broadcast. [Rehearsal test](../example/tests/setup.test.ts) · SPR-NITRO-90 |
+| N-181 | TypeScript service-backed builders exported the unsigned transaction after the last recipient check. | Return a one-shot payment that verifies the exact message and signatures, refreshes Solana recipient keys, then broadcasts through the payment client. Release reserved inputs only before a broadcast attempt. [Wallet tests](https://github.com/helius-labs/privacy-rings/pull/652) · SPR-NITRO-93 |
 
 ## Remaining qualification and review
 
