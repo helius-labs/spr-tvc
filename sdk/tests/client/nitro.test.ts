@@ -184,14 +184,4 @@ describe("native client trust gate", () => {
     expect(accept).not.toHaveBeenCalled();
     expect(signMessages).not.toHaveBeenCalled();
   });
-
-  it("allows policy URL overrides only for devnet loopback rehearsals", () => {
-    const arbitrary = new URL("https://relay.example.com/policy.json");
-    const rehearsal = new URL("http://127.0.0.1:8201/policy");
-    const policyStore = { ...emptyStore, async accept() { return true; } };
-    expect(() => createNitroDecryptionService({ trust, policyUrl: arbitrary, policyStore })).toThrow();
-    expect(() => createNitroDecryptionService({ trust, policyUrl: rehearsal, policyStore })).toThrow();
-    expect(() => createNitroDecryptionService({ trust: { ...trust, network: "devnet" }, policyUrl: arbitrary, policyStore })).toThrow();
-    expect(() => createNitroDecryptionService({ trust: { ...trust, network: "devnet" }, policyUrl: rehearsal, policyStore })).not.toThrow();
-  });
 });

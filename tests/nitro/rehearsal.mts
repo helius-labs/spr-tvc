@@ -21,7 +21,7 @@ import {
   advancesNitroPolicy, createNitroDecryptionService, type NitroPolicy,
   type NitroPolicyCheckpoint, type NitroTarget, type NitroTrust,
 } from "../../sdk/src/client/nitro.js";
-import { nitroPolicySigningDigest } from "../../sdk/src/attestation/nitro-policy.js";
+import { nitroPolicySigningDigest, nitroPublication } from "../../sdk/src/attestation/nitro-policy.js";
 import { signP256Prehash } from "../../sdk/src/crypto/p256.js";
 import { encodeLowerHex, requireHex } from "../../sdk/src/protocol/hex.js";
 import type { ServiceInfo } from "../../sdk/src/protocol/types.js";
@@ -52,13 +52,13 @@ const trust: NitroTrust = {
   keys: secrets.map(secret => encodeLowerHex(p256.getPublicKey(secret, false))),
 };
 const start = Date.now() - 30_000;
-let signedPolicy: string;
-function signPolicy(sequence: string, replicas: readonly NitroTarget[], minimumCustodyEpoch = "1"): string {
+const heads: [string, string] = ["", ""];
+function signPolicy(sequence: string, replicas: readonly NitroTarget[], minimumCustodyEpoch: string, previous?: string): string {
   const policy: NitroPolicy = {
     version: 1, action: "activate", network: trust.network, securityDomainId: domain, noteSeedCommitment: seed,
     validFromMs: String(start), expiresAtMs: String(start + 15 * 60_000),
     sequence, targets: replicas, minimumCustodyEpoch,
-    previousPolicyDigest: sequence === "1" ? null : encodeLowerHex(nitroPolicySigningDigest(JSON.parse(signedPolicy).policy)),
+    previousPolicyDigest: previous === undefined ? null : encodeLowerHex(nitroPolicySigningDigest(JSON.parse(previous).policy)),
   };
   const digest = nitroPolicySigningDigest(policy);
   const signatures = secrets.slice(0, 2).map((secret, i) => ({
@@ -67,25 +67,35 @@ function signPolicy(sequence: string, replicas: readonly NitroTarget[], minimumC
   return JSON.stringify({ policy, signatures });
 }
 const server = createServer((request, response) => {
-  if (request.url !== "/policy") {
+  const index = paths.indexOf(request.url ?? "");
+  const publication = trust.publications[index];
+  if (!publication || publication.account !== request.headers["x-amz-expected-bucket-owner"]) {
     response.writeHead(404).end();
     return;
   }
-  response.writeHead(200, { "Content-Type": "application/json" }).end(signedPolicy);
+  response.writeHead(200, { "Content-Type": "application/json" }).end(heads[index]);
 });
+const paths = ["/primary", "/mirror"];
 server.listen(0, "127.0.0.1");
 await once(server, "listening");
 server.unref();
 const listener = server.address();
 assert.ok(listener && typeof listener === "object");
-const policyUrl = new URL(`http://127.0.0.1:${listener.port}/policy`);
-let checkpoint: NitroPolicyCheckpoint | undefined;
-function clientFor() {
+const origin = `http://127.0.0.1:${listener.port}`;
+const policyUrls = trust.publications.map(publication => nitroPublication(trust, publication).url.href);
+const networkFetch = globalThis.fetch;
+// Only the two policy reads use local stand-ins. Enclave traffic uses the live endpoints.
+globalThis.fetch = (input, init) => {
+  const index = input instanceof URL ? policyUrls.indexOf(input.href) : -1;
+  return networkFetch(index === -1 ? input : new URL(paths[index]!, origin), init);
+};
+const checkpoint: { value?: NitroPolicyCheckpoint } = {};
+function clientFor(state = checkpoint) {
   return createNitroDecryptionService({
-    trust, policyUrl,
-    policyStore: { async current() { return checkpoint; }, async accept(next) {
-      if (!advancesNitroPolicy(checkpoint, next)) return false;
-      checkpoint = next;
+    trust,
+    policyStore: { async current() { return state.value; }, async accept(next) {
+      if (!advancesNitroPolicy(state.value, next)) return false;
+      state.value = next;
       return true;
     } },
   });
@@ -127,7 +137,8 @@ async function checkEvidence(pin: NitroTarget) {
 
 await initializePoseidon();
 const originalPin = target("a");
-signedPolicy = signPolicy("1", [originalPin]);
+const initial = signPolicy("1", [originalPin], "1");
+heads.fill(initial);
 const original = await checkEvidence(originalPin);
 const client = clientFor();
 const recipient = await client.address(owner.address);
@@ -180,20 +191,22 @@ async function waitForMarker(name: string) {
 await waitForMarker("move-ready");
 
 const recoveredPin = target("b");
-signedPolicy = signPolicy("1", [{ ...recoveredPin, pcrs: originalPin.pcrs }]);
-await assert.rejects(clientFor().address(owner.address), /policy rollback or checkpoint/);
-signedPolicy = signPolicy("2", [{ ...recoveredPin, pcrs: originalPin.pcrs }]);
+heads[0] = signPolicy("1", [{ ...recoveredPin, pcrs: originalPin.pcrs }], "1");
+await assert.rejects(clientFor().address(owner.address), /ReleasePolicyInvalid/);
+heads[0] = signPolicy("2", [{ ...recoveredPin, pcrs: originalPin.pcrs }], "1", initial);
 await assert.rejects(clientFor().address(owner.address), /BootProofUnverified/);
 const recovered = await checkEvidence(recoveredPin);
 assert.notEqual(recovered.info.quorum_public_key, original.info.quorum_public_key);
 assert.notEqual(recovered.proofKey, original.proofKey);
 const unavailable = { ...recoveredPin, endpoint: new URL("offline/", recoveredPin.endpoint).href };
-signedPolicy = signPolicy("3", replacementUrl ? [unavailable, recoveredPin, originalPin] : [unavailable, recoveredPin]);
+const overlap = signPolicy("2", replacementUrl ? [unavailable, recoveredPin, originalPin] : [unavailable, recoveredPin], "1", initial);
+heads[0] = overlap;
 const restored = clientFor();
 const restoredRecipient = await restored.address(owner.address);
 assert.deepEqual(restoredRecipient.viewingPublicKey.toBytes(), recipient.viewingPublicKey.toBytes());
 assert.deepEqual(restoredRecipient.nullifierPublicKey, recipient.nullifierPublicKey);
 assert.deepEqual(await openNote(restored), [amount]);
+heads[1] = overlap;
 console.log("Image B rejected the old PCR pin and opened the same note. Both connection keys rotated and both note keys stayed stable.");
 if (replacementUrl) {
   writeFileSync(resolve(directory, "before-retire"), "");
@@ -201,16 +214,23 @@ if (replacementUrl) {
   const old = await fetch(new URL("health", originalPin.endpoint), { signal: AbortSignal.timeout(3000) }).catch(() => undefined);
   assert.ok(!old?.ok, "image A was still serving after retirement");
 }
-signedPolicy = signPolicy("4", [recoveredPin], recoveredPin.custodyEpoch);
+const promoted = signPolicy("3", [recoveredPin], recoveredPin.custodyEpoch, overlap);
+heads[0] = promoted;
 assert.deepEqual(await openNote(clientFor()), [amount]);
+heads[1] = promoted;
 console.log("The owner reopened the note under the replacement custody epoch.");
-signedPolicy = signPolicy("5", [originalPin], originalPin.custodyEpoch);
+heads[0] = overlap;
+const fresh: { value?: NitroPolicyCheckpoint } = {};
+assert.deepEqual(await openNote(clientFor(fresh)), [amount]);
+assert.equal(fresh.value?.sequence, "3");
+console.log("A fresh wallet ignored one publisher serving the previous revision.");
 if (BigInt(recoveredPin.custodyEpoch) > BigInt(originalPin.custodyEpoch)) {
-  await assert.rejects(clientFor().address(owner.address), /policy rollback or checkpoint/);
+  heads[0] = signPolicy("4", [originalPin], originalPin.custodyEpoch, promoted);
+  await assert.rejects(clientFor().address(owner.address), /ReleasePolicyInvalid/);
   console.log("A higher-sequence policy could not restore the retired custody epoch.");
 }
-signedPolicy = signPolicy("1", [originalPin]);
-await assert.rejects(clientFor().address(owner.address), /policy rollback or checkpoint/);
+heads.fill(initial);
+await assert.rejects(clientFor().address(owner.address), /policy rollback/);
 console.log("A new SDK client rejected an older signed policy using the stored checkpoint.");
 secrets.forEach(secret => secret.fill(0));
 server.close();

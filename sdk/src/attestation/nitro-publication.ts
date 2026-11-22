@@ -2,10 +2,10 @@ import { fetchWithSignal, httpError, readBoundedText } from "../connection/http.
 import { nitroTransport } from "./nitro-connection.js";
 import { nitroPublication, verifyPublishedNitroPolicy, type NitroTrust } from "./nitro-policy.js";
 
-export async function readNitroPolicy(url: URL, signal: AbortSignal, account?: string): Promise<string> {
-  const response = await fetchWithSignal(nitroTransport, url, account ? {
+export async function readNitroPolicy(url: URL, signal: AbortSignal, account: string): Promise<string> {
+  const response = await fetchWithSignal(nitroTransport, url, {
     headers: { "x-amz-expected-bucket-owner": account },
-  } : undefined, signal);
+  }, signal);
   if (!response.ok) throw httpError(response, "ReleasePolicyInvalid");
   return readBoundedText(response, 32_768n, signal);
 }

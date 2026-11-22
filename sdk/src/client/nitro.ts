@@ -1,10 +1,10 @@
 import { connectNitroTarget, nitroTransport } from "../attestation/nitro-connection.js";
 import { indexedDbNitroPolicyStore } from "../attestation/nitro-checkpoint.js";
 import {
-  advancesNitroPolicy, nitroEndpoint, validateNitroTrust, verifyNitroPolicy,
+  advancesNitroPolicy, validateNitroTrust,
   type NitroPolicyCheckpoint, type NitroPolicyStore, type NitroTrust,
 } from "../attestation/nitro-policy.js";
-import { readNitroPolicy, readPublishedNitroPolicy } from "../attestation/nitro-publication.js";
+import { readPublishedNitroPolicy } from "../attestation/nitro-publication.js";
 import type { ConnectedTvcRuntime } from "../connection/connect.js";
 import { awaitWithSignal } from "../connection/request.js";
 import { sessionFromConnector } from "../connection/session.js";
@@ -15,8 +15,6 @@ export { advancesNitroPolicy } from "../attestation/nitro-policy.js";
 export type { NitroPolicy, NitroPolicyCheckpoint, NitroPolicyStore, NitroTarget, NitroTrust } from "../attestation/nitro-policy.js";
 
 export type NitroDecryptionServiceConfig = {
-  /** Loopback policy source for devnet rehearsals. Deployments read both pinned publications. */
-  readonly policyUrl?: URL;
   readonly trust: NitroTrust;
   /** Defaults to IndexedDB when available. Other runtimes supply a durable store. */
   readonly policyStore?: NitroPolicyStore;
@@ -30,10 +28,6 @@ const clock = () => BigInt(Date.now());
 export function createNitroDecryptionService(config: NitroDecryptionServiceConfig): DecryptionService {
   const trust = structuredClone(config.trust);
   validateNitroTrust(trust);
-  const policyUrl = config.policyUrl && nitroEndpoint(config.policyUrl.href, trust.network);
-  if (policyUrl && (trust.network !== "devnet" || !["127.0.0.1", "[::1]"].includes(policyUrl.hostname))) {
-    throw new DecryptionServiceError("ReleasePolicyInvalid", "policy overrides require devnet loopback");
-  }
   const store = config.policyStore ?? indexedDbNitroPolicyStore(trust);
   let latest: NitroPolicyCheckpoint | undefined;
   let next = 0;
@@ -49,9 +43,7 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
   }
 
   const session = sessionFromConnector(async (signal): Promise<ConnectedTvcRuntime> => {
-    const { policy, checkpoint, validFrom, expiresAt } = policyUrl
-      ? verifyNitroPolicy(await readNitroPolicy(policyUrl, signal), trust, clock())
-      : await readPublishedNitroPolicy(trust, signal);
+    const { policy, checkpoint, validFrom, expiresAt } = await readPublishedNitroPolicy(trust, signal);
     if (!advancesNitroPolicy(latest, checkpoint)) throw new DecryptionServiceError("ReleasePolicyInvalid", "policy rollback");
     if (policy.action === "revoke") {
       await accept(checkpoint, signal);

@@ -49,8 +49,9 @@ pnpm --filter spr-tvc-typescript-client-example exec tsx ../tests/nitro/rehearsa
 ```
 
 Use epoch 1 for A and a distinct rotated custody epoch for B to exercise revocation.
-The script signs and serves a test policy locally. Once it writes `note-created`,
+The script signs policies and serves both publisher responses locally. Once it writes `note-created`,
 verify that both enclaves are healthy and create `move-ready`. Once it writes
 `before-retire`, stop A and create `old-retired`. It verifies the original note
-again under B, then rejects a stale policy and a higher sequence that tries to lower the
-recorded custody floor.
+again under B. A fresh wallet must select the promoted release while one publisher
+replays the previous revision. The script also checks a lower custody floor and
+a replay against a persisted checkpoint.
