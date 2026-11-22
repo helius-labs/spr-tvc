@@ -9,7 +9,7 @@ from pathlib import Path
 
 from approval import (
     KEY_ARN, ROLE_ARN, add_approval, approval_roster, arn, aws, canonical, fields, file_digest, hex_digest,
-    parse_json, read_document, read_json, require_inspection_profiles, sha256,
+    parse_json, read_document, read_json, require_inspection_profiles, require_profile_account, sha256,
 )
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_custody_roster, load_epoch,
@@ -19,6 +19,7 @@ from custody_ledger import (
 from kms_policy import decrypt_conditions, key_policy, target_boot_pins
 from provenance import verify as verify_build
 from relay import relay_pins, sealed_rsa_key
+
 
 def host_policy(manifest):
     pins = target_boot_pins(manifest["hostRole"], manifest["pcrs"], manifest["instanceId"])
@@ -258,14 +259,18 @@ def main():
         require_active_epoch(trust, receipt["custody"]["epoch"])
         manifest = document["manifest"]
         require_reviewed_target(args.build, manifest, args.review)
+        require_inspection_profiles(args.inspection_profiles)
+        host_account = arn(ROLE_ARN, manifest["hostRole"])[1]
+        require_profile_account(args.host_inspection_profile, manifest["hostRegion"], host_account)
         if next_keys:
             successor = manifest["nextCustodians"]
             check_custody_roster(trust, str(int(manifest["custodyEpoch"]) + 1), successor, next_keys,
                                  args.next_inspection_profiles, args.next_relay_build)
         elif args.next_relay_build is not None or args.next_inspection_profiles is not None:
             raise ValueError("successor inspection is only used for rotation")
-        require_inspection_profiles(args.inspection_profiles)
         for key, policy, profile in zip(manifest["wrappingKeys"], policies, args.inspection_profiles, strict=True):
+            region, account = arn(KEY_ARN, key).groups()
+            require_profile_account(profile, region, account)
             sealed_rsa_key(key, policy, profile=profile)
         require_host_state(manifest, "running", args.host_inspection_profile)
         require_active_epoch(trust, manifest["custodyEpoch"])

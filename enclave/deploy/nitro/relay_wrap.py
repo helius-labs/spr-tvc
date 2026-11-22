@@ -6,7 +6,10 @@ import subprocess
 from pathlib import Path
 from time import time
 
-from approval import add_approval, approval_roster, canonical, check_approvals, epoch_number, read_json, sha256
+from approval import (
+    KEY_ARN, add_approval, approval_roster, arn, canonical, check_approvals, epoch_number, read_json,
+    require_profile_account, sha256,
+)
 from custody_ledger import load_epoch, require_active_epoch, verify_target_approval
 from deployment import require_registered_target, require_reviewed_target, target
 from relay import live_recipient, recover_to_relay, relay_pins, relay_request, sealed_rsa_key
@@ -44,7 +47,11 @@ def prepare(trust, approval, build, index, port, inspection_profile=None):
         (entry["activeFrom"] for entry in trust["approvalKeys"] if entry["activeFrom"] > at),
         manifest["expiresAt"],
     ))
-    destination = sealed_rsa_key(manifest["wrappingKeys"][index - 1], policies[index - 1], profile=inspection_profile)
+    key = manifest["wrappingKeys"][index - 1]
+    if inspection_profile is not None:
+        region, account = arn(KEY_ARN, key).groups()
+        require_profile_account(inspection_profile, region, account)
+    destination = sealed_rsa_key(key, policies[index - 1], profile=inspection_profile)
     key_id, evidence = live_recipient(port, relay)
     require_release_window(expires)
     statement = {

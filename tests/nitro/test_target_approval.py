@@ -162,6 +162,7 @@ class TargetApprovalTests(unittest.TestCase):
         with (patch("sys.argv", argv), patch("deployment.load_epoch", side_effect=self.load_epoch),
               patch("deployment.require_active_epoch") as active, patch("deployment.verify_build") as verify_build,
               patch("deployment.require_host_state") as inspect, patch("deployment.sealed_rsa_key") as inspect_key,
+              patch("deployment.require_profile_account") as identity,
               patch("deployment.add_approval", return_value=self.approval) as sign_target):
             for field in ("configurationSha256", "eifSha256", "executableSha256", "pcrs"):
                 value = {**PINS, "PCR0": "aa" * 48} if field == "pcrs" else "aa" * 32
@@ -171,7 +172,20 @@ class TargetApprovalTests(unittest.TestCase):
             sign_target.assert_not_called()
             self.assertFalse(output.exists())
             inspect_key.assert_not_called()
+            identity.assert_not_called()
             verify_build.return_value = reviewed
+            for checks in (
+                [ValueError("host profile is in the wrong account")],
+                [None, ValueError("slot profile is in the wrong account")],
+            ):
+                identity.side_effect = checks
+                with self.assertRaisesRegex(SystemExit, "profile is in the wrong account"):
+                    main()
+                sign_target.assert_not_called()
+                inspect_key.assert_not_called()
+                inspect.assert_not_called()
+                self.assertFalse(output.exists())
+            identity.side_effect = None
             inspect_key.side_effect = [DESTINATION] * 5 + [ValueError("unsealed wrapping key")]
             with self.assertRaisesRegex(SystemExit, "unsealed wrapping key"):
                 main()
@@ -195,6 +209,7 @@ class TargetApprovalTests(unittest.TestCase):
             inspect.side_effect = None
             inspect.reset_mock()
             inspect_key.reset_mock()
+            identity.reset_mock()
             main()
             self.assertEqual(json.loads(output.read_bytes()), self.approval)
             inspect.assert_called_once_with(self.manifest, "running", "host-reader")
@@ -202,6 +217,10 @@ class TargetApprovalTests(unittest.TestCase):
             self.assertEqual(inspect_key.call_args_list, [
                 call(key, policy, profile=profile)
                 for key, policy, profile in zip(self.manifest["wrappingKeys"], policies, profiles, strict=True)
+            ])
+            self.assertEqual(identity.call_args_list, [
+                call("host-reader", REGION, "000000000007"),
+                *(call(profile, REGION, f"{slot:012d}") for slot, profile in enumerate(profiles, 1)),
             ])
             sign_target.assert_called_once()
 

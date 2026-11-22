@@ -96,6 +96,20 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(release_keys, NEXT_KEYS)
         verify.assert_called_with(trust, {}, at=10)
 
+        _sealed.reset_mock()
+        _recipient.reset_mock()
+        with patch("relay_wrap.require_profile_account") as identity:
+            identity.side_effect = ValueError("slot profile is in the wrong account")
+            with self.assertRaisesRegex(ValueError, "profile is in the wrong account"):
+                prepare(*source, inspection_profile="slot-reader")
+            _sealed.assert_not_called()
+            _recipient.assert_not_called()
+            identity.side_effect = None
+            statement, *_ = prepare(*source, inspection_profile="slot-reader")
+            self.assertEqual(statement["expiresAt"], 20)
+            identity.assert_called_with("slot-reader", "eu-north-1", "000000000001")
+            _sealed.assert_called_once_with(key(1), {}, profile="slot-reader")
+
         verify.return_value["expiresAt"] = 15
         statement, *_ = prepare(*source)
         self.assertEqual(statement["expiresAt"], 15)

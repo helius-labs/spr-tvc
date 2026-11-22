@@ -299,7 +299,9 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    [IAM instance profile lookup](https://docs.aws.amazon.com/IAM/latest/APIReference/API_GetInstanceProfile.html)
 
    Supply six read-only profiles in slot order to verify the installed wrapping
-   policies and RSA key metadata before signing. A rotation draft takes
+   policies and RSA key metadata before signing. STS checks that each profile
+   resolves to its slot account and that the host profile resolves to the
+   approved host account. A rotation draft takes
    `--next-roster roster-next.json` and binds the successor relay from custody trust. Before authorizing a
    rotation, both signers verify the successor's build and keys with
    `--next-relay-build BUILD REVIEW` and `--next-inspection-profiles`.
@@ -479,8 +481,9 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
 
 For each slot, two epoch approval signers authorize the exact relay boot and
 sealed destination public key. Both use a read-only inspection profile in the
-slot account. Each command reattests the relay and checks the installed target
-policy. Collect both signatures against the same boot. Before opening a share,
+slot account. The tool checks the profile's account through STS, reads the
+installed target policy, and reattests the relay. Collect both signatures
+against the same boot. Before opening a share,
 the custodian verifies GitHub provenance against the independently supplied
 target review file. The custodian checks the installed recovery
 policy, sends the recovery package and relay
