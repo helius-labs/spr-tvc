@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
 import { connectNitroTarget } from "../sdk/src/attestation/nitro-connection.js";
 import {
-  nextNitroPublication, nitroPublication, validateNitroTrust, verifyNitroPolicy, type NitroTrust,
+  nextNitroPublication, nitroPublication, requireNitroTrustTransition, validateNitroTrust, verifyNitroPolicy, type NitroTrust,
 } from "../sdk/src/attestation/nitro-policy.js";
 import { readNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
@@ -22,7 +22,8 @@ const runCommand: Run = (command, args, timeout) => execute(command, args, {
 
 type PublicationOptions = {
   custodyTrust?: string;
-  previousTrust?: NitroTrust;
+  nextTrust?: NitroTrust;
+  emergencyFrom?: NitroTrust;
   run?: Run;
 };
 
@@ -36,7 +37,7 @@ async function readPolicy(path: string): Promise<string> {
       if (bytesRead === 0) break;
       size += bytesRead;
     }
-    if (size > MAX_BYTES) throw new Error("release policy exceeds 32 KiB");
+    if (size > MAX_BYTES) throw new Error("JSON document exceeds 32 KiB");
     return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, size));
   } finally {
     await file.close();
@@ -76,11 +77,27 @@ export function bucketPolicy(trust: NitroTrust, name: string, administrator: str
 }
 
 export async function publish(
-  trust: NitroTrust, name: string, text: string, { custodyTrust, previousTrust = trust, run = runCommand }: PublicationOptions = {},
+  trust: NitroTrust, name: string, text: string,
+  { custodyTrust, nextTrust, emergencyFrom, run = runCommand }: PublicationOptions = {},
 ): Promise<void> {
   const now = BigInt(Date.now());
-  const { policy } = verifyNitroPolicy(text, trust, now);
+  const { policy, signatures, custodySignatures } = verifyNitroPolicy(text, trust, now);
   if (policy.action === "activate" && !custodyTrust) throw new Error("activation requires --custody-trust");
+  if (nextTrust && emergencyFrom) throw new Error("choose one signer transition");
+  if (nextTrust) {
+    validateNitroTrust(nextTrust);
+    requireNitroTrustTransition(trust, nextTrust, policy.sequence);
+    verifyNitroPolicy(text, nextTrust, now);
+  }
+  if (emergencyFrom) {
+    validateNitroTrust(emergencyFrom);
+    requireNitroTrustTransition(emergencyFrom, trust, policy.sequence);
+  }
+  const other = nextTrust ?? emergencyFrom;
+  if (signatures.some(({ key }) => !trust.keys.includes(key) && !other?.keys.includes(key)) ||
+      custodySignatures.some(({ key }) => !trust.custodyKeys.includes(key) && !other?.custodyKeys.includes(key))) {
+    throw new Error("publication includes signers outside the supplied trust bundles");
+  }
   const { bucket, region, account, key } = publicationFor(trust, name);
   const directory = await mkdtemp(join(tmpdir(), "spr-release-"));
   const candidate = join(directory, "candidate.json");
@@ -101,7 +118,7 @@ export async function publish(
   try {
     await writeFile(candidate, text, { mode: 0o600, flag: "wx" });
     const head = policy.sequence === "1" ? undefined : await readHead();
-    const needsWrite = nextNitroPublication(text, head?.text, trust, now, previousTrust);
+    const needsWrite = nextNitroPublication(text, head?.text, trust, now, emergencyFrom);
     if (!needsWrite && head?.text !== text) throw new Error("use a new revision to change published signatures");
     const [first, second] = trust.publications;
     const isSecond = bucket === second.bucket;
@@ -136,11 +153,11 @@ export async function publish(
 
 async function main() {
   const [trustPath, bucket, policyPath, ...extra] = process.argv.slice(2);
-  const usage = "usage: nitro-publish.ts <wallet-trust.json> <bucket> <signed-policy.json> [--custody-trust <custody-trust.json>] [--previous-trust <old-trust.json>] | <wallet-trust.json> <bucket> --bucket-policy <administrator-role> <publisher-role>";
+  const usage = "usage: nitro-publish.ts <wallet-trust.json> <bucket> <signed-policy.json> [--custody-trust <custody-trust.json>] [--next-trust <incoming.json> | --emergency-from <outgoing.json>] | <wallet-trust.json> <bucket> --bucket-policy <administrator-role> <publisher-role>";
   if (!trustPath || !bucket || !policyPath) {
     throw new Error(usage);
   }
-  const trust = parseStrictJson<NitroTrust>(await readFile(trustPath, "utf8"));
+  const trust = parseStrictJson<NitroTrust>(await readPolicy(trustPath));
   validateNitroTrust(trust);
   if (policyPath === "--bucket-policy") {
     const [administrator, publisher] = extra;
@@ -148,12 +165,16 @@ async function main() {
     console.log(JSON.stringify(bucketPolicy(trust, bucket, administrator, publisher), null, 2));
     return;
   }
-  const { values: { "custody-trust": custodyTrust, "previous-trust": previousPath } } = parseArgs({
-    args: extra, options: { "custody-trust": { type: "string" }, "previous-trust": { type: "string" } },
+  const { values: { "custody-trust": custodyTrust, "next-trust": nextPath, "emergency-from": emergencyPath } } = parseArgs({
+    args: extra, options: { "custody-trust": { type: "string" }, "next-trust": { type: "string" }, "emergency-from": { type: "string" } },
   });
-  const previousTrust = previousPath ? parseStrictJson<NitroTrust>(await readFile(previousPath, "utf8")) : trust;
-  validateNitroTrust(previousTrust);
-  await publish(trust, bucket, await readPolicy(policyPath), { previousTrust, ...(custodyTrust ? { custodyTrust } : {}) });
+  const nextTrust = nextPath && parseStrictJson<NitroTrust>(await readPolicy(nextPath));
+  const emergencyFrom = emergencyPath && parseStrictJson<NitroTrust>(await readPolicy(emergencyPath));
+  await publish(trust, bucket, await readPolicy(policyPath), {
+    ...(custodyTrust ? { custodyTrust } : {}),
+    ...(nextTrust ? { nextTrust } : {}),
+    ...(emergencyFrom ? { emergencyFrom } : {}),
+  });
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -60,7 +60,7 @@ function custodySignatures(policy: NitroPolicy, signers = [9, 10]) {
 }
 function manifest(policy: NitroPolicy, ...signers: number[]) {
   return JSON.stringify({ policy, signatures: signatures(policy, ...signers),
-    custodySignatures: policy.action === "activate" ? custodySignatures(policy) : [] });
+    custodySignatures: custodySignatures(policy) });
 }
 
 describe("native Nitro release policy", () => {
@@ -166,14 +166,17 @@ describe("native Nitro release policy", () => {
     expect(() => verifyNitroPolicy(manifest(binding, 0, 1), incoming, now)).toThrow();
   });
 
-  it("requires an explicit signed revocation with no targets", () => {
+  it("requires both quorums for a revocation with no targets", () => {
     const revoke = { ...binding, action: "revoke", targets: [] } as const;
     expect(verifyNitroPolicy(manifest(revoke, 0, 1), trust, now).policy).toEqual(revoke);
+    const oneQuorum = { ...revoke, recoveryOnly: true, minimumCustodyEpoch: "18446744073709551615" };
     expect(() => verifyNitroPolicy(JSON.stringify({
-      policy: revoke, signatures: signatures(revoke, 0, 1), custodySignatures: custodySignatures(revoke),
-    }), trust, now)).toThrow();
+      policy: oneQuorum, signatures: signatures(oneQuorum, 0, 1), custodySignatures: [],
+    }), trust, now)).toThrow("ReleasePolicyInvalid");
     expect(() => verifyNitroPolicy(manifest({ ...binding, action: "revoke" }, 0, 1), trust, now)).toThrow();
-    expect(() => verifyNitroPolicy(JSON.stringify({ policy: revoke, signatures: signatures(binding, 0, 1), custodySignatures: [] }), trust, now)).toThrow();
+    expect(() => verifyNitroPolicy(JSON.stringify({
+      policy: revoke, signatures: signatures(binding, 0, 1), custodySignatures: custodySignatures(revoke),
+    }), trust, now)).toThrow();
   });
 
   it("rejects unmeasured, ambiguous or insecure routes", () => {

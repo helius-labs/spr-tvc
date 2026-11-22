@@ -131,13 +131,14 @@ previous published digest. Signers and publishers independently verify that
 each activation target matches an active epoch, the committed custody receipt,
 and a custody-approved serving executable, release ID and PCR0–PCR3. Two of
 three independently pinned custody approval keys also sign the entire
-activation policy. Their digest uses `SPR/native-nitro/custody-release-policy/v1`
+policy. Their digest uses `SPR/native-nitro/custody-release-policy/v1`
 followed by the same canonical JSON. The SDK verifies both quorums before
 contacting a replica. Separate key pins prevent the release quorum from
 substituting its own recipient keys through an unapproved image. Each publisher
 also checks the predecessor and attests every activation target. A revocation
-has no targets and requires only the release quorum, so it can proceed during
-a custody ledger outage.
+has no targets. Its sequence, custody floor and recovery flag can permanently
+change wallet state, so it also requires both quorums.
+Revocation can proceed while the custody ledger and replicas are offline.
 S3 accepts a write against the checked predecessor's ETag. Each publisher
 writes to its own bucket. The mirror copies the primary's signed file, including
 all signatures. The primary checks that the mirror holds the same file before
@@ -156,10 +157,11 @@ lifetime and local checkpoint bound acceptance.
 
 The envelope carries `policy`, `signatures` and `custodySignatures`. Each list
 can carry up to eight distinct valid low-S P-256 signatures. A key can appear in
-only one list. Wallets count only their pinned keys for that list. The custody
-list is empty for revocation. During a signer rotation, both rosters for the
-rotating authority can sign the same policy. Publish it to both buckets before
-distributing the incoming pins.
+only one list. Wallets count only their pinned keys for that list. For a
+planned signer rotation, the publisher verifies the same signed revision
+under both the outgoing and incoming trust. The incoming minimum sequence
+pins the transition revision. Publish it to both buckets before distributing
+the incoming pins.
 
 ## Seed compromise and recovery
 
@@ -183,9 +185,9 @@ is complete. [Cutover runbook](deploy/nitro/README.md#replace-a-compromised-seed
 
 ## Wallet connection and operations
 
-1. Fetch both policies with a five-second deadline and a 32 KiB limit per response. Require the release quorum on each head and the separate custody quorum on every activation. Check the network, domain, seed commitment and allowed lifetime. Compare the primary's checkpoint with the wallet's durable checkpoint before contacting any replica. An `activate` policy lists eligible replicas. A `revoke` policy has an empty target list and commits its sequence, digest and custody floor immediately, returning `ReleasePolicyRevoked`.
+1. Fetch both policies with a five-second deadline and a 32 KiB limit per response. Require both quorums on each head. Check the network, domain, seed commitment and allowed lifetime. Atomically advance the wallet's durable checkpoint to the authenticated primary before contacting any replica. An `activate` policy lists eligible replicas. A `revoke` policy has an empty target list and returns `ReleasePolicyRevoked` after the same checkpoint write.
 2. POST a random 32-byte nonce to one authorized target's `/v1/nitro/attestation`. The reply includes `boot` and AWS-signed COSE `evidence`. The `boot` object contains `info` and the three `bootstrapSlots` that restored this replica. The document signs the nonce, SHA-256 of `SPR/native-nitro/discovery/v1` followed by the canonical `boot` object, and the replica's response-signing public pair.
-3. Verify the exact pinned AWS root, the current certificate path and usages, the ES384 COSE signature, the signed timestamp and nonce, PCR0–PCR3 and the discovery bindings. Verify both public pairs before use. Compute the discovery release digest as SHA-256 of `SPR/native-nitro/release/v1` followed by the 32-byte executable hash, seed commitment and custody digest. The custody digest is SHA-256 of the RFC 8785 canonical `custody` object from the committed receipt. The signed target binds both that record and its epoch. Before using a normal activation, verify a replica and atomically persist the sequence, digest, floor and recovery mode. Recovery-only mode is committed as soon as the signed policy verifies. Raising the floor retires earlier epochs for that wallet. A later policy can authorize a previous build at or above that floor. New installs use independently pinned minimum values. The SDK uses one verified target for up to 60 seconds. The signed policy and every attestation certificate must remain valid through the checkpoint write and while the SDK uses that target.
+3. Verify the exact pinned AWS root, the current certificate path and usages, the ES384 COSE signature, the signed timestamp and nonce, PCR0–PCR3 and the discovery bindings. Verify both public pairs before use. Compute the discovery release digest as SHA-256 of `SPR/native-nitro/release/v1` followed by the 32-byte executable hash, seed commitment and custody digest. The custody digest is SHA-256 of the RFC 8785 canonical `custody` object from the committed receipt. The signed target binds both that record and its epoch. The checkpoint remains in force if every listed replica is unavailable. Wallets send only after a replica attests. Raising the floor retires earlier epochs for that wallet. A later policy can authorize a previous build at or above that floor. New installs use independently pinned minimum values. The SDK uses one verified target for up to 60 seconds. The signed policy must be current for attestation and use. Every certificate in the attestation path must remain valid while the SDK uses that target.
 4. Encrypt the request to that boot's P-256 transport key. A decrypt approval binds the signer, network, release, boot transport key ID, ordered outputs, request ID and the ephemeral client response key. The enclave verifies the approval before deriving or opening note keys. Its signed response binds the operation, request digest and encrypted result. Before opening the reply, the SDK verifies the replica signature and rechecks the persisted checkpoint and session deadline. It checks recovered notes against their indexed commitments.
 
 The SDK gives each operation's HTTP exchange 12 seconds within the caller's

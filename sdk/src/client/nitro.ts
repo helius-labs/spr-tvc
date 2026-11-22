@@ -37,6 +37,7 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
   async function accept(checkpoint: NitroPolicyCheckpoint, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
     if (!advancesNitroPolicy(latest, checkpoint) ||
+        !advancesNitroPolicy(await awaitWithSignal(store.current(), signal), checkpoint) ||
         !await awaitWithSignal(store.accept(checkpoint), signal) ||
         !advancesNitroPolicy(latest, checkpoint)) {
       throw new DecryptionServiceError("ReleasePolicyInvalid", "policy rollback or checkpoint unavailable");
@@ -51,14 +52,9 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
       if (now < validFrom || now >= expiresAt) throw new DecryptionServiceError("ReleasePolicyInvalid");
       return now;
     }
-    if (!advancesNitroPolicy(latest, checkpoint) ||
-        !advancesNitroPolicy(await awaitWithSignal(store.current(), signal), checkpoint)) {
-      throw new DecryptionServiceError("ReleasePolicyInvalid", "policy rollback");
-    }
+    // The signed policy advances trust even if every listed replica is offline.
+    await accept(checkpoint, signal);
     currentTime();
-    // Disable sending as soon as the signed cutover is known, even if recovery is temporarily offline.
-    const acceptBeforeAttestation = policy.action === "revoke" || policy.recoveryOnly;
-    if (acceptBeforeAttestation) await accept(checkpoint, signal);
     if (policy.action === "revoke") throw new DecryptionServiceError("ReleasePolicyRevoked");
     const count = policy.targets.length;
     const start = next % count;
@@ -81,8 +77,6 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
         releasePolicyExpiresAtMs: policyExpiry < certificateValidThroughMs ? policyExpiry : certificateValidThroughMs,
       };
       requireCurrentReleasePolicy(window, now);
-      if (!acceptBeforeAttestation) await accept(checkpoint, signal);
-      requireCurrentReleasePolicy(window, clock());
       next = index + 1;
       return {
         backend: { endpoint },

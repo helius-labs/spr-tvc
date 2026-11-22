@@ -202,11 +202,9 @@ function verifySignedPolicy(text: string, trust: NitroTrust) {
   const digest = nitroPolicySigningDigest(policy);
   const seen = new Set<string>();
   verifyQuorum(signatures, trust.keys, trust.threshold, digest, seen);
-  if (policy.action === "activate") {
-    verifyQuorum(custodySignatures, trust.custodyKeys, CUSTODY_QUORUM, nitroCustodySigningDigest(policy), seen);
-  } else if (!Array.isArray(custodySignatures) || custodySignatures.length !== 0) invalid();
+  verifyQuorum(custodySignatures, trust.custodyKeys, CUSTODY_QUORUM, nitroCustodySigningDigest(policy), seen);
   return {
-    policy, validFrom, expiresAt,
+    policy, signatures, custodySignatures, validFrom, expiresAt,
     checkpoint: {
       sequence: policy.sequence, digest: encodeLowerHex(digest),
       minimumCustodyEpoch: policy.minimumCustodyEpoch, recoveryOnly: policy.recoveryOnly,
@@ -244,7 +242,23 @@ export function verifyPublishedNitroPolicy([primaryText, mirrorText]: readonly [
   const agreed = primary.checkpoint.digest === mirror.checkpoint.digest;
   if (!agreed) requireSuccessor(mirror, primary);
   requireCurrent(primary, trust, now);
-  return { ...primary, agreed };
+  const { policy, checkpoint, validFrom, expiresAt } = primary;
+  return { policy, checkpoint, validFrom, expiresAt, agreed };
+}
+
+function requireSameTrustDomain(first: NitroTrust, second: NitroTrust): void {
+  if (first.network !== second.network || first.securityDomainId !== second.securityDomainId ||
+      first.noteSeedCommitment !== second.noteSeedCommitment ||
+      canonicalizeJsonValue(first.publications) !== canonicalizeJsonValue(second.publications)) invalid();
+}
+
+/** The independently distributed incoming pins start at the transition revision. */
+export function requireNitroTrustTransition(from: NitroTrust, to: NitroTrust, sequence: string): void {
+  requireSameTrustDomain(from, to);
+  if (to.minimumSequence !== sequence ||
+      decodeDecimalU64(sequence) <= decodeDecimalU64(from.minimumSequence) ||
+      decodeDecimalU64(to.minimumCustodyEpoch) < decodeDecimalU64(from.minimumCustodyEpoch) ||
+      (from.recoveryOnly && !to.recoveryOnly)) invalid();
 }
 
 /** Validate a publication before writing it against the exact observed S3 ETag. */
@@ -257,9 +271,7 @@ export function nextNitroPublication(
     return true;
   }
   const { policy } = parseStrictJson<{ policy: NitroPolicy }>(previous, POLICY_ENVELOPE_KEYS);
-  if (previousTrust.network !== trust.network || previousTrust.securityDomainId !== trust.securityDomainId ||
-      previousTrust.noteSeedCommitment !== trust.noteSeedCommitment ||
-      canonicalizeJsonValue(previousTrust.publications) !== canonicalizeJsonValue(trust.publications)) invalid();
+  requireSameTrustDomain(previousTrust, trust);
   const priorTrust = encodeLowerHex(nitroPolicySigningDigest(policy)) === next.checkpoint.digest ? trust : previousTrust;
   const prior = verifySignedPolicy(previous, priorTrust);
   if (prior.checkpoint.digest === next.checkpoint.digest) return false;

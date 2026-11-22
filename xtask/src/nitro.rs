@@ -30,7 +30,7 @@ pub(crate) struct Args {
     /// Pinned custody trust file for an activation.
     #[arg(long)]
     custody_trust: Option<PathBuf>,
-    /// Sign as a custody approver for an activation.
+    /// Sign as a custody approver.
     #[arg(long)]
     custody: bool,
 }
@@ -115,10 +115,6 @@ pub(crate) fn sign(args: Args) -> Result<()> {
     let mut manifest: SignedPolicy = serde_json::from_str(&text)?;
     validate_action(&manifest.policy)?;
     let activate = manifest.policy["action"] == "activate";
-    ensure!(
-        activate || (!args.custody && manifest.custody_signatures.is_empty()),
-        "revocation accepts release signatures only"
-    );
     let bytes = decode_lower_hex(&args.public_key)?;
     ensure!(
         bytes.len() == 65 && bytes[0] == 4,

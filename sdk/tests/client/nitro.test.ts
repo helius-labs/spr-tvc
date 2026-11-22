@@ -51,9 +51,9 @@ function signedPolicy(overrides: Partial<NitroPolicy> = {}) {
   return JSON.stringify({ policy, signatures: secrets.map((secret, index) => ({
     key: trust.keys[index],
     signature: encodeLowerHex(signP256Prehash(secret, nitroPolicySigningDigest(policy))),
-  })), custodySignatures: policy.action === "activate" ? custodySecrets.slice(0, 2).map((secret, index) => ({
+  })), custodySignatures: custodySecrets.slice(0, 2).map((secret, index) => ({
     key: trust.custodyKeys[index], signature: encodeLowerHex(signP256Prehash(secret, nitroCustodySigningDigest(policy))),
-  })) : [] });
+  })) });
 }
 
 function policyHeads(fetch = vi.fn(), first = signedPolicy(), second = first) {
@@ -141,6 +141,7 @@ afterEach(() => {
 
 describe("native client trust gate", () => {
   it("binds the bootstrap slots with the rest of the signed boot", async () => {
+    const policy = signedPolicy();
     const response = await attestedDiscovery().json();
     const binding = sha256(new TextEncoder().encode("SPR/native-nitro/discovery/v1" + canonicalizeJsonValue(response.boot)));
     const verified = vi.mocked(verifyNativeNitroEvidence);
@@ -148,10 +149,10 @@ describe("native client trust gate", () => {
       if (encodeLowerHex(received) !== encodeLowerHex(binding)) throw new Error("wrong attestation binding");
       return { proofKey: publicPair(secrets), certificateValidFromMs: 0n, certificateValidThroughMs: BigInt(Date.now()) + 60_000n };
     });
-    const fetch = policyHeads().mockResolvedValueOnce(Response.json({
+    const fetch = policyHeads(vi.fn(), policy).mockResolvedValueOnce(Response.json({
       ...response, boot: { ...response.boot, bootstrapSlots: [1, 3, 6] },
     }));
-    policyHeads(fetch).mockResolvedValueOnce(Response.json(response))
+    policyHeads(fetch, policy).mockResolvedValueOnce(Response.json(response))
       .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
     vi.stubGlobal("fetch", fetch);
     const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
@@ -225,18 +226,19 @@ describe("native client trust gate", () => {
     expect(fetch.mock.calls.filter(([url]) => !url.pathname.endsWith("/policy.json"))).toHaveLength(1);
   });
 
-  it("refuses a release-only activation before replica contact, checkpoint writes or wallet approval", async () => {
-    const activation = JSON.parse(signedPolicy());
-    const fetch = policyHeads(vi.fn(), JSON.stringify({ ...activation, custodySignatures: [] }));
-    const accept = vi.fn(async () => true);
-    vi.stubGlobal("fetch", fetch);
-    const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept } });
-    await expect(client.open(signer, proofs)).rejects.toThrow("ReleasePolicyInvalid");
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(verifyNativeNitroEvidence).not.toHaveBeenCalled();
-    expect(accept).not.toHaveBeenCalled();
-    expect(signMessages).not.toHaveBeenCalled();
-  });
+  it.each(["activate", "revoke"] as const)(
+    "refuses a release-only %s before replica contact, checkpoint writes or wallet approval", async action => {
+      const policy = JSON.parse(signedPolicy(action === "activate" ? {} : { action, targets: [], recoveryOnly: true }));
+      const fetch = policyHeads(vi.fn(), JSON.stringify({ ...policy, custodySignatures: [] }));
+      const accept = vi.fn(async () => true);
+      vi.stubGlobal("fetch", fetch);
+      const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept } });
+      await expect(client.open(signer, proofs)).rejects.toThrow("ReleasePolicyInvalid");
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(verifyNativeNitroEvidence).not.toHaveBeenCalled();
+      expect(accept).not.toHaveBeenCalled();
+      expect(signMessages).not.toHaveBeenCalled();
+    });
 
   it("reattests at certificate expiry before sending another operation", async () => {
     vi.useFakeTimers();
@@ -261,7 +263,7 @@ describe("native client trust gate", () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it("sends no operation if certificate validity ends during the checkpoint write", async () => {
+  it("requires a current certificate after the checkpoint write", async () => {
     vi.useFakeTimers();
     try {
       const store = checkpointStore();
@@ -275,7 +277,7 @@ describe("native client trust gate", () => {
           return store.accept(checkpoint);
         },
       } });
-      await expect(client.address(signer.address)).rejects.toMatchObject({ code: "ExpiredRequest" });
+      await expect(client.address(signer.address)).rejects.toMatchObject({ code: "BootProofUnverified" });
       expect(fetch).toHaveBeenCalledTimes(3);
     } finally { vi.useRealTimers(); }
   });
@@ -354,8 +356,8 @@ describe("native client trust gate", () => {
     const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept: stored } });
     await expect(client.open(signer, proofs)).rejects.toThrow("policy rollback or checkpoint");
     expect(stored).toHaveBeenCalledOnce();
-    expect(verifyNativeNitroEvidence).toHaveBeenCalledBefore(stored);
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(verifyNativeNitroEvidence).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(2);
     expect(fetch.mock.calls[0]?.[0].href).toBe(`https://release-test.s3.eu-north-1.amazonaws.com/spr-release/mainnet/${trust.securityDomainId}/policy.json`);
     expect(fetch.mock.calls[1]?.[0].href).toBe(`https://release-peer.s3.eu-west-1.amazonaws.com/spr-release/mainnet/${trust.securityDomainId}/policy.json`);
     for (const [index, publication] of trust.publications.entries()) {
@@ -393,23 +395,25 @@ describe("native client trust gate", () => {
     const accept = vi.fn(async () => true);
     const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept } });
     await expect(client.open(signer, proofs)).rejects.toThrow("no authorized Nitro replica");
-    expect(accept).not.toHaveBeenCalled();
+    expect(accept).toHaveBeenCalledOnce();
     expect(signMessages).not.toHaveBeenCalled();
   });
 
-  it("preserves the previous floor and sequence when a signed activation cannot attest", async () => {
+  it("keeps a newer signed floor across restart when its replicas cannot attest", async () => {
     const old = signedPolicy();
-    const targets = JSON.parse(old).policy.targets.map((target: NitroPolicy["targets"][number]) => ({ ...target, custodyEpoch: "2" }));
-    const fetch = policyHeads(vi.fn(), signedPolicy({ sequence: "3", minimumCustodyEpoch: "2", targets }))
+    const prior = (JSON.parse(old) as { policy: NitroPolicy }).policy;
+    const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(prior));
+    const targets = prior.targets.map(target => ({ ...target, custodyEpoch: "2" }));
+    const newer = signedPolicy({ sequence: "3", minimumCustodyEpoch: "2", targets, previousPolicyDigest });
+    const fetch = policyHeads(vi.fn(), newer, old)
       .mockResolvedValueOnce(new Response(null, { status: 503 }));
-    policyHeads(fetch, old).mockResolvedValueOnce(attestedDiscovery());
+    policyHeads(fetch, old);
     vi.stubGlobal("fetch", fetch);
-    const stored = vi.fn(async () => false);
-    const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept: stored } });
-    await expect(client.open(signer, proofs)).rejects.toThrow("no authorized Nitro replica");
-    expect(stored).not.toHaveBeenCalled();
-    await expect(client.open(signer, proofs)).rejects.toThrow("checkpoint unavailable");
-    expect(stored).toHaveBeenCalledWith(expect.objectContaining({ sequence: "2", minimumCustodyEpoch: "1" }));
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    await expect(createNitroDecryptionService({ trust }).open(signer, proofs)).rejects.toThrow("no authorized Nitro replica");
+    expect(await indexedDbNitroPolicyStore(trust).current()).toMatchObject({ sequence: "3", minimumCustodyEpoch: "2" });
+    await expect(createNitroDecryptionService({ trust }).open(signer, proofs)).rejects.toThrow("policy rollback");
+    expect(fetch.mock.calls.filter(([url]) => !url.pathname.endsWith("/policy.json"))).toHaveLength(1);
     expect(signMessages).not.toHaveBeenCalled();
   });
 

@@ -351,9 +351,11 @@ publication tools match its executable, release ID and PCR0–PCR3 to the
 registered serving image and verify its committed, active custody epoch.
 Give release signers, custody signers and both publishers scoped ledger read
 access using `reader-policy`. Distribute the custody trust file independently.
-For activation, collect release signatures and two custody signatures from the
-active custody approval roster. Each signer checks the exact proposed targets.
-For revocation, leave `custodySignatures` empty and omit `--custody-trust`.
+Collect the release quorum and two custody signatures on every policy.
+For activation, each signer checks the approved targets. For an emergency
+revocation, sign the target-free policy with both quorums and omit
+`--custody-trust`. Revocation needs access to the signing keys and publication
+buckets, even when the ledger and replicas are offline.
 
 Pin network, domain, seed commitment, minimum sequence, minimum custody epoch,
 release `keys` and `threshold`, the three `custodyKeys`, and `publications` with
@@ -361,12 +363,10 @@ two `{bucket, region, account}` entries in `wallet-trust.json`. The key lists
 must be disjoint and use uncompressed SEC1 hex. Export that format with
 `python3 "$nitro/approval.py" "$key_arn" --sec1`. List the primary bucket first.
 Times, sequence and epochs are canonical decimal strings. The wallet stores the
-sequence, policy digest, custody floor and recovery mode atomically. Normal
-activation requires a verified replica before the wallet advances the
-checkpoint. A recovery-only policy advances the checkpoint when the signatures
-verify, before any replica attests. An emergency `revoke`
-requires an empty target list and advances the checkpoint as soon as the wallet
-verifies both signed heads. Each publisher checks the predecessor, verifies
+sequence, policy digest, custody floor and recovery mode atomically once
+it verifies both signed heads, before contacting a replica. An activation
+still requires fresh replica attestation before use. A revocation has an
+empty target list. Each publisher checks the predecessor, verifies
 that every activation target attests, and writes against its observed ETag.
 Publish from the first listed bucket's AWS account, then mirror the exact signed
 file from the second account. The tool checks the full signed file at both
@@ -393,15 +393,19 @@ ARNs. Custodian replacements use a measured rotation.
    before the operator cutover and incoming signatures after it. Keep the domain,
    bucket pins and custody floor, and allow time to complete the rollout before
    the current wallet policy expires.
-2. Publish that signed file to both buckets using the outgoing trust. Confirm
-   both copies verify under the incoming trust before distributing the new pins.
-   Pin the transition revision as the minimum sequence in the new trust bundle.
+2. Pin the transition revision as `minimumSequence` in the incoming trust.
+   Publish the same signed file to both buckets using the outgoing trust and
+   pass `--next-trust "$incoming_trust"` to each publication. The tool checks
+   both sets of pins before writing. Distribute the incoming trust after both
+   copies are in place.
 3. After wallets adopt the new trust, publish the next revision with the incoming
    quorum and retire the outgoing keys.
 
-If the outgoing quorum is unavailable or compromised, distribute new wallet
-trust independently and publish a successor signed by the incoming quorum. Use
-`--previous-trust` to verify the published predecessor. Wallets need the new
-pins and both updated bucket heads to resume using the service.
+If the outgoing quorum is unavailable or compromised, independently
+distribute incoming trust pinned to the successor's sequence. Publish under
+that trust with `--emergency-from "$outgoing_trust"` to authenticate the
+existing predecessor. The successor needs both quorums under the incoming
+pins. Wallets resume once they use the new trust and both buckets publish
+the successor.
 
 [Security model](../../NITRO.md) · [Test invariants](../../../tests/INVARIANTS.md) · [Audit handoff](../../../tests/AUDIT.md)
