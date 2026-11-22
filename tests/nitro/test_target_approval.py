@@ -123,8 +123,10 @@ class TargetApprovalTests(unittest.TestCase):
         self.fail(operation)
 
     def wrap(self):
-        return release(self.trust, self.approval, self.build, 1, 7443, self.authorization,
-                       review=self.build / "review.json")
+        output = self.build / "share.kms"
+        release(self.trust, self.approval, self.build, 1, 7443, self.authorization, output,
+                review=self.build / "review.json")
+        return output.read_bytes()
 
     def test_quorum_and_installed_policy_checked_before_opening_one_share(self):
         self.assertEqual(self.wrap(), b"c" * 256)
