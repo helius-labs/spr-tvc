@@ -52,6 +52,7 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-44 | A sealed target policy could unwrap shares on any parent sharing the approved IAM role. | Bind both KMS and host IAM to PCR4, the measurement of the registered EC2 instance ID. Signers check that exact parent in EC2. [KMS policy](nitro/test_kms_policy.py) · [Target approval](nitro/test_target_approval.py) |
 | N-45 | Wallet and rotation attestation could substitute a sibling host using the same release and role. | The policy and registered rotation capture also require the approved PCR4. [Wallet evidence](../sdk/tests/attestation/nitro-evidence.test.ts) · [Rotation and registry](nitro/test_custody_ledger.py) |
 | N-46 | Disabling the old keys could leave a reconstructed seed on a still-running old parent. | Retirement requires a replacement on a separate registered parent, and its read-only report requires EC2 termination of all old registered serving and rotation parents before and after observing a later replacement boot. [Retirement tests](nitro/test_custody_ledger.py) |
+| N-47 | EC2 soon stops listing terminated instances, so the shutdown report could fail after an otherwise safe retry. | When EC2 has no state, require the latest AWS Config item to record deletion of the exact managed instance in the pinned account and region. Running, stopped and unverified parents still fail. [Termination history tests](nitro/test_target_approval.py) |
 
 ## Remaining qualification and review
 

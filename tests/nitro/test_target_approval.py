@@ -12,11 +12,12 @@ from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import sha256
 from custody_ledger import TARGET_APPROVAL
-from deployment import file_digest, main, require_host_state, target
+from deployment import HostUnobserved, file_digest, main, require_host_state, target
 from kms_policy import recovery_policy
 from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, schedule, sign
 from provenance import describe
 from relay_wrap import LABEL, release
+from retirement import require_terminated_parent
 
 PINS = {f"PCR{index}": byte * 48 for index, byte in enumerate(("12", "23", "34"))}
 RELAY_HOST = "arn:aws:iam::000000000009:role/relay"
@@ -185,6 +186,35 @@ class TargetApprovalTests(unittest.TestCase):
             describe.return_value = {"Reservations": changed}
             with self.assertRaises(ValueError):
                 require_host_state(self.manifest, "running", "host-reader")
+
+    @patch("retirement.aws")
+    @patch("retirement.require_host_state")
+    def test_retirement_uses_a_positive_config_deletion_for_an_unlisted_host(self, describe, config):
+        capture = "2026-11-22T06:00:00+00:00"
+        deletion = {"accountId": "000000000007", "awsRegion": REGION, "resourceId": INSTANCE,
+                    "resourceType": "AWS::EC2::Instance", "configurationItemStatus": "ResourceDeleted",
+                    "configurationItemCaptureTime": capture}
+        config.return_value = {"configurationItems": [deletion]}
+        describe.side_effect = ValueError("parent remains running")
+        with self.assertRaisesRegex(ValueError, "parent remains running"):
+            require_terminated_parent(self.manifest, "host-reader")
+        config.assert_not_called()
+        describe.side_effect = HostUnobserved("instance is no longer listed")
+        self.assertEqual(require_terminated_parent(self.manifest, "host-reader"), {
+            "account": "000000000007", "region": REGION, "instanceId": INSTANCE,
+            "state": "terminated", "source": "aws-config", "capturedAt": capture,
+        })
+        config.assert_called_once_with(REGION, "configservice", "get-resource-config-history", [
+            "--resource-type", "AWS::EC2::Instance", "--resource-id", INSTANCE,
+            "--chronological-order", "Reverse", "--limit", "1", "--no-paginate",
+        ], profile="host-reader")
+        for changed in ([], [{**deletion, "accountId": "000000000008"}], [{**deletion, "awsRegion": "us-east-1"}],
+                        [{**deletion, "resourceId": "i-1234567890abcdef1"}], [{**deletion, "resourceType": "Example::Custom::Host"}],
+                        [{**deletion, "configurationItemStatus": "ResourceDeletedNotRecorded"}],
+                        [{**deletion, "configurationItemStatus": "OK"}, deletion]):
+            config.return_value = {"configurationItems": changed}
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                require_terminated_parent(self.manifest, "host-reader")
 
     def test_host_policy_command_requires_the_registered_quorum_approved_target(self):
         trust_path, target_path = self.build / "trust.json", self.build / "target.json"

@@ -11,7 +11,7 @@ from pathlib import Path
 from subprocess import run as run_command
 
 from approval import (
-    MAX_DOCUMENT_BYTES, ROLE_ARN, add_approval, approval_keys, approval_roster, arn, canonical, check_approvals,
+    MAX_DOCUMENT_BYTES, ROLE_ARN, add_approval, approval_keys, approval_roster, arn, aws, canonical, check_approvals,
     epoch_number, fields, hex_digest, kms,
     parse_json, read_json, require_kms_key, sha256,
 )
@@ -22,7 +22,7 @@ from custody_ledger import (
     require_publication_roster, retirement_bootstrap, retirement_recovery, retirement_target, sign_share_recovery,
     target_attestation, write_once,
 )
-from deployment import require_host_state
+from deployment import HostUnobserved, require_host_state
 from kms_policy import RSA_KEYS, key_policy
 from relay import custody_recovery_policy
 
@@ -214,6 +214,33 @@ def inspect_inventory(inventory, check_inactive, **options):
     return {"retirementRole": role, "keys": result}
 
 
+def require_terminated_parent(target, profile):
+    try:
+        return require_host_state(target, "terminated", profile)
+    except HostUnobserved:
+        # EC2 drops terminated instances from its inventory. Require a positive
+        # deletion record for the exact managed resource from AWS Config.
+        pass
+    account = arn(ROLE_ARN, target["hostRole"])[1]
+    region, instance = target["hostRegion"], target["instanceId"]
+    resource_type = "AWS::EC2::Instance"
+    rows = aws(region, "configservice", "get-resource-config-history", [
+        "--resource-type", resource_type, "--resource-id", instance,
+        "--chronological-order", "Reverse", "--limit", "1", "--no-paginate",
+    ], profile=profile)["configurationItems"]
+    if len(rows) != 1:
+        raise ValueError(f"missing AWS Config termination evidence for {account}/{region}/{instance}")
+    row = rows[0]
+    capture_time = row.get("configurationItemCaptureTime")
+    if (row.get("accountId") != account or row.get("awsRegion") != region or
+            row.get("resourceId") != instance or row.get("resourceType") != resource_type or
+            row.get("configurationItemStatus") != "ResourceDeleted" or
+            not isinstance(capture_time, str) or not capture_time):
+        raise ValueError(f"unverified AWS Config termination for {account}/{region}/{instance}")
+    return {"account": account, "region": region, "instanceId": instance, "state": "terminated",
+            "source": "aws-config", "capturedAt": capture_time}
+
+
 def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_seconds):
     if len(profiles) != 6 or len(set(profiles)) != 6 or wait_seconds <= 0:
         raise ValueError("provide six distinct read-only profiles in slot order and a positive wait time")
@@ -233,7 +260,7 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
                  for target in targets}
         if set(host_profiles) != {account for account, _, _ in hosts}:
             raise ValueError("provide one host inspection profile for each old parent account")
-        terminated = [require_host_state(hosts[host], "terminated", host_profiles[host[0]]) for host in sorted(hosts)]
+        terminated = [require_terminated_parent(hosts[host], host_profiles[host[0]]) for host in sorted(hosts)]
         return slots, terminated
 
     inspect_all()

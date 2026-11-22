@@ -270,10 +270,12 @@ accounts. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
    inventory, schedules approved keys, and repeats `inspect --check-inactive`.
    Scheduling immediately disables cryptographic use. Canceling leaves the
    key disabled, and the sealed policy grants no permission to re-enable it.
-   Run the read-only verification while AWS still reports the terminated
-   instances and the old key metadata. Give it a KMS inspection profile for
-   each old custody account and an EC2 inspection profile for each old parent
-   account. Use an operator host with a synchronized clock.
+   Run the read-only verification while AWS still reports the old key
+   metadata. Give it a KMS inspection profile for each old custody account
+   and an EC2 inspection profile for each old parent account. Enable AWS
+   Config recording of `AWS::EC2::Instance` before commissioning, and give
+   each host inspection profile `config:GetResourceConfigHistory` as well.
+   Use an operator host with a synchronized clock.
 
    ```sh
    python3 "$nitro/retirement.py" trust.json verify-retired wallet-trust.json 1 \
@@ -284,11 +286,13 @@ accounts. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
    After it verifies that the old keys are inactive and the registered
    parents terminated, cold-boot a registered replacement with exactly three
    slots. The verifier waits for that later attested boot, checks the six keys
-   used by its slots, then checks the old keys and parents again. If an
-   instance is missing from EC2, the verifier refuses the report. AWS
-   usually lists terminated instances for less than an hour. Archive the
+   used by its slots, then checks the old keys and parents again. AWS
+   usually lists terminated instances for less than an hour. When EC2 cannot
+   report a parent, the verifier requires that the latest AWS Config record
+   for that exact managed EC2 instance is `ResourceDeleted`. Archive the
    result with the on-chain canary, old signed receipt and public trust pins.
    [EC2 instance visibility](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeInstances.html)
+   · [AWS Config history](https://docs.aws.amazon.com/config/latest/APIReference/API_GetResourceConfigHistory.html)
    · [KMS key states](https://docs.aws.amazon.com/kms/latest/developerguide/key-state.html)
 
 ## Share release

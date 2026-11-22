@@ -102,7 +102,9 @@ Use replacement parents separate from those registered for the old epoch.
 The read-only retirement verifier checks the old key inventory in all six
 accounts and requires each registered old serving or rotation parent to be
 terminated. It then checks for a later attested replacement boot and repeats
-the old key and parent checks. Record the on-chain canary with the report.
+the old key and parent checks. When EC2 no longer lists a parent, the
+verifier requires its AWS Config deletion record for the exact managed EC2
+resource. Record the on-chain canary with the report.
 The report concerns the registered targets and their sealed policies. A
 seed disclosed before retirement requires a new seed domain.
 

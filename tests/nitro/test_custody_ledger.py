@@ -706,6 +706,12 @@ class CustodyLedgerTests(unittest.TestCase):
         publish(self.trust, self.sign(self.document(1)))
         rotated, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
         publish(self.trust, self.sign(rotated))
+        other_instance = "i-1234567890abcdef2"
+        other_host = {**self.replacement_target(), "mode": "serve", "releaseId": "old-service", "custodyEpoch": "1",
+                      "receiptSha256": sha256(load_epoch(self.trust, "1")[1]), "instanceId": other_instance,
+                      "hostRole": "arn:aws:iam::000000000010:role/host", "hostRegion": "eu-west-1",
+                      "wrappingKeys": [key(i, 31) for i in range(1, 7)]}
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, other_host))
         replacement = self.replacement_target()
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
         with (patch("retirement.qualified_policy", return_value=self.qualification(replacement)),
@@ -717,10 +723,16 @@ class CustodyLedgerTests(unittest.TestCase):
         profiles = [f"old-slot-{index}" for index in range(1, 7)]
         inventory = {arn: (profile, policy) for index, profile in enumerate(profiles, 1)
                      for arn, policy in key_inventory(self.trust, "1", index)[1].items()}
-        host_profiles = {"000000000007": "old-parents"}
+        host_profiles = {"000000000007": "old-rotation", "000000000010": "old-service"}
         active = key(6, 21)
-        parent = {"account": "000000000007", "region": REGION, "instanceId": INSTANCE, "state": "terminated"}
+        parents = [{"account": "000000000007", "region": REGION, "instanceId": INSTANCE, "state": "terminated"},
+                   {"account": "000000000010", "region": "eu-west-1", "instanceId": other_instance, "state": "terminated"}]
         visited = []
+
+        def require_host_state(manifest, state, profile):
+            parent, = [item for item in parents if item["instanceId"] == manifest["instanceId"]]
+            self.assertEqual((state, profile), ("terminated", host_profiles[parent["account"]]))
+            return parent
 
         def kms(arn, operation, args=(), *, profile):
             expected_profile, policy = inventory[arn]
@@ -742,14 +754,14 @@ class CustodyLedgerTests(unittest.TestCase):
         self.trust["walletTrustSha256"] = hashlib.sha256(wallet.read_bytes()).hexdigest()
         with (patch("retirement.kms", side_effect=kms),
               patch("retirement.run_command") as query, patch("retirement.time.sleep"),
-              patch("retirement.require_host_state", return_value=parent) as host_state,
+              patch("retirement.require_host_state", side_effect=require_host_state) as host_state,
               patch("retirement.require_recovery_quorum") as quorum):
             with self.assertRaisesRegex(ValueError, active):
                 verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
             query.assert_not_called()
             active = None
             with self.assertRaisesRegex(ValueError, "provide one host inspection profile"):
-                verify_retired(self.trust, wallet, "1", profiles, {}, 5)
+                verify_retired(self.trust, wallet, "1", profiles, {"000000000007": "old-rotation"}, 5)
             with patch("retirement.require_host_state", side_effect=ValueError("old parent remains running")):
                 with self.assertRaisesRegex(ValueError, "old parent remains running"):
                     verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
@@ -769,9 +781,9 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertEqual(len(visited), 2 * len(inventory))
             self.assertEqual(report["retirementSha256"], sha256(retired))
             self.assertEqual(report["retirementObservedAtMs"], str(self.booted_at_ms))
-            self.assertEqual(report["terminatedParents"], [parent])
-            self.assertEqual(host_state.call_count, 2)
-            host_state.assert_called_with(ANY, "terminated", "old-parents")
+            self.assertEqual(report["terminatedParents"], parents)
+            self.assertEqual(host_state.call_count, 4)
+            host_state.assert_called_with(other_host, "terminated", "old-service")
             self.assertEqual(report["replacement"]["replacementBootstrap"], fresh)
             self.assertEqual({row["keyArn"] for slot in report["slots"] for row in slot["keys"]}, set(inventory))
             quorum.assert_called_once()

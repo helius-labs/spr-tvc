@@ -28,18 +28,27 @@ def host_policy(manifest):
     ]}
 
 
+class HostUnobserved(ValueError):
+    """EC2 did not return state for the requested instance."""
+
+
 def require_host_state(manifest, state, profile):
     account = arn(ROLE_ARN, manifest["hostRole"])[1]
     region, instance = manifest["hostRegion"], manifest["instanceId"]
-    reservations = aws(region, "ec2", "describe-instances", ["--instance-ids", instance], profile=profile)["Reservations"]
+    try:
+        reservations = aws(region, "ec2", "describe-instances", ["--instance-ids", instance], profile=profile)["Reservations"]
+    except (ValueError, subprocess.TimeoutExpired) as error:
+        raise HostUnobserved(f"EC2 could not describe {account}/{region}/{instance}") from error
+    if not reservations:
+        raise HostUnobserved(f"missing EC2 evidence for {account}/{region}/{instance}")
     if len(reservations) != 1 or reservations[0].get("OwnerId") != account:
-        raise ValueError(f"missing EC2 evidence for {account}/{region}/{instance}")
+        raise ValueError(f"unexpected EC2 reservation for {account}/{region}/{instance}")
     instances = reservations[0].get("Instances", [])
     if (len(instances) != 1 or instances[0].get("InstanceId") != instance or
             instances[0].get("State", {}).get("Name") != state or
             (state == "running" and instances[0].get("EnclaveOptions", {}).get("Enabled") is not True)):
         raise ValueError(f"expected {account}/{region}/{instance} to be {state}")
-    return {"account": account, "region": region, "instanceId": instance, "state": state}
+    return {"account": account, "region": region, "instanceId": instance, "state": state, "source": "ec2"}
 
 
 def target_binding(manifest):
