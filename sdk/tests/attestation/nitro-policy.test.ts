@@ -279,6 +279,20 @@ describe("native Nitro release policy", () => {
     expect(advancesNitroPolicy(first, agreed({ ...first, digest: next.digest }, binding.previousPolicyDigest))).toBe(false);
   });
 
+  it("refuses to advance from a malformed persisted checkpoint", () => {
+    const first = verifyNitroPolicy(manifest(binding, 0, 1), trust, now).checkpoint;
+    const next = { ...first, sequence: "12", digest: "aa".repeat(32) };
+    const update = agreed(next, "bb".repeat(32));
+    expect(advancesNitroPolicy(first, update)).toBe(true);
+    for (const malformed of [
+      null, { ...first, sequence: "0" }, { ...first, sequence: "09" },
+      { ...first, minimumCustodyEpoch: "0" }, { ...first, recoveryOnly: 0 },
+      { ...first, digest: "00".repeat(32) }, { ...first, digest: "damaged" },
+    ]) {
+      expect(advancesNitroPolicy(malformed as unknown as NitroPolicyCheckpoint, update)).toBe(false);
+    }
+  });
+
   it("rejects an independently signed fork at and directly after the shipped revision", () => {
     const fork = { ...binding, targets: binding.targets.map(target => ({ ...target, releaseId: "other" })) };
     const disputed = manifest(fork, 0, 1);

@@ -106,6 +106,7 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-98 | The TypeScript SDK stopped an unsigned key lookup when another wallet instance advanced the shared checkpoint. The caller had to repeat the lookup to discover the replacement or revocation. | Re-read both signed heads once for an unsigned lookup. Use an attested replacement, surface revocation, or fail if the publications roll back. Discard a superseded signed approval. [Native client tests](../sdk/tests/client/nitro.test.ts) |
 | N-99 | The TypeScript SDK could ask for wallet approval of an output with a malformed slot, cipher label or salt. | Validate all requested items before requesting approval for any batch. [Key handle tests](../sdk/tests/client/keys.test.ts) |
 | N-100 | The TypeScript wallet and release probe accepted a 32-byte nullifier key outside the BN254 scalar field. | Share one public-key decoder and reject out-of-field values before using recipient keys or qualifying a replica. [Wallet and probe tests](../sdk/tests/client/nitro.test.ts) |
+| N-101 | A malformed TypeScript checkpoint could let a later signed revision bypass the stored rollback anchor. An IndexedDB record holding `undefined` looked absent. | Validate stored checkpoints before comparing revisions and distinguish empty storage from an invalid record. [Policy tests](../sdk/tests/attestation/nitro-policy.test.ts) · [IndexedDB tests](../sdk/tests/attestation/nitro-checkpoint.test.ts) · [SQLite tests](../example/tests/nitro.test.ts) |
 
 ## Remaining qualification and review
 

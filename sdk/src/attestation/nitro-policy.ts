@@ -72,6 +72,7 @@ export type NitroPolicyUpdate = readonly [primary: NitroPolicyRevision, mirror: 
 
 /**
  * Atomic durable compare-and-set scoped to the pinned network and security domain.
+ * Return undefined from current only when no checkpoint is stored.
  * Run advancesNitroPolicy inside the write transaction and persist the primary checkpoint.
  */
 export type NitroPolicyStore = {
@@ -102,6 +103,18 @@ function invalid(): never {
 
 function checkDigest(value: unknown, length: number): void {
   if (typeof value !== "string" || !requireHex(value, length).some(byte => byte !== 0)) invalid();
+}
+
+export function isValidNitroPolicyCheckpoint(value: unknown): value is NitroPolicyCheckpoint {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const checkpoint = value as NitroPolicyCheckpoint;
+  try {
+    checkDigest(checkpoint.digest, 32);
+    return typeof checkpoint.recoveryOnly === "boolean" && decodeDecimalU64(checkpoint.sequence) > 0n &&
+      decodeDecimalU64(checkpoint.minimumCustodyEpoch) > 0n;
+  } catch {
+    return false;
+  }
 }
 
 export function nitroEndpoint(text: string, network: Network): URL {
@@ -334,6 +347,7 @@ function followsCheckpoint(
 
 /** Checks both authenticated heads against the checkpoint inside the atomic write. */
 export function advancesNitroPolicy(current: NitroPolicyCheckpoint | undefined, [primary, mirror]: NitroPolicyUpdate): boolean {
+  if (current !== undefined && !isValidNitroPolicyCheckpoint(current)) return false;
   return followsCheckpoint(current, primary) &&
     (!current || decodeDecimalU64(mirror.checkpoint.sequence) < decodeDecimalU64(current.sequence) ||
       followsCheckpoint(current, mirror));

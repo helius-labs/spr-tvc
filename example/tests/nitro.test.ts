@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { NitroPolicy, NitroTarget, NitroPolicyCheckpoint } from "@heliuslabs/spr-decryption-service/nitro";
 import { acceptedReplacementPolicy, checkpointStore, nativeDevnet, parseRetirementReport, requireOriginalPolicy } from "../nitro.js";
@@ -100,6 +101,30 @@ test("native rehearsal checkpoints survive closing the database and exclude earl
       unrelated.close();
     }
   } finally {
+    await rm(directory, { recursive: true });
+  }
+});
+
+test("native rehearsal refuses to replace a corrupt checkpoint", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "spr-nitro-checkpoint-"));
+  const path = join(directory, "wallet.sqlite");
+  const trust = { network: "devnet" as const, securityDomainId: "11".repeat(32) };
+  const checkpoint = { sequence: "3", digest: "33".repeat(32), recoveryOnly: false, minimumCustodyEpoch: "1" };
+  const { store, close } = checkpointStore(path, trust);
+  try {
+    assert.equal(await store.accept(agreed(checkpoint, "22".repeat(32))), true);
+    const db = new DatabaseSync(path);
+    try {
+      db.prepare("UPDATE checkpoints SET digest = ?").run("00".repeat(32));
+    } finally {
+      db.close();
+    }
+    const update = agreed({ ...checkpoint, sequence: "5" }, "44".repeat(32));
+    await assert.rejects(store.current(), { code: "ReleasePolicyInvalid" });
+    await assert.rejects(store.accept(update), { code: "ReleasePolicyInvalid" });
+    await assert.rejects(store.current(), { code: "ReleasePolicyInvalid" });
+  } finally {
+    close();
     await rm(directory, { recursive: true });
   }
 });

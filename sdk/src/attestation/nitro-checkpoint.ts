@@ -1,7 +1,7 @@
-import { decodeDecimalU64 } from "../protocol/decimal.js";
 import { DecryptionServiceError } from "../protocol/error.js";
-import { requireHex } from "../protocol/hex.js";
-import { advancesNitroPolicy, type NitroPolicyCheckpoint, type NitroPolicyStore, type NitroTrust } from "./nitro-policy.js";
+import {
+  advancesNitroPolicy, isValidNitroPolicyCheckpoint, type NitroPolicyCheckpoint, type NitroPolicyStore, type NitroTrust,
+} from "./nitro-policy.js";
 
 const DATABASE = "spr-nitro-policy";
 const CHECKPOINTS = "checkpoints";
@@ -10,9 +10,11 @@ function storageError() {
   return new DecryptionServiceError("ReleasePolicyInvalid", "checkpoint storage unavailable");
 }
 
-function validate(value: NitroPolicyCheckpoint): void {
-  if (typeof value.recoveryOnly !== "boolean" || decodeDecimalU64(value.sequence) === 0n || decodeDecimalU64(value.minimumCustodyEpoch) === 0n ||
-      !requireHex(value.digest, 32).some(byte => byte !== 0)) throw storageError();
+function storedCheckpoint(record: IDBCursorWithValue | null): NitroPolicyCheckpoint | undefined {
+  if (record === null) return undefined;
+  const value: unknown = record.value;
+  if (!isValidNitroPolicyCheckpoint(value)) throw storageError();
+  return value;
 }
 
 /** The browser commits the compare-and-set across all tabs before accepting it. */
@@ -35,13 +37,11 @@ export function indexedDbNitroPolicyStore(trust: Pick<NitroTrust, "network" | "s
       return await new Promise<T>((resolve, reject) => {
         const tx = db.transaction(CHECKPOINTS, mode, { durability: "strict" });
         const records = tx.objectStore(CHECKPOINTS);
-        const request = records.get(key);
+        const request = records.openCursor(key);
         let result: T;
         request.onsuccess = () => {
           try {
-            const current = request.result as NitroPolicyCheckpoint | undefined;
-            if (current !== undefined) validate(current);
-            result = run(current, records);
+            result = run(storedCheckpoint(request.result), records);
           } catch {
             tx.abort();
           }
@@ -58,7 +58,7 @@ export function indexedDbNitroPolicyStore(trust: Pick<NitroTrust, "network" | "s
     current: () => transact("readonly", current => current),
     async accept(update) {
       const next = update[0].checkpoint;
-      validate(next);
+      if (!isValidNitroPolicyCheckpoint(next)) throw storageError();
       return transact("readwrite", (current, records) => {
         if (!advancesNitroPolicy(current, update)) return false;
         if (current?.sequence !== next.sequence) records.put(next, key);

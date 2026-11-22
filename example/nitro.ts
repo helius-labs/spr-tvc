@@ -6,6 +6,7 @@ import { DecryptionServiceError } from "@heliuslabs/spr-decryption-service";
 import {
   advancesNitroPolicy, createNitroDecryptionService, type NitroPolicyCheckpoint, type NitroPolicyStore, type NitroTrust,
 } from "@heliuslabs/spr-decryption-service/nitro";
+import { isValidNitroPolicyCheckpoint } from "../sdk/src/attestation/nitro-policy.js";
 import { readPublishedNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
 import { decodeDecimalU64 } from "../sdk/src/protocol/decimal.js";
 import { DecryptionServiceError as PolicyReadError } from "../sdk/src/protocol/error.js";
@@ -29,8 +30,13 @@ export function checkpointStore(path: string, trust: Pick<NitroTrust, "network" 
     ON CONFLICT(scope) DO UPDATE SET sequence = excluded.sequence, digest = excluded.digest,
       minimumCustodyEpoch = excluded.minimumCustodyEpoch, recoveryOnly = excluded.recoveryOnly`);
   function current(): NitroPolicyCheckpoint | undefined {
-    const row = read.get(scope) as (Omit<NitroPolicyCheckpoint, "recoveryOnly"> & { recoveryOnly: number }) | undefined;
-    return row && { ...row, recoveryOnly: row.recoveryOnly === 1 };
+    const row = read.get(scope);
+    if (row === undefined) return undefined;
+    const checkpoint = { ...row, recoveryOnly: row.recoveryOnly === 1 };
+    if ((row.recoveryOnly !== 0 && row.recoveryOnly !== 1) || !isValidNitroPolicyCheckpoint(checkpoint)) {
+      throw new DecryptionServiceError("ReleasePolicyInvalid", "checkpoint storage unavailable");
+    }
+    return checkpoint;
   }
   const store: NitroPolicyStore = {
     async current() { return current(); },

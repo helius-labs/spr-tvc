@@ -57,4 +57,26 @@ describe("browser Nitro checkpoints", () => {
     vi.stubGlobal("indexedDB", undefined);
     expect(() => indexedDbNitroPolicyStore(scope)).toThrow("checkpoint storage unavailable");
   });
+
+  it("distinguishes an empty browser store from a record with no usable value", async () => {
+    const store = indexedDbNitroPolicyStore(scope);
+    expect(await store.accept(agreed(first, null))).toBe(true);
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("spr-nitro-policy");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction("checkpoints", "readwrite");
+        tx.objectStore("checkpoints").put(undefined, `${scope.network}/${scope.securityDomainId}`);
+        tx.oncomplete = () => resolve();
+        tx.onabort = () => reject(tx.error);
+      });
+    } finally {
+      db.close();
+    }
+    await expect(store.current()).rejects.toMatchObject({ code: "ReleasePolicyInvalid" });
+    await expect(store.accept(agreed())).rejects.toMatchObject({ code: "ReleasePolicyInvalid" });
+  });
 });

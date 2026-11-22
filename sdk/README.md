@@ -58,6 +58,7 @@ exact policy, including the ordered buckets, regions and owners. The SDK
 requires that pair to match its pins in both heads. Browsers store the
 checkpoint in IndexedDB.
 Other runtimes supply a durable `policyStore` scoped to network and domain.
+Its `current()` method rejects malformed records and returns `undefined` for an empty store.
 Its `accept(update)` method applies `advancesNitroPolicy` to both authenticated
 heads inside the write transaction and saves `update[0].checkpoint`.
 The wallet requires an exact match at the checkpoint sequence and an exact
