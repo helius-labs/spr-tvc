@@ -284,10 +284,11 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
 
    The verifier matches both frozen buckets against the independently retained
    checkpoint. It verifies the receipt chain, target registrations and
-   retirement proofs using the exact checkpointed records. It checks the new
-   destination's records, replication rule and bucket protections. After it
-   succeeds, install and verify the writable policy on the recovered bucket
-   and distribute the recovered trust file. While the original bucket is
+   retirement proofs using the exact checkpointed records. After verifying the
+   history it rechecks the replication rule, each bucket's object versions,
+   the new replica's protections, and the write denies on the original and
+   recovered buckets. After it succeeds, install and verify the writable
+   policy on the recovered bucket and distribute the recovered trust file. While the original bucket is
    unreachable or its write deny is unverified, keep custody changes suspended.
 
    AWS Backup creates new object creation dates and version IDs on restore.
@@ -733,8 +734,15 @@ current through the last read of both policy buckets.
 For mainnet payment activation, give signers, the primary publisher, and wallet pin
 verifiers `kms:DescribeKey` on the registered recovery and wrapping keys.
 Each target needs three slots with both keys enabled in the same account.
-A warm enclave still needs that quorum to accept new payments. Recovery-only
-policy publication can proceed during a key outage. [Cross-account KMS permissions](https://docs.aws.amazon.com/kms/latest/developerguide/key-policy-modifying-external-accounts.html)
+A warm enclave still needs that quorum to accept new payments. Add
+`--replica-profile "$replica_read_profile"` to `nitro-sign`, primary publication
+and `--check-wallet-trust` for a mainnet payment policy. The read-only profile
+must be in the custody replica owner's account. It checks versioning, ownership,
+public access blocks, lifecycle rules and the installed replication write policy.
+Use the same flag with a pinned devnet replica to rehearse these checks.
+Recovery-only activation can proceed during a key or replica inspection outage
+while the required records remain readable.
+[Cross-account KMS permissions](https://docs.aws.amazon.com/kms/latest/developerguide/key-policy-modifying-external-accounts.html) · [S3 bucket policy permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketPolicy.html)
 Publish from the first listed bucket's AWS account, then mirror the exact signed
 file from the second account. A new activation requires the same signed
 predecessor file at both buckets. Sign a new revision to change the primary's

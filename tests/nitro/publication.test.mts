@@ -317,8 +317,10 @@ test("rechecks live replica evidence after the final custody read", async contex
   let remainingAfterCustody = 30_000;
   const options = {
     custodyTrust: "custody.json",
+    replicaProfile: "replica-read",
     async run(command: string, args: string[]) {
       if (command === "python3") {
+        assert.deepEqual(args.slice(5), ["--replica-profile", "replica-read"]);
         remaining = remainingAfterCustody;
         return { stdout: JSON.stringify({ custodyKeys: trust.custodyKeys, nextCutover: null }) };
       }

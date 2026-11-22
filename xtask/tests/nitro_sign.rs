@@ -35,6 +35,24 @@ fn refuses_to_sign_without_pinned_publications() {
 }
 
 #[test]
+fn accepts_the_read_only_replica_profile_for_payment_activation() {
+    let parsed = Args::try_parse_from([
+        "nitro-sign",
+        "policy.json",
+        "--key",
+        "fixture",
+        "--public-key",
+        "fixture",
+        "--custody-trust",
+        "trust.json",
+        "--replica-profile",
+        "replica-read",
+    ])
+    .unwrap();
+    assert_eq!(parsed.replica_profile.as_deref(), Some("replica-read"));
+}
+
+#[test]
 fn kms_signatures_are_pinned_to_the_key_algorithm_and_exact_manifest() {
     let policy = serde_json::json!({"network":"devnet","sequence":"1"});
     let secret = SigningKey::from_bytes(&[1; 32].into()).unwrap();

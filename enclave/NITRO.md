@@ -291,9 +291,11 @@ a proof from that same boot and pass the wallet's X25519 and BN254 key checks.
 Wallet trust distribution and retirement use
 the same probe. A planned transition matches the incoming pins. The publisher
 rechecks the peer's signed file, the registered targets, epoch closure and
-the active custody roster after probing. It submits the conditional write with
-more than 30 seconds until policy expiry, replica probe expiry, or custody
-roster cutover. A revocation has no targets. Its sequence, custody floor and
+the active custody roster after probing. Payment activation on mainnet also
+checks the pinned replica's installed protections using a read-only identity
+in the replica account. Devnet can rehearse the same checks. The primary
+submits the conditional write with more than 30 seconds until policy expiry,
+replica probe expiry, or custody roster cutover. A revocation has no targets. Its sequence, custody floor and
 recovery flag can permanently change wallet state, so it also requires both quorums.
 Revocation can proceed while the custody ledger and replicas are offline.
 S3 applies the predecessor's ETag condition to the bucket being written.

@@ -350,12 +350,32 @@ class LedgerReplicationTests(unittest.TestCase):
             with patch.dict(names, {SOURCE_BUCKET: ["1.json", "retired/1.json", "retired/2.json"]}):
                 with self.assertRaisesRegex(ValueError, "differs from the independently pinned checkpoint"):
                     verify()
-            with patch("custody_ledger.installed_ledger_policy", side_effect=[
-                policies[SOURCE_BUCKET], policies[DESTINATION_BUCKET], policies[DESTINATION_BUCKET],
-                replica_policy, {"Statement": []},
-            ]):
+            def source_thaws_during_checkpoint(ledger, *_args, **_options):
+                if ledger == source_scope:
+                    policies[SOURCE_BUCKET] = {"Statement": []}
+
+            with (patch.dict(policies),
+                  patch("custody_archive.verify_ledger_records", side_effect=source_thaws_during_checkpoint)):
                 with self.assertRaisesRegex(ValueError, "requires the frozen bucket policy"):
                     verify()
+
+            def replica_lifecycle_changes(ledger, *_args, **_options):
+                if ledger == source_scope:
+                    replica_controls["get-bucket-lifecycle-configuration"] = {"Rules": [{"Expiration": {"Days": 1}}]}
+
+            with (patch.dict(replica_controls),
+                  patch("custody_archive.verify_ledger_records", side_effect=replica_lifecycle_changes)):
+                with self.assertRaisesRegex(ValueError, "no lifecycle"):
+                    verify()
+
+            for bucket in names:
+                def append_version(*_args, **_options):
+                    names[bucket] = [*names[bucket], "retired/2.json"]
+
+                with (self.subTest(late_write=bucket), patch.dict(names),
+                      patch("custody_archive.require_pinned_replication", side_effect=append_version)):
+                    with self.assertRaisesRegex(ValueError, f"custody bucket {bucket} changed after verification"):
+                        verify()
             with patch.dict(replication, {}, clear=True):
                 with self.assertRaisesRegex(ValueError, "does not match the pinned ledger replica"):
                     verify()

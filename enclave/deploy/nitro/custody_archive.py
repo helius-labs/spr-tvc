@@ -228,6 +228,11 @@ def require_current_repair(trust, manifest):
         raise ValueError("repair approval expired or its roster changed during verification")
 
 
+def require_unchanged_versions(trust, versions, *, profile):
+    if list_ledger_versions(trust, profile=profile) != versions:
+        raise ValueError(f"custody bucket {trust['ledger']['bucket']} changed after verification")
+
+
 def repair_source(trust, promoted, expected, plan, profile, *, minimum):
     original, bindings = repair_bindings(trust, promoted, expected)
     fields(plan, "manifest", "signatures")
@@ -249,6 +254,7 @@ def repair_source(trust, promoted, expected, plan, profile, *, minimum):
     _, versions = checkpoint(original, expected, excluded=excluded, profile=profile)
     for name, version in excluded.items():
         require_unapproved_record(original, name, version, profile=profile)
+    require_unchanged_versions(original, {**versions, **excluded}, profile=profile)
     require_frozen_ledger(original, profile=profile)
     require_current_repair(trust, manifest)
     return versions
@@ -289,6 +295,7 @@ def repair_transfer(trust, promoted, expected, plan, source_profile, recovery_pr
     transfer = {**trust, "ledgerReplica": destination}
     require_pinned_replication(transfer, profile=source_profile)
     check_recovery_bucket(transfer, destination, recovery_profile)
+    require_unchanged_versions(trust, {**versions, **plan["manifest"]["excluded"]}, profile=source_profile)
     require_frozen_ledger(trust, profile=source_profile)
     require_current_repair(trust, plan["manifest"])
     csv.writer(output, lineterminator="\n").writerows(
@@ -310,15 +317,19 @@ def verify_promotion(trust, promoted, expected, source_profile, recovery_profile
     require_profile_account(source_profile, source["region"], source["account"])
     require_profile_account(recovery_profile, recovery["region"], recovery["account"])
     require_frozen_ledger(original, profile=source_profile)
-    ledger_checkpoint(promoted, expected, profile=recovery_profile)
-    if next_replica is not None:
-        check_recovery_bucket(promoted, next_replica, replica_profile)
+    _, recovered_versions = checkpoint(promoted, expected, profile=recovery_profile)
     # Re-read the original history after checking the recovered copy.
     if repair is None:
-        ledger_checkpoint(original, expected, profile=source_profile)
+        _, original_versions = checkpoint(original, expected, profile=source_profile)
     else:
-        repair_source(trust, promoted, expected, repair, source_profile, minimum=2)
+        preserved = repair_source(trust, promoted, expected, repair, source_profile, minimum=2)
+        original_versions = {**preserved, **repair["manifest"]["excluded"]}
     require_pinned_replication(promoted, profile=recovery_profile)
+    require_unchanged_versions(original, original_versions, profile=source_profile)
+    require_unchanged_versions(promoted, recovered_versions, profile=recovery_profile)
+    if next_replica is not None:
+        require_unchanged_versions(replica_trust(promoted, next_replica), recovered_versions, profile=recovery_profile)
+        check_recovery_bucket(promoted, next_replica, replica_profile)
     require_frozen_ledger(promoted, profile=recovery_profile)
     require_frozen_ledger(original, profile=source_profile)
     if repair is not None:

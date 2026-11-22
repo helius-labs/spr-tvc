@@ -28,6 +28,7 @@ const runCommand: Run = (command, args, timeout) => execute(command, args, {
 
 type PublicationOptions = {
   custodyTrust?: string;
+  replicaProfile?: string;
   nextTrust?: NitroTrust;
   emergencyFrom?: NitroTrust;
   run?: Run;
@@ -72,8 +73,10 @@ function requireCustodyWriteWindow(nextCutover: bigint | undefined, now: bigint)
   }
 }
 
-async function checkActivationRoster(candidate: string, custodyTrust: string, trust: NitroTrust, run: Run) {
-  const { stdout } = await run("python3", ["-B", custodyLedger, custodyTrust, "check-release-policy", candidate], 60_000);
+async function checkActivationRoster(candidate: string, custodyTrust: string, trust: NitroTrust, run: Run, replicaProfile?: string) {
+  const args = ["-B", custodyLedger, custodyTrust, "check-release-policy", candidate];
+  if (replicaProfile !== undefined) args.push("--replica-profile", replicaProfile);
+  const { stdout } = await run("python3", args, 60_000);
   const roster = parseStrictJson<{ custodyKeys: string[]; nextCutover: string | null }>(stdout, ["custodyKeys", "nextCutover"]);
   const expected = trust.custodyKeys;
   if (!Array.isArray(roster.custodyKeys) || roster.custodyKeys.length !== expected.length ||
@@ -111,7 +114,7 @@ export function bucketPolicy(trust: NitroTrust, name: string, administrator: str
 
 export async function publish(
   trust: NitroTrust, name: string, text: string,
-  { custodyTrust, nextTrust, emergencyFrom, run = runCommand, probe = probeNitroTarget }: PublicationOptions = {},
+  { custodyTrust, replicaProfile, nextTrust, emergencyFrom, run = runCommand, probe = probeNitroTarget }: PublicationOptions = {},
 ): Promise<void> {
   validateNitroTrust(trust);
   const { bucket, region, account, key } = publicationFor(trust, name);
@@ -192,11 +195,11 @@ export async function publish(
     let probes: ReplicaProbe[] = [];
     if (activatesPrimary && custodyTrust) {
       const custodyPins = nextTrust ?? trust;
-      const cutover = await checkActivationRoster(candidate, custodyTrust, custodyPins, run);
+      const cutover = await checkActivationRoster(candidate, custodyTrust, custodyPins, run, replicaProfile);
       requireCustodyWriteWindow(cutover, BigInt(Date.now()));
       probes = await Promise.all(policy.targets.map(target => probe(target, trust)));
       await checkMirror();
-      confirmedCutover = await checkActivationRoster(candidate, custodyTrust, custodyPins, run);
+      confirmedCutover = await checkActivationRoster(candidate, custodyTrust, custodyPins, run, replicaProfile);
     }
     const latestPrimary = isSecond ? await readPeer() : undefined;
     const beforeWrite = BigInt(Date.now());
@@ -236,7 +239,8 @@ async function pinnedPublication(trust: NitroTrust) {
 /** Verify the exact current, witnessed revision before shipping a new pin file. */
 export async function verifyDistributionPins(
   trust: NitroTrust,
-  { custodyTrust, run = runCommand, probe = probeNitroTarget }: Pick<PublicationOptions, "custodyTrust" | "run" | "probe"> = {},
+  { custodyTrust, replicaProfile, run = runCommand, probe = probeNitroTarget }:
+  Pick<PublicationOptions, "custodyTrust" | "replicaProfile" | "run" | "probe"> = {},
 ) {
   validateNitroTrust(trust);
   const published = await pinnedPublication(trust);
@@ -247,9 +251,9 @@ export async function verifyDistributionPins(
   try {
     const candidate = join(directory, "published.json");
     await writeFile(candidate, published.text, { mode: 0o600, flag: "wx" });
-    await checkActivationRoster(candidate, custodyTrust, trust, run);
+    await checkActivationRoster(candidate, custodyTrust, trust, run, replicaProfile);
     const probes = await Promise.all(published.policy.targets.map(target => probe(target, trust)));
-    const nextCutover = await checkActivationRoster(candidate, custodyTrust, trust, run);
+    const nextCutover = await checkActivationRoster(candidate, custodyTrust, trust, run, replicaProfile);
     const confirmed = await pinnedPublication(trust);
     if (confirmed.text !== published.text) throw new Error("signed policy changed during wallet trust verification");
     const now = BigInt(Date.now());
@@ -265,15 +269,19 @@ export async function verifyDistributionPins(
 
 async function main() {
   const [trustPath, bucket, ...args] = process.argv.slice(2);
-  const usage = "usage: nitro-publish.ts <wallet-trust.json> --check-wallet-trust [--custody-trust <custody-trust.json>] | nitro-publish.ts <wallet-trust.json> <bucket> <signed-policy.json> [--custody-trust <custody-trust.json>] [--next-trust <incoming.json> | --emergency-from <outgoing.json>] | <wallet-trust.json> <bucket> --bucket-policy <administrator-role> <publisher-role>";
+  const activationOptions = "[--custody-trust <custody-trust.json>] [--replica-profile <aws-profile>]";
+  const usage = `usage: nitro-publish.ts <wallet-trust.json> --check-wallet-trust ${activationOptions} | nitro-publish.ts <wallet-trust.json> <bucket> <signed-policy.json> ${activationOptions} [--next-trust <incoming.json> | --emergency-from <outgoing.json>] | <wallet-trust.json> <bucket> --bucket-policy <administrator-role> <publisher-role>`;
+  const activationFlags = { "custody-trust": { type: "string" }, "replica-profile": { type: "string" } } as const;
   if (!trustPath || !bucket) {
     throw new Error(usage);
   }
   const trustText = await readPolicy(trustPath);
   const trust = parseStrictJson<NitroTrust>(trustText);
   if (bucket === "--check-wallet-trust") {
-    const { values: { "custody-trust": custodyTrust } } = parseArgs({ args, options: { "custody-trust": { type: "string" } } });
-    const checkpoint = await verifyDistributionPins(trust, { ...(custodyTrust ? { custodyTrust } : {}) });
+    const { values: { "custody-trust": custodyTrust, "replica-profile": replicaProfile } } = parseArgs({ args, options: activationFlags });
+    const checkpoint = await verifyDistributionPins(trust, {
+      ...(custodyTrust ? { custodyTrust } : {}), ...(replicaProfile ? { replicaProfile } : {}),
+    });
     const trustSha256 = createHash("sha256").update(trustText).digest("hex");
     console.log(JSON.stringify({ ...checkpoint, trustSha256 }, null, 2));
     return;
@@ -287,13 +295,14 @@ async function main() {
     console.log(JSON.stringify(bucketPolicy(trust, bucket, administrator, publisher), null, 2));
     return;
   }
-  const { values: { "custody-trust": custodyTrust, "next-trust": nextPath, "emergency-from": emergencyPath } } = parseArgs({
-    args: extra, options: { "custody-trust": { type: "string" }, "next-trust": { type: "string" }, "emergency-from": { type: "string" } },
+  const { values: { "custody-trust": custodyTrust, "replica-profile": replicaProfile, "next-trust": nextPath, "emergency-from": emergencyPath } } = parseArgs({
+    args: extra, options: { ...activationFlags, "next-trust": { type: "string" }, "emergency-from": { type: "string" } },
   });
   const nextTrust = nextPath && parseStrictJson<NitroTrust>(await readPolicy(nextPath));
   const emergencyFrom = emergencyPath && parseStrictJson<NitroTrust>(await readPolicy(emergencyPath));
   await publish(trust, bucket, await readPolicy(policyPath), {
     ...(custodyTrust ? { custodyTrust } : {}),
+    ...(replicaProfile ? { replicaProfile } : {}),
     ...(nextTrust ? { nextTrust } : {}),
     ...(emergencyFrom ? { emergencyFrom } : {}),
   });

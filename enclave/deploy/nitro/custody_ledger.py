@@ -773,7 +773,7 @@ def require_payment_recovery_quorums(target_slots):
             raise ValueError(f"custody epoch {epoch} target {release} requires three enabled recovery and wrapping pairs")
 
 
-def check_release_policy(trust, document, custody_signer=None):
+def check_release_policy(trust, document, custody_signer=None, *, replica_profile=None):
     fields(document, "policy", "signatures", "custodySignatures")
     policy = document["policy"]
     targets = policy["targets"]
@@ -787,8 +787,14 @@ def check_release_policy(trust, document, custody_signer=None):
     if policy["action"] != "activate" or not isinstance(targets, list) or not 1 <= len(targets) <= 8:
         raise ValueError("expected an activation with one to eight serving targets")
     ledger_backup = ledger_replica(trust)
-    if ledger_backup is None and trust["network"] == "mainnet":
+    mainnet = trust["network"] == "mainnet"
+    if ledger_backup is None and mainnet:
         raise ValueError("mainnet activation requires a pinned custody ledger replica")
+    verify_payment_recovery = not policy["recoveryOnly"] and (mainnet or replica_profile is not None)
+    if verify_payment_recovery and not replica_profile:
+        raise ValueError("mainnet payment activation requires --replica-profile")
+    if verify_payment_recovery and ledger_backup is None:
+        raise ValueError("payment recovery verification requires a pinned custody ledger replica")
     by_epoch = {}
     floor = epoch_number(policy["minimumCustodyEpoch"])
     for target in targets:
@@ -825,8 +831,9 @@ def check_release_policy(trust, document, custody_signer=None):
         registrations = set().union(*(names for names, _ in readiness))
         if ledger_backup is not None:
             require_replicated_custody(trust, ledger_backup, max(by_epoch, key=epoch_number), registrations)
-        if trust["network"] == "mainnet" and not policy["recoveryOnly"]:
+        if verify_payment_recovery:
             require_payment_recovery_quorums([target for _, targets in readiness for target in targets])
+            check_recovery_bucket(trust, ledger_backup, replica_profile)
         # Check retirement after reading receipts, targets and key state.
         list(workers.map(lambda epoch: require_active_epoch(trust, epoch), by_epoch))
     now = time.time()
@@ -1071,6 +1078,7 @@ def main():
     post = commands.add_parser("publish")
     post.add_argument("candidate", type=Path)
     check = commands.add_parser("check-release-policy")
+    check.add_argument("--replica-profile")
     check.add_argument("candidate", type=Path)
     check.add_argument("--custody-signer", nargs=2, metavar=("KEY_ARN", "SEC1_HEX"))
     get = commands.add_parser("read")
@@ -1131,7 +1139,8 @@ def main():
             publish(trust, document)
             return
         if args.command == "check-release-policy":
-            print(canonical(check_release_policy(trust, document, args.custody_signer)).decode())
+            print(canonical(check_release_policy(trust, document, args.custody_signer,
+                                                 replica_profile=args.replica_profile)).decode())
             return
         signed = (sign_epoch(trust, document, args.key, args.build, args.review,
                              args.inspection_profiles, args.relay_build)
