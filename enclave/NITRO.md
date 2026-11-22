@@ -143,10 +143,11 @@ committed recovery packages and sign the retirement candidate with their
 acknowledgement keys. Their proofs bind the boot, both receipts, the wallet
 policy, the registered serving target and the deadline 24 hours after its
 bootstrap. Both publication buckets must serve the same signed policy file
-before and after attestation. Signers and the publisher reattest the same
-boot and confirm that both the recovery and target wrapping keys for its
-three slots remain enabled. Restarting the replacement before publication
-requires a new candidate.
+before and after attestation. A draft selects a registered boot whose
+registration is replicated when configured and whose three recovery and
+three wrapping keys remain enabled. Signers and the publisher reattest that
+exact boot and recheck its registration and keys. Restarting the replacement
+before publication requires a new candidate.
 The ledger checks the S3 write time against the proof window and verifies
 both receipts, the signatures and the target before producing the key
 inventory. An unverifiable record halts new wraps and requires ledger recovery.
@@ -164,7 +165,11 @@ after the marker commits. Its bootstrap must be later than the S3 write
 second, and all six recovery and wrapping keys for those slots must be
 enabled. The same boot and wallet policy must still be current after the key
 checks. Where replication is configured, the observed replacement's
-registration must also match its copy in the pinned replica.
+registration must also match its copy in the pinned replica. Pre-deletion
+inspection and final verification try other boots from the same observation
+if a candidate fails its key, replication or repeated attestation check.
+The second attestation must confirm the selected boot ID, bootstrap time,
+slots and policy digest.
 If the proven trio is unavailable or its epoch has been retired, three
 custodians of the same or a newer active receipt can prove recovery again.
 The new proof binds the original retirement digest and a boot after that

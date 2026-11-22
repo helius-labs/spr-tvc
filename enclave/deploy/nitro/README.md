@@ -407,9 +407,11 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    for those exact three slots. All six keys must still be enabled. Draft, sign
    and publish require the same signed policy file in both buckets before and
    after attestation and match the replacement to its registered serving
-   target. If the attested boot key or slots change, draft
-   a new candidate and collect proofs for those slots. After a timeout, retry the same signed
-   document. The tool verifies a committed record against its historical
+   target. Draft selects an attested target with enabled keys and a replicated
+   registration when a replica is configured. Sign and publish recheck those
+   conditions for the exact signed boot. If the attested boot key or slots
+   change, draft a new candidate and collect proofs for those slots. After a
+   timeout, retry the same signed document. The tool verifies a committed record against its historical
    roster and S3 timestamp, even after the recovery window closes. If the
    write never committed and the window or policy changed, draft a new
    candidate. A committed record closes the old epoch to new wraps. Its key
@@ -456,7 +458,9 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    the replacement under the current wallet policy before and after checking
    its six recovery and wrapping keys. The replacement epoch must remain
    open and the boot must use the three proved slots after the marker's S3
-   write second. The role
+   write second. If a candidate fails a key, replication or repeated
+   attestation check, inspection and final verification try another boot
+   from the same observation. The role
    needs `kms:DescribeKey` for the six replacement keys. Use
    `inspect --check-inactive` for the historical key state check after scheduling.
 

@@ -1214,8 +1214,8 @@ class CustodyLedgerTests(unittest.TestCase):
         def inspect_slot():
             return inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet, host_profiles=host_profiles)
 
-        def evidence(target):
-            return json.dumps({"policyDigest": policy_digest, "targets": [target]}).encode()
+        def evidence(*targets):
+            return json.dumps({"policyDigest": policy_digest, "targets": list(targets)}).encode()
 
         with (patch("retirement.inspect_inventory", side_effect=lambda *_args: {"keys": []}) as inspect,
               patch("retirement.require_recovery_quorum") as quorum, patch("retirement.run_command") as query,
@@ -1300,6 +1300,9 @@ class CustodyLedgerTests(unittest.TestCase):
                 read_replica.side_effect = ValueError("registered standby has not completed S3 replication")
                 with self.assertRaisesRegex(ValueError, "standby has not completed S3 replication"):
                     inspect_keys(self.trust, "1", 1, False, **options)
+                query.return_value.stdout = evidence(standby_observed, observed)
+                self.assertEqual(inspect_keys(self.trust, "1", 1, False, **options)["replacement"], expected)
+                query.return_value.stdout = evidence(standby_observed)
                 read_replica.side_effect = None
                 timestamp = datetime.fromtimestamp(self.now, timezone.utc).isoformat()
                 read_replica.return_value = canonical(standby_approval), ("version", timestamp, "digest")
@@ -1378,6 +1381,92 @@ class CustodyLedgerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "pinned primary and mirror"):
                     qualified_policy(self.trust, wallet_trust, scope, seed)
                 query.assert_not_called()
+
+    def test_retirement_selects_a_standby_when_an_attested_replica_cannot_qualify(self):
+        publish(self.trust, self.sign(self.document(1)))
+        rotation, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
+        publish(self.trust, self.sign(rotation))
+        primary = self.replacement_target()
+        standby = self.replacement_target(releaseId="standby", instanceId="i-1234567890abcdefc",
+                                           wrappingKeys=[key(slot, 39) for slot in range(1, 7)])
+        for target in (primary, standby):
+            register_target(self.trust, self.signed_subject(TARGET_APPROVAL, target))
+        wallet = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory())) / "wallet.json"
+        wallet.write_bytes(self.wallet_pins)
+        self.trust["walletTrustSha256"] = hashlib.sha256(self.wallet_pins).hexdigest()
+        primary_boot = self.qualification(primary)["replacementBootstrap"]
+        standby_boot = {**primary_boot, "bootKeyId": "ae" * 32}
+        unavailable = set()
+
+        def describe(key_arn, operation):
+            self.assertEqual(operation, "describe-key")
+            return {"KeyMetadata": {
+                "Arn": key_arn, "KeySpec": "RSA_2048", "KeyUsage": "ENCRYPT_DECRYPT", "Origin": "AWS_KMS",
+                "MultiRegion": False, "KeyState": "Disabled" if key_arn in unavailable else "Enabled",
+            }}
+
+        def observation(*targets, policy="fe" * 32):
+            return SimpleNamespace(stdout=canonical({"policyDigest": policy, "targets": list(targets)}))
+
+        with (patch("retirement.run_command") as query, patch("retirement.kms", side_effect=describe),
+              patch("retirement.inspect_inventory", return_value={"keys": []}),
+              patch("retirement.inspect_old_parents", return_value=[]), patch("retirement.require_profile_account")):
+            primary_observed = {**target_attestation(primary), "bootstrap": primary_boot}
+            standby_observed = {**target_attestation(standby), "bootstrap": standby_boot}
+            query.return_value = observation(primary_observed, standby_observed)
+            marker = qualified_manifest(self.trust, wallet, "1", "2")
+            self.assertEqual(marker["replacementTargetSha256"], sha256(primary))
+            signed = self.signed_retirement(marker)
+            replica = {"bucket": "custody-recovery", "account": "000000000011", "region": "eu-west-1",
+                       "role": "arn:aws:iam::000000000008:role/replication"}
+            with (patch.dict(self.trust, {"ledgerReplica": replica}), patch("retirement.add_approval") as sign,
+                  patch("retirement.read_replicated_record", side_effect=ValueError("replication pending")) as read):
+                with self.assertRaisesRegex(ValueError, "replication pending"):
+                    sign_retirement(self.trust, wallet, {**signed, "signatures": []},
+                                    approval_keys(self.trust)[0]["keyArn"])
+                sign.assert_not_called()
+                with self.assertRaisesRegex(ValueError, "replication pending"):
+                    commit_retirement(self.trust, wallet, signed)
+                self.assertEqual([call.args[-1] for call in read.call_args_list], [target_object_name(primary)] * 2)
+            commit_retirement(self.trust, wallet, signed)
+            self.now += 1
+            for observed in (primary_observed, standby_observed):
+                observed["bootstrap"]["bootedAtMs"] = str(self.now * 1000)
+            query.return_value = observation(primary_observed, standby_observed)
+            host_profiles = {"000000000007": "old-parent"}
+
+            def inspect():
+                return inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet, host_profiles=host_profiles)
+
+            unavailable.add(primary["wrappingKeys"][0])
+            with self.subTest(stage="draft"):
+                drafted = qualified_manifest(self.trust, wallet, "1", "2", requalify=True)
+                self.assertEqual(drafted["replacementTargetSha256"], sha256(standby))
+            with self.subTest(stage="inspect"):
+                self.assertEqual(inspect()["replacement"]["replacementTargetSha256"], sha256(standby))
+            with self.subTest(stage="report"):
+                for observed in (primary_observed, standby_observed):
+                    observed["bootstrap"]["bootedAtMs"] = str((self.now + 1) * 1000)
+                query.return_value = observation(primary_observed, standby_observed)
+                profiles = [f"slot-{slot}" for slot in range(1, 7)]
+                report = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
+                self.assertEqual(report["replacement"]["replacementTargetSha256"], sha256(standby))
+
+            unavailable.add(standby["wrappingKeys"][1])
+            with self.assertRaisesRegex(ValueError, "no attested replacement qualified") as rejected:
+                inspect()
+            self.assertIn(primary["wrappingKeys"][0], str(rejected.exception))
+            self.assertIn(standby["wrappingKeys"][1], str(rejected.exception))
+
+            unavailable.clear()
+            restarted = {**primary_observed, "bootstrap": {**primary_boot, "bootKeyId": "1a" * 32}}
+            query.side_effect = [observation(primary_observed, standby_observed), observation(restarted, standby_observed),
+                                 observation(restarted, standby_observed)]
+            self.assertEqual(inspect()["replacement"]["replacementTargetSha256"], sha256(standby))
+            different_policy = observation(restarted, standby_observed, policy="df" * 32)
+            query.side_effect = [observation(primary_observed, standby_observed), different_policy, different_policy]
+            with self.assertRaisesRegex(ValueError, "no attested replacement qualified"):
+                inspect()
 
     def test_closed_epoch_can_requalify_with_a_fresh_trio_and_keep_its_original_record(self):
         publish(self.trust, self.sign(self.document(1)))

@@ -95,7 +95,7 @@ def replacement_targets(trust, scope):
     return candidates
 
 
-def qualified_boot(pinned_trust, candidates, scope, seed, *, after_ms=0, deadline=None, expected=None, required_slots=None):
+def attested_boots(pinned_trust, candidates, scope, seed, *, after_ms=0, deadline=None, expected=None, required_slots=None):
     timeout = 25 if deadline is None else min(25, deadline - time.monotonic())
     if timeout <= 0:
         raise ReplacementNotReady("replacement boot wait expired")
@@ -106,6 +106,7 @@ def qualified_boot(pinned_trust, candidates, scope, seed, *, after_ms=0, deadlin
     ], input=pinned_trust, stdout=subprocess.PIPE, check=True, timeout=timeout)
     evidence = parse_json(reply.stdout)
     fields(evidence, "policyDigest", "targets")
+    matches = []
     for observed in evidence["targets"]:
         fields(observed, "releaseId", "pcrs", "bootstrap")
         identity = sha256({"releaseId": observed["releaseId"], "pcrs": observed["pcrs"]})
@@ -122,16 +123,21 @@ def qualified_boot(pinned_trust, candidates, scope, seed, *, after_ms=0, deadlin
                              "replacementBootstrap": bootstrap}
             if expected is not None and any(expected[field] != value for field, value in qualification.items()):
                 continue
-            if deadline is not None and time.monotonic() >= deadline:
-                raise ReplacementNotReady("replacement boot wait expired")
-            return qualification
-    raise ReplacementNotReady("no fresh attested serving boot matches the registered replacement")
+            matches.append(qualification)
+    if deadline is not None and time.monotonic() >= deadline:
+        raise ReplacementNotReady("replacement boot wait expired")
+    if not matches:
+        raise ReplacementNotReady("no fresh attested serving boot matches the registered replacement")
+    return matches
 
 
-def qualified_policy(trust, wallet_trust, scope, seed, *, after_ms=0, expected=None):
+def qualified_policy(trust, wallet_trust, scope, seed, *, after_ms=0, expected=None, custodians=None):
     pinned_trust = pinned_wallet_trust(trust, wallet_trust)
     candidates = replacement_targets(trust, scope)
-    return qualified_boot(pinned_trust, candidates, scope, seed, after_ms=after_ms, expected=expected)
+    boots = attested_boots(pinned_trust, candidates, scope, seed, after_ms=after_ms, expected=expected)
+    if custodians is not None:
+        return ready_boot(trust, scope, boots, custodians)
+    return boots[0]
 
 
 def after_write_ms(published_at):
@@ -151,15 +157,16 @@ def check_requalification_anchor(closure, published_at, manifest):
 
 
 def qualified_manifest(trust, wallet_trust, epoch, replacement, *, requalify=False):
-    scope, receipt, _ = retirement_scope(trust, epoch, replacement)
+    scope, receipt, custodians = retirement_scope(trust, epoch, replacement)
     seed = receipt["custody"]["noteSeedCommitment"]
     if requalify:
         closure, _, published_at = load_retirement(trust, epoch)
         scope["priorRetirementSha256"] = sha256(closure)
-        policy = qualified_policy(trust, wallet_trust, scope, seed, after_ms=after_write_ms(published_at))
+        policy = qualified_policy(trust, wallet_trust, scope, seed,
+                                  after_ms=after_write_ms(published_at), custodians=custodians)
         check_requalification_anchor(closure, published_at, {**scope, **policy})
     else:
-        policy = qualified_policy(trust, wallet_trust, scope, seed)
+        policy = qualified_policy(trust, wallet_trust, scope, seed, custodians=custodians)
     booted_at = epoch_number(policy["replacementBootstrap"]["bootedAtMs"]) // 1000
     manifest = {**scope, **policy, "recoveryDeadline": booted_at + RECOVERY_WINDOW_SECONDS}
     require_recovery_window(manifest)
@@ -223,6 +230,7 @@ def verify_qualification(trust, wallet_trust, document):
     policy = qualified_policy(trust, wallet_trust, scope, receipt["custody"]["noteSeedCommitment"], expected=manifest)
     if manifest != {**scope, **policy, "recoveryDeadline": manifest["recoveryDeadline"]}:
         raise ValueError("retirement no longer matches the qualified replacement and wallet policy")
+    require_observed_target_replication(trust, scope, policy)
     require_recovery_quorum(trust, manifest, proven)
     require_active_epoch(trust, scope["replacementEpoch"])
 
@@ -286,7 +294,7 @@ def require_retirement_replication(trust, marker, targets, qualification):
 
 def require_observed_target_replication(trust, qualification, evidence):
     replica = ledger_replica(trust)
-    if replica is None or evidence["replacementTargetIdentity"] == qualification["replacementTargetIdentity"]:
+    if replica is None or evidence["replacementTargetIdentity"] == qualification.get("replacementTargetIdentity"):
         return
     epoch = qualification["replacementEpoch"]
     name = target_path(epoch, evidence["replacementTargetIdentity"])
@@ -295,6 +303,22 @@ def require_observed_target_replication(trust, qualification, evidence):
                                      publication_time({"LastModified": published_at}))
     if sha256(target) != evidence["replacementTargetSha256"]:
         raise ValueError("replicated target does not match the attested replacement")
+
+
+def ready_boot(trust, scope, boots, custodians, *, confirm=None):
+    failures = []
+    for boot in boots:
+        try:
+            require_observed_target_replication(trust, scope, boot)
+            slots = retirement_bootstrap(boot["replacementBootstrap"])
+            require_recovery_quorum(trust, {**scope, **boot}, [custodians[slot - 1] for slot in slots])
+            if confirm is not None:
+                confirm(boot)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            failures.append(f"Target {boot['replacementTargetIdentity']} failed with {error}")
+        else:
+            return boot
+    raise ReplacementNotReady("\n".join(["no attested replacement qualified", *failures]))
 
 
 def slot_inventory(trust, epoch, member, targets, index):
@@ -317,10 +341,12 @@ def qualify_key_retirement(trust, wallet_trust, qualification, published_at):
     bootstrap = qualification["replacementBootstrap"]
     slots = retirement_bootstrap(bootstrap)
     after_ms = max(after_write_ms(published_at), epoch_number(bootstrap["bootedAtMs"]) - 1)
-    evidence = qualified_boot(pinned_trust, candidates, qualification, seed, after_ms=after_ms, required_slots=slots)
-    require_observed_target_replication(trust, qualification, evidence)
-    require_recovery_quorum(trust, {**qualification, **evidence}, [custodians[slot - 1] for slot in slots])
-    qualified_boot(pinned_trust, candidates, qualification, seed, after_ms=after_ms, expected=evidence)
+    boots = attested_boots(pinned_trust, candidates, qualification, seed, after_ms=after_ms, required_slots=slots)
+
+    def confirm(boot):
+        attested_boots(pinned_trust, candidates, qualification, seed, after_ms=after_ms, expected=boot)
+
+    evidence = ready_boot(trust, qualification, boots, custodians, confirm=confirm)
     require_active_epoch(trust, replacement)
     require_current_requalification(trust, qualification)
     return evidence
@@ -493,8 +519,8 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
     while True:
         try:
             require_current_requalification(trust, qualification)
-            evidence = qualified_boot(pinned_trust, candidates, qualification, seed, after_ms=after_ms,
-                                      deadline=deadline, required_slots=proven_slots)
+            boots = attested_boots(pinned_trust, candidates, qualification, seed, after_ms=after_ms,
+                                   deadline=deadline, required_slots=proven_slots)
             break
         except (ReplacementNotReady, subprocess.SubprocessError) as error:
             remaining = deadline - time.monotonic()
@@ -505,10 +531,12 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
     slots, parents = inspect_all()
     if replica is not None:
         check_recovery_bucket(trust, replica, replica_profile)
-    require_observed_target_replication(trust, qualification, evidence)
-    require_recovery_quorum(trust, {**qualification, **evidence},
-                            [replacement_custodians[slot - 1] for slot in proven_slots])
-    qualified_policy(trust, wallet_trust, qualification, seed, after_ms=after_ms, expected=evidence)
+    candidates = replacement_targets(trust, qualification)
+
+    def confirm(boot):
+        attested_boots(pinned_trust, candidates, qualification, seed, after_ms=after_ms, expected=boot)
+
+    evidence = ready_boot(trust, qualification, boots, replacement_custodians, confirm=confirm)
     require_active_epoch(trust, qualification["replacementEpoch"])
     require_current_requalification(trust, qualification)
     report = {"retirementSha256": sha256(document), "retirementObservedAtMs": str(after_ms),
