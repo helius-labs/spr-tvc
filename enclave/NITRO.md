@@ -130,6 +130,9 @@ requires a new candidate.
 The ledger checks the S3 write time against the proof window and verifies
 both receipts, the signatures and the target before producing the key
 inventory. An unverifiable record halts new wraps and requires ledger recovery.
+When a replica is configured, the inventory tool also checks that the receipt
+chain, target registrations it depends on and retirement marker have identical
+content, version IDs and write times on the pinned replica.
 A reconstructed seed remains in enclave memory until the enclave stops.
 Use replacement parents separate from those registered for the old epoch.
 The read-only retirement verifier checks the old key inventory in all six

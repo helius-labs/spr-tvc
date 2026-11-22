@@ -5,14 +5,14 @@ import hashlib
 import json
 import subprocess
 import sys
-from datetime import timezone
 from pathlib import Path
 
 from approval import MAX_DOCUMENT_BYTES, canonical, epoch_number, fields, hex_digest, read_json, sha256, unique_object
 from custody_ledger import (
-    check_commit, check_predecessor, check_registered_target, check_rotation_target, ledger_object, ledger_prefix, ledger_replica,
-    list_objects, publication_datetime, publication_time, read_object, read_stored_object, read_stored_payload, record,
-    require_frozen_ledger, rotation_target_name, verify_ceremony_capture,
+    check_commit, check_predecessor, check_registered_target, check_rotation_target,
+    ledger_object, ledger_prefix, ledger_record_fingerprint, ledger_replica,
+    list_objects, publication_time, read_object, read_stored_object, read_stored_payload, record,
+    require_frozen_ledger, require_record_replication, rotation_target_name, verify_ceremony_capture,
 )
 
 MAX_ARCHIVE_ENTRY_BYTES = 2 * MAX_DOCUMENT_BYTES + 256
@@ -89,15 +89,9 @@ def ledger_checkpoint(trust, expected=None):
         raise ValueError("custody ledger checkpoint requires a committed genesis")
     for name in names:
         payload, metadata = read_stored_payload(trust, name)
-        if replica is not None and metadata.get("ReplicationStatus") != "COMPLETED":
-            raise ValueError(f"custody ledger record {name} has not completed S3 replication")
-        if not 0 < len(payload) <= MAX_DOCUMENT_BYTES:
-            raise ValueError(f"invalid custody ledger record size for {name}")
-        version = metadata.get("VersionId")
-        if not isinstance(version, str) or not version or version == "null":
-            raise ValueError(f"custody ledger record {name} requires an original S3 version")
-        published_at = publication_datetime(metadata).astimezone(timezone.utc).isoformat()
-        checksum.update(canonical([name, version, published_at, hashlib.sha256(payload).hexdigest()]) + b"\n")
+        if replica is not None:
+            require_record_replication(name, metadata)
+        checksum.update(canonical([name, *ledger_record_fingerprint(name, payload, metadata)]) + b"\n")
     if names != tuple(list_objects(trust, "")):
         raise ValueError("custody ledger changed during checkpoint")
     require_frozen_ledger(trust)

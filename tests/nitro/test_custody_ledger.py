@@ -521,6 +521,73 @@ class CustodyLedgerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "requires the frozen bucket policy"):
                 ledger_checkpoint(self.trust, pinned)
 
+    def test_retirement_inventory_requires_the_actual_replicas_of_its_dependencies(self):
+        publish(self.trust, self.sign(self.document(1)))
+        _, old, _ = load_epoch(self.trust, "1")
+        rotated, _ = self.rotation_document(old)
+        publish(self.trust, self.sign(rotated))
+        replacement = self.replacement_target()
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
+        original_target = {**replacement, "custodyEpoch": "1", "receiptSha256": sha256(old), "releaseId": "old-serving",
+                           "instanceId": INSTANCE, "wrappingKeys": [key(slot, 31) for slot in range(1, 7)]}
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, original_target))
+        with (patch("retirement.qualified_policy", return_value=self.qualification(replacement)),
+              patch("retirement.require_recovery_quorum")):
+            marker = qualified_manifest(self.trust, None, "1", "2")
+            commit_retirement(self.trust, None, self.signed_retirement(marker))
+
+        self.trust["ledgerReplica"] = {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1",
+                                      "role": "arn:aws:iam::000000000008:role/replication"}
+        prefix = f"spr-custody/devnet/{DOMAIN}/"
+        pending = set()
+        copied = set()
+        marker_key = prefix + "retired/1.json"
+        replica_change = {}
+
+        def aws(region, service, operation, args, **options):
+            if region == "eu-north-1":
+                reply = self.aws(region, service, operation, args, **options)
+                if operation == "get-object":
+                    name = args[args.index("--key") + 1]
+                    reply["ReplicationStatus"] = "PENDING" if name in pending else "COMPLETED"
+                return reply
+            self.assertEqual((region, service, operation), ("eu-west-1", "s3api", "get-object"))
+            self.assertEqual(args[:4], ["--bucket", "custody-recovery", "--expected-bucket-owner", "000000000010"])
+            name = args[args.index("--key") + 1]
+            copied.add(name)
+            change = replica_change.copy() if name == marker_key else {}
+            if change.pop("missing", False):
+                raise ValueError("object missing")
+            original = ["--bucket", "custody-journal", "--expected-bucket-owner", "000000000008", *args[4:]]
+            reply = self.aws("eu-north-1", service, operation, original, **options)
+            if "body" in change:
+                pathlib.Path(args[-1]).write_bytes(change.pop("body"))
+            return {**reply, "ReplicationStatus": "REPLICA", **change}
+
+        with patch("custody_ledger.aws", side_effect=aws):
+            _, keys = key_inventory(self.trust, "1", 1)
+            self.assertIn(original_target["wrappingKeys"][0], keys)
+            self.assertEqual(copied, set(self.objects))
+            for name in self.objects:
+                pending.add(name)
+                with self.subTest(pending=name), self.assertRaisesRegex(ValueError, "has not completed S3 replication"):
+                    key_inventory(self.trust, "1", 1)
+                pending.clear()
+            changed_time = datetime.fromtimestamp(self.now + 1, timezone.utc).isoformat()
+            for change in ({"VersionId": "new-version"}, {"LastModified": changed_time},
+                           {"ReplicationStatus": "PENDING"}, {"body": b"{}"}):
+                with self.subTest(change=change), patch.dict(replica_change, change):
+                    with self.assertRaisesRegex(ValueError, "differs from the pinned replica"):
+                        key_inventory(self.trust, "1", 1)
+            with patch.dict(replica_change, {"missing": True}):
+                with self.assertRaisesRegex(ValueError, "could not read.*retired/1.json from the pinned replica"):
+                    key_inventory(self.trust, "1", 1)
+            pending.add(marker_key)
+            with self.assertRaisesRegex(ValueError, "has not completed S3 replication"):
+                verify_retired(self.trust, None, "1", [f"slot-{n}" for n in range(1, 7)], {}, 1)
+            with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
+                require_active_epoch(self.trust, "1")
+
     def test_genesis_host_role_must_match_the_captured_identity_before_publication(self):
         document = self.document(1)
         document["authorization"]["manifest"]["capture"]["pcrs"]["3"] = "ef" * 48

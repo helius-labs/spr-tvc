@@ -18,10 +18,11 @@ from approval import (
 )
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
-    find_retirement, list_objects, load_epoch,
-    load_retirement, read_registered_target, recovery_deadline, require_active_epoch, retirement_approval, retirement_object_name,
-    require_publication_roster, retirement_bootstrap, retirement_recovery, retirement_target, sign_share_recovery,
-    target_attestation, write_once,
+    find_retirement, ledger_object, ledger_record_fingerprint, ledger_replica, list_objects, load_epoch, load_retirement,
+    read_registered_target, read_stored_payload, recovery_deadline, replica_trust, require_active_epoch, require_publication_roster,
+    require_record_replication, retirement_approval, retirement_bootstrap, retirement_object_name, retirement_recovery,
+    retirement_target, rotation_target_name, sign_share_recovery, target_attestation, target_object_name,
+    target_path, write_once,
 )
 from deployment import HostUnobserved, require_host_state
 from kms_policy import RSA_KEYS, key_policy
@@ -206,7 +207,44 @@ def key_inventory(trust, epoch, index):
         raise ValueError("invalid custody slot")
     document, custodians = load_retirement(trust, epoch)
     marker = document["manifest"]
-    return slot_inventory(trust, epoch, custodians[index - 1], registered_targets(trust, epoch, marker["receiptSha256"]), index)
+    targets = list(registered_targets(trust, epoch, marker["receiptSha256"]))
+    require_retirement_replication(trust, marker, targets)
+    return slot_inventory(trust, epoch, custodians[index - 1], targets, index)
+
+
+def require_retirement_replication(trust, marker, targets):
+    replica = ledger_replica(trust)
+    if replica is None:
+        return
+    destination = replica_trust(trust, replica)
+
+    def confirm(name):
+        original, source_metadata = read_stored_payload(trust, name)
+        require_record_replication(name, source_metadata)
+        try:
+            copied, replica_metadata = read_stored_payload(destination, name)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            raise ValueError(f"could not read custody ledger record {name} from the pinned replica") from error
+        if (replica_metadata.get("ReplicationStatus") != "REPLICA" or
+                ledger_record_fingerprint(name, original, source_metadata) !=
+                ledger_record_fingerprint(name, copied, replica_metadata)):
+            raise ValueError(f"custody ledger record {name} differs from the pinned replica")
+        return original
+
+    replacement = marker["replacementEpoch"]
+    registrations = {
+        retirement_object_name(marker["epoch"]),
+        target_path(replacement, marker["replacementTargetIdentity"]),
+        *(target_object_name(target) for target in targets),
+    }
+    for number in range(1, epoch_number(replacement) + 1):
+        document = parse_json(confirm(ledger_object(trust, str(number))))
+        if number > 1:
+            manifest = document["authorization"]["manifest"]
+            registrations.add(rotation_target_name(manifest, str(number - 1)))
+
+    for name in sorted(registrations):
+        confirm(name)
 
 
 def slot_inventory(trust, epoch, member, targets, index):
@@ -321,6 +359,7 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
 
     def inspect_all(*, check_profiles=False):
         targets = list(registered_targets(trust, epoch, marker["receiptSha256"]))
+        require_retirement_replication(trust, marker, targets)
         hosts = {(arn(ROLE_ARN, target["hostRole"])[1], target["hostRegion"], target["instanceId"]): target
                  for target in targets}
         host_regions = {account: region for account, region, _ in hosts}

@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from approval import (
@@ -166,6 +166,21 @@ def publication_time(metadata):
     return publication_datetime(metadata).timestamp()
 
 
+def require_record_replication(name, metadata):
+    if metadata.get("ReplicationStatus") != "COMPLETED":
+        raise ValueError(f"custody ledger record {name} has not completed S3 replication")
+
+
+def ledger_record_fingerprint(name, payload, metadata):
+    if not 0 < len(payload) <= MAX_DOCUMENT_BYTES:
+        raise ValueError(f"invalid custody ledger record size for {name}")
+    version = metadata.get("VersionId")
+    if not isinstance(version, str) or not version or version == "null":
+        raise ValueError(f"custody ledger record {name} requires an original S3 version")
+    published_at = publication_datetime(metadata).astimezone(timezone.utc).isoformat()
+    return version, published_at, hashlib.sha256(payload).hexdigest()
+
+
 def require_publication_roster(trust, start):
     # Leave room for the AWS CLI's 25-second request deadline.
     now = time.time()
@@ -257,11 +272,16 @@ def ledger_replica(trust):
     replica = trust["ledgerReplica"]
     fields(replica, "bucket", "region", "account", "role")
     source, _ = ledger_prefix(trust)
-    destination, _ = ledger_prefix({**trust, "ledger": {name: replica[name] for name in ("bucket", "region", "account")}})
+    destination, _ = ledger_prefix(replica_trust(trust, replica))
     if (any(source[field] == destination[field] for field in ("bucket", "account", "region")) or
             arn(ROLE_ARN, replica["role"])[1] != source["account"]):
         raise ValueError("ledger replication requires a source role and a separate bucket, account and region")
     return replica
+
+
+def replica_trust(trust, replica):
+    return {"network": trust["network"], "securityDomainId": trust["securityDomainId"],
+            "ledger": {name: replica[name] for name in ("bucket", "region", "account")}}
 
 
 def replication_configuration(trust, replica):
@@ -324,9 +344,7 @@ def ledger_replica_plan(trust, administrator, publisher, readers):
     if replica is None:
         raise ValueError("pin ledgerReplica before configuring replication")
     source, prefix = ledger_prefix(trust)
-    destination_trust = {name: trust[name] for name in ("network", "securityDomainId")}
-    destination_trust["ledger"] = {name: replica[name] for name in ("bucket", "account", "region")}
-    destination_policy = ledger_policy(destination_trust, administrator, publisher, readers, frozen=True)
+    destination_policy = ledger_policy(replica_trust(trust, replica), administrator, publisher, readers, frozen=True)
     history = next(rule for rule in destination_policy["Statement"] if rule["Sid"] == "PreserveCustodyHistory")
     history["Action"].remove("s3:ReplicateObject")
     resource, role = history["Resource"], replica["role"]

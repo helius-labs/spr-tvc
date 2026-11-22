@@ -372,6 +372,14 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    python3 "$nitro/retirement.py" trust.json inspect 1 "$share_index"
    ```
 
+   With a ledger replica configured, give the retirement inspection roles
+   `s3:GetObject` on the custody prefix in both buckets and include them in the
+   reader lists. The inventory checks
+   the pinned replica for the retirement marker, receipt chain and required
+   target registrations. It requires matching record bytes, original version
+   IDs and write times. The retirement marker closes the old epoch as soon as
+   it commits on the source.
+
    Before scheduling any deletion, cold-boot with exactly three current slots
    and open a note from before rotation. Each retirement role verifies its
    inventory, schedules approved keys, and repeats `inspect --check-inactive`.
