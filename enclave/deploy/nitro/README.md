@@ -258,34 +258,67 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
 
 ## Attested recovery relay trial
 
-Use newly created devnet keys and synthetic shares for this trial. The relay
-configuration uses the trial network, release ID and security domain, with
-`deployment` set to `{"mode":"relay","custodyEpoch":"1","approvalKeys":[...]}`.
-Supply the three ordered custody approval public keys as uncompressed SEC1 hex.
-Build the measured image with the native workflow before creating its recovery
-keys. Render each policy with `relay-recovery-policy` and the exact relay host
-role and measurements. The role making the KMS request is still the custodian.
+Use fresh devnet keys and a disposable seed domain. Set the relay EIF's
+`deployment` to `{"mode":"relay","custodyEpoch":"1","approvalKeys":[...]}`.
+Supply the three epoch approval public keys in roster order as uncompressed
+SEC1 hex. Add `recoveryRelays` to pinned custody trust, keyed by epoch. Each
+entry contains the relay `hostRole` and reviewed `pcrs` from `measurements.json`
+(PCR0–PCR2). The tools derive PCR3 from the exact host role.
 
-The relay serves only port 44031 for ten minutes. `GET /recipient` returns Nitro
-attestation for its ephemeral RSA key. KMS `Decrypt` with that document as
-`Recipient` must return `CiphertextForRecipient` and an empty `Plaintext`.
-Submit the ciphertext as lowercase hex in `envelope` to `POST /rewrap`, along
-with `statement` and `approvals`. Each of two independently reviewed approvals
-has a one-based `authority` index and a 64-byte low-S P-256 `signature` in hex.
-Sign SHA-256 of `SPR/native-nitro/relay-release/v1` followed by RFC 8785 JSON of
-the statement. It contains `network`, `securityDomainId`, `custodyEpoch`,
-`slot`, `shareCommitment`, `relayKeyId`, `targetDigest` and `destinationPublicKey`.
-`relayKeyId` hashes the attested RSA SPKI. `targetDigest` identifies the
-operator's reviewed target registration. `destinationPublicKey` is the RSA DER
-SPKI sealed for that target, encoded in lowercase hex. The approvers must
-check its KMS key and effective policy independently before signing.
+1. Render the six source policies with `custody_ledger.py relay-recovery-policy`
+   after pinning the relay. Pass the custodian role, retirement role and
+   custody epoch. Create RSA KMS recovery keys with those policies.
+   Give the custody approvers separate read-only inspection profiles in the
+   six slot accounts. Each approver runs `custody_ledger.py sign` with
+   `--inspection-profiles` in slot order. KMS `GetKeyPolicy` requires a session
+   in the key's own account. The tool checks every installed policy and the
+   public key in each measured recovery package. For rotation, use
+   `deployment.py sign --next-inspection-profiles` to qualify the successor
+   keys before releasing shares to the rotation EIF.
+2. Forward the measured relay's vsock port 44031 through SSM to a loopback
+   port. It serves for ten minutes. Each custodian runs `acknowledge` with
+   `--relay-port`. KMS returns a recipient ciphertext. The relay opens it and
+   signs fresh evidence that the actual slot and commitment match. The same
+   path supplies `retirement.py prove-recovery --relay-port`.
+3. Create six fresh RSA target keys using `kms_policy.py` with
+   `--wrapping-algorithm RSAES_OAEP_SHA_256`. Draft the target with the same
+   algorithm, then sign and register it. Each target key is sealed to the
+   measured target and its host role. The signed registry fixes their ARNs in
+   slot order. The enclave still verifies every share’s epoch, slot and
+   commitment at bootstrap.
+4. Draft a release for each participating slot. Two approval signers run
+   `sign` independently, each with a read-only profile in that slot account.
+   Each command reattests the same relay boot and checks the actual
+   destination KMS public key and policy. The signed authorization cannot be
+   reused after the relay restarts.
 
-The relay verifies the approvals and share commitment in enclave memory and
-emits an RSA-OAEP-SHA-256 ciphertext. The trial uses a static approval roster
-for the measured relay. Production hookup still needs signed authorization
-from the actual registry, attested acknowledgements and retirement proofs,
-RSA destination provisioning, and a tested approval-roster cutover. Keep
-existing custody keys outside the trial. [KMS attested decrypt](https://docs.aws.amazon.com/kms/latest/APIReference/API_Decrypt.html)
+   ```sh
+   python3 "$nitro/relay_wrap.py" trust.json target.json "$build_dir" "$slot" --relay-port "$port" \
+     draft --inspection-profile "$slot_read_profile" > relay-draft.json
+   python3 "$nitro/relay_wrap.py" trust.json target.json "$build_dir" "$slot" --relay-port "$port" \
+     sign relay-draft.json "$first_approval_key" --inspection-profile "$slot_read_profile" > relay-signed-1.json
+   python3 "$nitro/relay_wrap.py" trust.json target.json "$build_dir" "$slot" --relay-port "$port" \
+     sign relay-signed-1.json "$second_approval_key" --inspection-profile "$slot_read_profile" > relay-signed-2.json
+   python3 "$nitro/relay_wrap.py" trust.json target.json "$build_dir" "$slot" --relay-port "$port" \
+     wrap relay-signed-2.json "shares/$slot.kms"
+   ```
+
+   A custodian runs `wrap` in their slot role. The operation supplies only the
+   relay's fresh attestation and the committed ciphertext to its recovery KMS
+   key. The relay returns an RSA-OAEP-SHA-256 ciphertext for the approved target
+   key. Provision the target with the usual command. Its KMS call uses the
+   manifest's algorithm. Asymmetric KMS calls carry no encryption context.
+   The immutable per-slot key ARN and the enclave's share commitment identify
+   the slot. [KMS GetKeyPolicy](https://docs.aws.amazon.com/kms/latest/APIReference/API_GetKeyPolicy.html) · [KMS Decrypt](https://docs.aws.amazon.com/kms/latest/APIReference/API_Decrypt.html)
+
+A relay-pinned epoch requires RSA destinations and another relay-pinned epoch
+when rotating. Its source keys stay bound to the measured epoch relay and its
+approval roster. Commission the successor before switching approval rosters.
+The wire authorization signs the SHA-256 of
+`SPR/native-nitro/relay-release/v1` followed by a null byte and canonical
+statement JSON. KMS signatures retain DER encoding. Live six-account
+qualification and the approval-roster cutover drill are pending. Keep old
+plaintext-capable custody keys outside this trial.
 
 ## Replace a compromised seed
 

@@ -14,7 +14,7 @@ from pathlib import Path
 from time import monotonic, sleep
 
 from approval import KEY_ARN, MAX_DOCUMENT_BYTES, ROLE_ARN, arn, aws_environment, fields, hex_digest, parse_json
-from kms_policy import target_context
+from kms_policy import RSA_OAEP, target_context
 
 MAX_ENVELOPE = 6144
 MAX_EVIDENCE = 16384
@@ -70,10 +70,12 @@ def decrypt_share(arn, wrapped_share, recipient, ctx):
     key = KEY_ARN.fullmatch(arn)
     if key is None:
         raise ValueError("expected immutable KMS key ARN")
+    algorithm_args = (["--encryption-algorithm", RSA_OAEP] if ctx is None
+                      else ["--encryption-context", json.dumps(ctx)])
     result = subprocess.run([
         "aws", "--region", key[1], "kms", "decrypt", "--key-id", arn,
         "--ciphertext-blob", f"fileb://{wrapped_share}",
-        "--encryption-context", json.dumps(ctx), "--recipient", recipient,
+        *algorithm_args, "--recipient", recipient,
         "--cli-binary-format", "base64", "--output", "json", "--no-cli-pager",
     ], capture_output=True, text=True, timeout=25, env=aws_environment())
     if result.returncode:

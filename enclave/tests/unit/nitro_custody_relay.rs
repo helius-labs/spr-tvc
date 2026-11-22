@@ -78,7 +78,7 @@ impl Fixture {
                 .unwrap();
             Approval {
                 authority,
-                signature: signature.normalize_s().to_bytes().into(),
+                signature: signature.to_der().as_bytes().to_vec(),
             }
         })
     }
@@ -138,4 +138,32 @@ fn checks_scope_and_commitment_even_after_two_approvals() {
     let mut request = fix.request();
     request.envelope = envelope(&fix.relay.recipient, &[0x66; 41]);
     assert!(fix.relay.rewrap(request).is_none());
+}
+
+#[test]
+fn proves_a_recovered_share_without_returning_it() {
+    let fix = Fixture::new();
+    let request = fix.request();
+    let mut proof = RecoveryProof {
+        slot: request.statement.slot,
+        share_commitment: request.statement.share_commitment,
+        envelope: request.envelope,
+        nonce: [0x88; 32],
+    };
+    let expected = sha256(
+        &[
+            b"SPR/native-nitro/relay-share-proof/v1devnet".as_slice(),
+            &DOMAIN,
+            &EPOCH.to_be_bytes(),
+            &[4],
+            &proof.share_commitment,
+        ]
+        .concat(),
+    );
+    assert_eq!(fix.relay.prove(&proof), Some(expected));
+    proof.slot = 3;
+    assert_eq!(fix.relay.prove(&proof), None);
+    proof.slot = 4;
+    proof.share_commitment[4] ^= 1;
+    assert_eq!(fix.relay.prove(&proof), None);
 }

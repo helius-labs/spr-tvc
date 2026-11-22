@@ -42,7 +42,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     custody::{CustodianPackage, Custody, Recipients, SHARE_COUNT, THRESHOLD},
-    custody_relay::{Relay, Request as RelayRequest, MAX_CMS_BYTES},
+    custody_relay::{RecoveryProof, Relay, Request as RelayRequest, MAX_CMS_BYTES},
     keys::NoteSeed,
     native_crypto::NativePair,
     nitro_http,
@@ -313,8 +313,9 @@ async fn run_relay(domain: [u8; 32], epoch: u64, pins: [[u8; 65]; 3]) -> io::Res
         PKey::from_rsa(Rsa::generate(2048).map_err(io::Error::other)?).map_err(io::Error::other)?;
     let relay = Arc::new(Relay::new(recipient, NETWORK, domain, epoch, pins)?);
     let app = Router::new()
-        .route("/recipient", get(relay_recipient))
+        .route("/recipient", post(relay_recipient))
         .route("/rewrap", post(relay_rewrap))
+        .route("/prove", post(relay_prove))
         .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(Extension(Arc::new(Semaphore::new(1))))
         .with_state(relay);
@@ -331,11 +332,19 @@ async fn run_relay(domain: [u8; 32], epoch: u64, pins: [[u8; 65]; 3]) -> io::Res
 async fn relay_recipient(
     State(relay): State<Arc<Relay>>,
     Extension(worker): Extension<Arc<Semaphore>>,
+    nonce: Bytes,
 ) -> Reply<Vec<u8>> {
+    if nonce.len() != 32 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let public = relay
         .public_key()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    issue_attestation(worker, move || attest(Some(public), None, None)).await
+    let binding = sha256(b"SPR/native-nitro/relay-recipient/v1");
+    issue_attestation(worker, move || {
+        attest(Some(public), Some(binding), Some(nonce.to_vec()))
+    })
+    .await
 }
 
 async fn relay_rewrap(State(relay): State<Arc<Relay>>, body: Bytes) -> Reply<Vec<u8>> {
@@ -343,6 +352,20 @@ async fn relay_rewrap(State(relay): State<Arc<Relay>>, body: Bytes) -> Reply<Vec
     let request: RelayRequest = parse_strict_json(json).map_err(|_| StatusCode::BAD_REQUEST)?;
     let ciphertext = relay.rewrap(request).ok_or(StatusCode::BAD_REQUEST)?;
     Ok(([(CONTENT_TYPE, "application/octet-stream")], ciphertext))
+}
+
+async fn relay_prove(
+    State(relay): State<Arc<Relay>>,
+    Extension(worker): Extension<Arc<Semaphore>>,
+    body: Bytes,
+) -> Reply<Vec<u8>> {
+    let json = std::str::from_utf8(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let request: RecoveryProof = parse_strict_json(json).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let binding = relay.prove(&request).ok_or(StatusCode::BAD_REQUEST)?;
+    issue_attestation(worker, move || {
+        attest(None, Some(binding), Some(request.nonce.to_vec()))
+    })
+    .await
 }
 
 async fn kms_attestation(

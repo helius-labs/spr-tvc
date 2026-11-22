@@ -51,7 +51,7 @@ class TargetApprovalTests(unittest.TestCase):
             "eifSha256": file_digest(self.build / "enclave.eif"),
             "executableSha256": file_digest(self.build / "tvc_app"),
             "configurationSha256": file_digest(self.build / "configuration.json"),
-            "pcrs": PINS, "hostRole": HOST, "wrappingKeys": [key(i, 2) for i in range(1, 7)], "nextCustodians": None,
+            "pcrs": PINS, "hostRole": HOST, "wrappingAlgorithm": "SYMMETRIC_DEFAULT", "wrappingKeys": [key(i, 2) for i in range(1, 7)], "nextCustodians": None,
         }
         self.approval = {"manifest": self.manifest, "signatures": [
             sign(TARGET_APPROVAL, self.manifest, signer["keyArn"]) for signer in self.trust["approvalKeys"][0]["keys"][:2]
@@ -269,7 +269,14 @@ class TargetApprovalTests(unittest.TestCase):
         }))
         self.manifest["configurationSha256"] = file_digest(path)
         _, _, keys = target(self.trust, self.approval, self.receipt, self.custodians, self.build)
-        self.assertEqual(keys[0], (key(1, 4), hashlib.sha256(bytes.fromhex(recipients[0])).hexdigest()))
+        self.assertEqual(keys[0], hashlib.sha256(bytes.fromhex(recipients[0])).hexdigest())
+        self.manifest["wrappingAlgorithm"] = "RSAES_OAEP_SHA_256"
+        with self.assertRaisesRegex(ValueError, "does not match the epoch's pinned recovery path"):
+            target(self.trust, self.approval, self.receipt, self.custodians, self.build)
+        self.trust["recoveryRelays"] = {"5": {}}
+        with self.assertRaisesRegex(ValueError, "cannot rotate a relay epoch to plaintext"):
+            target(self.trust, self.approval, self.receipt, self.custodians, self.build)
+        self.trust["recoveryRelays"]["6"] = {}
         roster[0]["recoveryKeyArn"] = key(1)
         with self.assertRaisesRegex(ValueError, "rotate recovery keys"):
             target(self.trust, self.approval, self.receipt, self.custodians, self.build)

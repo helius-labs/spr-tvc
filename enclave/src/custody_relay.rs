@@ -43,7 +43,7 @@ struct Statement {
 struct Approval {
     authority: u8,
     #[serde(with = "hex")]
-    signature: [u8; 64],
+    signature: Vec<u8>,
 }
 
 #[derive(Deserialize)]
@@ -53,6 +53,18 @@ pub(crate) struct Request {
     approvals: [Approval; 2],
     #[serde(with = "hex")]
     envelope: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RecoveryProof {
+    slot: u8,
+    #[serde(with = "hex")]
+    share_commitment: [u8; 32],
+    #[serde(with = "hex")]
+    envelope: Vec<u8>,
+    #[serde(with = "hex")]
+    pub(crate) nonce: [u8; 32],
 }
 
 pub(crate) struct Relay {
@@ -112,10 +124,8 @@ impl Relay {
             || statement.security_domain_id != self.domain
             || statement.custody_epoch != self.epoch
             || statement.relay_key_id != self.relay_key_id
-            || !(1..=SHARE_COUNT).contains(&usize::from(statement.slot))
             || statement.target_digest == [0; 32]
             || approvals[0].authority == approvals[1].authority
-            || !(1..=MAX_CMS_BYTES).contains(&envelope.len())
         {
             return None;
         }
@@ -128,24 +138,48 @@ impl Relay {
             let key = self
                 .authorities
                 .get(usize::from(authority).checked_sub(1)?)?;
-            let sig = Signature::from_slice(&signature).ok()?;
-            if sig.normalize_s() != sig || key.verify_prehash(&digest, &sig).is_err() {
+            if !(8..=72).contains(&signature.len()) {
+                return None;
+            }
+            let sig = Signature::from_der(&signature).ok()?.normalize_s();
+            if key.verify_prehash(&digest, &sig).is_err() {
                 return None;
             }
         }
         let destination = parse_recipient(&statement.destination_public_key).ok()?;
-        let cms = CmsContentInfo::from_der(&envelope).ok()?;
-        let share = Zeroizing::new(cms.decrypt_without_cert_check(&self.recipient).ok()?);
-        if !valid_share(
-            &self.domain,
-            self.epoch,
-            statement.slot,
-            &share,
-            &statement.share_commitment,
-        ) {
+        let share = self.open_share(statement.slot, &statement.share_commitment, &envelope)?;
+        encrypt_share(&destination, &share).ok()
+    }
+
+    pub(crate) fn prove(&self, request: &RecoveryProof) -> Option<[u8; 32]> {
+        drop(self.open_share(request.slot, &request.share_commitment, &request.envelope)?);
+        Some(sha256(
+            &[
+                b"SPR/native-nitro/relay-share-proof/v1".as_slice(),
+                self.network.as_str().as_bytes(),
+                &self.domain,
+                &self.epoch.to_be_bytes(),
+                &[request.slot],
+                &request.share_commitment,
+            ]
+            .concat(),
+        ))
+    }
+
+    fn open_share(
+        &self,
+        slot: u8,
+        commitment: &[u8; 32],
+        envelope: &[u8],
+    ) -> Option<Zeroizing<Vec<u8>>> {
+        if !(1..=SHARE_COUNT).contains(&usize::from(slot))
+            || !(1..=MAX_CMS_BYTES).contains(&envelope.len())
+        {
             return None;
         }
-        encrypt_share(&destination, &share).ok()
+        let cms = CmsContentInfo::from_der(envelope).ok()?;
+        let share = Zeroizing::new(cms.decrypt_without_cert_check(&self.recipient).ok()?);
+        valid_share(&self.domain, self.epoch, slot, &share, commitment).then_some(share)
     }
 }
 
@@ -153,7 +187,7 @@ fn signing_digest(statement: &Statement) -> Option<[u8; 32]> {
     let canonical = jcs_serialize(statement).ok()?;
     Some(sha256(
         &[
-            b"SPR/native-nitro/relay-release/v1".as_slice(),
+            b"SPR/native-nitro/relay-release/v1\0".as_slice(),
             canonical.as_bytes(),
         ]
         .concat(),

@@ -1,3 +1,4 @@
+import { sha256 } from "@noble/hashes/sha256";
 import { sha384 } from "@noble/hashes/sha512";
 import { DecryptionServiceError } from "../protocol/error.js";
 import {
@@ -113,6 +114,21 @@ export async function verifyNitroCustodyEvidence(
   try {
     const { attestation } = await verifyNativeBinding(document, nonce, binding, expectedPcrs, nowMs);
     if (attestation.get("public_key") != null) throw new DecryptionServiceError("BootProofUnverified");
+  } catch {
+    throw new DecryptionServiceError("BootProofUnverified");
+  }
+}
+
+/** Binds an ephemeral relay recipient key to a fresh challenge and independent PCR pins. */
+export async function verifyNitroRelayRecipient(document: Uint8Array, nonce: Uint8Array, pcrs: NitroPcrs) {
+  try {
+    const binding = sha256(new TextEncoder().encode("SPR/native-nitro/relay-recipient/v1"));
+    const { attestation, validity } = await verifyNativeBinding(document, nonce, binding, pcrs, BigInt(Date.now()));
+    const now = BigInt(Date.now());
+    if (now < validity.certificateValidFromMs || now > validity.certificateValidThroughMs) {
+      throw new DecryptionServiceError("BootProofUnverified");
+    }
+    return asBytes(attestation.get("public_key"));
   } catch {
     throw new DecryptionServiceError("BootProofUnverified");
   }

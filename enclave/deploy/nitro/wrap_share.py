@@ -10,7 +10,7 @@ from time import time
 from approval import approval_roster, check_approvals, key_result, kms, parse_json, read_json, require_kms_key
 from custody_ledger import TARGET_APPROVAL, load_epoch, open_share, require_active_epoch, require_target_approval_window
 from deployment import require_registered_target, target
-from kms_policy import target_context
+from kms_policy import SYMMETRIC, target_algorithm, target_context
 
 
 def sealed_policy(key, expected):
@@ -25,6 +25,8 @@ def wrap(trust, approval, build, index):
     if index not in range(1, 7):
         raise ValueError("invalid custody slot")
     manifest = approval["manifest"]
+    if target_algorithm(manifest) != SYMMETRIC or manifest["custodyEpoch"] in trust.get("recoveryRelays", {}):
+        raise ValueError("RSA targets require attested relay wrapping")
     _, receipt, custodians = load_epoch(trust, manifest["custodyEpoch"])
     keys, policies, _ = target(trust, approval, receipt, custodians, build)
     check_approvals(keys, TARGET_APPROVAL, approval)

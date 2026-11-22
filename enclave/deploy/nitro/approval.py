@@ -76,22 +76,23 @@ def aws_environment():
     return {**os.environ, "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS": "true"}
 
 
-def aws(region, service, operation, arguments, body=None):
+def aws(region, service, operation, arguments, body=None, *, profile=None):
+    credentials = ["--profile", profile] if profile is not None else []
     reply = subprocess.run([
-        "aws", "--region", region, "--no-cli-pager", "--output", "json", service, operation, *arguments,
+        "aws", *credentials, "--region", region, "--no-cli-pager", "--output", "json", service, operation, *arguments,
     ], input=body, capture_output=True, timeout=25, check=False, env=aws_environment())
     if reply.returncode:
         raise ValueError(f"AWS {service} {operation} failed")
     return parse_json(reply.stdout)
 
 
-def kms(key, operation, arguments=(), body=None):
+def kms(key, operation, arguments=(), body=None, **options):
     return aws(arn(KEY_ARN, key)[1], "kms", operation,
-               ["--key-id", key, "--cli-binary-format", "base64", *arguments], body)
+               ["--key-id", key, "--cli-binary-format", "base64", *arguments], body, **options)
 
 
-def key_result(key, operation, arguments=(), body=None):
-    result = kms(key, operation, arguments, body)
+def key_result(key, operation, arguments=(), body=None, **options):
+    result = kms(key, operation, arguments, body, **options)
     if result.get("KeyId") != key:
         raise ValueError(f"unexpected KMS key for {operation}")
     return result

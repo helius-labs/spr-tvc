@@ -12,11 +12,11 @@ from approval import (
     parse_json, read_document, read_json, sha256,
 )
 from custody_ledger import (
-    LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_acknowledgement_key, check_recovery_key, load_epoch,
+    LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_acknowledgement_key, check_recovery_roster, load_epoch,
     read_registered_target, require_active_epoch, require_publication_roster, require_target_approval_window,
     target_object_name, validate_roster, verify_target_approval, write_once,
 )
-from kms_policy import boot_pins, decrypt_conditions, key_policy, target_context
+from kms_policy import RSA_OAEP, SYMMETRIC, WRAPPING_ALGORITHMS, boot_pins, decrypt_conditions, key_policy, target_algorithm, target_context
 from provenance import MAIN_REF, verify as verify_build
 
 def host_policy(manifest):
@@ -60,7 +60,10 @@ def target(trust, document, receipt, custodians, build):
     manifest = document["manifest"]
     fields(manifest, "network", "securityDomainId", "custodyEpoch", "receiptSha256", "releaseId", "mode", "expiresAt",
            "eifSha256", "configurationSha256", "executableSha256", "pcrs", "hostRole", "wrappingKeys",
-           "nextCustodians", "approvalFromEpoch")
+           "nextCustodians", "approvalFromEpoch", "wrappingAlgorithm")
+    rsa_target = target_algorithm(manifest) == RSA_OAEP
+    if rsa_target != (manifest["custodyEpoch"] in trust.get("recoveryRelays", {})):
+        raise ValueError("target wrapping algorithm does not match the epoch's pinned recovery path")
     if manifest["approvalFromEpoch"] != roster["fromEpoch"]:
         raise ValueError("target requires the current approval roster")
     network, domain, release = manifest["network"], manifest["securityDomainId"], manifest["releaseId"]
@@ -90,6 +93,9 @@ def target(trust, document, receipt, custodians, build):
         fields(deployment, "mode", "custody")
         source = deployment["custody"]
     elif mode == "rotate":
+        next_epoch = str(int(manifest["custodyEpoch"]) + 1)
+        if rsa_target and next_epoch not in trust.get("recoveryRelays", {}):
+            raise ValueError("cannot rotate a relay epoch to plaintext recovery")
         fields(deployment, "mode", "previous", "recipientPublicKeys")
         source = deployment["previous"]
         validate_roster(next_custodians, host)
@@ -103,7 +109,7 @@ def target(trust, document, receipt, custodians, build):
             key = member["recoveryKeyArn"]
             if key in current_keys:
                 raise ValueError("rotate recovery keys before issuing fresh shares")
-            next_keys.append((key, hashlib.sha256(bytes.fromhex(spki)).hexdigest()))
+            next_keys.append(hashlib.sha256(bytes.fromhex(spki)).hexdigest())
     else:
         raise ValueError("expected a serving or rotation target")
     if deployment["mode"] != mode or source != receipt["custody"]:
@@ -142,12 +148,14 @@ def main():
     prepare.add_argument("wrapping_keys", type=Path)
     prepare.add_argument("expires_at", type=int)
     prepare.add_argument("--next-roster", type=Path)
+    prepare.add_argument("--wrapping-algorithm", choices=WRAPPING_ALGORITHMS, default=SYMMETRIC)
     sign = commands.add_parser("sign")
     sign.add_argument("target", type=Path)
     sign.add_argument("key")
     sign.add_argument("output", type=Path)
     sign.add_argument("--source-commit", required=True)
     sign.add_argument("--source-ref", default=MAIN_REF)
+    sign.add_argument("--next-inspection-profiles", nargs=6)
     register = commands.add_parser("register")
     register.add_argument("target", type=Path)
     identity = commands.add_parser("host-policy")
@@ -170,6 +178,7 @@ def main():
                 "executableSha256": file_digest(args.build / "tvc_app"),
                 "configurationSha256": file_digest(config_path), "pcrs": {pcr: measured[pcr] for pcr in ("PCR0", "PCR1", "PCR2")},
                 "hostRole": args.host_role, "wrappingKeys": read_json(args.wrapping_keys),
+                "wrappingAlgorithm": args.wrapping_algorithm,
                 "nextCustodians": read_json(args.next_roster) if args.next_roster else None,
                 "approvalFromEpoch": approval_roster(trust)["fromEpoch"],
             }, "signatures": []}
@@ -193,10 +202,12 @@ def main():
             "configurationSha256", "eifSha256", "executableSha256", "pcrs",
         )):
             raise ValueError("target does not match the verified build provenance")
-        for key, fingerprint in next_keys:
-            check_recovery_key(key, fingerprint)
-        for custodian in document["manifest"]["nextCustodians"] or ():
-            check_acknowledgement_key(custodian)
+        if next_keys:
+            successor = manifest["nextCustodians"]
+            check_recovery_roster(trust, str(int(manifest["custodyEpoch"]) + 1), successor, next_keys,
+                                  args.next_inspection_profiles)
+            for custodian in successor:
+                check_acknowledgement_key(custodian)
         approved = add_approval(keys, TARGET_APPROVAL, document, args.key)
         with args.output.open("xb") as output:
             output.write(canonical(approved) + b"\n")

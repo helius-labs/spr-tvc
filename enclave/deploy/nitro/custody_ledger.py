@@ -16,8 +16,9 @@ from approval import (
     epoch_number, fields, file_digest, get_signing_key, hex_digest, key_result, kms, parse_json, read_document,
     read_json, require_kms_key, sha256, signing_key, signing_sec1,
 )
-from kms_policy import acknowledgement_policy, boot_pins, context, recovery_policy, relay_recovery_policy, validate_custodian_roles
+from kms_policy import RSA_OAEP, acknowledgement_policy, boot_pins, context, recovery_policy, target_algorithm, validate_custodian_roles
 from provenance import MAIN_REF, verify as verify_build
+from relay import custody_recovery_policy, prove_share, relay_pins, sealed_rsa_key
 
 LABEL = "custody-epoch"
 ACKNOWLEDGEMENT = "custodian-acknowledgement"
@@ -293,6 +294,9 @@ def require_target_approval_window(manifest, at, *, remaining=0):
 
 def verify_target_approval(trust, document, *, at=None):
     manifest = document["manifest"]
+    rsa_target = target_algorithm(manifest) == RSA_OAEP
+    if rsa_target != (manifest["custodyEpoch"] in trust.get("recoveryRelays", {})):
+        raise ValueError("target wrapping algorithm does not match the epoch's pinned recovery path")
     at = time.time() if at is None else at
     require_target_approval_window(manifest, at)
     roster = approval_roster(trust, at=at)
@@ -512,6 +516,20 @@ def check_recovery_key(key, expected_fingerprint):
         raise ValueError("recovery key does not match its recovery package")
 
 
+def check_recovery_roster(trust, epoch, custodians, fingerprints, inspection_profiles):
+    if epoch not in trust.get("recoveryRelays", {}):
+        for custodian, fingerprint in zip(custodians, fingerprints, strict=True):
+            check_recovery_key(custodian["recoveryKeyArn"], fingerprint)
+        return
+    if inspection_profiles is None or len(inspection_profiles) != 6 or len(set(inspection_profiles)) != 6:
+        raise ValueError("provide six distinct read-only inspection profiles in custody slot order")
+    for custodian, fingerprint, profile in zip(custodians, fingerprints, inspection_profiles, strict=True):
+        expected = custody_recovery_policy(trust, custodian, epoch)
+        public = sealed_rsa_key(custodian["recoveryKeyArn"], expected, profile=profile)
+        if hashlib.sha256(public).hexdigest() != fingerprint:
+            raise ValueError("inspected recovery key does not match its recovery package")
+
+
 def check_acknowledgement_key(custodian):
     key = custodian["acknowledgementKey"]
     if get_signing_key(key["keyArn"]) != key:
@@ -543,7 +561,7 @@ def open_share(custodian, receipt, index, *, before_decrypt=None):
     return share
 
 
-def sign_epoch(trust, document, key, build, source_commit, source_ref):
+def sign_epoch(trust, document, key, build, source_commit, source_ref, inspection_profiles=None):
     receipt, custodians = record(trust, document)
     target = check_previous(trust, document, receipt)
     authorization = document["authorization"]
@@ -564,14 +582,16 @@ def sign_epoch(trust, document, key, build, source_commit, source_ref):
     subprocess.run(["pnpm", "--dir", str(root / "example"), "exec", "tsx",
                     str(root / "xtask/nitro-ceremony.ts"), "verify"],
                    input=canonical(capture), timeout=25, check=True)
-    for custodian, package in zip(custodians, receipt["packages"], strict=True):
-        check_recovery_key(custodian["recoveryKeyArn"], package["recipientSha256"])
+    epoch = receipt["custody"]["epoch"]
+    check_recovery_roster(trust, epoch, custodians, [package["recipientSha256"] for package in receipt["packages"]],
+                          inspection_profiles)
+    for custodian in custodians:
         check_acknowledgement_key(custodian)
-    keys = approval_keys(trust, receipt["custody"]["epoch"])
+    keys = approval_keys(trust, epoch)
     return {**document, "authorization": add_approval(keys, LABEL, authorization, key)}
 
 
-def sign_share_recovery(trust, custodians, receipt, index, label, approval):
+def sign_share_recovery(trust, custodians, receipt, index, label, approval, relay_port=None):
     if index not in range(1, 7):
         raise ValueError("invalid custody slot")
     epoch = receipt["custody"]["epoch"]
@@ -585,17 +605,24 @@ def sign_share_recovery(trust, custodians, receipt, index, label, approval):
     expected = acknowledgement_policy(custodian["custodianRole"], custodian["retirementRole"])
     if parse_json(kms(key, "get-key-policy", ["--policy-name", "default"])["Policy"]) != expected:
         raise ValueError("installed acknowledgement policy does not match the custodian role")
-    open_share(custodian, receipt, index, before_decrypt=require_open_epoch)
+    if epoch in trust.get("recoveryRelays", {}):
+        if relay_port is None:
+            raise ValueError("this custody epoch requires an attested recovery relay")
+        prove_share(trust, receipt, custodian, index, relay_port, require_open_epoch)
+    else:
+        if relay_port is not None:
+            raise ValueError("no recovery relay is pinned for this custody epoch")
+        open_share(custodian, receipt, index, before_decrypt=require_open_epoch)
     require_open_epoch()
     keys = [member["acknowledgementKey"] for member in custodians]
     return add_approval(keys, label, approval, key)["signatures"]
 
 
-def acknowledge(trust, document, index):
+def acknowledge(trust, document, index, relay_port=None):
     receipt, custodians = record(trust, document)
     check_approvals(approval_keys(trust, receipt["custody"]["epoch"]), LABEL, document["authorization"])
     check_previous(trust, document, receipt)
-    signatures = sign_share_recovery(trust, custodians, receipt, index, ACKNOWLEDGEMENT, acknowledgements(document))
+    signatures = sign_share_recovery(trust, custodians, receipt, index, ACKNOWLEDGEMENT, acknowledgements(document), relay_port)
     return {**document, "acknowledgements": signatures}
 
 
@@ -629,10 +656,12 @@ def main():
     sign.add_argument("output", type=Path)
     sign.add_argument("--source-commit", required=True)
     sign.add_argument("--source-ref", default=MAIN_REF)
+    sign.add_argument("--inspection-profiles", nargs=6)
     ack = commands.add_parser("acknowledge")
     ack.add_argument("candidate", type=Path)
     ack.add_argument("share", type=int, choices=range(1, 7))
     ack.add_argument("output", type=Path)
+    ack.add_argument("--relay-port", type=int)
     post = commands.add_parser("publish")
     post.add_argument("candidate", type=Path)
     check = commands.add_parser("check-serving-policy")
@@ -658,8 +687,6 @@ def main():
     relay = commands.add_parser("relay-recovery-policy", help="render a recovery key policy for the devnet relay trial")
     relay.add_argument("custodian_role")
     relay.add_argument("retirement_role")
-    relay.add_argument("relay_host_role")
-    relay.add_argument("measurements", type=Path)
     relay.add_argument("epoch")
     acknowledgement = commands.add_parser("acknowledgement-policy")
     acknowledgement.add_argument("custodian_role")
@@ -677,11 +704,9 @@ def main():
             print(canonical(recovery_policy(args.custodian_role, args.retirement_role, args.epoch)).decode())
             return
         if args.command == "relay-recovery-policy":
-            if trust["network"] != "devnet":
-                raise ValueError("the recovery relay trial requires devnet")
-            pins = read_json(args.measurements)["Measurements"]
-            print(canonical(relay_recovery_policy(args.custodian_role, args.retirement_role, args.relay_host_role,
-                                                  pins, args.epoch)).decode())
+            relay_pins(trust, args.epoch)
+            custodian = {"custodianRole": args.custodian_role, "retirementRole": args.retirement_role}
+            print(canonical(custody_recovery_policy(trust, custodian, args.epoch)).decode())
             return
         if args.command == "acknowledgement-policy":
             print(canonical(acknowledgement_policy(args.custodian_role, args.retirement_role)).decode())
@@ -707,8 +732,9 @@ def main():
         if args.command == "check-serving-policy":
             check_serving_policy(trust, document, args.custody_signer)
             return
-        signed = (sign_epoch(trust, document, args.key, args.build, args.source_commit, args.source_ref) if args.command == "sign"
-                  else acknowledge(trust, document, args.share))
+        signed = (sign_epoch(trust, document, args.key, args.build, args.source_commit, args.source_ref, args.inspection_profiles)
+                  if args.command == "sign"
+                  else acknowledge(trust, document, args.share, args.relay_port))
         with args.output.open("xb") as output:
             output.write(canonical(signed) + b"\n")
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:

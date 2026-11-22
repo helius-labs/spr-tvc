@@ -17,7 +17,8 @@ from custody_ledger import (
     load_retirement, read_registered_target, recovery_deadline, require_active_epoch, retirement_approval, retirement_object_name,
     require_publication_roster, retirement_bootstrap, retirement_recovery, sign_share_recovery, target_attestation, write_once,
 )
-from kms_policy import key_policy, recovery_policy, target_context
+from kms_policy import key_policy, target_context
+from relay import custody_recovery_policy
 
 
 def retirement_scope(trust, epoch, replacement):
@@ -109,13 +110,13 @@ def checked_scope(trust, manifest):
     return scope, receipt, custodians
 
 
-def prove_recovery(trust, document, index):
+def prove_recovery(trust, document, index, relay_port=None):
     manifest = retirement_approval(document)["manifest"]
     _, receipt, custodians = checked_scope(trust, manifest)
     if index not in retirement_bootstrap(manifest["replacementBootstrap"]):
         raise ValueError("custodian did not supply an attested bootstrap slot")
     proof = {"manifest": manifest, "signatures": document["recoveryProofs"]}
-    signatures = sign_share_recovery(trust, custodians, receipt, index, RETIREMENT_RECOVERY, proof)
+    signatures = sign_share_recovery(trust, custodians, receipt, index, RETIREMENT_RECOVERY, proof, relay_port)
     require_recovery_window(manifest)
     return {**document, "recoveryProofs": signatures}
 
@@ -164,7 +165,7 @@ def key_inventory(trust, epoch, index):
     marker = document["manifest"]
     member = custodians[index - 1]
     custodian, admin = member["custodianRole"], member["retirementRole"]
-    keys = {member["recoveryKeyArn"]: recovery_policy(custodian, admin, epoch)}
+    keys = {member["recoveryKeyArn"]: custody_recovery_policy(trust, member, epoch)}
     for target in registered_targets(trust, epoch, marker["receiptSha256"]):
         key = target["wrappingKeys"][index - 1]
         expected = key_policy(target["hostRole"], custodian, admin, target["pcrs"], target_context(target, index))
@@ -199,6 +200,7 @@ def main():
     prove = commands.add_parser("prove-recovery")
     prove.add_argument("candidate", type=Path)
     prove.add_argument("share", type=int, choices=range(1, 7))
+    prove.add_argument("--relay-port", type=int)
     sign = commands.add_parser("sign")
     sign.add_argument("wallet_trust", type=Path)
     sign.add_argument("candidate", type=Path)
@@ -223,7 +225,7 @@ def main():
             if args.command == "publish":
                 commit_retirement(trust, args.wallet_trust, document)
                 return
-            result = (prove_recovery(trust, document, args.share) if args.command == "prove-recovery" else
+            result = (prove_recovery(trust, document, args.share, args.relay_port) if args.command == "prove-recovery" else
                       sign_retirement(trust, args.wallet_trust, document, args.key))
         print(canonical(result).decode())
     except (OSError, ValueError, KeyError, TypeError, IndexError, subprocess.SubprocessError) as error:

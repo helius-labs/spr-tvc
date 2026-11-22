@@ -13,7 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import aws
 from deployment import host_policy
-from kms_policy import context, key_policy, relay_recovery_policy
+from kms_policy import RSA_OAEP, context, key_policy, relay_recovery_policy, target_context
 from provision import decrypt_share, provision, read_target, recipient_for
 
 HOST = "arn:aws:iam::111111111111:role/host"
@@ -24,7 +24,7 @@ DOMAIN = "ab" * 32
 KEY_1 = "arn:aws:kms:eu-north-1:222222222222:key/12345678-1234-1234-1234-123456789abc"
 KEYS = [KEY_1.replace("222222222222", f"{index:012d}") for index in range(1, 7)]
 TARGET = {"network": "mainnet", "securityDomainId": DOMAIN, "releaseId": "release-a", "custodyEpoch": "5",
-          "hostRole": HOST, "pcrs": PINS, "wrappingKeys": KEYS}
+          "hostRole": HOST, "pcrs": PINS, "wrappingAlgorithm": "SYMMETRIC_DEFAULT", "wrappingKeys": KEYS}
 SHARES = pathlib.Path("shares")
 
 
@@ -49,6 +49,25 @@ class KeyPolicyTests(unittest.TestCase):
         for host, measurements in [(CUSTODIAN, PINS), (HOST, {**PINS, "PCR1": "00" * 48})]:
             with self.assertRaises(ValueError):
                 relay_recovery_policy(CUSTODIAN, RETIREMENT, host, measurements, "5")
+
+    @patch("provision.subprocess.run")
+    def test_rsa_targets_pin_the_algorithm_and_pass_no_symmetric_context(self, run):
+        manifest = {**TARGET, "network": "devnet", "wrappingAlgorithm": RSA_OAEP}
+        conditions = host_policy(manifest)["Statement"][0]["Condition"]
+        self.assertEqual(conditions["StringEquals"], {"kms:EncryptionAlgorithm": RSA_OAEP})
+        self.assertTrue(all(name.startswith("kms:RecipientAttestation:") for name in conditions["StringEqualsIgnoreCase"]))
+        statements = key_policy(HOST, CUSTODIAN, RETIREMENT, PINS, target_context(manifest, 1))["Statement"]
+        self.assertFalse(any(rule["Action"] == "kms:Encrypt" for rule in statements))
+        self.assertIn("DenyOtherAlgorithm", {rule["Sid"] for rule in statements})
+        run.return_value = subprocess.CompletedProcess([], 0, json.dumps({
+            "KeyId": KEY_1, "CiphertextForRecipient": base64.b64encode(b"wrapped").decode(),
+        }), "")
+        self.assertEqual(decrypt_share(KEY_1, SHARES / "1.kms", "evidence", target_context(manifest, 1)), b"wrapped")
+        args = run.call_args.args[0]
+        self.assertEqual(args[args.index("--encryption-algorithm") + 1], RSA_OAEP)
+        self.assertNotIn("--encryption-context", args)
+        with self.assertRaisesRegex(ValueError, "unsupported target wrapping algorithm"):
+            host_policy({**manifest, "network": "mainnet"})
 
     def test_only_host_role_with_recipient_pcrs_and_exact_context_can_unwrap(self):
         ctx = context("mainnet", DOMAIN, "release-a", "5", 1)

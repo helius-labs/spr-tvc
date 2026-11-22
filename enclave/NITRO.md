@@ -22,6 +22,14 @@ Each recovery KMS key authorizes its custodian to open one share in plaintext.
 The separate custody approval quorum governs provisioning to a measured
 target. Treat three exposed shares from one epoch as seed exposure.
 
+The [devnet relay trial](deploy/nitro/README.md#attested-recovery-relay-trial)
+uses separate sealed recovery keys. For a relay-pinned epoch, those keys release
+shares only to the measured relay. The relay checks the share commitment and
+requires two approvals of the exact RSA destination and relay boot. The
+approved target opens the resulting ciphertext through attested KMS. Fresh
+relay evidence confirms share recovery before an acknowledgement or retirement
+proof is signed. Production qualification and roster cutover are pending.
+
 Custody and target signers require GitHub build provenance from the designated
 native EIF workflow at the exact ref and commit approved in review. Devnet can
 use an explicit branch in this repository. Mainnet requires a fresh dispatch

@@ -16,7 +16,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/de
 from approval import approval_keys, approval_roster, canonical, sha256
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
-    check_serving_policy, draft, ledger_policy, ledger_reader_policy, list_objects, load_epoch, publish, read_registered_target,
+    check_recovery_roster, check_serving_policy, draft, ledger_policy, ledger_reader_policy, list_objects, load_epoch, publish, read_registered_target,
     record, require_active_epoch,
     sign_epoch, target_attestation,
     target_object_name, verify_archive, write_once,
@@ -93,7 +93,8 @@ class CustodyLedgerTests(unittest.TestCase):
                   "pcrs": PINS, "eifSha256": manifest["ceremonyEifSha256"],
                   "executableSha256": hashlib.sha256(b"rotation executable fixture").hexdigest(),
                   "configurationSha256": sha256(manifest["capture"]["configuration"]),
-                  "nextCustodians": copy.deepcopy(manifest["custodians"]), "wrappingKeys": [key(i, 21) for i in range(1, 7)]}
+                  "nextCustodians": copy.deepcopy(manifest["custodians"]), "wrappingAlgorithm": "SYMMETRIC_DEFAULT",
+                  "wrappingKeys": [key(i, 21) for i in range(1, 7)]}
         manifest["rotationTargetSha256"] = sha256(target)
         approval = self.signed_subject(TARGET_APPROVAL, target)
         if register:
@@ -344,6 +345,52 @@ class CustodyLedgerTests(unittest.TestCase):
         open_share.assert_called_once()
         approval.assert_not_called()
 
+    @patch("custody_ledger.open_share", side_effect=AssertionError("relay epoch must never expose a plaintext share"))
+    @patch("custody_ledger.prove_share")
+    @patch("custody_ledger.add_approval")
+    @patch("custody_ledger.kms")
+    def test_relay_epoch_requires_attested_acknowledgement_without_falling_back(self, kms, approve, prove, plaintext):
+        document = self.sign(self.document(1))
+        document["acknowledgements"] = []
+        member = document["authorization"]["manifest"]["custodians"][0]
+        kms.return_value = {"Policy": json.dumps(acknowledgement_policy(member["custodianRole"], member["retirementRole"]))}
+        self.trust["recoveryRelays"] = {"1": {"hostRole": HOST, "pcrs": PINS}}
+        with self.assertRaisesRegex(ValueError, "requires an attested recovery relay"):
+            acknowledge(self.trust, document, 1)
+        prove.side_effect = ValueError("unverified relay proof")
+        with self.assertRaisesRegex(ValueError, "unverified relay proof"):
+            acknowledge(self.trust, document, 1, 7443)
+        approve.assert_not_called()
+        prove.side_effect = None
+        approve.return_value = {"signatures": ["fixture"]}
+        result = acknowledge(self.trust, document, 1, 7443)
+        self.assertEqual(result["acknowledgements"], ["fixture"])
+        _, args_receipt, args_member, slot, port, check = prove.call_args.args
+        self.assertEqual(args_receipt["custody"]["epoch"], "1")
+        self.assertEqual((args_member, slot, port), (member, 1, 7443))
+        check()
+        plaintext.assert_not_called()
+
+    @patch("custody_ledger.sealed_rsa_key")
+    @patch("custody_ledger.check_recovery_key", side_effect=AssertionError("relay policy inspection cannot be skipped"))
+    def test_relay_receipt_requires_independent_inspection_of_every_slot_policy(self, _plaintext, inspect):
+        roster = self.document(1)["authorization"]["manifest"]["custodians"]
+        self.trust["recoveryRelays"] = {"1": {"hostRole": HOST, "pcrs": PINS}}
+        keys = [bytes([i]) * 264 for i in range(1, 7)]
+        fingerprints = [hashlib.sha256(key).hexdigest() for key in keys]
+        with self.assertRaisesRegex(ValueError, "six distinct read-only inspection profiles"):
+            check_recovery_roster(self.trust, "1", roster, fingerprints, ["same"] * 6)
+        inspect.assert_not_called()
+        profiles = [f"slot-{i}-inspect" for i in range(1, 7)]
+        inspect.side_effect = keys[:-1] + [ValueError("unsealed source key")]
+        with self.assertRaisesRegex(ValueError, "unsealed source key"):
+            check_recovery_roster(self.trust, "1", roster, fingerprints, profiles)
+        inspect.reset_mock()
+        inspect.side_effect = keys
+        check_recovery_roster(self.trust, "1", roster, fingerprints, profiles)
+        self.assertEqual([call.kwargs["profile"] for call in inspect.call_args_list], profiles)
+        self.assertEqual([call.args[0] for call in inspect.call_args_list], [member["recoveryKeyArn"] for member in roster])
+
     def test_bucket_policy_enforces_single_publisher_and_conditional_creation(self):
         statements = {item["Sid"]: item for item in ledger_policy(self.trust, ADMIN, PUBLISHER, [READ_ROLE])["Statement"]}
         self.assertEqual(statements["RequireWriteOnce"]["Condition"], {"StringNotEquals": {"s3:if-none-match": "*"}})
@@ -392,7 +439,7 @@ class CustodyLedgerTests(unittest.TestCase):
         _, receipt, _ = load_epoch(self.trust, "2")
         return {"network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "2",
                 "receiptSha256": sha256(receipt), "approvalFromEpoch": approval_roster(self.trust)["fromEpoch"],
-                "releaseId": "new-slot", "mode": "serve", "hostRole": HOST, "expiresAt": self.now + 3600,
+                "releaseId": "new-slot", "mode": "serve", "hostRole": HOST, "wrappingAlgorithm": "SYMMETRIC_DEFAULT", "expiresAt": self.now + 3600,
                 "executableSha256": "ab" * 32,
                 "pcrs": {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)}, **overrides}
 
@@ -474,7 +521,7 @@ class CustodyLedgerTests(unittest.TestCase):
         target = {
             "network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "1", "receiptSha256": sha256(old),
             "approvalFromEpoch": "1", "releaseId": "old-slot", "hostRole": HOST, "expiresAt": self.now + 3600,
-            "wrappingKeys": [key(account, 11) for account in range(1, 7)],
+            "wrappingAlgorithm": "SYMMETRIC_DEFAULT", "wrappingKeys": [key(account, 11) for account in range(1, 7)],
             "pcrs": {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)},
         }
         target_doc = self.signed_subject(TARGET_APPROVAL, target)
