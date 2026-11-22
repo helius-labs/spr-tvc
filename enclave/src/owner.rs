@@ -6,11 +6,12 @@ use solana_pubkey::Pubkey;
 use spr_tvc_protocol::decryption_service::{decrypt_message, ADDRESS_LEN};
 use spr_tvc_protocol::types::Network;
 
-/// Decode an on-curve Ed25519 address and reject small-order keys.
+/// Decode a canonical Ed25519 signing key in the prime-order subgroup.
 pub(crate) fn address_key(address: &str) -> Result<VerifyingKey, Failure> {
     let address = address.parse::<Pubkey>().map_err(|_| Failure::Invalid)?;
     let key = VerifyingKey::from_bytes(&address.to_bytes()).map_err(|_| Failure::Invalid)?;
-    if key.is_weak() {
+    let point = key.to_edwards();
+    if key.is_weak() || point.compress().as_bytes() != key.as_bytes() || !point.is_torsion_free() {
         return Err(Failure::Invalid);
     }
     Ok(key)

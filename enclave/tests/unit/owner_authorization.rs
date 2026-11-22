@@ -97,6 +97,18 @@ fn a_signed_request_expires_before_note_work_or_release() {
 }
 
 #[test]
+fn a_signed_deadline_must_be_within_two_minutes_of_enclave_time() {
+    let mut service = service();
+    let owner = recipient_signer();
+    let request = decrypt(&service, &owner, NETWORK, Vec::new());
+
+    service.now_ms = || Some(APPROVAL_EXPIRES_AT_MS - 120_000);
+    assert!(call(&service, &request).is_ok());
+    service.now_ms = || Some(APPROVAL_EXPIRES_AT_MS - 120_001);
+    refused(&service, &request);
+}
+
+#[test]
 fn a_signature_binds_the_batch_order_and_length() {
     let service = service();
     let owner = recipient_signer();
@@ -161,9 +173,27 @@ fn only_an_address_a_key_can_sign_for_has_service_keys() {
     // The identity point, of order one.
     let mut small_order = [0u8; 32];
     small_order[0] = 1;
+    let mixed_order = (0u8..=255)
+        .filter_map(|byte| ed25519_dalek::VerifyingKey::from_bytes(&[byte; 32]).ok())
+        .find(|key| !key.is_weak() && !key.to_edwards().is_torsion_free())
+        .expect("a non-small-order point with torsion")
+        .to_bytes();
+    let noncanonical = (0xedu8..=0xff)
+        .filter_map(|low| {
+            // Encodes y >= 2^255 - 19 instead of its canonical residue.
+            let mut bytes = [0xff; 32];
+            bytes[0] = low;
+            bytes[31] = 0x7f;
+            ed25519_dalek::VerifyingKey::from_bytes(&bytes).ok()
+        })
+        .find(|key| !key.is_weak() && key.to_edwards().compress().as_bytes() != key.as_bytes())
+        .expect("a noncanonical point accepted by the decoder")
+        .to_bytes();
     for address in [
         Pubkey::new_from_array(off_curve).to_string(),
         Pubkey::new_from_array(small_order).to_string(),
+        Pubkey::new_from_array(mixed_order).to_string(),
+        Pubkey::new_from_array(noncanonical).to_string(),
         "not base58!".to_owned(),
     ] {
         for operation in [

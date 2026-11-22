@@ -45,8 +45,8 @@ signs the request.
    `PublicKeys(address)`. Read the registry again before using the service
    keys. A registration found on the second read takes precedence, and a
    failed read stops resolution. Anyone can request the service viewing and
-   nullifier public keys. The enclave accepts on-curve Ed25519 addresses and
-   rejects small-order keys and program-derived addresses.
+   nullifier public keys. The enclave requires the canonical Ed25519 encoding
+   of a non-identity point in the prime-order subgroup.
    The SDK checks the returned X25519 key and the canonical BN254 nullifier
    key before using them.
 2. **Encrypt and publish.** The sender uses its ephemeral X25519 viewing
@@ -64,14 +64,15 @@ signs the request.
    off-chain message that binds the network, target release and Quorum identity,
    fresh request ID, ordered items, response public key, and exclusive deadline
    `expires_at_ms`. The SDK sets the deadline within 60 seconds and within the
-   verified session. It seals the signed request
+   verified session. The enclave accepts a deadline up to 120 seconds ahead of
+   its clock, allowing a minute of clock skew. The SDK seals the signed request
    to the pinned Quorum encryption key. An empty batch uses the same
    authorization to obtain the service nullifier secret.
 4. **Open inside the enclave.** The enclave authenticates the envelope,
    checks that it targets the running release, and verifies the owner's
-   Ed25519 signature. The deadline must be in the future. The verified signer
-   address alone selects the recipient
-   viewing secret for every item. Each item's ephemeral viewing public key
+   Ed25519 signature. The deadline must be in the enclave's acceptance window.
+   The verified signer address alone selects the viewing secret for every
+   item. Each item's ephemeral viewing public key
    is the sender's X25519 input. The enclave accepts up to 256 items. Any
    malformed item fails the entire batch.
 5. **Return and verify.** The enclave seals the ordered plaintexts and the

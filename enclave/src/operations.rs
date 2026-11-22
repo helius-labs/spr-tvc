@@ -14,6 +14,9 @@ use crate::cipher::open_ciphertexts;
 use crate::request::{open_envelope, respond, Failure};
 use crate::{http, owner, Service};
 
+// Wallets allow at most one minute for an approval, with one minute for clock skew.
+const MAX_APPROVAL_AHEAD_MS: u64 = 120_000;
+
 pub(crate) fn handle(service: &Service, body: &[u8]) -> Response<Body> {
     match execute(service, body) {
         Ok(response) => http::ok(response),
@@ -49,7 +52,7 @@ fn execute(service: &Service, body: &[u8]) -> Result<String, Failure> {
         } => {
             let address =
                 owner::verify_decrypt(signer, signature, service.info.network, &request_digest)?;
-            require_unexpired(service, *expires_at_ms)?;
+            require_current_approval(service, *expires_at_ms)?;
             let keys = service.note_seed.for_address(&address);
             let plaintexts = open_ciphertexts(&keys.viewing, items)?;
             ServiceResult::Decrypt(DecryptedOutputs {
@@ -66,14 +69,14 @@ fn execute(service: &Service, body: &[u8]) -> Result<String, Failure> {
         &result,
     )?;
     if let ServiceOperation::Decrypt { expires_at_ms, .. } = request.operation {
-        require_unexpired(service, expires_at_ms)?;
+        require_current_approval(service, expires_at_ms)?;
     }
     Ok(response)
 }
 
-fn require_unexpired(service: &Service, expires_at_ms: u64) -> Result<(), Failure> {
+fn require_current_approval(service: &Service, expires_at_ms: u64) -> Result<(), Failure> {
     let now = (service.now_ms)().ok_or(Failure::Unavailable)?;
-    if now >= expires_at_ms {
+    if !(1..=MAX_APPROVAL_AHEAD_MS).contains(&expires_at_ms.saturating_sub(now)) {
         return Err(Failure::Invalid);
     }
     Ok(())
