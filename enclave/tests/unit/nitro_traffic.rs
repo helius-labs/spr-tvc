@@ -13,6 +13,8 @@ fn reads_time_from_an_aws_nitro_document_and_rejects_malformed_evidence() {
     assert_eq!(nsm_timestamp_ms(&document), Some(1_795_290_719_965));
     let tagged = [&[0xd2], document.as_slice()].concat();
     assert_eq!(nsm_timestamp_ms(&tagged), Some(1_795_290_719_965));
+    let unknown_tag = [&[0xd1], document.as_slice()].concat();
+    assert_eq!(nsm_timestamp_ms(&unknown_tag), None);
     assert_eq!(nsm_timestamp_ms(&document[..document.len() - 1]), None);
     assert_eq!(nsm_timestamp_ms(&[]), None);
 }

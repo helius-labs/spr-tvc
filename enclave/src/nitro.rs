@@ -610,9 +610,13 @@ fn attest(
 
 // The caller gets fresh COSE_Sign1 bytes directly from NSM, never over vsock.
 fn nsm_timestamp_ms(document: &[u8]) -> Option<u64> {
-    use serde_cbor::Value::{Array, Bytes, Map};
+    use serde_cbor::Value::{Array, Bytes, Map, Tag};
 
-    let Array(fields) = serde_cbor::from_slice(document).ok()? else {
+    let cose = match serde_cbor::from_slice(document).ok()? {
+        Tag(18, value) => *value,
+        value => value,
+    };
+    let Array(fields) = cose else {
         return None;
     };
     let [Bytes(_), Map(_), Bytes(payload), Bytes(_)] = fields.as_slice() else {

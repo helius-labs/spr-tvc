@@ -313,7 +313,11 @@ entry contains the relay `hostRole` and reviewed `pcrs` from `measurements.json`
 
 A relay-pinned epoch requires RSA destinations and another relay-pinned epoch
 when rotating. Its source keys stay bound to the measured epoch relay and its
-approval roster. Commission the successor before switching approval rosters.
+approval roster. During a roster change, the active quorum registers the
+successor target and the successor's measured quorum approves each relay wrap.
+Commission the successor and retire the old source keys before the roster
+cutover. The wrapping tool refuses a source relay whose measured quorum has
+retired. A running source relay trusts its measured roster until its boot ends.
 The wire authorization signs the SHA-256 of
 `SPR/native-nitro/relay-release/v1` followed by a null byte and canonical
 statement JSON. KMS signatures retain DER encoding. Live six-account

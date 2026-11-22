@@ -29,7 +29,10 @@ requires two approvals of the exact RSA destination, relay boot and deadline.
 The relay reads Nitro time before opening the share and again before returning
 ciphertext. The approved target opens the ciphertext through attested KMS. Fresh
 relay evidence confirms share recovery before an acknowledgement or retirement
-proof is signed. Production qualification and roster cutover are pending.
+proof is signed. During roster rotation, the active quorum signs target
+registration and the epoch's measured quorum signs share releases. The old
+source keys must be retired before their quorum changes. Production
+qualification and roster cutover are pending.
 
 Custody and target signers require GitHub build provenance from the designated
 native EIF workflow at the exact ref and commit approved in review. Devnet can

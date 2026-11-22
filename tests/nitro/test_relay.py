@@ -19,6 +19,7 @@ PUBLIC = b"fixture SPKI for an immutable recovery key"
 RECEIPT = {"securityDomainId": DOMAIN, "custody": {"epoch": "1", "shareCommitments": ["ab" * 32]},
            "packages": [{"recipientSha256": hashlib.sha256(PUBLIC).hexdigest(), "ciphertext": "de" * 256}]}
 KEYS = [pin(key(i, 9)) for i in (10, 11, 12)]
+NEXT_KEYS = [pin(key(i, 9)) for i in (13, 14, 15)]
 
 
 class RelayTests(unittest.TestCase):
@@ -30,22 +31,41 @@ class RelayTests(unittest.TestCase):
     @patch("relay_wrap.load_epoch", return_value=(None, RECEIPT, [CUSTODIAN]))
     @patch("relay_wrap.relay_pins")
     @patch("relay_wrap.verify_target_approval")
-    def test_release_deadline_is_capped_by_the_next_approval_roster(
-        self, verify, _pins, _epoch, _target, _registered, _sealed, _recipient, _time,
+    def test_successor_can_wrap_before_cutover_and_old_roster_cannot_wrap_after(
+        self, verify, _pins, _epoch, _target, _registered, _sealed, _recipient, now,
     ):
         schedule = [
             {"fromEpoch": "1", "activeFrom": 0, "keys": KEYS},
-            {"fromEpoch": "2", "activeFrom": 20, "keys": [pin(key(i, 9)) for i in (13, 14, 15)]},
+            {"fromEpoch": "2", "activeFrom": 20, "keys": NEXT_KEYS},
         ]
         trust = {**TRUST, "approvalKeys": schedule}
-        for target_deadline, expected in [(15, 15), (30, 20)]:
-            verify.return_value = {
-                "network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "1",
-                "wrappingKeys": [key(1)], "wrappingAlgorithm": RSA_OAEP, "expiresAt": target_deadline,
-            }
-            statement, *_ = prepare(trust, {}, pathlib.Path("build"), 1, 7443)
-            self.assertEqual(statement["expiresAt"], expected)
-            verify.assert_called_with(trust, {}, at=10)
+        verify.return_value = {
+            "network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "2", "approvalFromEpoch": "1",
+            "wrappingKeys": [key(1)], "wrappingAlgorithm": RSA_OAEP, "expiresAt": 30,
+        }
+        source = (trust, {}, pathlib.Path("build"), 1, 7443)
+        statement, release_keys, *_ = prepare(*source)
+        self.assertEqual(statement["expiresAt"], 20)
+        self.assertEqual(release_keys, NEXT_KEYS)
+        verify.assert_called_with(trust, {}, at=10)
+
+        verify.return_value["expiresAt"] = 15
+        statement, *_ = prepare(*source)
+        self.assertEqual(statement["expiresAt"], 15)
+
+        now.return_value = 20
+        verify.return_value.update(custodyEpoch="1", approvalFromEpoch="2", expiresAt=30)
+        _sealed.reset_mock()
+        _recipient.reset_mock()
+        with self.assertRaisesRegex(ValueError, "approval roster has retired"):
+            prepare(*source)
+        _sealed.assert_not_called()
+        _recipient.assert_not_called()
+
+        verify.return_value["custodyEpoch"] = "2"
+        statement, release_keys, *_ = prepare(*source)
+        self.assertEqual(statement["expiresAt"], 30)
+        self.assertEqual(release_keys, NEXT_KEYS)
 
     @patch("relay.sealed_rsa_key", return_value=PUBLIC)
     @patch("relay.key_result")

@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from time import time
 
-from approval import add_approval, approval_roster, canonical, check_approvals, read_json, sha256
+from approval import add_approval, approval_roster, canonical, check_approvals, epoch_number, read_json, sha256
 from custody_ledger import load_epoch, require_active_epoch, verify_target_approval
 from deployment import require_registered_target, target
 from kms_policy import RSA_OAEP, target_algorithm
@@ -26,10 +26,11 @@ def prepare(trust, approval, build, index, port, inspection_profile=None):
     epoch = manifest["custodyEpoch"]
     relay = relay_pins(trust, epoch)
     _, receipt, custodians = load_epoch(trust, epoch)
-    keys, policies, _ = target(trust, approval, receipt, custodians, build)
+    _, policies, _ = target(trust, approval, receipt, custodians, build)
     require_registered_target(trust, manifest)
-    if keys != approval_roster(trust, epoch=epoch)["keys"]:
-        raise ValueError("the active approval keys do not match the epoch's relay roster")
+    roster = approval_roster(trust, epoch=epoch)
+    if epoch_number(roster["fromEpoch"]) < epoch_number(manifest["approvalFromEpoch"]):
+        raise ValueError("the relay's measured approval roster has retired")
     expires = min(manifest["expiresAt"], next(
         (entry["activeFrom"] for entry in trust["approvalKeys"] if entry["activeFrom"] > at),
         manifest["expiresAt"],
@@ -42,7 +43,7 @@ def prepare(trust, approval, build, index, port, inspection_profile=None):
         "relayKeyId": key_id, "targetDigest": sha256(manifest), "expiresAt": expires,
         "destinationPublicKey": destination.hex(),
     }
-    return statement, keys, receipt, custodians[index - 1], evidence
+    return statement, roster["keys"], receipt, custodians[index - 1], evidence
 
 
 def release(trust, approval, build, index, port, authorization):
