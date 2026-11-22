@@ -1,5 +1,6 @@
 import { awaitWithSignal } from "./request.js";
 import { remainingReleasePolicyMs } from "./operations.js";
+import { DecryptionServiceError } from "../protocol/error.js";
 import {
   connectAndVerifyTvc,
   type ConnectedTvcRuntime,
@@ -13,7 +14,7 @@ import {
  */
 export type DecryptionServiceSession = {
   /** The verified connection, verifying first when there is none or it no longer holds. */
-  context(signal: AbortSignal): Promise<ConnectedTvcRuntime>;
+  context(signal: AbortSignal, forPayment?: boolean): Promise<ConnectedTvcRuntime>;
   /** Drops `context` if it is still the current one, so the next call verifies again. */
   forget(context: ConnectedTvcRuntime): void;
 };
@@ -31,11 +32,23 @@ export function sessionFromConnector(
   let pending: Flight | null = null;
 
   return {
-    async context(signal): Promise<ConnectedTvcRuntime> {
+    async context(signal, forPayment): Promise<ConnectedTvcRuntime> {
       let flight: Flight | undefined;
       try {
         signal.throwIfAborted();
-        if (active && holds(active)) return active;
+        if (active && holds(active)) {
+          const cached = active;
+          if (forPayment && cached.requirePublishedPaymentPolicy) {
+            try {
+              await cached.requirePublishedPaymentPolicy(signal);
+            } catch (error) {
+              if (active === cached && error instanceof DecryptionServiceError &&
+                  error.code === "ReleasePolicySuperseded") active = null;
+              throw error;
+            }
+          }
+          return cached;
+        }
         active = null;
         if (!pending) {
           const controller = new AbortController();

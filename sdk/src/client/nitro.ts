@@ -138,6 +138,15 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
       nowMs: clock,
       ...window,
       requireCurrentCheckpoint,
+      async requirePublishedPaymentPolicy(signal) {
+        await requireCurrentCheckpoint(signal);
+        const { policy, update } = await readPublishedNitroPolicy(trust, signal);
+        await accept(update, signal);
+        if (policy.action === "revoke") throw new DecryptionServiceError("ReleasePolicyRevoked");
+        if (policy.recoveryOnly) throw new DecryptionServiceError("ReleasePolicyRecoveryOnly");
+        await requireCurrentCheckpoint(signal);
+        requireCurrentReleasePolicy(window, clock());
+      },
     };
   });
   return decryptionServiceFromSession(session, genesisHashForNetwork(trust.network), { requestTimeoutMs: config.requestTimeoutMs, retryPublicKeys: true });

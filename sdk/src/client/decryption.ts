@@ -74,7 +74,7 @@ export function decryptionServiceFromSession(
     for (;;) {
       let context: ConnectedTvcRuntime | undefined;
       try {
-        context = await session.context(signal);
+        context = await session.context(signal, forPayment);
         if (forPayment && context.recoveryOnly) {
           await context.requireCurrentCheckpoint?.(signal);
           throw new DecryptionServiceError("ReleasePolicyRecoveryOnly");

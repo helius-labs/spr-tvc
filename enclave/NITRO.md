@@ -379,8 +379,12 @@ The old client rejects `address()` and still supports the owner's signed
 `open()` flow against an attested replica. Owners scan old notes and sweep to
 wallet-local privacy keys under their own signatures. Stopping destination
 lookup protects supported wallets after they observe the cutover. On use, a
-wallet refreshes after 60 seconds from the start of its policy fetch. A permissionless sender
-can still pay a previously published destination. Earlier ciphertexts retain
+wallet refreshes its attestation session after 60 seconds from the start of
+its policy fetch. Payment lookups also read both policy heads before reusing
+a cached session. The TypeScript wallet builders repeat the lookup after
+assembling a transfer or preparing a deposit and require the same recipient
+keys. A permissionless sender can still pay a previously published destination.
+Earlier ciphertexts retain
 their exposure, and owners must retain access to the old domain until recovery
 is complete. [Cutover runbook](deploy/nitro/README.md#replace-a-compromised-seed)
 
