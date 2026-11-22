@@ -92,7 +92,7 @@ def replacement_targets(trust, scope):
     return candidates
 
 
-def qualified_boot(pinned_trust, candidates, scope, seed, *, after_ms=0, deadline=None, expected=None):
+def qualified_boot(pinned_trust, candidates, scope, seed, *, after_ms=0, deadline=None, expected=None, required_slots=None):
     timeout = 25 if deadline is None else min(25, deadline - time.monotonic())
     if timeout <= 0:
         raise ReplacementNotReady("replacement boot wait expired")
@@ -108,7 +108,9 @@ def qualified_boot(pinned_trust, candidates, scope, seed, *, after_ms=0, deadlin
         identity = sha256({"releaseId": observed["releaseId"], "pcrs": observed["pcrs"]})
         if identity in candidates:
             bootstrap = observed["bootstrap"]
-            retirement_bootstrap(bootstrap)
+            slots = retirement_bootstrap(bootstrap)
+            if required_slots is not None and slots != required_slots:
+                continue
             booted_at = epoch_number(bootstrap["bootedAtMs"])
             if booted_at <= after_ms or booted_at // 1000 + RECOVERY_WINDOW_SECONDS <= time.time():
                 continue
@@ -202,14 +204,15 @@ def commit_retirement(trust, wallet_trust, document):
     load_retirement(trust, epoch)
 
 
-def key_inventory(trust, epoch, index):
+def retirement_inventory(trust, epoch, index):
     if index not in range(1, 7):
         raise ValueError("invalid custody slot")
     document, custodians = load_retirement(trust, epoch)
     marker = document["manifest"]
     targets = list(registered_targets(trust, epoch, marker["receiptSha256"]))
     require_retirement_replication(trust, marker, targets)
-    return slot_inventory(trust, epoch, custodians[index - 1], targets, index)
+    role, keys = slot_inventory(trust, epoch, custodians[index - 1], targets, index)
+    return marker, role, keys
 
 
 def require_retirement_replication(trust, marker, targets):
@@ -258,8 +261,30 @@ def slot_inventory(trust, epoch, member, targets, index):
     return admin, keys
 
 
-def inspect_keys(trust, epoch, index, check_inactive):
-    return inspect_inventory(key_inventory(trust, epoch, index), check_inactive)
+def qualify_key_retirement(trust, wallet_trust, marker):
+    pinned_trust = pinned_wallet_trust(trust, wallet_trust)
+    replacement = marker["replacementEpoch"]
+    _, receipt, custodians = load_epoch(trust, replacement)
+    identity = marker["replacementTargetIdentity"]
+    target = replacement_targets(trust, marker).get(identity)
+    if target is None or sha256(target) != marker["replacementTargetSha256"]:
+        raise ValueError("retirement requires the originally approved replacement target")
+    slots = retirement_bootstrap(marker["replacementBootstrap"])
+    require_recovery_quorum(trust, marker, [custodians[slot - 1] for slot in slots])
+    evidence = qualified_boot(pinned_trust, {identity: target}, marker, receipt["custody"]["noteSeedCommitment"],
+                              required_slots=slots)
+    require_active_epoch(trust, replacement)
+    return evidence
+
+
+def inspect_keys(trust, epoch, index, check_inactive, *, wallet_trust=None):
+    if not check_inactive and wallet_trust is None:
+        raise ValueError("provide --wallet-trust before scheduling key deletion")
+    marker, role, keys = retirement_inventory(trust, epoch, index)
+    result = inspect_inventory((role, keys), check_inactive)
+    if not check_inactive:
+        result["replacement"] = qualify_key_retirement(trust, wallet_trust, marker)
+    return result
 
 
 def deleted_keys(region, account, keys, **options):
@@ -435,6 +460,7 @@ def main():
     inspect.add_argument("epoch")
     inspect.add_argument("share", type=int, choices=range(1, 7))
     inspect.add_argument("--check-inactive", action="store_true")
+    inspect.add_argument("--wallet-trust", type=Path, help="verify the live replacement before scheduling deletion")
     verify = commands.add_parser("verify-retired")
     verify.add_argument("wallet_trust", type=Path)
     verify.add_argument("epoch")
@@ -446,7 +472,7 @@ def main():
     try:
         trust = read_json(args.trust)
         if args.command == "inspect":
-            result = inspect_keys(trust, args.epoch, args.share, args.check_inactive)
+            result = inspect_keys(trust, args.epoch, args.share, args.check_inactive, wallet_trust=args.wallet_trust)
         elif args.command == "verify-retired":
             if args.output is not None and args.output.exists():
                 raise ValueError("retirement report already exists")

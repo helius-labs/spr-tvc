@@ -29,8 +29,9 @@ from deployment import register_target, require_registered_target
 from kms_policy import acknowledgement_policy, boot_pins
 from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, schedule, sign
 from provenance import describe
-from retirement import (commit_retirement, inspect_keys, key_inventory, prove_recovery, qualified_manifest, qualified_policy,
-                        main as retirement_main, replacement_targets, retirement_scope, sign_retirement, verify_retired)
+from retirement import (commit_retirement, inspect_keys, prove_recovery, qualified_manifest, qualified_policy,
+                        main as retirement_main, replacement_targets, retirement_inventory, retirement_scope,
+                        sign_retirement, verify_retired)
 
 READ_ROLE = "arn:aws:iam::000000000001:role/custodian"
 PUBLISHER = "arn:aws:iam::000000000008:role/publisher"
@@ -565,23 +566,23 @@ class CustodyLedgerTests(unittest.TestCase):
             return {**reply, "ReplicationStatus": "REPLICA", **change}
 
         with patch("custody_ledger.aws", side_effect=aws):
-            _, keys = key_inventory(self.trust, "1", 1)
+            _, _, keys = retirement_inventory(self.trust, "1", 1)
             self.assertIn(original_target["wrappingKeys"][0], keys)
             self.assertEqual(copied, set(self.objects))
             for name in self.objects:
                 pending.add(name)
                 with self.subTest(pending=name), self.assertRaisesRegex(ValueError, "has not completed S3 replication"):
-                    key_inventory(self.trust, "1", 1)
+                    retirement_inventory(self.trust, "1", 1)
                 pending.clear()
             changed_time = datetime.fromtimestamp(self.now + 1, timezone.utc).isoformat()
             for change in ({"VersionId": "new-version"}, {"LastModified": changed_time},
                            {"ReplicationStatus": "PENDING"}, {"body": b"{}"}):
                 with self.subTest(change=change), patch.dict(replica_change, change):
                     with self.assertRaisesRegex(ValueError, "differs from the pinned replica"):
-                        key_inventory(self.trust, "1", 1)
+                        retirement_inventory(self.trust, "1", 1)
             with patch.dict(replica_change, {"missing": True}):
                 with self.assertRaisesRegex(ValueError, "could not read.*retired/1.json from the pinned replica"):
-                    key_inventory(self.trust, "1", 1)
+                    retirement_inventory(self.trust, "1", 1)
             pending.add(marker_key)
             with self.assertRaisesRegex(ValueError, "has not completed S3 replication"):
                 verify_retired(self.trust, None, "1", [f"slot-{n}" for n in range(1, 7)], {}, 1)
@@ -935,7 +936,7 @@ class CustodyLedgerTests(unittest.TestCase):
             kms.assert_not_called()
 
         self.rotate_approvals("3")
-        role, inventory = key_inventory(self.trust, "1", 1)
+        _, role, inventory = retirement_inventory(self.trust, "1", 1)
         self.assertTrue(role.endswith(":role/retirement"))
         self.assertEqual(set(inventory), {key(1), key(1, 11), key(1, 12), key(1, 21)})
 
@@ -955,6 +956,7 @@ class CustodyLedgerTests(unittest.TestCase):
     @patch("retirement.require_recovery_quorum")
     @patch("retirement.qualified_policy")
     def test_unverified_retirement_halts_share_release_without_authorizing_key_retirement(self, qualification, _):
+        wallet = pathlib.Path("wallet.json")
         publish(self.trust, self.sign(self.document(1)))
         _, old, _ = load_epoch(self.trust, "1")
         self.rotate_approvals("2")
@@ -965,7 +967,7 @@ class CustodyLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cannot verify retirement record"):
             require_active_epoch(self.trust, "1")
         with patch("retirement.kms") as kms, self.assertRaises(ValueError):
-            inspect_keys(self.trust, "1", 1, False)
+            inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)
         kms.assert_not_called()
 
         replacement = self.replacement_target()
@@ -975,13 +977,13 @@ class CustodyLedgerTests(unittest.TestCase):
         wrong = self.signed_retirement({**marker, "replacementReceiptSha256": "ab" * 32})
         self.objects[path] = json.dumps(wrong).encode()
         with patch("retirement.kms") as kms, self.assertRaisesRegex(ValueError, "retirement receipts do not match the ledger"):
-            inspect_keys(self.trust, "1", 1, False)
+            inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)
         kms.assert_not_called()
 
         wrong = self.signed_retirement({**marker, "replacementTargetSha256": "ab" * 32})
         self.objects[path] = json.dumps(wrong).encode()
         with patch("retirement.kms") as kms, self.assertRaisesRegex(ValueError, "does not match the registered serving"):
-            inspect_keys(self.trust, "1", 1, False)
+            inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)
         kms.assert_not_called()
 
         self.objects[path] = json.dumps(self.signed_retirement(marker)).encode()
@@ -990,6 +992,63 @@ class CustodyLedgerTests(unittest.TestCase):
             require_active_epoch(stale, "1")
         with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
             require_active_epoch(self.trust, "1")
+
+    def test_pre_deletion_inspection_reattests_the_exact_replacement_and_proven_slots(self):
+        publish(self.trust, self.sign(self.document(1)))
+        rotated, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
+        publish(self.trust, self.sign(rotated))
+        replacement = self.replacement_target()
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
+        with (patch("retirement.qualified_policy", return_value=self.qualification(replacement)),
+              patch("retirement.require_recovery_quorum")):
+            marker = qualified_manifest(self.trust, None, "1", "2")
+            commit_retirement(self.trust, None, self.signed_retirement(marker))
+
+        self.now = marker["recoveryDeadline"] + 1
+        directory = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        wallet = directory / "wallet.json"
+        wallet.write_bytes(b"{}")
+        self.trust["walletTrustSha256"] = hashlib.sha256(wallet.read_bytes()).hexdigest()
+        boot = {**marker["replacementBootstrap"], "bootKeyId": "ae" * 32, "bootedAtMs": str(self.now * 1000)}
+        observed = {**target_attestation(replacement), "bootstrap": boot}
+        policy_digest = "bf" * 32
+        expected = {**self.qualification(replacement, policy_digest), "replacementBootstrap": boot}
+
+        def evidence(target):
+            return json.dumps({"policyDigest": policy_digest, "targets": [target]}).encode()
+
+        with (patch("retirement.inspect_inventory", side_effect=lambda *_args: {"keys": []}) as inspect,
+              patch("retirement.require_recovery_quorum") as quorum, patch("retirement.run_command") as query):
+            with self.assertRaisesRegex(ValueError, "provide --wallet-trust"):
+                inspect_keys(self.trust, "1", 1, False)
+            inspect.assert_not_called()
+
+            query.return_value.stdout = evidence(observed)
+            self.assertEqual(inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)["replacement"], expected)
+            self.assertEqual(query.call_args.kwargs["input"], b"{}")
+            _, _, members = load_epoch(self.trust, "2")
+            quorum.assert_called_once_with(self.trust, marker, [members[slot - 1] for slot in boot["slots"]])
+
+            different_slots = [4, 5, 6] if boot["slots"] != [4, 5, 6] else [1, 2, 3]
+            for other in (
+                {**observed, "bootstrap": {**boot, "slots": different_slots}},
+                {**observed, "bootstrap": marker["replacementBootstrap"]},
+                {**observed, "pcrs": {**observed["pcrs"], "4": "ab" * 48}},
+            ):
+                query.return_value.stdout = evidence(other)
+                with self.subTest(other=other), self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
+                    inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)
+            query.return_value.stdout = evidence(observed)
+            with patch("retirement.require_active_epoch", side_effect=[None, ValueError("custody epoch is retired")]):
+                with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
+                    inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)
+            query.reset_mock()
+            quorum.side_effect = ValueError("proven replacement key is unavailable")
+            with self.assertRaisesRegex(ValueError, "replacement key is unavailable"):
+                inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)
+            query.assert_not_called()
+            self.assertEqual(inspect_keys(self.trust, "1", 1, True), {"keys": []})
+            query.assert_not_called()
 
     def test_retirement_qualifies_only_a_live_registered_serving_replica_on_a_new_parent(self):
         publish(self.trust, self.sign(self.document(1)))
@@ -1079,7 +1138,7 @@ class CustodyLedgerTests(unittest.TestCase):
 
         profiles = [f"old-slot-{index}" for index in range(1, 7)]
         inventory = {arn: (profile, policy) for index, profile in enumerate(profiles, 1)
-                     for arn, policy in key_inventory(self.trust, "1", index)[1].items()}
+                     for arn, policy in retirement_inventory(self.trust, "1", index)[2].items()}
         host_profiles = {"000000000007": "old-rotation", "000000000010": "old-service"}
         active = key(6, 21)
         parents = [{"account": "000000000007", "region": REGION, "instanceId": INSTANCE, "state": "terminated"},
@@ -1391,7 +1450,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 commit_retirement(self.trust, None, bad)
             self.objects[path] = canonical(bad)
             with self.assertRaisesRegex(ValueError, message):
-                key_inventory(self.trust, "1", 1)
+                retirement_inventory(self.trust, "1", 1)
             del self.objects[path]
         quorum.assert_not_called()
 
@@ -1415,15 +1474,15 @@ class CustodyLedgerTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "different retirement record"):
                         commit_retirement(self.trust, None, conflict)
                 write.assert_not_called()
-            self.assertIn(key(1), key_inventory(self.trust, "1", 1)[1])
+            self.assertIn(key(1), retirement_inventory(self.trust, "1", 1)[2])
         qualification.assert_not_called()
         quorum.assert_not_called()
         self.timestamps[path] = datetime.fromtimestamp(self.now, timezone.utc).isoformat()
         with self.assertRaisesRegex(ValueError, "approval roster does not match its publication time"):
-            key_inventory(self.trust, "1", 1)
+            retirement_inventory(self.trust, "1", 1)
         self.timestamps[path] = datetime.fromtimestamp(deadline, timezone.utc).isoformat()
         with self.assertRaisesRegex(ValueError, "outside the recovery window"):
-            key_inventory(self.trust, "1", 1)
+            retirement_inventory(self.trust, "1", 1)
         with self.assertRaisesRegex(ValueError, "outside the recovery window"):
             commit_retirement(self.trust, None, retired)
 

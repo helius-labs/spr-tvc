@@ -369,7 +369,7 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-proof-3.json "$first_approval_key" > retire-signed-1.json
    python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-signed-1.json "$second_approval_key" > retire-signed-2.json
    python3 "$nitro/retirement.py" trust.json publish wallet-trust.json retire-signed-2.json
-   python3 "$nitro/retirement.py" trust.json inspect 1 "$share_index"
+   python3 "$nitro/retirement.py" trust.json inspect 1 "$share_index" --wallet-trust wallet-trust.json
    ```
 
    With a ledger replica configured, give the retirement inspection roles
@@ -380,9 +380,15 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    IDs and write times. The retirement marker closes the old epoch as soon as
    it commits on the source.
 
-   Before scheduling any deletion, cold-boot with exactly three current slots
-   and open a note from before rotation. Each retirement role verifies its
-   inventory, schedules approved keys, and repeats `inspect --check-inactive`.
+   Before scheduling any deletion, cold-boot the pinned replacement with the
+   three slots proved in the retirement marker and open a note from before
+   rotation. Each retirement role runs `inspect --wallet-trust` immediately
+   before scheduling. It checks that those recovery and wrapping keys are
+   enabled, the replacement epoch is open, and the original registered
+   target attests with those slots under the current wallet policy. A new boot
+   or policy revision can qualify with the same target and slots. The role
+   needs `kms:DescribeKey` for the six replacement keys. Use
+   `inspect --check-inactive` for the historical key state check after scheduling.
    Scheduling immediately disables cryptographic use. Canceling leaves the
    key disabled, and the sealed policy grants no permission to re-enable it.
    Give the verifier a KMS inspection profile for each old custody account
