@@ -76,8 +76,11 @@ def release_actor(actor_id, attempt):
 
 def require_available_reviewer(environment, actor_id, attempt):
     actor = release_actor(actor_id, attempt)
-    if environment["name"] != MAIN_ENVIRONMENT:
+    environment_id = environment.get("id")
+    if environment["name"] != MAIN_ENVIRONMENT or type(environment_id) is not int or environment_id <= 0:
         raise ValueError("expected the image-publish release environment")
+    if environment.get("can_admins_bypass") is not False:
+        raise ValueError("disable administrator bypass on image-publish before building for mainnet")
     for rule in environment["protection_rules"]:
         if rule["type"] != "required_reviewers":
             continue
@@ -88,19 +91,21 @@ def require_available_reviewer(environment, actor_id, attempt):
                 entry["type"] == "Team" or
                 (entry["type"] == "User" and reviewer["type"] == "User" and identity != actor)
             ):
-                return
+                return environment_id
     raise ValueError("image-publish has no required reviewer who can independently approve this dispatcher")
 
 
-def require_independent_review(reviews, actor_id, attempt):
+def require_independent_review(reviews, actor_id, attempt, environment_id):
     actor = release_actor(actor_id, attempt)
-    if not isinstance(reviews, list):
+    if not isinstance(reviews, list) or type(environment_id) is not int or environment_id <= 0:
         raise ValueError("invalid GitHub release review evidence")
     for review in reviews:
         reviewer = review["user"]
         if (review["state"] == "approved" and reviewer["type"] == "User" and
                 type(reviewer["id"]) is int and reviewer["id"] > 0 and reviewer["id"] != actor and
-                any(environment["name"] == MAIN_ENVIRONMENT for environment in review["environments"])):
+                any(environment["name"] == MAIN_ENVIRONMENT and
+                    type(environment.get("id")) is int and environment["id"] == environment_id
+                    for environment in review["environments"])):
             return
     raise ValueError("mainnet build requires an image-publish approval from another GitHub user")
 
@@ -121,10 +126,12 @@ def main():
     artifact.add_argument("network", choices=("devnet", "mainnet"))
     artifact.add_argument("source_commit")
     artifact.add_argument("provenance_sha256")
-    for command in ("check-reviewers", "check-review"):
-        review = commands.add_parser(command)
-        review.add_argument("actor_id")
-        review.add_argument("attempt")
+    reviewers = commands.add_parser("check-reviewers")
+    review = commands.add_parser("check-review")
+    for command in (reviewers, review):
+        command.add_argument("actor_id")
+        command.add_argument("attempt")
+    review.add_argument("environment_id", type=int)
     args = parser.parse_args()
     try:
         if args.command == "describe":
@@ -138,9 +145,9 @@ def main():
         else:
             evidence = parse_json(sys.stdin.buffer.read(MAX_DOCUMENT_BYTES + 1))
             if args.command == "check-reviewers":
-                require_available_reviewer(evidence, args.actor_id, args.attempt)
+                print(require_available_reviewer(evidence, args.actor_id, args.attempt))
             else:
-                require_independent_review(evidence, args.actor_id, args.attempt)
+                require_independent_review(evidence, args.actor_id, args.attempt, args.environment_id)
     except (OSError, TypeError, ValueError, KeyError, subprocess.SubprocessError) as error:
         raise SystemExit(str(error)) from None
 

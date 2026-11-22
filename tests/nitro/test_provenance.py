@@ -12,15 +12,16 @@ from approval import MAX_DOCUMENT_BYTES, canonical
 from provenance import WORKFLOW, check_artifact, describe, require_available_reviewer, require_independent_review, verify
 
 COMMIT = "ab" * 20
+ENVIRONMENT_ID = 73
 
 
 class IndependentReleaseReviewTests(unittest.TestCase):
     review = {"state": "approved", "user": {"id": 2, "type": "User"},
-              "environments": [{"name": "image-publish"}]}
+              "environments": [{"name": "image-publish", "id": ENVIRONMENT_ID}]}
 
     def test_requires_a_configured_reviewer_before_building_mainnet(self):
         def environment(*reviewers):
-            return {"name": "image-publish", "protection_rules": [
+            return {"name": "image-publish", "id": ENVIRONMENT_ID, "can_admins_bypass": False, "protection_rules": [
                 {"type": "branch_policy"}, {"type": "required_reviewers", "reviewers": reviewers},
             ]}
 
@@ -28,7 +29,7 @@ class IndependentReleaseReviewTests(unittest.TestCase):
         other = {"type": "User", "reviewer": {"id": 2, "type": "User"}}
         team = {"type": "Team", "reviewer": {"id": 1}}
         for reviewers in ((other,), (dispatcher, other), (team,)):
-            require_available_reviewer(environment(*reviewers), "1", "1")
+            self.assertEqual(require_available_reviewer(environment(*reviewers), "1", "1"), ENVIRONMENT_ID)
         bot = {"type": "User", "reviewer": {"id": 2, "type": "Bot"}}
         invalid_id = {"type": "User", "reviewer": {"id": True, "type": "User"}}
         for reviewers in ((), (dispatcher,), (bot,), (invalid_id,)):
@@ -38,25 +39,32 @@ class IndependentReleaseReviewTests(unittest.TestCase):
             require_available_reviewer({**environment(), "protection_rules": []}, "1", "1")
         with self.assertRaisesRegex(ValueError, "expected the image-publish"):
             require_available_reviewer({**environment(other), "name": "native-eif-devnet"}, "1", "1")
+        with self.assertRaisesRegex(ValueError, "expected the image-publish"):
+            require_available_reviewer({**environment(other), "id": True}, "1", "1")
+        for bypass in (True, 0, None):
+            with self.subTest(bypass=bypass), self.assertRaisesRegex(ValueError, "disable administrator bypass"):
+                require_available_reviewer({**environment(other), "can_admins_bypass": bypass}, "1", "1")
         with self.assertRaisesRegex(ValueError, "dispatch a new mainnet build"):
             require_available_reviewer(environment(other), "1", "2")
 
     def test_requires_an_independent_approval_of_the_production_environment(self):
-        require_independent_review([self.review], "1", "1")
+        require_independent_review([self.review], "1", "1", ENVIRONMENT_ID)
         for reviews in ([], [{**self.review, "state": "rejected"}],
-                        [{**self.review, "environments": [{"name": "native-eif-devnet"}]}],
+                        [{**self.review, "environments": [{"name": "native-eif-devnet", "id": ENVIRONMENT_ID}]}],
+                        [{**self.review, "environments": [{"name": "image-publish", "id": ENVIRONMENT_ID + 1}]}],
+                        [{**self.review, "environments": [{"name": "image-publish"}]}],
                         [{**self.review, "user": {"id": 1, "type": "User"}}],
                         [{**self.review, "user": {"id": 2, "type": "Bot"}}],
                         [{**self.review, "user": {"id": True, "type": "User"}}]):
             with self.subTest(reviews=reviews), self.assertRaisesRegex(ValueError, "from another GitHub user"):
-                require_independent_review(reviews, "1", "1")
+                require_independent_review(reviews, "1", "1", ENVIRONMENT_ID)
 
     def test_rejects_old_run_attempts_and_missing_dispatch_identity(self):
         with self.assertRaisesRegex(ValueError, "dispatch a new mainnet build"):
-            require_independent_review([self.review], "1", "2")
+            require_independent_review([self.review], "1", "2", ENVIRONMENT_ID)
         for actor in ("", "0", "invalid"):
             with self.subTest(actor=actor), self.assertRaisesRegex(ValueError, "invalid GitHub release review evidence"):
-                require_independent_review([self.review], actor, "1")
+                require_independent_review([self.review], actor, "1", ENVIRONMENT_ID)
 
 
 class ProvenanceTests(unittest.TestCase):

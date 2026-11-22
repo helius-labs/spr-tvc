@@ -162,9 +162,11 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    configuration before packaging.
    Dispatch `publish-enclave-image.yml` with the public configuration. For
    devnet, use the reviewed branch. Dispatch mainnet builds from protected `main`.
-   Before building, the workflow checks that `image-publish` has a required
-   reviewer other than the dispatcher or a configured review team. A different
-   GitHub user reviews the artifact linked in the run summary and approves it.
+   In the `image-publish` environment, disable administrator bypass and
+   configure a required reviewer other than the dispatcher or a review team.
+   A different GitHub user reviews the artifact linked in the run summary and
+   approves it. The workflow checks the environment before building and again
+   before signing. The recorded approval must name the same environment ID.
    If the sole required reviewer must dispatch, add another required reviewer
    first. Dispatch a new run if the build needs another attempt.
    The reviewer records the summary's **Build review pins** as `review.json`
