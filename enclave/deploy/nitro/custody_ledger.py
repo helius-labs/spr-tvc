@@ -6,6 +6,7 @@ import hashlib
 import re
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 from approval import (
@@ -20,6 +21,8 @@ LABEL = "custody-epoch"
 ACKNOWLEDGEMENT = "custodian-acknowledgement"
 TARGET_APPROVAL = "target-approval"
 RETIREMENT = "custody-retirement"
+RETIREMENT_RECOVERY = "retirement-recovery"
+RECOVERY_WINDOW_SECONDS = 24 * 60 * 60
 RECOVERY_SPECS = {"RSA_2048", "RSA_3072", "RSA_4096"}
 
 
@@ -122,11 +125,15 @@ def storage(trust, operation, args):
 
 
 def read_object(trust, name):
+    return read_stored_object(trust, name)[0]
+
+
+def read_stored_object(trust, name):
     _, prefix = ledger_prefix(trust)
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "record.json"
-        storage(trust, "get-object", ["--key", prefix + name, "--range", f"bytes=0-{MAX_DOCUMENT_BYTES}", str(path)])
-        return read_json(path)
+        metadata = storage(trust, "get-object", ["--key", prefix + name, "--range", f"bytes=0-{MAX_DOCUMENT_BYTES}", str(path)])
+        return read_json(path), metadata
 
 
 def write_once(trust, name, document, subject):
@@ -255,12 +262,33 @@ def read_registered_target(trust, name, epoch, receipt_digest):
     return target
 
 
+def retirement_approval(document):
+    fields(document, "manifest", "signatures", "recoveryProofs")
+    return {"manifest": document["manifest"], "signatures": document["signatures"]}
+
+
+def retirement_recovery(document, custodians):
+    proofs = {"manifest": document["manifest"], "signatures": document["recoveryProofs"]}
+    keys = [member["acknowledgementKey"] for member in custodians]
+    check_approvals(keys, RETIREMENT_RECOVERY, proofs, minimum=3)
+    proven = {proof["keyArn"] for proof in proofs["signatures"]}
+    return [member for member in custodians if member["acknowledgementKey"]["keyArn"] in proven]
+
+
+def recovery_deadline(manifest):
+    deadline = manifest["recoveryDeadline"]
+    if type(deadline) is not int or not RECOVERY_WINDOW_SECONDS < deadline < 2**53:
+        raise ValueError("invalid retirement recovery deadline")
+    return deadline
+
+
 def verify_retirement(trust, document, epoch):
-    fields(document, "manifest", "signatures")
+    approval = retirement_approval(document)
     manifest = document["manifest"]
     fields(manifest, "network", "securityDomainId", "epoch", "receiptSha256", "replacementEpoch",
            "replacementReceiptSha256", "replacementCustodyDigest", "replacementTargetIdentity", "replacementTargetSha256",
-           "approvalFromEpoch", "walletPolicyDigest")
+           "approvalFromEpoch", "walletPolicyDigest", "recoveryDeadline")
+    recovery_deadline(manifest)
     if ((manifest["network"], manifest["securityDomainId"], manifest["epoch"]) !=
             (trust["network"], trust["securityDomainId"], epoch) or
             epoch_number(manifest["replacementEpoch"]) <= epoch_number(epoch)):
@@ -271,19 +299,30 @@ def verify_retirement(trust, document, epoch):
     start = manifest["approvalFromEpoch"]
     if not any(entry["fromEpoch"] == start for entry in trust["approvalKeys"]):
         raise ValueError("unknown retirement approval roster")
-    check_approvals(approval_keys(trust, start), RETIREMENT, document)
+    check_approvals(approval_keys(trust, start), RETIREMENT, approval)
     return manifest
 
 
+def read_retirement(trust, epoch):
+    document, metadata = read_stored_object(trust, retirement_object_name(epoch))
+    marker = verify_retirement(trust, document, epoch)
+    committed = datetime.fromisoformat(metadata["LastModified"])
+    deadline = recovery_deadline(marker)
+    if committed.tzinfo is None or not deadline - RECOVERY_WINDOW_SECONDS <= committed.timestamp() < deadline:
+        raise ValueError("retirement was published outside the recovery window")
+    return document, marker
+
+
 def load_retirement(trust, epoch):
-    marker = verify_retirement(trust, read_object(trust, retirement_object_name(epoch)), epoch)
+    document, marker = read_retirement(trust, epoch)
     _, previous, custodians = load_epoch(trust, epoch)
     replacement_epoch = marker["replacementEpoch"]
-    _, replacement, _ = load_epoch(trust, replacement_epoch)
+    _, replacement, replacement_custodians = load_epoch(trust, replacement_epoch)
     if (marker["receiptSha256"] != sha256(previous) or marker["replacementReceiptSha256"] != sha256(replacement) or
             marker["replacementCustodyDigest"] != sha256(replacement["custody"]) or
             previous["custody"]["noteSeedCommitment"] != replacement["custody"]["noteSeedCommitment"]):
         raise ValueError("retirement receipts do not match the ledger")
+    retirement_recovery(document, replacement_custodians)
     name = target_path(replacement_epoch, marker["replacementTargetIdentity"])
     target = read_registered_target(trust, name, replacement_epoch, marker["replacementReceiptSha256"])
     if target["mode"] != "serve" or sha256(target) != marker["replacementTargetSha256"]:
@@ -416,10 +455,7 @@ def sign_epoch(trust, document, key, build, source_commit, source_ref):
     return {**document, "authorization": add_approval(keys, LABEL, authorization, key)}
 
 
-def acknowledge(trust, document, index):
-    receipt, custodians = record(trust, document)
-    check_approvals(approval_keys(trust, receipt["custody"]["epoch"]), LABEL, document["authorization"])
-    check_previous(trust, document, receipt)
+def sign_share_recovery(custodians, receipt, index, label, approval):
     if index not in range(1, 7):
         raise ValueError("invalid custody slot")
     custodian = custodians[index - 1]
@@ -429,8 +465,15 @@ def acknowledge(trust, document, index):
         raise ValueError("installed acknowledgement policy does not match the custodian role")
     open_share(custodian, receipt, index)
     keys = [member["acknowledgementKey"] for member in custodians]
-    approved = add_approval(keys, ACKNOWLEDGEMENT, acknowledgements(document), key)
-    return {**document, "acknowledgements": approved["signatures"]}
+    return add_approval(keys, label, approval, key)["signatures"]
+
+
+def acknowledge(trust, document, index):
+    receipt, custodians = record(trust, document)
+    check_approvals(approval_keys(trust, receipt["custody"]["epoch"]), LABEL, document["authorization"])
+    check_previous(trust, document, receipt)
+    signatures = sign_share_recovery(custodians, receipt, index, ACKNOWLEDGEMENT, acknowledgements(document))
+    return {**document, "acknowledgements": signatures}
 
 
 def publish(trust, document):

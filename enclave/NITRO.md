@@ -62,15 +62,17 @@ registered destination. A custodian workstation temporarily sees its one share. 
 rewraps it for the target. The host sees ciphertext during this flow.
 
 The wallet publishers raise the custody floor after the replacement attests.
-Custody signers then verify the published floor and the exact replacement
-receipt. They check that at least three replacement recovery keys are enabled
-and match a live attested replica to a registered serving target by
-release ID and PCR0–PCR3. The retirement record pins that target. Operators
-verify it against both committed receipts and the target registry before
-producing the key inventory. An unverifiable record halts new wraps and requires ledger
-recovery. The retirement roles make the inventoried keys unusable. Drain the
-old enclaves before collecting retirement evidence. A reconstructed seed
-remains in its serving enclave's memory until that enclave stops.
+Three replacement custodians reopen their committed recovery packages and
+sign the same retirement candidate with their acknowledgement keys. The
+proofs bind both receipts, the wallet policy, the registered serving target
+and a 24-hour deadline. Custody signers and the publisher verify the proofs
+and confirm at least three proven recovery keys are enabled. They match a
+live replica to the registered serving target by release ID and PCR0–PCR3.
+The ledger checks the S3 write time against the proof window and verifies
+both receipts, the signatures and the target before producing the key
+inventory. An unverifiable record halts new wraps and requires ledger recovery.
+Drain the old enclaves before collecting retirement evidence. A reconstructed
+seed remains in its serving enclave's memory until that enclave stops.
 
 A serving EIF measures its network, release, security domain and current
 custody record. Both serving and rotation use the same bootstrap:

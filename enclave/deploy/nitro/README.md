@@ -193,22 +193,30 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    `minimumCustodyEpoch` at the new epoch. Drain old sessions and stop the old
    enclaves. An older executable can be built for the current epoch if needed.
 4. Pin the file SHA-256 of the independently distributed wallet trust bundle
-   as `walletTrustSha256` in the custody trust file. Draft, sign twice and
-   publish a retirement record. Each step verifies the canonical wallet policy
-   and attests its replacement replicas against the exact committed custody
-   record. Each operator needs `kms:DescribeKey` on the replacement receipt's
-   six recovery keys. The command checks that at least three are enabled.
-   At least one live replica must match a serving target in the custody
-   ledger by release ID and PCR0–PCR3. Both public buckets must agree before
-   and after attestation. The signed retirement record pins the matched target
-   and closes the old epoch to new wraps. Each slot's inventory includes its
-   recovery key and all wrapping
-   keys registered before retirement, including those from in-flight requests.
+   as `walletTrustSha256` in the custody trust file. Three current custodians
+   run `prove-recovery` in their respective roles. Each command reopens that
+   custodian's package from the replacement receipt and signs the retirement
+   candidate with its acknowledgement key. Keep those keys enabled for the
+   current epoch. Pass each output to the next custodian.
+
+   Two custody approval signers then sign, and the ledger publisher commits
+   the record within 24 hours of drafting. Signers and the publisher need
+   `kms:DescribeKey` on the proven recovery keys and check that at least
+   three are enabled. Draft, sign and publish check that both public buckets
+   agree before and after attestation and that a live replacement matches
+   the registered serving target. If the policy changes or the window closes,
+   draft a new candidate. A committed record closes the old epoch to new
+   wraps. Its key inventory includes wrapping keys registered before the
+   commit, including those for requests in flight.
 
    ```sh
    python3 "$nitro/retirement.py" trust.json draft wallet-trust.json 1 2 > retire-draft.json
-   python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-draft.json "$approval_key" > retire-signed.json
-   python3 "$nitro/retirement.py" trust.json publish wallet-trust.json retire-signed.json
+   python3 "$nitro/retirement.py" trust.json prove-recovery retire-draft.json 2 > retire-proof-1.json
+   python3 "$nitro/retirement.py" trust.json prove-recovery retire-proof-1.json 4 > retire-proof-2.json
+   python3 "$nitro/retirement.py" trust.json prove-recovery retire-proof-2.json 6 > retire-proof-3.json
+   python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-proof-3.json "$first_approval_key" > retire-signed-1.json
+   python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-signed-1.json "$second_approval_key" > retire-signed-2.json
+   python3 "$nitro/retirement.py" trust.json publish wallet-trust.json retire-signed-2.json
    python3 "$nitro/retirement.py" trust.json inspect 1 "$share_index"
    ```
 

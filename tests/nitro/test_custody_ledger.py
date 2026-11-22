@@ -4,21 +4,25 @@ import json
 import pathlib
 import sys
 import tempfile
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from threading import Lock
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import approval_keys, canonical, sha256
 from custody_ledger import (
-    ACKNOWLEDGEMENT, LABEL, RETIREMENT, TARGET_APPROVAL, acknowledge, ledger_policy, ledger_reader_policy, load_epoch,
-    draft, publish, record, sign_epoch, target_attestation, target_object_name, verify_archive, write_once,
+    ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
+    draft, ledger_policy, ledger_reader_policy, load_epoch, publish, record, sign_epoch, target_attestation,
+    target_object_name, verify_archive, write_once,
 )
 from deployment import register_target, require_active_epoch, require_registered_target
 from kms_policy import acknowledgement_policy, boot_pins
 from nitro_fixtures import DOMAIN, HOST, key, pin, schedule, sign
-from retirement import commit_retirement, inspect_keys, key_inventory, qualified_manifest, qualified_policy, retirement_scope
+from retirement import (commit_retirement, inspect_keys, key_inventory, prove_recovery, qualified_manifest, qualified_policy,
+                        retirement_scope, sign_retirement)
 
 READ_ROLE = "arn:aws:iam::000000000001:role/custodian"
 PUBLISHER = "arn:aws:iam::000000000008:role/publisher"
@@ -33,6 +37,7 @@ class CustodyLedgerTests(unittest.TestCase):
             "ledger": {"bucket": "custody-journal", "account": "000000000008", "region": "eu-north-1"},
         }
         self.objects = {}
+        self.timestamps = {}
         self.lock = Lock()
         self.enterContext(patch("custody_ledger.aws", side_effect=self.aws))
         self.enterContext(patch("approval.kms", side_effect=AssertionError("receipt verification must not call KMS")))
@@ -102,8 +107,10 @@ class CustodyLedgerTests(unittest.TestCase):
                 if name in self.objects:
                     raise ValueError("precondition failed")
                 self.objects[name] = pathlib.Path(args[-1]).read_bytes()
+                self.timestamps[name] = datetime.now(timezone.utc).isoformat()
             elif operation == "get-object" and name in self.objects:
                 pathlib.Path(args[-1]).write_bytes(self.objects[name])
+                return {"LastModified": self.timestamps.get(name, datetime.now(timezone.utc).isoformat())}
             else:
                 raise ValueError("object missing")
         return {}
@@ -287,6 +294,13 @@ class CustodyLedgerTests(unittest.TestCase):
         return {"walletPolicyDigest": policy_digest, "replacementTargetIdentity": sha256(target_attestation(target)),
                 "replacementTargetSha256": sha256(target)}
 
+    def signed_retirement(self, manifest, slots=(1, 2, 3)):
+        result = self.signed_subject(RETIREMENT, manifest)
+        _, _, roster = load_epoch(self.trust, manifest["replacementEpoch"])
+        result["recoveryProofs"] = [sign(RETIREMENT_RECOVERY, manifest, roster[index - 1]["acknowledgementKey"]["keyArn"])
+                                    for index in slots]
+        return result
+
     def replacement_target(self, **overrides):
         _, receipt, _ = load_epoch(self.trust, "2")
         return {"network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "2",
@@ -318,7 +332,7 @@ class CustodyLedgerTests(unittest.TestCase):
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
         qualification.return_value = self.qualification(replacement)
         marker = qualified_manifest(self.trust, None, "1", "2")
-        retired = self.signed_subject(RETIREMENT, marker)
+        retired = self.signed_retirement(marker)
         qualification.return_value = self.qualification(replacement, "cd" * 32)
         with self.assertRaisesRegex(ValueError, "no longer matches"):
             commit_retirement(self.trust, None, retired)
@@ -376,19 +390,19 @@ class CustodyLedgerTests(unittest.TestCase):
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
         qualification.return_value = self.qualification(replacement)
         marker = qualified_manifest(self.trust, None, "1", "2")
-        wrong = self.signed_subject(RETIREMENT, {**marker, "replacementReceiptSha256": "ab" * 32})
+        wrong = self.signed_retirement({**marker, "replacementReceiptSha256": "ab" * 32})
         self.objects[path] = json.dumps(wrong).encode()
         with patch("retirement.kms") as kms, self.assertRaisesRegex(ValueError, "retirement receipts do not match the ledger"):
             inspect_keys(self.trust, "1", 1, False)
         kms.assert_not_called()
 
-        wrong = self.signed_subject(RETIREMENT, {**marker, "replacementTargetSha256": "ab" * 32})
+        wrong = self.signed_retirement({**marker, "replacementTargetSha256": "ab" * 32})
         self.objects[path] = json.dumps(wrong).encode()
         with patch("retirement.kms") as kms, self.assertRaisesRegex(ValueError, "does not match the registered serving"):
             inspect_keys(self.trust, "1", 1, False)
         kms.assert_not_called()
 
-        self.objects[path] = json.dumps(self.signed_subject(RETIREMENT, marker)).encode()
+        self.objects[path] = json.dumps(self.signed_retirement(marker)).encode()
         stale = {**self.trust, "approvalKeys": self.trust["approvalKeys"][:1]}
         with self.assertRaisesRegex(ValueError, "cannot verify.*unknown retirement approval roster"):
             require_active_epoch(stale, "1")
@@ -400,7 +414,8 @@ class CustodyLedgerTests(unittest.TestCase):
         _, old, _ = load_epoch(self.trust, "1")
         rotated, _ = self.rotation_document(old)
         publish(self.trust, self.sign(rotated))
-        scope, seed, _ = retirement_scope(self.trust, "1", "2")
+        scope, receipt, _ = retirement_scope(self.trust, "1", "2")
+        seed = receipt["custody"]["noteSeedCommitment"]
         registered = self.replacement_target()
         pins = {key.removeprefix("PCR"): value for key, value in boot_pins(HOST, registered["pcrs"]).items()}
         evidence = {"policyDigest": "fe" * 32, "targets": [{"releaseId": registered["releaseId"], "pcrs": pins}]}
@@ -462,14 +477,14 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertEqual(len([name for name in self.objects if "/targets/2/" in name]), 1)
 
     @patch("retirement.qualified_policy")
-    def test_retirement_requires_three_enabled_recovery_keys_in_the_replacement_epoch(self, qualification):
+    def test_retirement_requires_three_proven_replacement_keys_to_stay_enabled(self, qualification):
         publish(self.trust, self.sign(self.document(1)))
         _, old, _ = load_epoch(self.trust, "1")
         rotated, _ = self.rotation_document(old)
         publish(self.trust, self.sign(rotated))
         _, _, custodians = load_epoch(self.trust, "2")
         keys = [item["recoveryKeyArn"] for item in custodians]
-        states = ["Enabled", "Enabled", "Disabled", "PendingDeletion", None, "foreign"]
+        states = ["Enabled", "Enabled", "Disabled", "Enabled", None, "foreign"]
 
         def describe(arn, operation):
             self.assertEqual(operation, "describe-key")
@@ -481,13 +496,90 @@ class CustodyLedgerTests(unittest.TestCase):
                                     "KeyState": "Enabled" if state == "foreign" else state}}
 
         with patch("retirement.kms", side_effect=describe):
-            with self.assertRaisesRegex(ValueError, "only 2 verified enabled recovery keys"):
-                qualified_manifest(self.trust, None, "1", "2")
-            qualification.assert_not_called()
-            states[2] = "Enabled"
             qualification.return_value = self.qualification(self.replacement_target())
             marker = qualified_manifest(self.trust, None, "1", "2")
+            retirement = self.signed_retirement(marker)
+            with self.assertRaisesRegex(ValueError, "only 2 proven replacement recovery keys"):
+                commit_retirement(self.trust, None, retirement)
+            states[2] = "Enabled"
+            with patch("retirement.add_approval", return_value={"signatures": retirement["signatures"]}):
+                self.assertEqual(sign_retirement(self.trust, None, {**retirement, "signatures": []},
+                                                 approval_keys(self.trust)[0]["keyArn"]), retirement)
             states[2] = "PendingDeletion"
-            with self.assertRaisesRegex(ValueError, "only 2 verified enabled recovery keys"):
-                commit_retirement(self.trust, None, self.signed_subject(RETIREMENT, marker))
+            with self.assertRaisesRegex(ValueError, "only 2 proven replacement recovery keys"):
+                commit_retirement(self.trust, None, retirement)
             self.assertTrue(all("/retired/" not in name for name in self.objects))
+            commit_retirement(self.trust, None, self.signed_retirement(marker, (1, 2, 4)))
+
+    @patch("retirement.require_recovery_quorum")
+    @patch("retirement.qualified_policy")
+    def test_retirement_binds_three_distinct_proofs_to_one_candidate_and_publication_window(self, qualification, quorum):
+        publish(self.trust, self.sign(self.document(1)))
+        _, old, _ = load_epoch(self.trust, "1")
+        rotated, _ = self.rotation_document(old)
+        publish(self.trust, self.sign(rotated))
+        replacement = self.replacement_target()
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
+        qualification.return_value = self.qualification(replacement)
+        marker = qualified_manifest(self.trust, None, "1", "2")
+        retired = self.signed_retirement(marker)
+        proofs = retired["recoveryProofs"]
+        other = self.signed_retirement({**marker, "recoveryDeadline": marker["recoveryDeadline"] - 1})
+        path = f"spr-custody/devnet/{DOMAIN}/retired/1.json"
+        for invalid, message in ((proofs[:2], "signing quorum"), ([*proofs[:2], proofs[0]], "duplicate approval"),
+                                 (rotated["acknowledgements"], "invalid custody approval signature"),
+                                 (other["recoveryProofs"], "invalid custody approval signature")):
+            bad = {**retired, "recoveryProofs": invalid}
+            with self.assertRaisesRegex(ValueError, message):
+                sign_retirement(self.trust, None, bad, approval_keys(self.trust)[0]["keyArn"])
+            with self.assertRaisesRegex(ValueError, message):
+                commit_retirement(self.trust, None, bad)
+            self.objects[path] = canonical(bad)
+            with self.assertRaisesRegex(ValueError, message):
+                key_inventory(self.trust, "1", 1)
+            del self.objects[path]
+        quorum.assert_not_called()
+
+        deadline = marker["recoveryDeadline"]
+        for now in (deadline - RECOVERY_WINDOW_SECONDS - 1, deadline, deadline - 1):
+            with patch("retirement.time.time", return_value=now):
+                with self.assertRaisesRegex(ValueError, "recovery window"):
+                    commit_retirement(self.trust, None, retired)
+        self.assertNotIn(path, self.objects)
+        commit_retirement(self.trust, None, retired)
+        commit_retirement(self.trust, None, retired)
+        with patch("retirement.time.time", return_value=deadline + 1):
+            self.assertIn(key(1), key_inventory(self.trust, "1", 1)[1])
+        self.timestamps[path] = datetime.fromtimestamp(deadline, timezone.utc).isoformat()
+        with self.assertRaisesRegex(ValueError, "outside the recovery window"):
+            key_inventory(self.trust, "1", 1)
+
+    @patch("retirement.qualified_policy")
+    def test_replacement_custodian_proves_recovery_only_after_opening_the_committed_share(self, qualification):
+        publish(self.trust, self.sign(self.document(1)))
+        _, old, _ = load_epoch(self.trust, "1")
+        rotated, _ = self.rotation_document(old)
+        publish(self.trust, self.sign(rotated))
+        qualification.return_value = self.qualification(self.replacement_target())
+        marker = qualified_manifest(self.trust, None, "1", "2")
+        candidate = {"manifest": marker, "signatures": [], "recoveryProofs": []}
+        _, receipt, roster = load_epoch(self.trust, "2")
+        member = roster[1]
+        key_arn = member["acknowledgementKey"]["keyArn"]
+        policy = acknowledgement_policy(member["custodianRole"], member["retirementRole"])
+        with (patch("custody_ledger.kms", return_value={"Policy": json.dumps(policy)}) as kms,
+              patch("custody_ledger.open_share", side_effect=ValueError("recovery failed")) as open_share,
+              patch("custody_ledger.add_approval") as approval):
+            with self.assertRaisesRegex(ValueError, "committed receipts"):
+                prove_recovery(self.trust, {**candidate, "manifest": {**marker, "replacementReceiptSha256": "ab" * 32}}, 2)
+            kms.assert_not_called()
+            with self.assertRaisesRegex(ValueError, "recovery failed"):
+                prove_recovery(self.trust, candidate, 2)
+            open_share.assert_called_once_with(member, receipt, 2)
+            approval.assert_not_called()
+            open_share.side_effect = None
+            approval.return_value = {"signatures": [sign(RETIREMENT_RECOVERY, marker, key_arn)]}
+            proven = prove_recovery(self.trust, candidate, 2)
+            self.assertEqual(len(proven["recoveryProofs"]), 1)
+            approval.assert_called_once_with([item["acknowledgementKey"] for item in roster], RETIREMENT_RECOVERY,
+                                             {"manifest": marker, "signatures": []}, key_arn)

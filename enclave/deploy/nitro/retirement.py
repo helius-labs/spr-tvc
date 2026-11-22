@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -11,8 +12,9 @@ from approval import (
     parse_json, read_json, require_kms_key, sha256,
 )
 from custody_ledger import (
-    RECOVERY_SPECS, RETIREMENT, list_objects, load_epoch, load_retirement, read_registered_target,
-    retirement_object_name, target_attestation, verify_retirement, write_once,
+    RECOVERY_SPECS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, list_objects, load_epoch, load_retirement,
+    read_registered_target, read_retirement, recovery_deadline, retirement_approval, retirement_object_name,
+    retirement_recovery, sign_share_recovery, target_attestation, verify_retirement, write_once,
 )
 from deployment import require_active_epoch
 from kms_policy import key_policy, recovery_policy, target_context
@@ -30,7 +32,7 @@ def retirement_scope(trust, epoch, replacement):
         "epoch": epoch, "receiptSha256": sha256(old), "replacementEpoch": replacement,
         "replacementReceiptSha256": sha256(new), "replacementCustodyDigest": sha256(new["custody"]),
         "approvalFromEpoch": trust["approvalKeys"][-1]["fromEpoch"],
-    }, new["custody"]["noteSeedCommitment"], custodians
+    }, new, custodians
 
 
 def require_recovery_quorum(custodians):
@@ -43,10 +45,10 @@ def require_recovery_quorum(custodians):
         except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired):
             return False
 
-    with ThreadPoolExecutor(max_workers=6) as workers:
+    with ThreadPoolExecutor(max_workers=len(custodians)) as workers:
         count = sum(workers.map(enabled, custodians))
     if count < 3:
-        raise ValueError(f"replacement epoch has only {count} verified enabled recovery keys. Three are required.")
+        raise ValueError(f"only {count} proven replacement recovery keys are still enabled. Three are required.")
 
 
 def registered_targets(trust, epoch, receipt_digest):
@@ -82,20 +84,71 @@ def qualified_policy(trust, wallet_trust, scope, seed):
 
 
 def qualified_manifest(trust, wallet_trust, epoch, replacement):
-    scope, seed, custodians = retirement_scope(trust, epoch, replacement)
-    require_recovery_quorum(custodians)
-    return {**scope, **qualified_policy(trust, wallet_trust, scope, seed)}
+    scope, receipt, _ = retirement_scope(trust, epoch, replacement)
+    policy = qualified_policy(trust, wallet_trust, scope, receipt["custody"]["noteSeedCommitment"])
+    return {**scope, **policy, "recoveryDeadline": int(time.time()) + RECOVERY_WINDOW_SECONDS}
+
+
+def require_recovery_window(manifest, remaining=0):
+    deadline = recovery_deadline(manifest)
+    now = time.time()
+    if not deadline - RECOVERY_WINDOW_SECONDS <= now < deadline - remaining:
+        raise ValueError("retirement recovery window is closed or has insufficient time remaining")
+
+
+def checked_scope(trust, manifest):
+    require_recovery_window(manifest)
+    scope, receipt, custodians = retirement_scope(trust, manifest["epoch"], manifest["replacementEpoch"])
+    if any(manifest.get(field) != value for field, value in scope.items()):
+        raise ValueError("retirement no longer matches the committed receipts or approval roster")
+    return scope, receipt, custodians
+
+
+def prove_recovery(trust, document, index):
+    manifest = retirement_approval(document)["manifest"]
+    _, receipt, custodians = checked_scope(trust, manifest)
+    require_active_epoch(trust, manifest["replacementEpoch"])
+    proof = {"manifest": manifest, "signatures": document["recoveryProofs"]}
+    signatures = sign_share_recovery(custodians, receipt, index, RETIREMENT_RECOVERY, proof)
+    require_recovery_window(manifest)
+    return {**document, "recoveryProofs": signatures}
+
+
+def verify_qualification(trust, wallet_trust, document):
+    manifest = document["manifest"]
+    scope, receipt, custodians = checked_scope(trust, manifest)
+    proven = retirement_recovery(document, custodians)
+    policy = qualified_policy(trust, wallet_trust, scope, receipt["custody"]["noteSeedCommitment"])
+    if manifest != {**scope, **policy, "recoveryDeadline": manifest["recoveryDeadline"]}:
+        raise ValueError("retirement no longer matches the qualified replacement and wallet policy")
+    require_recovery_quorum(proven)
+    return custodians
+
+
+def sign_retirement(trust, wallet_trust, document, key):
+    approval = retirement_approval(document)
+    verify_qualification(trust, wallet_trust, document)
+    require_recovery_window(approval["manifest"])
+    signed = add_approval(approval_keys(trust), RETIREMENT, approval, key)
+    return {**document, "signatures": signed["signatures"]}
 
 
 def commit_retirement(trust, wallet_trust, document):
-    manifest = document["manifest"]
-    keys = approval_keys(trust)
-    check_approvals(keys, RETIREMENT, document)
-    qualified = qualified_manifest(trust, wallet_trust, manifest["epoch"], manifest["replacementEpoch"])
-    if manifest != qualified:
-        raise ValueError("retirement no longer matches the qualified replacement and wallet policy")
-    write_once(trust, retirement_object_name(manifest["epoch"]), document,
-               lambda stored: verify_retirement(trust, stored, manifest["epoch"]))
+    approval = retirement_approval(document)
+    check_approvals(approval_keys(trust), RETIREMENT, approval)
+    custodians = verify_qualification(trust, wallet_trust, document)
+    manifest = approval["manifest"]
+    epoch = manifest["epoch"]
+    # Leave room for the AWS CLI's 25-second request deadline.
+    require_recovery_window(manifest, remaining=30)
+
+    def subject(stored):
+        marker = verify_retirement(trust, stored, epoch)
+        retirement_recovery(stored, custodians)
+        return marker
+
+    write_once(trust, retirement_object_name(epoch), document, subject)
+    read_retirement(trust, epoch)
 
 
 def key_inventory(trust, epoch, index):
@@ -136,6 +189,9 @@ def main():
     draft.add_argument("wallet_trust", type=Path)
     draft.add_argument("epoch")
     draft.add_argument("replacement")
+    prove = commands.add_parser("prove-recovery")
+    prove.add_argument("candidate", type=Path)
+    prove.add_argument("share", type=int, choices=range(1, 7))
     sign = commands.add_parser("sign")
     sign.add_argument("wallet_trust", type=Path)
     sign.add_argument("candidate", type=Path)
@@ -153,16 +209,15 @@ def main():
         if args.command == "inspect":
             result = inspect_keys(trust, args.epoch, args.share, args.check_inactive)
         elif args.command == "draft":
-            result = {"manifest": qualified_manifest(trust, args.wallet_trust, args.epoch, args.replacement), "signatures": []}
+            result = {"manifest": qualified_manifest(trust, args.wallet_trust, args.epoch, args.replacement),
+                      "signatures": [], "recoveryProofs": []}
         else:
             document = read_json(args.candidate)
             if args.command == "publish":
                 commit_retirement(trust, args.wallet_trust, document)
                 return
-            manifest = document["manifest"]
-            if manifest != qualified_manifest(trust, args.wallet_trust, manifest["epoch"], manifest["replacementEpoch"]):
-                raise ValueError("retirement no longer matches the qualified replacement and wallet policy")
-            result = add_approval(approval_keys(trust), RETIREMENT, document, args.key)
+            result = (prove_recovery(trust, document, args.share) if args.command == "prove-recovery" else
+                      sign_retirement(trust, args.wallet_trust, document, args.key))
         print(canonical(result).decode())
     except (OSError, ValueError, KeyError, TypeError, IndexError, subprocess.SubprocessError) as error:
         raise SystemExit(str(error)) from None
