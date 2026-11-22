@@ -92,11 +92,13 @@ custody record. Both serving and rotation use the same bootstrap:
    epoch and share index. The host gets the key ARNs and context from the
    approved target whose file hash is pinned in its deployment configuration.
 2. KMS encrypts its response for that temporary recipient. The parent sends up
-   to six CMS records, each prefixed by a two-byte big-endian length and
-   limited to 6,144 bytes. The enclave counts three distinct committed shares
-   from the measured epoch and verifies the recovered seed against the stable
-   commitment. Unavailable keys, invalid shares and duplicates contribute no
-   share. Invalid framing fails the batch and another request can retry.
+   to six CMS records. Each starts with a one-byte slot and a two-byte
+   big-endian length, followed by up to 6,144 bytes of ciphertext. A share
+   contributes only if its decrypted slot matches the frame and its epoch
+   and commitment match the measured configuration. The enclave restores
+   the seed from three distinct slots and verifies the seed commitment. It
+   replies with HTTP 200 and the three slot numbers as raw bytes. Invalid
+   framing fails the batch and another request can retry.
 3. Boot expires after two minutes. Successful boot drops the RSA recipient.
    A serving enclave generates fresh P-256 request-encryption and
    response-signing keys and listens on vsock port 44030. The boot transport ID

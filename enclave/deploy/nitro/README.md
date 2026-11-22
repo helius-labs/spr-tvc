@@ -189,8 +189,10 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    shares. Commit the new receipt only after all six new keys acknowledge it.
 2. Commission new serving slots from the new receipt. On a fresh enclave run,
    pass `--slots 2 4 6` to `provision.py` to use only those three current slots.
-   Provisioning fails if any selected slot fails. Capture the accepted slot
-   list. Through the real ingress, use the wallet to open a note
+   Provisioning fails if any selected slot fails. Save the three slots that
+   the enclave reports using to restore the seed. If the response is lost,
+   check the serving attestation or rotation receipt before restarting.
+   Through the real ingress, use the wallet to open a note
    addressed before rotation. Keep healthy old slots during qualification.
 3. Allow overlap while the wallet policy floor covers both epochs. After a
    cold boot and wallet canary on the new epoch, publish a policy with

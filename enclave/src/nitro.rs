@@ -51,6 +51,7 @@ use crate::{
 };
 
 const MAX_CMS_BYTES: usize = 6144;
+const SHARE_FRAME_HEADER: usize = 3;
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_SERVING_REQUESTS: usize = 32;
 const MAX_ATTESTATION_REQUESTS: usize = 2;
@@ -247,7 +248,9 @@ async fn provision(domain: [u8; 32], custody: Custody) -> io::Result<NoteSeed> {
     let app = Router::new()
         .route("/recipient", get(kms_attestation))
         .route("/shares", post(accept_shares))
-        .layer(DefaultBodyLimit::max(SHARE_COUNT * (MAX_CMS_BYTES + 2)))
+        .layer(DefaultBodyLimit::max(
+            SHARE_COUNT * (MAX_CMS_BYTES + SHARE_FRAME_HEADER),
+        ))
         .layer(Extension(Arc::new(Semaphore::new(1))))
         .with_state(Arc::new(Bootstrap {
             recipient: Mutex::new(Some(Recipient { private, sender })),
@@ -290,23 +293,20 @@ async fn kms_attestation(
     issue_attestation(worker, move || attest(Some(public), None, None)).await
 }
 
-async fn accept_shares(
-    State(state): State<Arc<Bootstrap>>,
-    body: Bytes,
-) -> Result<StatusCode, StatusCode> {
+async fn accept_shares(State(state): State<Arc<Bootstrap>>, body: Bytes) -> Reply<Vec<u8>> {
     let mut pending = state
         .recipient
         .lock()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let recipient = pending.as_ref().ok_or(StatusCode::GONE)?;
-    let seed = open_shares(&recipient.private, &body, &state.domain, &state.custody)
+    let (seed, slots) = open_shares(&recipient.private, &body, &state.domain, &state.custody)
         .ok_or(StatusCode::BAD_REQUEST)?;
     let recipient = pending.take().ok_or(StatusCode::GONE)?;
     recipient
         .sender
         .send(seed)
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(([(CONTENT_TYPE, "application/octet-stream")], slots.to_vec()))
 }
 
 fn open_shares(
@@ -314,13 +314,13 @@ fn open_shares(
     mut frame: &[u8],
     domain: &[u8; 32],
     custody: &Custody,
-) -> Option<NoteSeed> {
-    let mut shares = Zeroizing::new(Vec::with_capacity(SHARE_COUNT));
+) -> Option<(NoteSeed, [u8; THRESHOLD])> {
+    let mut shares = Vec::with_capacity(SHARE_COUNT);
     let mut count = 0;
     while !frame.is_empty() {
         count += 1;
-        let (length, rest) = frame.split_first_chunk::<2>()?;
-        let length = usize::from(u16::from_be_bytes(*length));
+        let (&[slot, high, low], rest) = frame.split_first_chunk::<SHARE_FRAME_HEADER>()?;
+        let length = usize::from(u16::from_be_bytes([high, low]));
         if count > SHARE_COUNT || !(1..=MAX_CMS_BYTES).contains(&length) {
             return None;
         }
@@ -328,14 +328,17 @@ fn open_shares(
         if let Ok(share) = CmsContentInfo::from_der(envelope)
             .and_then(|cms| cms.decrypt_without_cert_check(private))
         {
-            shares.push(share);
+            shares.push((slot, Zeroizing::new(share)));
         }
         frame = rest;
     }
     if count < THRESHOLD {
         return None;
     }
-    custody.restore(domain, &shares)
+    custody.restore(
+        domain,
+        shares.iter().map(|(slot, share)| (*slot, share.as_slice())),
+    )
 }
 
 #[derive(Serialize)]

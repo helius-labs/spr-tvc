@@ -52,23 +52,30 @@ impl Custody {
         Ok(())
     }
 
-    pub(crate) fn restore(&self, domain: &[u8; 32], shares: &[Vec<u8>]) -> Option<NoteSeed> {
+    pub(crate) fn restore<'a>(
+        &self,
+        domain: &[u8; 32],
+        shares: impl IntoIterator<Item = (u8, &'a [u8])>,
+    ) -> Option<(NoteSeed, [u8; THRESHOLD])> {
         self.validate().ok()?;
         let mut verified = Zeroizing::new(Vec::with_capacity(THRESHOLD));
-        let mut seen = BTreeSet::new();
-        for share in shares {
-            if share.len() != SHARE_BYTES || share[..EPOCH_BYTES] != self.epoch.to_be_bytes() {
+        let mut slots = [0; THRESHOLD];
+        for (slot, share) in shares {
+            if share.len() != SHARE_BYTES
+                || share[..EPOCH_BYTES] != self.epoch.to_be_bytes()
+                || share[EPOCH_BYTES] != slot
+                || slots.contains(&slot)
+            {
                 continue;
             }
-            let index = usize::from(share[EPOCH_BYTES]).checked_sub(1);
-            let Some(index) = index.filter(|&index| index < SHARE_COUNT) else {
+            let Some(commitment) = usize::from(slot)
+                .checked_sub(1)
+                .and_then(|index| self.share_commitments.get(index))
+            else {
                 continue;
             };
-            if openssl::memcmp::eq(
-                &share_commitment(domain, share),
-                &self.share_commitments[index],
-            ) && seen.insert(index)
-            {
+            if openssl::memcmp::eq(&share_commitment(domain, share), commitment) {
+                slots[verified.len()] = slot;
                 verified.push(share[EPOCH_BYTES..].to_vec());
             }
             if verified.len() == THRESHOLD {
@@ -83,7 +90,7 @@ impl Custody {
         seed.copy_from_slice(&recovered);
         let seed = NoteSeed(seed);
         openssl::memcmp::eq(&note_commitment(domain, &seed), &self.note_seed_commitment)
-            .then_some(seed)
+            .then_some((seed, slots))
     }
 }
 

@@ -84,7 +84,7 @@ class KeyPolicyTests(unittest.TestCase):
                                     "Condition": decrypt["Condition"]})
 
     @patch("provision.decrypt_share")
-    @patch("provision.request", side_effect=[(200, b"evidence"), (204, b"")])
+    @patch("provision.request", side_effect=[(200, b"evidence"), (200, bytes([2, 4, 6]))])
     def test_three_available_accounts_are_enough(self, request, decrypt):
         def wrapped(_, __, ___, ctx):
             if int(ctx["share"]) % 2 == 0:
@@ -100,7 +100,7 @@ class KeyPolicyTests(unittest.TestCase):
         self.assertTrue(all(arg[3]["custody-epoch"] == "5" for arg in args))
         self.assertEqual({arg[2] for arg in args}, {args[0][2]})
         request.assert_called_with(16, "POST", "/shares",
-                                   b"".join(struct.pack(">H", 1) + share for share in [b"2", b"4", b"6"]))
+                                   b"".join(struct.pack(">BH", slot, 1) + str(slot).encode() for slot in (2, 4, 6)), limit=3)
 
     @patch("provision.decrypt_share")
     @patch("provision.request", return_value=(200, b"evidence"))
@@ -111,11 +111,12 @@ class KeyPolicyTests(unittest.TestCase):
         request.assert_called_once_with(16, "GET", "/recipient")
 
     @patch("provision.decrypt_share", return_value=b"envelope")
-    @patch("provision.request", side_effect=[(200, b"evidence"), (204, b"")])
+    @patch("provision.request", side_effect=[(200, b"evidence"), (200, bytes([2, 4, 6]))])
     def test_rehearsal_uses_exactly_the_requested_slots_without_fallback(self, request, decrypt):
         self.assertEqual(provision(16, TARGET, SHARES, [6, 2, 4]), [2, 4, 6])
         self.assertEqual({call.args[0] for call in decrypt.call_args_list}, {KEYS[1], KEYS[3], KEYS[5]})
-        request.assert_called_with(16, "POST", "/shares", (struct.pack(">H", 8) + b"envelope") * 3)
+        request.assert_called_with(16, "POST", "/shares",
+                                   b"".join(struct.pack(">BH", slot, 8) + b"envelope" for slot in (2, 4, 6)), limit=3)
         request.reset_mock(side_effect=True)
         request.return_value = (200, b"evidence")
         decrypt.reset_mock(side_effect=True)
@@ -124,6 +125,22 @@ class KeyPolicyTests(unittest.TestCase):
             provision(16, TARGET, SHARES, [2, 4, 6])
         self.assertEqual(decrypt.call_count, 3)
         request.assert_called_once_with(16, "GET", "/recipient")
+
+    @patch("provision.decrypt_share", return_value=b"envelope")
+    @patch("provision.request")
+    def test_reports_the_restored_slots_and_rejects_an_invalid_or_missing_acknowledgement(self, request, _):
+        request.side_effect = [(200, b"evidence"), (200, bytes([2, 4, 6]))]
+        self.assertEqual(provision(16, TARGET, SHARES), [2, 4, 6])
+        for ack in (b"", bytes([2, 4]), bytes([2, 2, 6]), bytes([2, 4, 5]), bytes([2, 4, 6, 7])):
+            request.side_effect = [(200, b"evidence"), (200, ack)]
+            with self.subTest(ack=ack), self.assertRaisesRegex(ValueError, "invalid enclave acknowledgement"):
+                provision(16, TARGET, SHARES, [2, 4, 6])
+        request.side_effect = [(200, b"evidence"), (400, b"")]
+        with self.assertRaisesRegex(ValueError, "refused the shares with HTTP 400"):
+            provision(16, TARGET, SHARES, [2, 4, 6])
+        request.side_effect = [(200, b"evidence"), TimeoutError("lost response")]
+        with self.assertRaisesRegex(ValueError, "could not confirm seed restoration"):
+            provision(16, TARGET, SHARES, [2, 4, 6])
 
     @patch("provision.request")
     def test_refuses_keys_or_slot_selections_outside_the_approved_custody_set(self, request):

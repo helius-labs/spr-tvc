@@ -30,6 +30,20 @@ pub(crate) fn fixture(epoch: u64, seed: &NoteSeed) -> (Custody, Zeroizing<Vec<Ve
     (custody, shares)
 }
 
+fn restore_seed(custody: &Custody, domain: &[u8; 32], shares: &[Vec<u8>]) -> Option<NoteSeed> {
+    custody
+        .restore(
+            domain,
+            shares.iter().map(|share| {
+                (
+                    share.get(EPOCH_BYTES).copied().unwrap_or(0),
+                    share.as_slice(),
+                )
+            }),
+        )
+        .map(|(seed, _)| seed)
+}
+
 #[test]
 fn every_distinct_three_restore_the_seed() {
     let seed = NoteSeed(Zeroizing::new([0x88; 32]));
@@ -43,7 +57,7 @@ fn every_distinct_three_restore_the_seed() {
                     shares[second].clone(),
                     shares[third].clone(),
                 ]);
-                let restored = custody.restore(&DOMAIN, &available).unwrap();
+                let restored = restore_seed(&custody, &DOMAIN, &available).unwrap();
                 assert_eq!(*restored.0, *seed.0);
                 tested += 1;
             }
@@ -68,15 +82,15 @@ fn rejects_insufficient_duplicate_foreign_and_wrong_seed_shares() {
         ]),
         Zeroizing::new(vec![shares[0].clone(), shares[1].clone(), next[2].clone()]),
     ] {
-        assert!(custody.restore(&DOMAIN, &available).is_none());
+        assert!(restore_seed(&custody, &DOMAIN, &available).is_none());
     }
     let mut invalid = Zeroizing::new(shares[..3].to_vec());
     invalid[2][SHARE_BYTES - 1] ^= 1;
-    assert!(custody.restore(&DOMAIN, &invalid).is_none());
-    assert!(custody.restore(&[0xcc; 32], &shares).is_none());
+    assert!(restore_seed(&custody, &DOMAIN, &invalid).is_none());
+    assert!(restore_seed(&custody, &[0xcc; 32], &shares).is_none());
     let mut wrong_seed = custody.clone();
     wrong_seed.note_seed_commitment = [0x66; 32];
-    assert!(wrong_seed.restore(&DOMAIN, &shares).is_none());
+    assert!(restore_seed(&wrong_seed, &DOMAIN, &shares).is_none());
 
     let available = Zeroizing::new(vec![
         vec![0; SHARE_BYTES],
@@ -85,7 +99,10 @@ fn rejects_insufficient_duplicate_foreign_and_wrong_seed_shares() {
         shares[2].clone(),
         shares[5].clone(),
     ]);
-    assert_eq!(*custody.restore(&DOMAIN, &available).unwrap().0, *seed.0);
+    assert_eq!(
+        *restore_seed(&custody, &DOMAIN, &available).unwrap().0,
+        *seed.0
+    );
 }
 
 #[test]
@@ -102,8 +119,8 @@ fn rejects_mixing_shares_from_two_ceremonies_for_the_same_epoch() {
         shares[1].clone(),
         other_shares[2].clone(),
     ]);
-    assert!(canonical.restore(&DOMAIN, &mixed).is_none());
-    assert!(competing.restore(&DOMAIN, &mixed).is_none());
+    assert!(restore_seed(&canonical, &DOMAIN, &mixed).is_none());
+    assert!(restore_seed(&competing, &DOMAIN, &mixed).is_none());
 }
 
 fn keys() -> Vec<PKey<Private>> {
@@ -139,7 +156,7 @@ fn rotation_issues_encrypted_shares_to_new_keys_and_preserves_derived_keys() {
             .map(|(key, package)| import(key, package).unwrap().to_vec())
             .collect::<Vec<_>>(),
     );
-    let live = old.restore(&DOMAIN, &old_shares[..3]).unwrap();
+    let live = restore_seed(&old, &DOMAIN, &old_shares[..3]).unwrap();
 
     let replacement_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
     let mut new_spkis = spkis.clone();
@@ -149,13 +166,13 @@ fn rotation_issues_encrypted_shares_to_new_keys_and_preserves_derived_keys() {
     assert_eq!(old.note_seed_commitment, new.note_seed_commitment);
     assert_ne!(old.share_commitments, new.share_commitments);
     assert!(import(&keys[0], &new_packages[0]).is_none());
-    assert!(new.restore(&DOMAIN, &old_shares).is_none());
+    assert!(restore_seed(&new, &DOMAIN, &old_shares).is_none());
     let new_shares = Zeroizing::new(vec![
         import(&replacement_key, &new_packages[0]).unwrap().to_vec(),
         import(&keys[4], &new_packages[4]).unwrap().to_vec(),
         import(&keys[5], &new_packages[5]).unwrap().to_vec(),
     ]);
-    let recovered = new.restore(&DOMAIN, &new_shares).unwrap();
+    let recovered = restore_seed(&new, &DOMAIN, &new_shares).unwrap();
     let old_keys = seed.for_address(&[0xab; 32]);
     let new_keys = recovered.for_address(&[0xab; 32]);
     assert_eq!(

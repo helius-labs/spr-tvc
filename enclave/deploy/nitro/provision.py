@@ -127,11 +127,18 @@ def provision(cid, manifest, directory, slots=None):
     submitted = [slot for slot, _ in shares]
     if len(shares) < THRESHOLD:
         raise ValueError(f"KMS returned fewer than three share envelopes; successful slots: {submitted}")
-    frame = b"".join(struct.pack(">H", len(share)) + share for _, share in shares)
-    status, _ = request(cid, "POST", "/shares", frame)
-    if status != 204:
+    frame = b"".join(struct.pack(">BH", slot, len(share)) + share for slot, share in shares)
+    try:
+        status, body = request(cid, "POST", "/shares", frame, limit=THRESHOLD)
+    except (OSError, http.client.HTTPException) as error:
+        raise ValueError("could not confirm seed restoration. Check serving attestation or the rotation receipt "
+                         "before restarting") from error
+    if status != 200:
         raise ValueError(f"enclave refused the shares with HTTP {status}")
-    return submitted
+    accepted = set(body)
+    if len(body) != THRESHOLD or len(accepted) != THRESHOLD or not accepted.issubset(submitted):
+        raise ValueError("invalid enclave acknowledgement of custody slots")
+    return list(body)
 
 
 def main():
@@ -144,7 +151,7 @@ def main():
     try:
         target = read_target(args.target, args.target_sha256)
         slots = provision(args.cid, target, args.target.parent / "shares", args.slots)
-        print(f"enclave accepted the batch from custody slots {slots}")
+        print(f"enclave restored the seed from custody slots {slots}")
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
         raise SystemExit(str(error)) from None
 
