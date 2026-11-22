@@ -125,6 +125,15 @@ resuming mainnet writes, backfill the inherited versions to a new replica and
 verify its contents, its bucket protections under the new owner's account
 and the recovered bucket's live replication rule.
 
+An occupied invalid slot requires a signed repair plan before promoting a
+clean bucket. Two current custody approvers bind both trust bundles, an
+independently retained checkpoint, the excluded key and version, and a
+24-hour deadline. The original stays frozen. Every other version must form
+the authenticated checkpoint, and a record with a valid custody quorum
+cannot be excluded. The transfer manifest gives S3 Batch Replication only
+the verified versions. Promotion authenticates the clean copy and checks
+the original again. The excluded version remains in the frozen source.
+
 The custody ledger registers one wrapping-key set per epoch, release ID and
 PCR0–PCR4. Before signing, each approver checks that all six RSA wrapping
 keys have the installed policy for the exact parent and measurements. At

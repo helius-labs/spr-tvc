@@ -9,21 +9,22 @@ import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from io import BytesIO
+from io import BytesIO, StringIO
 from threading import Lock
 from types import SimpleNamespace
 from unittest.mock import ANY, call, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
-from approval import approval_keys, approval_roster, canonical, sha256
+from approval import MAX_DOCUMENT_BYTES, approval_keys, approval_roster, canonical, sha256
 from custody_archive import (
-    MAX_ARCHIVE_ENTRY_BYTES, archive, ledger_checkpoint, verify_archive, verify_ledger_records, verify_promotion,
+    MAX_ARCHIVE_ENTRY_BYTES, archive, draft_repair, ledger_checkpoint, repair_transfer,
+    sign_repair, verify_archive, verify_ledger_records, verify_promotion,
 )
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
-    check_custody_roster, check_installed_ledger, check_release_policy, draft, ledger_policy, ledger_reader_policy,
+    check_custody_roster, check_installed_ledger, check_release_policy, draft, ledger_policy, ledger_reader_policy, ledger_replica_plan,
     list_ledger_versions, list_objects, load_epoch, publish, read_object, read_registered_target, read_stored_payload,
-    record, require_active_epoch,
+    record, replication_configuration, require_active_epoch,
     sign_epoch, target_attestation,
     target_object_name, write_once,
 )
@@ -177,6 +178,8 @@ class CustodyLedgerTests(unittest.TestCase):
             elif operation == "get-object" and name in self.objects:
                 pathlib.Path(args[-1]).write_bytes(self.objects[name])
                 return metadata(name)
+            elif operation == "head-object" and name in self.objects:
+                return {**metadata(name), "ContentLength": len(self.objects[name])}
             else:
                 raise ValueError("object missing")
         return {}
@@ -637,6 +640,111 @@ class CustodyLedgerTests(unittest.TestCase):
         with patch("custody_ledger.installed_ledger_policy", side_effect=[frozen, live]):
             with self.assertRaisesRegex(ValueError, "requires the frozen bucket policy"):
                 ledger_checkpoint(self.trust, pinned)
+
+    def test_repair_preserves_the_pinned_history_and_excludes_only_one_unapproved_version(self):
+        publish(self.trust, self.sign(self.document(1)))
+        rotation, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
+        publish(self.trust, self.sign(rotation))
+        target = self.replacement_target()
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, target))
+        with (patch("retirement.qualified_policy", return_value=self.qualification(target)),
+              patch("retirement.require_recovery_quorum")):
+            retired = self.signed_retirement(qualified_manifest(self.trust, None, "1", "2"))
+            commit_retirement(self.trust, None, retired)
+
+        self.bucket_policy = ledger_policy(self.trust, ADMIN, PUBLISHER, [READ_ROLE], frozen=True)
+        pin = ledger_checkpoint(self.trust)
+        original = {**self.trust, "ledgerReplica": {"bucket": "old-replica", "region": "eu-west-1",
+                    "account": "000000000010", "role": "arn:aws:iam::000000000008:role/replication"}}
+        recovered = {**self.trust, "ledger": {"bucket": "clean-recovery", "region": "eu-west-2", "account": "000000000011"}}
+        prefix = f"spr-custody/devnet/{DOMAIN}/"
+        bad = "retired/2.json"
+        bad_key = prefix + bad
+        good = dict(self.objects)
+        self.objects[bad_key] = b"{}"
+        admin = ADMIN.replace("000000000008", "000000000011")
+        publisher = PUBLISHER.replace("000000000008", "000000000011")
+        recovered_policy = ledger_policy(recovered, admin, publisher, [READ_ROLE], frozen=True)
+        transfer = {**recovered["ledger"], "role": original["ledgerReplica"]["role"]}
+        transfer_rule = replication_configuration(original, transfer)
+        receiving = ledger_replica_plan({**original, "ledgerReplica": transfer}, admin, publisher, [READ_ROLE])["destinationPolicy"]
+        recovery_policy = recovered_policy
+
+        def aws(region, service, operation, args, *, profile, **options):
+            if region == "eu-north-1":
+                self.assertEqual(profile, "source-read")
+                if operation == "get-bucket-replication":
+                    return {"ReplicationConfiguration": transfer_rule}
+                return self.aws(region, service, operation, args, **options)
+            self.assertEqual((region, profile), ("eu-west-2", "recovery-read"))
+            self.assertEqual(args[:4], ["--bucket", "clean-recovery", "--expected-bucket-owner", "000000000011"])
+            if operation == "get-bucket-policy":
+                return {"Policy": json.dumps(recovery_policy)}
+            if operation == "get-bucket-replication":
+                return None
+            source_args = ["--bucket", "custody-journal", "--expected-bucket-owner", "000000000008", *args[4:]]
+            with patch.object(self, "objects", good):
+                result = self.aws("eu-north-1", service, operation, source_args, **options)
+            return {**result, "Name": "clean-recovery"} if operation == "list-object-versions" else result
+
+        with (patch("custody_ledger.aws", side_effect=aws), patch("custody_archive.require_profile_account"),
+              patch("custody_ledger.require_profile_account"),
+              patch("custody_archive.add_approval", side_effect=lambda _keys, label, plan, key_arn: {
+                  **plan, "signatures": [*plan["signatures"], sign(label, plan["manifest"], key_arn)],
+              })):
+            plan = draft_repair(original, recovered, pin, bad, "source-read")
+            self.assertEqual(plan["manifest"]["excluded"], {"name": bad, "versionId": hashlib.sha256(bad_key.encode()).hexdigest()})
+            for signer in approval_keys(original)[:2]:
+                plan = sign_repair(original, recovered, pin, plan, "source-read", signer["keyArn"])
+            self.assertEqual(len(plan["signatures"]), 2)
+            csv = StringIO()
+            with self.assertRaisesRegex(ValueError, "pinned replica write and delete protections"):
+                repair_transfer(original, recovered, pin, plan, "source-read", "recovery-read", csv)
+            self.assertEqual(csv.getvalue(), "")
+            recovery_policy = receiving
+            repair_transfer(original, recovered, pin, plan, "source-read", "recovery-read", csv)
+            recovery_policy = recovered_policy
+            self.assertEqual(csv.getvalue().splitlines(), [
+                f"custody-journal,{name},{hashlib.sha256(name.encode()).hexdigest()}" for name in sorted(good)
+            ])
+            self.assertEqual(self.objects[bad_key], b"{}")
+
+            def promote(repair=plan):
+                return verify_promotion(original, recovered, pin, "source-read", "recovery-read", repair=repair)
+
+            self.assertEqual(promote(), pin)
+            with self.assertRaisesRegex(ValueError, "original ledger's pinned replica"):
+                promote(repair=None)
+            with self.assertRaisesRegex(ValueError, "signing quorum"):
+                promote({**plan, "signatures": plan["signatures"][:1]})
+            different = {**recovered, "ledger": {**recovered["ledger"], "bucket": "different-recovery"}}
+            with self.assertRaisesRegex(ValueError, "pinned checkpoint, trust bundles"):
+                repair_transfer(original, different, pin, plan, "source-read", "recovery-read", StringIO())
+            with patch.dict(self.versions, {bad_key: "changed"}):
+                with self.assertRaisesRegex(ValueError, "does not match the frozen ledger version"):
+                    promote()
+            with patch.dict(good, {bad_key: b"{}"}):
+                with self.assertRaisesRegex(ValueError, "independently pinned checkpoint"):
+                    promote()
+            with patch.dict(self.objects, {prefix + "unexpected.json": b"{}"}):
+                with self.assertRaisesRegex(ValueError, "independently pinned checkpoint"):
+                    promote()
+            with patch.dict(transfer_rule, {}, clear=True):
+                with self.assertRaisesRegex(ValueError, "does not match the pinned ledger replica"):
+                    repair_transfer(original, recovered, pin, plan, "source-read", "recovery-read", StringIO())
+            with patch("time.time", return_value=plan["manifest"]["expiresAt"]):
+                with self.assertRaisesRegex(ValueError, "current quorum and deadline"):
+                    promote()
+            for invalid in (b"", b"x" * (MAX_DOCUMENT_BYTES + 1)):
+                with (self.subTest(size=len(invalid)), patch.dict(self.objects, {bad_key: invalid}),
+                      patch.dict(self.versions, {bad_key: f"invalid-{len(invalid)}"})):
+                    self.assertEqual(draft_repair(original, recovered, pin, bad, "source-read")["manifest"]["excluded"],
+                                     {"name": bad, "versionId": f"invalid-{len(invalid)}"})
+            self.objects.pop(bad_key)
+            approved = self.signed_subject(RETIREMENT, {**retired["manifest"], "epoch": "2"})
+            self.objects[bad_key] = canonical(approved)
+            with self.assertRaisesRegex(ValueError, "valid custody approval quorum"):
+                draft_repair(original, recovered, pin, bad, "source-read")
 
     def test_retirement_inventory_requires_the_actual_replicas_of_its_dependencies(self):
         publish(self.trust, self.sign(self.document(1)))

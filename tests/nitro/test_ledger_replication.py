@@ -340,12 +340,20 @@ class LedgerReplicationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "differs from the independently pinned checkpoint"):
                     verify()
             with patch("custody_ledger.installed_ledger_policy", side_effect=[
-                policies[SOURCE_BUCKET], policies[DESTINATION_BUCKET], policies[DESTINATION_BUCKET], {"Statement": []},
+                policies[SOURCE_BUCKET], policies[DESTINATION_BUCKET], policies[DESTINATION_BUCKET],
+                replica_policy, {"Statement": []},
             ]):
                 with self.assertRaisesRegex(ValueError, "requires the frozen bucket policy"):
                     verify()
             with patch.dict(replication, {}, clear=True):
                 with self.assertRaisesRegex(ValueError, "does not match the pinned ledger replica"):
+                    verify()
+
+            def source_thaws(*_args, **_options):
+                policies[SOURCE_BUCKET] = {"Statement": []}
+
+            with patch.dict(policies), patch("custody_archive.require_pinned_replication", side_effect=source_thaws):
+                with self.assertRaisesRegex(ValueError, "requires the frozen bucket policy"):
                     verify()
             with patch("custody_ledger.installed_ledger_policy", side_effect=OSError("original bucket unreachable")):
                 with self.assertRaisesRegex(OSError, "original bucket unreachable"):

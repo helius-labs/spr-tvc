@@ -1,24 +1,30 @@
 """Verify historical custody receipts and checkpoint the complete ledger."""
 
 import argparse
+import csv
 import hashlib
 import json
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
+from urllib.parse import quote
 
 from approval import (
-    MAX_DOCUMENT_BYTES, canonical, epoch_number, hex_digest, read_json, require_profile_account, sha256, unique_object,
+    MAX_DOCUMENT_BYTES, add_approval, approval_keys, approval_roster, canonical, check_approvals, epoch_number,
+    fields, hex_digest, parse_json, read_json, require_profile_account, sha256, unique_object,
 )
 from custody_ledger import (
-    check_custody_history_entry, check_recovery_bucket, ledger_object, ledger_prefix, ledger_record_fingerprint,
-    ledger_replica, list_ledger_versions, load_retirement, read_object, read_registered_target, read_replicated_record,
-    read_stored_object, read_stored_payload, replica_trust, require_frozen_ledger, require_pinned_replication,
-    rotation_target_name, verify_ceremony_capture,
+    LABEL, RETIREMENT, TARGET_APPROVAL, check_custody_history_entry, check_recovery_bucket, ledger_object, ledger_prefix,
+    ledger_record_fingerprint, ledger_record_version, ledger_replica, list_ledger_versions, load_retirement,
+    publication_time, read_object, read_registered_target, read_replicated_record, read_stored_object, read_stored_payload,
+    replica_trust, require_frozen_ledger, require_pinned_replication, rotation_target_name, storage, verify_ceremony_capture,
 )
 
 MAX_ARCHIVE_ENTRY_BYTES = 2 * MAX_DOCUMENT_BYTES + 256
+REPAIR_APPROVAL = "ledger-repair"
+REPAIR_WINDOW_SECONDS = 24 * 60 * 60
 
 
 def custody_history(trust, epoch, **options):
@@ -82,6 +88,10 @@ def verify_ledger_records(trust, names, **options):
 
 
 def ledger_checkpoint(trust, expected=None, **options):
+    return checkpoint(trust, expected, **options)[0]
+
+
+def checkpoint(trust, expected, *, excluded=None, **options):
     if expected is not None:
         hex_digest(expected)
     require_frozen_ledger(trust, **options)
@@ -90,10 +100,15 @@ def ledger_checkpoint(trust, expected=None, **options):
     destination = replica_trust(trust, replica) if replica is not None else None
     checksum = hashlib.sha256(b"SPR/native-nitro/ledger-checkpoint/v1\0" + prefix.encode())
     versions = list_ledger_versions(trust, **options)
-    if "1.json" not in versions:
+    names = tuple(sorted(versions))
+    if excluded is not None:
+        name = excluded["name"]
+        if versions.get(name) != excluded["versionId"]:
+            raise ValueError("excluded record does not match the frozen ledger version")
+        names = tuple(key for key in names if key != name)
+    if "1.json" not in names:
         raise ValueError("custody ledger checkpoint requires a committed genesis")
     records = {}
-    names = tuple(sorted(versions))
     for name in names:
         if destination is None:
             payload, metadata = read_stored_payload(trust, name, **options)
@@ -113,39 +128,174 @@ def ledger_checkpoint(trust, expected=None, **options):
     if destination is not None and versions != list_ledger_versions(destination, **options):
         raise ValueError("pinned replica versions differ from the custody ledger")
     require_frozen_ledger(trust, **options)
-    return actual
+    return actual, {name: versions[name] for name in names}
 
 
-def verify_promotion(trust, promoted, expected, source_profile, recovery_profile, *, replica_profile=None):
-    hex_digest(expected)
+def check_promotion_scope(trust, promoted):
     source, _ = ledger_prefix(trust)
-    recovery, _ = ledger_prefix(promoted)
-    replica = ledger_replica(trust)
-    if replica is None or recovery != replica_trust(trust, replica)["ledger"]:
-        raise ValueError("promotion must use the original ledger's pinned replica")
+    recovered, _ = ledger_prefix(promoted)
     original = {name: value for name, value in trust.items() if name != "ledgerReplica"}
     promoted_scope = {name: value for name, value in promoted.items() if name != "ledgerReplica"}
     if original != {**promoted_scope, "ledger": source}:
         raise ValueError("promotion must preserve the custody trust outside the ledger locations")
+    if any(source[field] == recovered[field] for field in ("bucket", "region", "account")):
+        raise ValueError("promotion requires a separate recovered bucket, region and account")
     next_replica = ledger_replica(promoted)
     if next_replica is None and trust["network"] == "mainnet":
         raise ValueError("mainnet promotion requires a new pinned replica")
-    if next_replica is not None:
-        if next_replica["bucket"] == source["bucket"]:
-            raise ValueError("promotion must keep the original ledger frozen")
-        if not replica_profile:
-            raise ValueError("provide --replica-profile to verify the new ledger replica")
+    if next_replica is not None and next_replica["bucket"] == source["bucket"]:
+        raise ValueError("promotion must keep the original ledger frozen")
+    return original, next_replica
+
+
+def check_repair_name(name):
+    if (not isinstance(name, str) or not re.fullmatch(r"[a-zA-Z0-9_./-]{1,512}", name) or
+            any(part in {"", ".", ".."} for part in name.split("/"))):
+        raise ValueError("invalid excluded ledger record name")
+
+
+def require_unapproved_record(trust, excluded, **options):
+    name, version = excluded["name"], excluded["versionId"]
+    _, prefix = ledger_prefix(trust)
+    head = storage(trust, "head-object", ["--key", prefix + name], **options)
+    if ledger_record_version(name, head) != version:
+        raise ValueError("excluded record does not match the frozen ledger version")
+    size = head.get("ContentLength")
+    if type(size) is not int or size < 0:
+        raise ValueError("excluded record is missing its S3 length")
+    if size == 0 or size > MAX_DOCUMENT_BYTES:
+        return
+    payload, metadata = read_stored_payload(trust, name, **options)
+    published_at = publication_time(head)
+    if (len(payload) != size or ledger_record_version(name, metadata) != version or
+            publication_time(metadata) != published_at):
+        raise ValueError("excluded ledger record changed during verification")
+    try:
+        document = parse_json(payload)
+    except ValueError:
+        return
+    if not isinstance(document, dict):
+        return
+
+    if epoch := re.fullmatch(r"([1-9][0-9]{0,19})\.json", name):
+        try:
+            epoch_number(epoch[1])
+        except ValueError:
+            return
+        label, keys, approval = LABEL, approval_keys(trust, epoch[1]), document.get("authorization")
+    elif re.fullmatch(r"(targets|retired)/.+\.json", name):
+        label = TARGET_APPROVAL if name.startswith("targets/") else RETIREMENT
+        keys = approval_roster(trust, at=published_at)["keys"]
+        approval = {field: document.get(field) for field in ("manifest", "signatures")}
+    else:
+        return
+    try:
+        check_approvals(keys, label, approval)
+    except (ValueError, TypeError):
+        return
+    raise ValueError("cannot exclude a record with a valid custody approval quorum")
+
+
+def repair_bindings(trust, promoted, expected):
+    original, _ = check_promotion_scope(trust, promoted)
+    replica = ledger_replica(trust)
+    if replica is None or promoted["ledger"]["bucket"] == replica["bucket"]:
+        raise ValueError("repair requires a pinned replica and a fresh recovery bucket")
+    bindings = {"sourceTrustSha256": sha256(trust), "recoveredTrustSha256": sha256(promoted),
+                "checkpointSha256": hex_digest(expected), "approvalFromEpoch": approval_roster(trust)["fromEpoch"]}
+    return original, bindings
+
+
+def require_current_repair(trust, manifest):
+    if time.time() >= manifest["expiresAt"] or approval_roster(trust)["fromEpoch"] != manifest["approvalFromEpoch"]:
+        raise ValueError("repair approval expired or its roster changed during verification")
+
+
+def repair_source(trust, promoted, expected, plan, profile, *, minimum):
+    original, bindings = repair_bindings(trust, promoted, expected)
+    fields(plan, "manifest", "signatures")
+    manifest = plan["manifest"]
+    fields(manifest, *bindings, "expiresAt", "excluded")
+    expires, excluded = manifest["expiresAt"], manifest["excluded"]
+    now = time.time()
+    if (any(manifest[field] != value for field, value in bindings.items()) or type(expires) is not int or
+            not now < expires <= now + REPAIR_WINDOW_SECONDS):
+        raise ValueError("repair must match the pinned checkpoint, trust bundles, current quorum and deadline")
+    fields(excluded, "name", "versionId")
+    check_repair_name(excluded["name"])
+    ledger_record_version(excluded["name"], {"VersionId": excluded["versionId"]})
+    check_approvals(approval_keys(trust), REPAIR_APPROVAL, plan, minimum=minimum)
+    source = original["ledger"]
+    require_profile_account(profile, source["region"], source["account"])
+    _, versions = checkpoint(original, expected, excluded=excluded, profile=profile)
+    require_unapproved_record(original, excluded, profile=profile)
+    require_frozen_ledger(original, profile=profile)
+    require_current_repair(trust, manifest)
+    return versions
+
+
+def draft_repair(trust, promoted, expected, name, profile):
+    original, bindings = repair_bindings(trust, promoted, expected)
+    check_repair_name(name)
+    source, prefix = ledger_prefix(original)
+    require_profile_account(profile, source["region"], source["account"])
+    require_frozen_ledger(original, profile=profile)
+    head = storage(original, "head-object", ["--key", prefix + name], profile=profile)
+    excluded = {"name": name, "versionId": ledger_record_version(name, head)}
+    plan = {"manifest": {**bindings, "excluded": excluded, "expiresAt": int(time.time()) + REPAIR_WINDOW_SECONDS},
+            "signatures": []}
+    repair_source(trust, promoted, expected, plan, profile, minimum=0)
+    return plan
+
+
+def sign_repair(trust, promoted, expected, plan, profile, key):
+    repair_source(trust, promoted, expected, plan, profile, minimum=0)
+    signed = add_approval(approval_keys(trust), REPAIR_APPROVAL, plan, key)
+    require_current_repair(trust, plan["manifest"])
+    return signed
+
+
+def repair_transfer(trust, promoted, expected, plan, source_profile, recovery_profile, output):
+    versions = repair_source(trust, promoted, expected, plan, source_profile, minimum=2)
+    source, prefix = ledger_prefix(trust)
+    destination = {**promoted["ledger"], "role": ledger_replica(trust)["role"]}
+    transfer = {**trust, "ledgerReplica": destination}
+    require_pinned_replication(transfer, profile=source_profile)
+    check_recovery_bucket(transfer, destination, recovery_profile)
+    require_frozen_ledger(trust, profile=source_profile)
+    require_current_repair(trust, plan["manifest"])
+    csv.writer(output, lineterminator="\n").writerows(
+        (source["bucket"], quote(prefix + name), version) for name, version in versions.items()
+    )
+
+
+def verify_promotion(trust, promoted, expected, source_profile, recovery_profile, *, replica_profile=None, repair=None):
+    hex_digest(expected)
+    recovery, _ = ledger_prefix(promoted)
+    replica = ledger_replica(trust)
+    if repair is None and (replica is None or recovery != replica_trust(trust, replica)["ledger"]):
+        raise ValueError("promotion must use the original ledger's pinned replica")
+    original, next_replica = check_promotion_scope(trust, promoted)
+    source = original["ledger"]
+    if next_replica is not None and not replica_profile:
+        raise ValueError("provide --replica-profile to verify the new ledger replica")
 
     require_profile_account(source_profile, source["region"], source["account"])
     require_profile_account(recovery_profile, recovery["region"], recovery["account"])
     require_frozen_ledger(original, profile=source_profile)
     ledger_checkpoint(promoted, expected, profile=recovery_profile)
-    require_pinned_replication(promoted, profile=recovery_profile)
-    # Re-read the original history after checking the recovered copy.
-    ledger_checkpoint(original, expected, profile=source_profile)
     if next_replica is not None:
         check_recovery_bucket(promoted, next_replica, replica_profile)
+    # Re-read the original history after checking the recovered copy.
+    if repair is None:
+        ledger_checkpoint(original, expected, profile=source_profile)
+    else:
+        repair_source(trust, promoted, expected, repair, source_profile, minimum=2)
+    require_pinned_replication(promoted, profile=recovery_profile)
     require_frozen_ledger(promoted, profile=recovery_profile)
+    require_frozen_ledger(original, profile=source_profile)
+    if repair is not None:
+        require_current_repair(trust, repair["manifest"])
     return expected
 
 
@@ -162,10 +312,20 @@ def main():
     checkpoint = commands.add_parser("ledger-checkpoint")
     checkpoint.add_argument("--expect", metavar="SHA256")
     promote = commands.add_parser("verify-promotion")
-    promote.add_argument("recovered_trust", type=Path)
-    promote.add_argument("--expect", required=True, metavar="SHA256")
-    promote.add_argument("--source-profile", required=True)
-    promote.add_argument("--recovery-profile", required=True)
+    draft = commands.add_parser("draft-repair")
+    sign = commands.add_parser("sign-repair")
+    transfer = commands.add_parser("repair-transfer")
+    for command in (promote, draft, sign, transfer):
+        command.add_argument("recovered_trust", type=Path)
+        command.add_argument("--expect", required=True, metavar="SHA256")
+        command.add_argument("--source-profile", required=True)
+    draft.add_argument("record", help="name under the custody ledger prefix")
+    sign.add_argument("plan", type=Path)
+    sign.add_argument("key", help="custody approval KMS key ARN")
+    transfer.add_argument("plan", type=Path)
+    promote.add_argument("--repair", type=Path, help="signed repair plan for a clean recovery bucket")
+    for command in (promote, transfer):
+        command.add_argument("--recovery-profile", required=True)
     promote.add_argument("--replica-profile", help="read-only profile in the new replica bucket owner's account")
     args = parser.parse_args()
     try:
@@ -175,8 +335,22 @@ def main():
         elif args.command == "ledger-checkpoint":
             print(ledger_checkpoint(trust, args.expect))
         elif args.command == "verify-promotion":
+            repair = read_json(args.repair) if args.repair is not None else None
+            if args.repair is not None:
+                fields(repair, "manifest", "signatures")
             print(verify_promotion(trust, read_json(args.recovered_trust), args.expect,
-                                   args.source_profile, args.recovery_profile, replica_profile=args.replica_profile))
+                                   args.source_profile, args.recovery_profile, replica_profile=args.replica_profile,
+                                   repair=repair))
+        elif args.command == "draft-repair":
+            plan = draft_repair(trust, read_json(args.recovered_trust), args.expect, args.record, args.source_profile)
+            print(canonical(plan).decode())
+        elif args.command == "sign-repair":
+            plan = sign_repair(trust, read_json(args.recovered_trust), args.expect,
+                               read_json(args.plan), args.source_profile, args.key)
+            print(canonical(plan).decode())
+        elif args.command == "repair-transfer":
+            repair_transfer(trust, read_json(args.recovered_trust), args.expect, read_json(args.plan),
+                            args.source_profile, args.recovery_profile, sys.stdout)
         else:
             with args.archive.open("rb") as source:
                 receipt = verify_archive(trust, args.epoch, source, args.sha256)

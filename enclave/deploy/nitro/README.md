@@ -301,6 +301,51 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    the roster active at its original S3 write. Preserve the
    historical public keys and original S3 records. [S3 object timestamps](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingMetadata.html) · [Conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes-enforce.html)
 
+## Recover an occupied ledger slot
+
+Use this procedure for a single unapproved object in a write-once slot.
+Freeze the original ledger and pause custody changes. Obtain the latest
+independently retained checkpoint for the complete valid history. Prepare
+`recovered-trust.json` with a fresh bucket in a separate account and region
+and preserve all other custody and wallet pins. Mainnet still requires a
+new replica. Use the checkpoint inspection roles and tooling above.
+
+Draft the repair with the record name relative to the custody prefix.
+Two current custody approvers independently check the frozen source and
+sign the plan. Every other version must exactly match the pinned digest.
+A record with a valid custody approval quorum blocks repair.
+
+```sh
+python3 "$nitro/custody_archive.py" trust.json draft-repair recovered-trust.json "$record" \
+  --expect "$ledger_checkpoint_sha256" --source-profile "$source_read_profile" > repair-draft.json
+python3 "$nitro/custody_archive.py" trust.json sign-repair recovered-trust.json repair-draft.json "$first_approval_key" \
+  --expect "$ledger_checkpoint_sha256" --source-profile "$source_read_profile" > repair-first.json
+python3 "$nitro/custody_archive.py" trust.json sign-repair recovered-trust.json repair-first.json "$second_approval_key" \
+  --expect "$ledger_checkpoint_sha256" --source-profile "$source_read_profile" > repair.json
+```
+
+Use `replica-plan` with a temporary trust file that points the original
+source's replication role at the approved recovery bucket. Install the
+generated role permissions and rules in both accounts. Keep the source
+frozen. The transfer command checks the installed rule and the recovery
+bucket's receiving policy and controls. Run S3 Batch Replication with its
+CSV manifest using the `Bucket,Key,VersionId` fields.
+[Batch Replication manifests](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-batch-replication-batch.html)
+
+```sh
+python3 "$nitro/custody_archive.py" trust.json repair-transfer recovered-trust.json repair.json \
+  --expect "$ledger_checkpoint_sha256" --source-profile "$source_read_profile" \
+  --recovery-profile "$recovery_read_profile" > repair-versions.csv
+```
+
+After the transfer, apply the normal frozen policy to the recovered bucket
+to close inbound replication. Backfill its new replica for mainnet and run
+the standard `verify-promotion` command with `--repair repair.json` before
+enabling writes there. The original remains frozen and retains the
+excluded version. Archive the signed repair plan and transfer report. If
+the plan expires before promotion, collect fresh approvals over the same
+pinned history and excluded version.
+
 ## Commission a measured target
 
 1. For serving, copy the canonical receipt's `custody` object into
