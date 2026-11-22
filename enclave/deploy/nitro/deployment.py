@@ -12,8 +12,8 @@ from approval import (
     parse_json, read_document, read_json, require_inspection_profiles, require_profile_account, sha256,
 )
 from custody_ledger import (
-    LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_custody_roster, load_epoch,
-    read_registered_target, require_active_epoch, require_publication_roster, require_target_approval_window,
+    LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_custody_roster, list_objects, load_epoch, publication_time,
+    read_registered_target, read_stored_object, require_active_epoch, require_publication_roster, require_target_approval_window,
     target_attestation, target_object_name, validate_target, verify_target_approval, write_once,
 )
 from kms_policy import decrypt_conditions, key_policy, target_boot_pins
@@ -85,17 +85,29 @@ def target_binding(manifest):
     return {name: value for name, value in manifest.items() if name not in {"expiresAt", "approvalFromEpoch"}}
 
 
-def register_target(trust, document):
-    manifest = verify_target_approval(trust, document)
+def register_target(trust, document, *, build=None):
+    fields(document, "manifest", "signatures")
+    manifest = document["manifest"]
+    validate_target(trust, manifest)
     epoch = manifest["custodyEpoch"]
-    _, receipt, _ = load_epoch(trust, epoch)
+    _, receipt, custodians = load_epoch(trust, epoch)
     if manifest["receiptSha256"] != sha256(receipt):
         raise ValueError("target does not match the committed custody receipt")
+    name = target_object_name(manifest)
+    published_at = None
+    if name in list_objects(trust, name):
+        stored, metadata = read_stored_object(trust, name)
+        if canonical(stored) == canonical(document):
+            published_at = publication_time(metadata)
+    verify_target_approval(trust, document, at=published_at)
+    if build is not None:
+        target(trust, document, receipt, custodians, build, at=published_at)
     require_active_epoch(trust, epoch)
+    if published_at is not None:
+        return
     require_target_approval_window(manifest, time.time(), remaining=LEDGER_WRITE_MARGIN_SECONDS)
     require_publication_roster(trust, manifest["approvalFromEpoch"])
-    write_once(trust, target_object_name(manifest), document,
-               lambda stored: target_binding(stored["manifest"]))
+    write_once(trust, name, document, lambda stored: target_binding(stored["manifest"]))
     require_registered_target(trust, manifest)
 
 
@@ -108,9 +120,9 @@ def require_registered_target(trust, manifest):
     require_active_epoch(trust, manifest["custodyEpoch"])
 
 
-def target(trust, document, receipt, custodians, build):
-    now = time.time()
-    roster = approval_roster(trust, at=now)
+def target(trust, document, receipt, custodians, build, *, at=None):
+    at = time.time() if at is None else at
+    roster = approval_roster(trust, at=at)
     fields(document, "manifest", "signatures")
     manifest = document["manifest"]
     validate_target(trust, manifest)
@@ -123,7 +135,7 @@ def target(trust, document, receipt, custodians, build):
         receipt["custody"]["epoch"], sha256(receipt)
     ):
         raise ValueError("target does not authorize this custody receipt and domain")
-    require_target_approval_window(manifest, now)
+    require_target_approval_window(manifest, at)
 
     configuration = read_document(build / "configuration.json")
     config = parse_json(configuration)
@@ -245,11 +257,11 @@ def main():
             print(canonical(document).decode())
             return
         document = read_json(args.target)
+        if args.command == "register":
+            register_target(trust, document, build=args.build)
+            return
         _, receipt, custodians = load_epoch(trust, document["manifest"]["custodyEpoch"])
         keys, policies, next_keys = target(trust, document, receipt, custodians, args.build)
-        if args.command == "register":
-            register_target(trust, document)
-            return
         if args.command in {"host-policy", "attestation-pins"}:
             require_registered_target(trust, verify_target_approval(trust, document))
             manifest = document["manifest"]

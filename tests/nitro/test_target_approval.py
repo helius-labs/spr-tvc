@@ -7,11 +7,12 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import call, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import sha256
-from custody_ledger import TARGET_APPROVAL
+from custody_ledger import TARGET_APPROVAL, target_object_name
 from deployment import HostUnobserved, file_digest, main, require_host_state, target
 from kms_policy import recovery_policy
 from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, schedule, sign
@@ -332,6 +333,25 @@ class TargetApprovalTests(unittest.TestCase):
             registered.side_effect = None
             main()
             self.assertEqual(json.loads(output.getvalue())["Statement"][0]["Resource"], self.manifest["wrappingKeys"])
+
+    def test_register_command_confirms_the_original_write_with_the_reviewed_artifacts(self):
+        trust_path, target_path = self.build / "trust.json", self.build / "target.json"
+        trust_path.write_text(json.dumps(self.trust))
+        target_path.write_text(json.dumps(self.approval))
+        argv = ["deployment.py", str(trust_path), str(self.build), "register", str(target_path)]
+        expiry = self.manifest["expiresAt"]
+        written = datetime.fromtimestamp(expiry - 60, timezone.utc).isoformat()
+        with (patch("sys.argv", argv), patch("deployment.load_epoch", side_effect=self.load_epoch),
+              patch("deployment.list_objects", return_value=[target_object_name(self.manifest)]),
+              patch("deployment.read_stored_object", return_value=(self.approval, {"LastModified": written})),
+              patch("deployment.require_active_epoch") as active, patch("deployment.write_once") as write,
+              patch("deployment.time.time", return_value=expiry)):
+            main()
+            active.assert_called_once_with(self.trust, "5")
+            (self.build / "tvc_app").write_bytes(b"wrong executable")
+            with self.assertRaisesRegex(SystemExit, "target artifacts do not match"):
+                main()
+            write.assert_not_called()
 
     def test_rejects_receipt_and_eif_substitution(self):
         self.receipt["packages"][0]["ciphertext"] = "00" * 256

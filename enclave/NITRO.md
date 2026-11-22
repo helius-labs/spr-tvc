@@ -97,7 +97,9 @@ A conditional S3 write commits one record for
 the epoch. Historical receipts verify with the public keys pinned for their
 epoch. Target approvals and retirement records verify under the roster
 active at the original S3 write. Publishing after a cutover requires
-approval from the incoming roster. Retiring an approval or acknowledgement
+approval from the incoming roster. An exact target registration retry verifies
+the stored record at its original write time and confirms the epoch is open.
+Retiring an approval or acknowledgement
 signing key leaves custody receipts verifiable offline. The archive checks
 the independently pinned digest of the receipt chain, each registered
 rotation approval, and each ceremony’s Nitro proof at its recorded

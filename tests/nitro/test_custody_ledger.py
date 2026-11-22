@@ -1407,7 +1407,8 @@ class CustodyLedgerTests(unittest.TestCase):
         rotated, _ = self.rotation_document(old)
         publish(self.trust, self.sign(rotated))
         existing = self.replacement_target()
-        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, existing))
+        existing_approval = self.signed_subject(TARGET_APPROVAL, existing)
+        register_target(self.trust, existing_approval)
 
         cutoff = self.now + 60
         self.trust["approvalKeys"].append(schedule("3", 9, cutoff))
@@ -1426,6 +1427,15 @@ class CustodyLedgerTests(unittest.TestCase):
 
         self.now = cutoff
         require_registered_target(self.trust, existing)
+        with patch("deployment.write_once") as write:
+            register_target(self.trust, existing_approval)
+            with patch.object(self, "now", existing["expiresAt"]):
+                register_target(self.trust, existing_approval)
+            existing_path = f"spr-custody/devnet/{DOMAIN}/{target_object_name(existing)}"
+            with patch.dict(self.timestamps, {existing_path: datetime.fromtimestamp(cutoff, timezone.utc).isoformat()}):
+                with self.assertRaisesRegex(ValueError, "approval roster does not match its publication time"):
+                    register_target(self.trust, existing_approval)
+            write.assert_not_called()
         name = target_object_name(old_target)
         with self.assertRaisesRegex(ValueError, "approval roster does not match"):
             register_target(self.trust, old_approval)

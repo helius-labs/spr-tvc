@@ -281,7 +281,10 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    epoch. Target and retirement approvals use the roster active when S3
    committed the record. The tools pause new writes during the final 30
    seconds before cutover. Re-sign unpublished targets and requalify and sign
-   unpublished retirements under the new roster after cutover. Preserve the
+   unpublished retirements under the new roster after cutover. If a target
+   registration response was lost, rerun `register` with the original signed
+   file and build. The command confirms an exact recorded approval under
+   the roster active at its original S3 write. Preserve the
    historical public keys and original S3 records. [S3 object timestamps](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingMetadata.html) · [Conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes-enforce.html)
 
 ## Commission a measured target
