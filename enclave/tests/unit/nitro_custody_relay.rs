@@ -78,11 +78,7 @@ impl Fixture {
                 .unwrap();
             Approval {
                 authority,
-                signature: signature
-                    .normalize_s()
-                    .unwrap_or(signature)
-                    .to_bytes()
-                    .into(),
+                signature: signature.normalize_s().to_bytes().into(),
             }
         })
     }

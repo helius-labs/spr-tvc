@@ -129,7 +129,7 @@ impl Relay {
                 .authorities
                 .get(usize::from(authority).checked_sub(1)?)?;
             let sig = Signature::from_slice(&signature).ok()?;
-            if sig.normalize_s().is_some() || key.verify_prehash(&digest, &sig).is_err() {
+            if sig.normalize_s() != sig || key.verify_prehash(&digest, &sig).is_err() {
                 return None;
             }
         }
