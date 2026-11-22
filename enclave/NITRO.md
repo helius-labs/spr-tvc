@@ -45,9 +45,15 @@ configuration bytes it will measure, using the same checks as enclave startup.
 The native builder fetches OpenSSL from a pinned 3.5 LTS revision, verifies its
 source hash and checks the version reported by the statically linked binary.
 The written EIF must pass Nitro CLI's checksum check and match the build PCRs.
-The workflow attests the executable, configuration, EIF and
-PCR0–PCR2 hashes after verifying the approval. Signers verify a private copy of
-the exact provenance bytes and match their proposed target or ceremony against
+The builder and operators independently read the EIF bytes. They check the
+checksum, recompute PCR0–PCR2, and pin PCR1 to the kernel, command line and
+bootstrap packaged by Nitro CLI v1.5.3. The application archive must launch
+`/tvc_app` with the expected environment and contain the exact executable
+and configuration identified in provenance. [AWS EIF specification](https://github.com/aws/aws-nitro-enclaves-image-format#enclave-image-file-eif-specification)
+
+The workflow attests the executable, configuration, EIF and PCR0–PCR2
+hashes after verifying the approval. Signers verify a private copy of the
+exact provenance bytes and match their proposed target or ceremony against
 the authenticated hashes. The KMS wrapping policy pins PCR3 to the parent IAM
 role and PCR4 to the EC2 instance ID. That authorization covers the approved
 image across boots on the registered parent. Each serving boot generates its

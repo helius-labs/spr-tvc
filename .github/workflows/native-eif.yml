@@ -11,6 +11,7 @@ on:
       - enclave/deploy/nitro/approval.py
       - enclave/deploy/nitro/build-eif.sh
       - enclave/deploy/nitro/build-native.sh
+      - enclave/deploy/nitro/eif.py
       - enclave/deploy/nitro/provenance.py
       - enclave/native/**
       - enclave/src/**

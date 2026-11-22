@@ -25,8 +25,9 @@ NEXT_KEYS = [pin(key(i, 9)) for i in (13, 14, 15)]
 
 
 class RelayTests(unittest.TestCase):
+    @patch("provenance.verify_eif")
     @patch("provenance.subprocess.run")
-    def test_relay_must_match_the_reviewed_build_and_ordered_epoch_roster(self, github):
+    def test_relay_must_match_the_reviewed_build_and_ordered_epoch_roster(self, github, _eif):
         build = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
         commit, ref = "ad" * 20, "refs/heads/native"
         trust = {**TRUST, "securityDomainId": DOMAIN,

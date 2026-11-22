@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 from approval import MAX_DOCUMENT_BYTES, canonical, fields, file_digest, hex_digest, parse_json, read_document, read_json
+from eif import verify_eif
 
 REPO = "helius-labs/spr-tvc"
 WORKFLOW = f"{REPO}/.github/workflows/native-eif.yml"
@@ -42,6 +43,7 @@ def verify(build, network, review_file):
     manifest = parse_json(contents)
     if manifest != describe(build, network, source_commit):
         raise ValueError("artifact does not match the reviewed build attestation")
+    verify_eif(build / "enclave.eif", manifest)
     with tempfile.TemporaryDirectory() as directory:
         subject = Path(directory) / "provenance.json"
         subject.write_bytes(contents)
@@ -85,7 +87,9 @@ def main():
     args = parser.parse_args()
     try:
         if args.command == "describe":
-            print(canonical(describe(args.build, args.network, args.source_commit)).decode())
+            manifest = describe(args.build, args.network, args.source_commit)
+            verify_eif(args.build / "enclave.eif", manifest)
+            print(canonical(manifest).decode())
         elif args.command == "verify":
             print(canonical(verify(args.build, args.network, args.review)).decode())
         else:

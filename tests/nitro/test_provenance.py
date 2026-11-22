@@ -49,6 +49,7 @@ class ProvenanceTests(unittest.TestCase):
         self.manifest.write_bytes(canonical(describe(self.build, "mainnet", COMMIT)))
         self.review = self.build / "review.json"
         self.pin_review()
+        self.check_eif = self.enterContext(patch("provenance.verify_eif"))
 
     def pin_review(self, ref="refs/heads/main"):
         self.review.write_bytes(canonical({"sourceCommit": COMMIT, "sourceRef": ref,
@@ -67,6 +68,7 @@ class ProvenanceTests(unittest.TestCase):
 
         run.side_effect = verify_subject
         self.assertEqual(verify(self.build, "mainnet", self.review), describe(self.build, "mainnet", COMMIT))
+        self.check_eif.assert_called_once_with(self.build / "enclave.eif", describe(self.build, "mainnet", COMMIT))
         run.assert_called_once()
         args = run.call_args.args[0]
         self.assertIn(str(self.build / "provenance.intoto.jsonl"), args)
@@ -75,6 +77,13 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(args[args.index("--source-digest") + 1], COMMIT)
         self.assertEqual(args[args.index("--signer-digest") + 1], COMMIT)
         self.assertIn("--deny-self-hosted-runners", args)
+
+    @patch("provenance.subprocess.run")
+    def test_attestation_cannot_substitute_for_a_valid_eif(self, run):
+        self.check_eif.side_effect = ValueError("invalid EIF contents")
+        with self.assertRaisesRegex(ValueError, "invalid EIF contents"):
+            verify(self.build, "mainnet", self.review)
+        run.assert_not_called()
 
     @patch("provenance.subprocess.run")
     def test_devnet_accepts_an_explicit_reviewed_branch_and_mainnet_rejects_it(self, run):
