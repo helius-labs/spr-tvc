@@ -17,7 +17,7 @@ import { parseStrictJson } from "../sdk/src/protocol/json.js";
 
 const execute = promisify(execFile);
 const MAX_BYTES = 32_768;
-const CUSTODY_WRITE_MARGIN_MS = 30_000n;
+const WRITE_MARGIN_MS = 30_000n;
 const custodyLedger = fileURLToPath(new URL("../enclave/deploy/nitro/custody_ledger.py", import.meta.url));
 type Run = (command: string, args: string[], timeout: number) => Promise<{ stdout: string }>;
 const runCommand: Run = (command, args, timeout) => execute(command, args, {
@@ -58,7 +58,7 @@ function publicationFor(trust: NitroTrust, bucket: string) {
 }
 
 function requireCustodyWriteWindow(nextCutover: bigint | undefined, now: bigint): void {
-  if (nextCutover !== undefined && now + CUSTODY_WRITE_MARGIN_MS >= nextCutover) {
+  if (nextCutover !== undefined && now + WRITE_MARGIN_MS >= nextCutover) {
     throw new Error("custody approval cutover is too close for publication");
   }
 }
@@ -191,6 +191,9 @@ export async function publish(
     const latestPrimary = isSecond ? await readPeer() : undefined;
     const beforeWrite = BigInt(Date.now());
     verify(trust, beforeWrite, latestPrimary);
+    if (!isSecond && verified.expiresAt <= beforeWrite + WRITE_MARGIN_MS) {
+      throw new Error("the signed policy expires too soon for conditional publication");
+    }
     requireCustodyWriteWindow(confirmedCutover, beforeWrite);
     const precondition = head ? ["--if-match", head.etag] : ["--if-none-match", "*"];
     try {

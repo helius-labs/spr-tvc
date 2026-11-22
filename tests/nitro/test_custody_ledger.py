@@ -32,7 +32,7 @@ from deployment import register_target, require_registered_target
 from kms_policy import acknowledgement_policy, boot_pins
 from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, schedule, sign
 from provenance import describe
-from retirement import (commit_retirement, inspect_keys, prove_recovery, qualified_manifest, qualified_policy,
+from retirement import (LiveBoot, commit_retirement, inspect_keys, prove_recovery, qualified_manifest, qualified_policy,
                         main as retirement_main, replacement_targets, retirement_inventory, retirement_scope,
                         sign_retirement, verify_retired)
 
@@ -509,7 +509,7 @@ class CustodyLedgerTests(unittest.TestCase):
         publish(self.trust, self.sign(rotated))
         replacement = self.replacement_target()
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
-        with (patch("retirement.qualified_policy", return_value=self.qualification(replacement)),
+        with (patch("retirement.qualified_policy", return_value=self.live_qualification(replacement)),
               patch("retirement.require_recovery_quorum")):
             marker = qualified_manifest(self.trust, None, "1", "2")
             commit_retirement(self.trust, None, self.signed_retirement(marker))
@@ -647,7 +647,7 @@ class CustodyLedgerTests(unittest.TestCase):
         publish(self.trust, self.sign(rotation))
         target = self.replacement_target()
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, target))
-        with (patch("retirement.qualified_policy", return_value=self.qualification(target)),
+        with (patch("retirement.qualified_policy", return_value=self.live_qualification(target)),
               patch("retirement.require_recovery_quorum")):
             retired = self.signed_retirement(qualified_manifest(self.trust, None, "1", "2"))
             commit_retirement(self.trust, None, retired)
@@ -792,7 +792,7 @@ class CustodyLedgerTests(unittest.TestCase):
         original_target = {**replacement, "custodyEpoch": "1", "receiptSha256": sha256(old), "releaseId": "old-serving",
                            "instanceId": INSTANCE, "wrappingKeys": [key(slot, 31) for slot in range(1, 7)]}
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, original_target))
-        with (patch("retirement.qualified_policy", return_value=self.qualification(replacement)),
+        with (patch("retirement.qualified_policy", return_value=self.live_qualification(replacement)),
               patch("retirement.require_recovery_quorum")):
             marker = qualified_manifest(self.trust, None, "1", "2")
             commit_retirement(self.trust, None, self.signed_retirement(marker))
@@ -847,7 +847,7 @@ class CustodyLedgerTests(unittest.TestCase):
             with (patch("retirement.check_recovery_bucket") as check_bucket,
                   patch("retirement.inspect_inventory", return_value={"keys": []}) as inspect,
                   patch("retirement.inspect_old_parents", return_value=[]),
-                  patch("retirement.qualify_key_retirement", return_value={"boot": "replacement"}) as qualify):
+                  patch("retirement.qualify_key_retirement", return_value=LiveBoot({"boot": "replacement"}, (self.now + 60) * 1000)) as qualify):
                 wallet = pathlib.Path("wallet-trust.json")
                 with self.assertRaisesRegex(ValueError, "provide --replica-profile"):
                     inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)
@@ -861,7 +861,8 @@ class CustodyLedgerTests(unittest.TestCase):
                     inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet, replica_profile="recovery-read")
                 check_bucket.side_effect = None
                 result = inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet, replica_profile="recovery-read")
-                self.assertEqual(result, {"keys": [], "terminatedParents": [], "replacement": {"boot": "replacement"}})
+                self.assertEqual(result, {"keys": [], "terminatedParents": [], "replacement": {"boot": "replacement"},
+                                          "validUntilMs": str((self.now + 60) * 1000)})
                 check_bucket.assert_called_with(self.trust, self.trust["ledgerReplica"], "recovery-read")
             source_status[marker_key] = "PENDING"
             with self.assertRaisesRegex(ValueError, "has not completed S3 replication"):
@@ -1072,6 +1073,13 @@ class CustodyLedgerTests(unittest.TestCase):
         return {"walletPolicyDigest": policy_digest, "replacementTargetIdentity": sha256(target_attestation(target)),
                 "replacementTargetSha256": sha256(target),
                 "replacementBootstrap": {"bootKeyId": "de" * 32, "bootedAtMs": str(self.booted_at_ms), "slots": [1, 2, 3]}}
+
+    def live_qualification(self, target, policy_digest="fe" * 32):
+        return LiveBoot(self.qualification(target, policy_digest), (self.now + 60) * 1000)
+
+    def attestation_reply(self, evidence):
+        targets = [{"validUntilMs": str((self.now + 60) * 1000), **target} for target in evidence["targets"]]
+        return canonical({**evidence, "targets": targets})
 
     def signed_retirement(self, manifest, slots=(1, 2, 3)):
         result = self.signed_subject(RETIREMENT, manifest)
@@ -1341,14 +1349,14 @@ class CustodyLedgerTests(unittest.TestCase):
 
         replacement = self.replacement_target()
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
-        qualification.return_value = self.qualification(replacement)
+        qualification.return_value = self.live_qualification(replacement)
         marker = qualified_manifest(self.trust, None, "1", "2")
         retired = self.signed_retirement(marker)
-        qualification.return_value = self.qualification(replacement, "cd" * 32)
+        qualification.return_value = self.live_qualification(replacement, "cd" * 32)
         with self.assertRaisesRegex(ValueError, "no longer matches"):
             commit_retirement(self.trust, None, retired)
         require_registered_target(self.trust, target)
-        qualification.return_value = self.qualification(replacement)
+        qualification.return_value = self.live_qualification(replacement)
         concurrent = {**target, "releaseId": "other-slot", "wrappingKeys": [key(account, 12) for account in range(1, 7)]}
 
         def register_during_retirement(region, service, operation, args, **options):
@@ -1406,7 +1414,7 @@ class CustodyLedgerTests(unittest.TestCase):
 
         replacement = self.replacement_target()
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
-        qualification.return_value = self.qualification(replacement)
+        qualification.return_value = self.live_qualification(replacement)
         marker = qualified_manifest(self.trust, None, "1", "2")
         wrong = self.signed_retirement({**marker, "replacementReceiptSha256": "ab" * 32})
         self.objects[path] = json.dumps(wrong).encode()
@@ -1433,7 +1441,7 @@ class CustodyLedgerTests(unittest.TestCase):
         publish(self.trust, self.sign(rotated))
         replacement = self.replacement_target()
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
-        with (patch("retirement.qualified_policy", return_value=self.qualification(replacement)),
+        with (patch("retirement.qualified_policy", return_value=self.live_qualification(replacement)),
               patch("retirement.require_recovery_quorum")):
             marker = qualified_manifest(self.trust, None, "1", "2")
             self.now += 2
@@ -1454,7 +1462,7 @@ class CustodyLedgerTests(unittest.TestCase):
             return inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet, host_profiles=host_profiles)
 
         def evidence(*targets):
-            return json.dumps({"policyDigest": policy_digest, "targets": list(targets)}).encode()
+            return self.attestation_reply({"policyDigest": policy_digest, "targets": list(targets)})
 
         with (patch("retirement.inspect_inventory", side_effect=lambda *_args: {"keys": []}) as inspect,
               patch("retirement.require_recovery_quorum") as quorum, patch("retirement.run_command") as query,
@@ -1503,6 +1511,17 @@ class CustodyLedgerTests(unittest.TestCase):
             with patch("retirement.require_active_epoch", side_effect=[None, ValueError("custody epoch is retired")]):
                 with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
                     inspect_slot()
+
+            def check_epoch_after_expiry(_trust, _epoch):
+                if check_epoch.call_count == 2:
+                    self.now += 1
+
+            query.return_value.stdout = evidence({**observed, "validUntilMs": str((self.now + 1) * 1000)})
+            with (patch.object(self, "now", self.now),
+                  patch("retirement.require_active_epoch", side_effect=check_epoch_after_expiry) as check_epoch):
+                with self.assertRaisesRegex(ValueError, "replacement evidence expired"):
+                    inspect_slot()
+            query.return_value.stdout = evidence(observed)
             query.reset_mock()
             quorum.side_effect = ValueError("proven replacement key is unavailable")
             with self.assertRaisesRegex(ValueError, "replacement key is unavailable"):
@@ -1567,7 +1586,7 @@ class CustodyLedgerTests(unittest.TestCase):
             wallet_trust.write_bytes(body)
             self.trust["walletTrustSha256"] = hashlib.sha256(body).hexdigest()
             with patch("retirement.run_command") as query:
-                query.return_value.stdout = json.dumps(evidence).encode()
+                query.return_value.stdout = self.attestation_reply(evidence)
                 with self.assertRaisesRegex(ValueError, "no registered serving target"):
                     qualified_policy(self.trust, wallet_trust, scope, seed)
 
@@ -1583,19 +1602,19 @@ class CustodyLedgerTests(unittest.TestCase):
 
                 register_target(self.trust, self.signed_subject(TARGET_APPROVAL, registered))
                 for pcr in ("3", "4"):
-                    query.return_value.stdout = json.dumps({**evidence, "targets": [
+                    query.return_value.stdout = self.attestation_reply({**evidence, "targets": [
                         {**observed, "pcrs": {**pins, pcr: "ab" * 48}},
-                    ]}).encode()
+                    ]})
                     with self.subTest(pcr=pcr), self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
                         qualified_policy(self.trust, wallet_trust, scope, seed)
 
                 for slots in ([1, 2], [1, 1, 2], [1, 2, 7], [True, 2, 3], [3, 2, 1]):
                     bootstrap = {**observed["bootstrap"], "slots": slots}
-                    query.return_value.stdout = json.dumps({**evidence, "targets": [{**observed, "bootstrap": bootstrap}]}).encode()
+                    query.return_value.stdout = self.attestation_reply({**evidence, "targets": [{**observed, "bootstrap": bootstrap}]})
                     with self.assertRaisesRegex(ValueError, "three distinct attested bootstrap slots"):
                         qualified_policy(self.trust, wallet_trust, scope, seed)
-                query.return_value.stdout = json.dumps(evidence).encode()
-                self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, seed), self.qualification(registered))
+                query.return_value.stdout = self.attestation_reply(evidence)
+                self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, seed).evidence, self.qualification(registered))
                 with self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
                     qualified_policy(self.trust, wallet_trust, scope, seed, after_ms=self.booted_at_ms)
                 with patch("retirement.time.time", return_value=self.now + RECOVERY_WINDOW_SECONDS):
@@ -1604,9 +1623,9 @@ class CustodyLedgerTests(unittest.TestCase):
                 sibling = {**registered, "instanceId": "i-1234567890abcdef4", "wrappingKeys": [key(i, 24) for i in range(1, 7)]}
                 register_target(self.trust, self.signed_subject(TARGET_APPROVAL, sibling))
                 other = {**target_attestation(sibling), "bootstrap": observed["bootstrap"]}
-                query.return_value.stdout = json.dumps({**evidence, "targets": [other, observed]}).encode()
-                self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, seed), self.qualification(sibling))
-                self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, seed, expected=self.qualification(registered)),
+                query.return_value.stdout = self.attestation_reply({**evidence, "targets": [other, observed]})
+                self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, seed).evidence, self.qualification(sibling))
+                self.assertEqual(qualified_policy(self.trust, wallet_trust, scope, seed, expected=self.qualification(registered)).evidence,
                                  self.qualification(registered))
                 self.assertEqual(query.call_args.kwargs["input"], body)
                 self.assertNotIn(str(wallet_trust), query.call_args.args[0])
@@ -1645,7 +1664,7 @@ class CustodyLedgerTests(unittest.TestCase):
             }}
 
         def observation(*targets, policy="fe" * 32):
-            return SimpleNamespace(stdout=canonical({"policyDigest": policy, "targets": list(targets)}))
+            return SimpleNamespace(stdout=self.attestation_reply({"policyDigest": policy, "targets": list(targets)}))
 
         with (patch("retirement.run_command") as query, patch("retirement.kms", side_effect=describe),
               patch("retirement.inspect_inventory", return_value={"keys": []}),
@@ -1724,7 +1743,7 @@ class CustodyLedgerTests(unittest.TestCase):
               patch("retirement.inspect_inventory", return_value={"keys": []}),
               patch("retirement.inspect_old_parents", return_value=[]), patch("retirement.require_profile_account")):
             def observe(boot):
-                query.return_value.stdout = canonical({
+                query.return_value.stdout = self.attestation_reply({
                     "policyDigest": "fe" * 32, "targets": [{**target_attestation(target), "bootstrap": boot}],
                 })
 
@@ -1799,13 +1818,13 @@ class CustodyLedgerTests(unittest.TestCase):
         for target in (replacement, latest):
             register_target(self.trust, self.signed_subject(TARGET_APPROVAL, target))
         with patch("retirement.qualified_policy") as qualify, patch("retirement.require_recovery_quorum"):
-            qualify.return_value = self.qualification(replacement)
+            qualify.return_value = self.live_qualification(replacement)
             closure = self.signed_retirement(qualified_manifest(self.trust, None, "1", "2"))
             commit_retirement(self.trust, None, closure)
             self.now += 1
             evidence = self.qualification(latest)
             evidence["replacementBootstrap"]["bootedAtMs"] = str(self.now * 1000)
-            qualify.return_value = evidence
+            qualify.return_value = LiveBoot(evidence, (self.now + 60) * 1000)
             second_closure = self.signed_retirement(qualified_manifest(self.trust, None, "2", "3"))
             commit_retirement(self.trust, None, second_closure)
             with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
@@ -1840,7 +1859,7 @@ class CustodyLedgerTests(unittest.TestCase):
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, other_host))
         replacement = self.replacement_target()
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
-        with (patch("retirement.qualified_policy", return_value=self.qualification(replacement)),
+        with (patch("retirement.qualified_policy", return_value=self.live_qualification(replacement)),
               patch("retirement.require_recovery_quorum")):
             marker = qualified_manifest(self.trust, None, "1", "2")
             retired = self.signed_retirement(marker)
@@ -1871,9 +1890,9 @@ class CustodyLedgerTests(unittest.TestCase):
 
         boot = self.qualification(replacement)["replacementBootstrap"]
         observed = {**target_attestation(replacement), "bootstrap": boot}
-        stale = json.dumps({"policyDigest": "fe" * 32, "targets": [observed]}).encode()
+        stale = self.attestation_reply({"policyDigest": "fe" * 32, "targets": [observed]})
         fresh = {**boot, "bootKeyId": "be" * 32, "bootedAtMs": str(self.booted_at_ms + 1_000)}
-        ready = json.dumps({"policyDigest": "fe" * 32, "targets": [{**observed, "bootstrap": fresh}]}).encode()
+        ready = self.attestation_reply({"policyDigest": "fe" * 32, "targets": [{**observed, "bootstrap": fresh}]})
 
         wallet = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory())) / "wallet.json"
         wallet.write_bytes(self.wallet_pins)
@@ -1909,7 +1928,7 @@ class CustodyLedgerTests(unittest.TestCase):
             for changed in ({"policyDigest": "ad" * 32, "targets": [{**observed, "bootstrap": fresh}]},
                             {"policyDigest": "fe" * 32, "targets": [{**observed, "bootstrap": {**fresh, "bootKeyId": "da" * 32}}]}):
                 with self.subTest(changed=changed):
-                    query.side_effect = [SimpleNamespace(stdout=body) for body in (ready, json.dumps(changed).encode())]
+                    query.side_effect = [SimpleNamespace(stdout=body) for body in (ready, self.attestation_reply(changed))]
                     with self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
                         verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
             visited.clear()
@@ -1970,7 +1989,15 @@ class CustodyLedgerTests(unittest.TestCase):
                 verified = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5, replica_profile="recovery-read")
                 self.assertEqual(verified, report)
 
-                query.return_value.stdout = canonical({
+                def replica_check_crosses_deadline(*_args):
+                    self.now += 60
+
+                check_bucket.side_effect = replica_check_crosses_deadline
+                with patch.object(self, "now", self.now), self.assertRaisesRegex(ValueError, "replacement evidence expired"):
+                    verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5, replica_profile="recovery-read")
+                check_bucket.side_effect = None
+
+                query.return_value.stdout = self.attestation_reply({
                     "policyDigest": "fe" * 32, "targets": [{**target_attestation(standby), "bootstrap": fresh}],
                 })
                 with patch("retirement.read_replicated_record", side_effect=ValueError("standby replication pending")) as read:
@@ -2152,7 +2179,7 @@ class CustodyLedgerTests(unittest.TestCase):
                                     "KeyState": "Enabled" if state == "foreign" else state}}
 
         with patch("retirement.kms", side_effect=describe):
-            qualification.return_value = self.qualification(replacement)
+            qualification.return_value = self.live_qualification(replacement)
             marker = qualified_manifest(self.trust, None, "1", "2")
             retirement = self.signed_retirement(marker)
             with self.assertRaisesRegex(ValueError, recovery_keys[2]):
@@ -2174,11 +2201,17 @@ class CustodyLedgerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "invalid or duplicate approval"):
                 commit_retirement(self.trust, None, self.signed_retirement(marker, (1, 2, 4)))
             states[wrapping_keys[1]] = "Enabled"
-            qualification.return_value = {**self.qualification(replacement),
-                                          "replacementBootstrap": {**marker["replacementBootstrap"], "bootKeyId": "bc" * 32}}
+            changed = {**self.qualification(replacement),
+                       "replacementBootstrap": {**marker["replacementBootstrap"], "bootKeyId": "bc" * 32}}
+            qualification.return_value = LiveBoot(changed, (self.now + 60) * 1000)
             with self.assertRaisesRegex(ValueError, "no longer matches the qualified replacement"):
                 commit_retirement(self.trust, None, retirement)
-            qualification.return_value = self.qualification(replacement)
+            qualification.return_value = LiveBoot(self.qualification(replacement), (self.now + 1) * 1000)
+            with patch("retirement.write_once") as write:
+                with self.assertRaisesRegex(ValueError, "replacement evidence expired or has insufficient time"):
+                    commit_retirement(self.trust, None, retirement)
+                write.assert_not_called()
+            qualification.return_value = self.live_qualification(replacement)
             commit_retirement(self.trust, None, retirement)
 
     @patch("retirement.require_recovery_quorum")
@@ -2190,7 +2223,7 @@ class CustodyLedgerTests(unittest.TestCase):
         publish(self.trust, self.sign(rotated))
         replacement = self.replacement_target()
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
-        qualification.return_value = self.qualification(replacement)
+        qualification.return_value = self.live_qualification(replacement)
         marker = qualified_manifest(self.trust, None, "1", "2")
         retired = self.signed_retirement(marker)
         proofs = retired["recoveryProofs"]
@@ -2213,11 +2246,13 @@ class CustodyLedgerTests(unittest.TestCase):
         deadline = marker["recoveryDeadline"]
         with self.assertRaisesRegex(ValueError, "measured from the replacement boot"):
             sign_retirement(self.trust, None, other, approval_keys(self.trust)[0]["keyArn"])
+        qualification.return_value = LiveBoot(self.qualification(replacement), deadline * 1000)
         for now in (deadline - RECOVERY_WINDOW_SECONDS - 1, deadline, deadline - 1):
             with patch("retirement.time.time", return_value=now):
                 with self.assertRaisesRegex(ValueError, "recovery window"):
                     commit_retirement(self.trust, None, retired)
         self.assertNotIn(path, self.objects)
+        qualification.return_value = self.live_qualification(replacement)
         commit_retirement(self.trust, None, retired)
         commit_retirement(self.trust, None, retired)
         self.rotate_approvals("3")
@@ -2248,7 +2283,7 @@ class CustodyLedgerTests(unittest.TestCase):
         _, old, _ = load_epoch(self.trust, "1")
         rotated, _ = self.rotation_document(old)
         publish(self.trust, self.sign(rotated))
-        qualification.return_value = self.qualification(self.replacement_target())
+        qualification.return_value = self.live_qualification(self.replacement_target())
         marker = qualified_manifest(self.trust, None, "1", "2")
         candidate = {"manifest": marker, "signatures": [], "recoveryProofs": []}
         _, receipt, roster = load_epoch(self.trust, "2")

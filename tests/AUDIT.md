@@ -151,6 +151,8 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-143 | Opening a named pipe as a policy or trust file could block before validation. | Open without blocking and require a regular file. Verified by passing a named pipe to the publication CLI. |
 | N-144 | An extra valid signer in the mirror's predecessor file blocked both mirror repair and emergency revocation. | A revocation can advance if both heads independently authenticate the same immediate predecessor with both quorums. Activation still requires matching signed files. [Publication tests](nitro/publication.test.mts) |
 | N-145 | A nonregular file could stall the Rust wallet's checkpoint worker or a Python operator command before validation. | The wallet rejects nonregular files and symbolic links at checkpoint and lock paths. Python reads and hashes only regular files. [Rust checkpoint tests](https://github.com/helius-labs/privacy-rings/pull/652) · [Provenance tests](nitro/test_provenance.py) |
+| N-146 | Final AWS reads could outlast the replacement boot evidence used to authorize retirement. | Keep the earlier wallet policy, attestation, certificate and boot recovery deadlines through qualification. Check the deadline after the final AWS reads and leave a write margin for closure. Inspection reports its deadline for the deletion operator. [Retirement tests](nitro/test_custody_ledger.py) |
+| N-147 | A slow conditional write could put an already expired policy at the primary head. | Before writing a primary policy, require a 30-second expiry margin. Mirror recovery still authenticates and copies the expired primary. [Publication tests](nitro/publication.test.mts) |
 
 ## Remaining qualification and review
 

@@ -282,10 +282,10 @@ a proof from that same boot and pass the wallet's X25519 and BN254 key checks.
 Wallet trust distribution and retirement use
 the same probe. A planned transition matches the incoming pins. The publisher
 rechecks the peer's signed file, the registered targets, epoch closure and
-the active custody roster after probing. It checks the candidate's deadline
-and the roster cutover before submitting the conditional write. A revocation
-has no targets. Its sequence, custody floor and recovery flag can permanently
-change wallet state, so it also requires both quorums.
+the active custody roster after probing. It leaves 30 seconds before the
+candidate expires or the custody roster changes when submitting the conditional
+write. A revocation has no targets. Its sequence, custody floor and recovery
+flag can permanently change wallet state, so it also requires both quorums.
 Revocation can proceed while the custody ledger and replicas are offline.
 S3 applies the predecessor's ETag condition to the bucket being written.
 Each publisher writes to its own bucket. The mirror verifies both quorums

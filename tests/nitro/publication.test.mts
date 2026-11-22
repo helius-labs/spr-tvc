@@ -131,6 +131,30 @@ test("confirms a lost write response only by exact bytes and reports both failur
   }
 });
 
+test("the primary leaves time for the conditional write before policy expiry", async context => {
+  const [primary] = trust.publications;
+  const predecessor = signed(first);
+  let current = now;
+  context.mock.method(Date, "now", () => current);
+  context.mock.method(globalThis, "fetch", async () => new Response(predecessor));
+  const read = awsOnly(async args => {
+    assert.ok(args.includes("get-object"));
+    await writeFile(args.at(-1)!, predecessor);
+    return { stdout: JSON.stringify({ ETag: '"current"' }) };
+  });
+  const next = { ...first, sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest };
+  const activation = signed({ ...next, action: "activate", targets: [target] });
+  await assert.rejects(publish(trust, primary.bucket, activation, {
+    custodyTrust: "custody.json",
+    async run(command, args) {
+      if (command === "python3") return { stdout: JSON.stringify({ custodyKeys: trust.custodyKeys, nextCutover: null }) };
+      return read.run(command, args);
+    },
+    async probe() { current = now + 30_000; },
+  }), /policy expires too soon/);
+  await assert.rejects(publish(trust, primary.bucket, signed(next), read), /policy expires too soon/);
+});
+
 test("requires custody registration, the active roster and live attestation before publishing an activation", async context => {
   const fetch = context.mock.method(globalThis, "fetch", async () => new Response(null, { status: 503 }));
   const activate: NitroPolicy = { ...first, action: "activate", targets: [target] };

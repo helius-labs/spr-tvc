@@ -476,7 +476,10 @@ pinned history and excluded versions.
    after attestation and match the replacement to its registered serving
    target. Draft selects an attested target with enabled keys and a replicated
    registration when a replica is configured. Sign and publish recheck those
-   conditions for the exact signed boot. If the attested boot key or slots
+   conditions for the exact signed boot. The live evidence expires at the
+   earliest of the wallet policy, Nitro proof freshness window, certificate
+   path, or 24-hour recovery window. Publication needs 30 seconds left to
+   submit the ledger write. If the attested boot key or slots
    change, draft a new candidate and collect proofs for those slots. After a
    timeout, retry the same signed document. The tool verifies a committed record against its historical
    roster and S3 timestamp, even after the recovery window closes. If the
@@ -528,8 +531,11 @@ pinned history and excluded versions.
    write second. Inspection and the final report check the replica's bucket
    protections after confirming the live replacement. If a candidate fails a
    key, replication or repeated attestation check, both commands try another boot
-   from the same observation. The role
-   needs `kms:DescribeKey` for the six replacement keys. Use
+   from the same observation. Both commands reject evidence that expires during
+   the remaining checks. `inspect` reports `validUntilMs` as a Unix millisecond
+   timestamp for the live boot evidence. Rerun inspection if that deadline
+   passes before scheduling deletion. The role needs `kms:DescribeKey` for the
+   six replacement keys. Use
    `inspect --check-inactive` for the historical key state check after scheduling.
 
    If one of the proved slots is unavailable, or the replacement epoch is
@@ -712,7 +718,8 @@ activation target and verifies its encrypted `PublicKeys` reply through
 `/v1/operations`. The reply must be signed by the attested boot. The probe
 uses a fixed public address and needs no wallet signature. The publisher
 rereads the peer and custody ledger after the probes, checks the active
-roster and cutover window, and writes against its original ETag.
+roster and cutover window, and writes against its original ETag. New primary
+policies need at least 30 seconds before expiry to submit the write.
 For mainnet payment activation, give signers, the primary publisher, and wallet pin
 verifiers `kms:DescribeKey` on the registered recovery and wrapping keys.
 Each target needs three slots with both keys enabled in the same account.
