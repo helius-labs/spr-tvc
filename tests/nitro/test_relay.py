@@ -146,25 +146,28 @@ class RelayTests(unittest.TestCase):
     @patch("relay_wrap.relay_request", return_value=b"x" * 256)
     @patch("relay_wrap.recover_to_relay", return_value=b"envelope")
     @patch("relay_wrap.prepare")
+    @patch("relay_wrap.require_reviewed_target")
     @patch("relay_wrap.time", return_value=10)
     def test_release_checks_the_live_boot_and_exact_quorum_before_any_recovery(
-        self, now, prepare, recover, request, _verify, active,
+        self, now, reviewed, prepare, recover, request, _verify, active,
     ):
         statement = {"custodyEpoch": "1", "relayKeyId": "ab" * 32, "destinationPublicKey": "cd" * 32, "expiresAt": 20}
         prepare.return_value = (statement, KEYS, RECEIPT, CUSTODIAN, b"evidence")
         signatures = [sign(LABEL, statement, pin["keyArn"]) for pin in KEYS[:2]]
         approved = {"manifest": statement, "signatures": signatures}
-        source = (TRUST, {}, pathlib.Path("build"), 1, 7443)
+        source = (TRUST, {"manifest": {}}, pathlib.Path("build"), 1, 7443)
+        review = {"source_commit": "ab" * 20, "source_ref": "refs/heads/reviewed"}
         for edited in [
             {**approved, "manifest": {**statement, "relayKeyId": "ef" * 32}},
             {**approved, "signatures": signatures[:1]},
             {**approved, "signatures": [signatures[0], signatures[0]]},
         ]:
             with self.assertRaises(ValueError):
-                release(*source, edited)
+                release(*source, edited, **review)
         recover.assert_not_called()
         request.assert_not_called()
-        self.assertEqual(release(*source, approved), b"x" * 256)
+        reviewed.assert_not_called()
+        self.assertEqual(release(*source, approved, **review), b"x" * 256)
         self.assertEqual(request.call_args.args[:2], (7443, "/rewrap"))
         payload = request.call_args.args[2]
         self.assertIn(b'"envelope":"656e76656c6f7065"', payload)
@@ -172,7 +175,7 @@ class RelayTests(unittest.TestCase):
         request.reset_mock()
         now.return_value = 20
         with self.assertRaisesRegex(ValueError, "relay authorization has expired"):
-            release(*source, approved)
+            release(*source, approved, **review)
         request.assert_not_called()
 
 if __name__ == "__main__":

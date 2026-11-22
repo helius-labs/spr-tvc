@@ -339,7 +339,11 @@ def verify_target_approval(trust, document, *, at=None):
 
 def read_registered_target(trust, name, epoch, receipt_digest):
     document, metadata = read_stored_object(trust, name)
-    target = verify_target_approval(trust, document, at=publication_time(metadata))
+    return check_registered_target(trust, name, epoch, receipt_digest, document, publication_time(metadata))
+
+
+def check_registered_target(trust, name, epoch, receipt_digest, document, published_at):
+    target = verify_target_approval(trust, document, at=published_at)
     if (name != target_object_name(target) or
             (target["network"], target["securityDomainId"], target["custodyEpoch"], target["receiptSha256"]) !=
             (trust["network"], trust["securityDomainId"], epoch, receipt_digest)):
@@ -486,14 +490,6 @@ def check_serving_policy(trust, document, custody_signer=None):
             raise ValueError("custody policy signer must match a key in the active custody approval roster")
 
 
-def verify_archive(trust, document, expected_digest):
-    if sha256(document) != hex_digest(expected_digest):
-        raise ValueError("archive does not match the pinned custody document digest")
-    receipt, custodians = record(trust, document)
-    check_commit(trust, document, receipt, custodians)
-    return receipt
-
-
 def draft(trust, capture, build, host, roster):
     epoch = int(capture["receipt"]["custody"]["epoch"])
     previous = None if epoch == 1 else sha256(load_epoch(trust, str(epoch - 1))[1])
@@ -512,26 +508,30 @@ def draft(trust, capture, build, host, roster):
     return document
 
 
-def rotation_target(trust, manifest, previous_epoch):
+def rotation_target_name(manifest, previous_epoch):
     capture = manifest["capture"]
     pcrs = capture["pcrs"]
     fields(pcrs, "0", "1", "2", "3", "4")
     identity = {"releaseId": capture["receipt"]["releaseId"], "pcrs": pcrs}
-    target = read_registered_target(trust, target_path(previous_epoch, sha256(identity)), previous_epoch,
+    return target_path(previous_epoch, sha256(identity))
+
+
+def rotation_target(trust, manifest, previous_epoch):
+    target = read_registered_target(trust, rotation_target_name(manifest, previous_epoch), previous_epoch,
                                     manifest["previousReceiptSha256"])
+    check_rotation_target(manifest, target)
+    return target
+
+
+def check_rotation_target(manifest, target):
+    pcrs = manifest["capture"]["pcrs"]
     if (target["mode"] != "rotate" or target["hostRole"] != manifest["ceremonyHostRole"] or
             pcrs != target_attestation(target)["pcrs"] or target["eifSha256"] != manifest["ceremonyEifSha256"] or
             target["nextCustodians"] != manifest["custodians"] or target["nextRelay"] != manifest["relay"]):
         raise ValueError("ceremony image or successor roster does not match the registered rotation target")
-    return target
 
 
-def check_previous(trust, document, receipt):
-    epoch = int(receipt["custody"]["epoch"])
-    if epoch == 1:
-        return
-    previous_epoch = str(epoch - 1)
-    _, predecessor, previous_roster = read_epoch_record(trust, previous_epoch)
+def check_predecessor(document, receipt, predecessor, previous_roster):
     manifest = document["authorization"]["manifest"]
     if (sha256(predecessor) != manifest["previousReceiptSha256"] or
             predecessor["custody"]["noteSeedCommitment"] != receipt["custody"]["noteSeedCommitment"] or
@@ -540,6 +540,16 @@ def check_previous(trust, document, receipt):
     previous_keys = {custodian["recoveryKeyArn"] for custodian in previous_roster}
     if previous_keys & {custodian["recoveryKeyArn"] for custodian in manifest["custodians"]}:
         raise ValueError("custody rotation requires fresh recovery keys")
+
+
+def check_previous(trust, document, receipt):
+    epoch = int(receipt["custody"]["epoch"])
+    if epoch == 1:
+        return
+    previous_epoch = str(epoch - 1)
+    _, predecessor, previous_roster = read_epoch_record(trust, previous_epoch)
+    check_predecessor(document, receipt, predecessor, previous_roster)
+    manifest = document["authorization"]["manifest"]
     target = rotation_target(trust, manifest, previous_epoch)
     if manifest["rotationTargetSha256"] != sha256(target):
         raise ValueError("custody record does not pin the registered rotation target")
@@ -569,6 +579,13 @@ def check_acknowledgement_policy(custodian, **options):
         raise ValueError("installed acknowledgement policy does not match the custodian role")
 
 
+def verify_ceremony_capture(capture):
+    root = Path(__file__).resolve().parents[3]
+    subprocess.run(["pnpm", "--dir", str(root / "example"), "exec", "tsx",
+                    str(root / "xtask/nitro-ceremony.ts"), "verify"],
+                   input=canonical(capture), timeout=25, check=True)
+
+
 def sign_epoch(trust, document, key, build, source_commit, source_ref, inspection_profiles=None, relay_build=None):
     receipt, custodians = record(trust, document)
     target = check_previous(trust, document, receipt)
@@ -589,10 +606,7 @@ def sign_epoch(trust, document, key, build, source_commit, source_ref, inspectio
             (target is not None and (target["executableSha256"], target["pcrs"]) !=
              (reviewed["executableSha256"], reviewed["pcrs"]))):
         raise ValueError("captured ceremony does not match the verified build provenance")
-    root = Path(__file__).resolve().parents[3]
-    subprocess.run(["pnpm", "--dir", str(root / "example"), "exec", "tsx",
-                    str(root / "xtask/nitro-ceremony.ts"), "verify"],
-                   input=canonical(capture), timeout=25, check=True)
+    verify_ceremony_capture(capture)
     epoch = receipt["custody"]["epoch"]
     check_custody_roster(trust, epoch, custodians, [package["recipientSha256"] for package in receipt["packages"]],
                          inspection_profiles, relay_build)
@@ -671,11 +685,6 @@ def main():
     get = commands.add_parser("read")
     get.add_argument("epoch")
     get.add_argument("--custody-digest", action="store_true")
-    archive = commands.add_parser("archive")
-    archive.add_argument("epoch")
-    verify = commands.add_parser("verify-archive")
-    verify.add_argument("archive", type=Path)
-    verify.add_argument("sha256")
     policy = commands.add_parser("policy")
     policy.add_argument("administrator")
     policy.add_argument("publisher")
@@ -708,15 +717,9 @@ def main():
             document = draft(trust, read_json(args.capture), args.build, args.host_role, read_json(args.roster))
             print(canonical(document).decode())
             return
-        if args.command in {"read", "archive"}:
-            document, receipt, _ = load_epoch(trust, args.epoch)
-            if args.command == "read" and args.custody_digest:
-                print(sha256(receipt["custody"]))
-            else:
-                print(canonical(receipt if args.command == "read" else document).decode())
-            return
-        if args.command == "verify-archive":
-            print(canonical(verify_archive(trust, read_json(args.archive), args.sha256)).decode())
+        if args.command == "read":
+            _, receipt, _ = load_epoch(trust, args.epoch)
+            print(sha256(receipt["custody"]) if args.custody_digest else canonical(receipt).decode())
             return
         document = read_json(args.candidate)
         if args.command == "publish":

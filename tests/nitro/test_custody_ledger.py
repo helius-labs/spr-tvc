@@ -9,18 +9,20 @@ import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from io import BytesIO
 from threading import Lock
 from types import SimpleNamespace
 from unittest.mock import ANY, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import approval_keys, approval_roster, canonical, sha256
+from custody_archive import MAX_ARCHIVE_ENTRY_BYTES, archive, verify_archive
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
     check_custody_roster, check_serving_policy, draft, ledger_policy, ledger_reader_policy, list_objects, load_epoch, publish, read_registered_target,
     record, require_active_epoch,
     sign_epoch, target_attestation,
-    target_object_name, verify_archive, write_once,
+    target_object_name, write_once,
 )
 from deployment import register_target, require_registered_target
 from kms_policy import acknowledgement_policy, boot_pins
@@ -156,28 +158,28 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertEqual(receipt, record(self.trust, winner)[0])
         publish(self.trust, winner)
 
-    def test_mainnet_admits_only_the_signed_relay_and_preserves_it_in_archives(self):
+    def test_mainnet_admits_only_the_signed_relay(self):
         self.trust["network"] = "mainnet"
         document = self.document(1)
         manifest = document["authorization"]["manifest"]
         manifest["capture"]["receipt"]["network"] = "mainnet"
         self.sign(document)
-        custody = verify_archive(self.trust, document, sha256(document))["custody"]
+        custody = record(self.trust, document)[0]["custody"]
         self.assertEqual(custody["epoch"], "1")
         legacy = copy.deepcopy(document)
         del legacy["authorization"]["manifest"]["relay"]
         with self.assertRaisesRegex(ValueError, "expected document fields"):
-            verify_archive(self.trust, self.sign(legacy), sha256(legacy))
+            record(self.trust, self.sign(legacy))
         missing = {**self.trust, "recoveryRelays": {}}
         with self.assertRaisesRegex(ValueError, "requires a pinned recovery relay"):
-            verify_archive(missing, document, sha256(document))
+            record(missing, document)
         relay = manifest["relay"]
         for substituted in (
             {**relay, "hostRole": "arn:aws:iam::000000000009:role/relay"},
             {**relay, "pcrs": {**relay["pcrs"], "PCR0": "ef" * 48}},
         ):
             with self.subTest(substituted=substituted), self.assertRaisesRegex(ValueError, "pinned recovery relay"):
-                verify_archive({**self.trust, "recoveryRelays": {"1": substituted}}, document, sha256(document))
+                record({**self.trust, "recoveryRelays": {"1": substituted}}, document)
 
     def test_reports_both_failures_when_a_ledger_write_cannot_be_confirmed(self):
         with patch("custody_ledger.storage", side_effect=[ValueError("write timed out"), ValueError("read denied")]):
@@ -316,8 +318,6 @@ class CustodyLedgerTests(unittest.TestCase):
                     load_epoch(self.trust, "2")
                 del self.objects[name]
         publish(self.trust, document)
-        with patch("custody_ledger.aws", side_effect=AssertionError("archive verification must work offline")):
-            self.assertEqual(verify_archive(self.trust, document, sha256(document)), capture["receipt"])
 
     def test_unapproved_roster_or_insufficient_acknowledgements_never_commits(self):
         document = self.sign(self.document(1))
@@ -364,16 +364,62 @@ class CustodyLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "separate signing keys"):
             register_target(self.trust, target)
 
-    def test_archive_verifies_without_s3_or_kms_and_requires_the_exact_document_pin(self):
-        document = self.sign(self.document(1))
-        digest = sha256(document)
-        with patch("custody_ledger.aws", side_effect=AssertionError("archive verification must not call S3")):
-            self.assertEqual(verify_archive(self.trust, document, digest), record(self.trust, document)[0])
-            document["acknowledgements"][0]["signature"] = document["authorization"]["signatures"][0]["signature"]
-            with self.assertRaisesRegex(ValueError, "pinned custody document digest"):
-                verify_archive(self.trust, document, digest)
+    def test_archive_verifies_rotation_history_under_the_historical_rosters(self):
+        first = self.sign(self.document(1))
+        publish(self.trust, first)
+        self.rotate_approvals("2")
+        second, approval = self.rotation_document(record(self.trust, first)[0])
+        publish(self.trust, self.sign(second))
+        output = BytesIO()
+        archive(self.trust, "2", output)
+        payload = output.getvalue()
+        self.now = approval["manifest"]["expiresAt"] + 1
+        self.rotate_approvals("3")
+        entries = [json.loads(line) for line in payload.splitlines()]
+
+        def verify(payload, *, epoch="2", pin=None):
+            digest = hashlib.sha256(payload).hexdigest()
+            return verify_archive(self.trust, epoch, BytesIO(payload), pin or digest)
+
+        def encode(entries):
+            return b"".join(canonical(entry) + b"\n" for entry in entries)
+
+        with (patch("custody_ledger.aws", side_effect=AssertionError("archive must verify offline")),
+              patch("custody_archive.verify_ceremony_capture") as evidence):
+            self.assertEqual(verify(payload), record(self.trust, second)[0])
+            self.assertEqual([call.args[0] for call in evidence.call_args_list],
+                             [document["authorization"]["manifest"]["capture"] for document in (first, second)])
+            with self.assertRaisesRegex(ValueError, "pinned custody archive digest"):
+                verify(payload, pin="ff" * 32)
+            with self.assertRaisesRegex(ValueError, "pinned custody archive digest"):
+                verify(payload, epoch="1")
+            with self.assertRaisesRegex(ValueError, "missing or oversized"):
+                verify(encode(entries[:1]))
+            with self.assertRaisesRegex(ValueError, "missing or oversized"):
+                verify(b"x" * (MAX_ARCHIVE_ENTRY_BYTES + 1))
+            with self.assertRaisesRegex(ValueError, "consecutive"):
+                verify(encode(entries[::-1]))
+
+            changed = copy.deepcopy(entries)
+            changed[1]["rotation"]["publishedAt"] = datetime.fromtimestamp(self.now, timezone.utc).isoformat()
+            with self.assertRaisesRegex(ValueError, "approval has expired"):
+                verify(encode(changed))
+            changed = copy.deepcopy(entries)
+            changed[1]["rotation"]["approval"]["signatures"].pop()
+            with self.assertRaisesRegex(ValueError, "signing quorum"):
+                verify(encode(changed))
+
+            changed = copy.deepcopy(entries)
+            changed[0]["document"] = self.sign(self.document(1, variant="cd"))
+            with self.assertRaisesRegex(ValueError, "canonical previous receipt"):
+                verify(encode(changed))
+            changed = copy.deepcopy(entries)
+            changed[0]["document"]["acknowledgements"][0]["signature"] = first["authorization"]["signatures"][0]["signature"]
             with self.assertRaisesRegex(ValueError, "invalid custody approval signature"):
-                verify_archive(self.trust, document, sha256(document))
+                verify(encode(changed))
+            evidence.side_effect = ValueError("invalid ceremony evidence")
+            with self.assertRaisesRegex(ValueError, "invalid ceremony evidence"):
+                verify(payload)
 
     @patch("custody_ledger.prove_share")
     @patch("custody_ledger.add_approval")

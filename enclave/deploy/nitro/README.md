@@ -131,11 +131,20 @@ inspect. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
    Acknowledgement, publication and online reads verify the same image, host
    role and successor roster. The seed commitment stays stable.
 
-   Use `archive <epoch>` to retain the encrypted packages, evidence and
-   signatures. Pin the SHA-256 over canonical JSON without a trailing newline.
-   `verify-archive` checks the independent pin and signatures without AWS.
-   Retain the original registered approval with each rotated receipt's audit
-   evidence.
+   Export the custody history through the committed epoch and record the
+   SHA-256 of the complete file in an independently retained audit record.
+   Keep the pinned custody trust schedule and the reviewed build artifacts
+   with the archive. The verifier opens no AWS connection. It checks the
+   genesis receipt, each rotation link, original target approval and
+   recorded S3 publication time, custodian signatures and Nitro evidence at
+   its recorded verification time. The independent archive pin authenticates
+   the exported S3 timestamps.
+
+   ```sh
+   python3 "$nitro/custody_archive.py" trust.json export "$epoch" > custody.jsonl
+   shasum -a 256 custody.jsonl
+   python3 "$nitro/custody_archive.py" trust.json verify "$epoch" custody.jsonl "$pinned_sha256"
+   ```
 
    To change custody approval keys, append a schedule entry for the first
    uncommitted epoch and set a cutover time. Distribute the updated trust file
@@ -307,8 +316,10 @@ inspect. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
 For each slot, two epoch approval signers authorize the exact relay boot and
 sealed destination public key. Both use a read-only inspection profile in the
 slot account. Each command reattests the relay and checks the installed target
-policy. Collect both signatures against the same boot. The custodian then
-checks the installed recovery policy, sends the recovery package and relay
+policy. Collect both signatures against the same boot. Before opening a share,
+the custodian verifies GitHub provenance for the exact reviewed commit and
+ref they received independently. The custodian checks the installed recovery
+policy, sends the recovery package and relay
 attestation to KMS, and passes the encrypted response to the relay. The relay
 checks the signatures, share commitment and authorization deadline, then
 returns an RSA-OAEP-SHA-256 ciphertext for the registered destination.
@@ -321,7 +332,8 @@ python3 "$nitro/relay_wrap.py" trust.json target-signed.json "$build_dir" "$slot
 python3 "$nitro/relay_wrap.py" trust.json target-signed.json "$build_dir" "$slot" --relay-port "$port" \
   sign relay-signed-1.json "$second_approval_key" --inspection-profile "$slot_read_profile" > relay-signed-2.json
 python3 "$nitro/relay_wrap.py" trust.json target-signed.json "$build_dir" "$slot" --relay-port "$port" \
-  wrap relay-signed-2.json "shares/$slot.kms"
+  wrap relay-signed-2.json "shares/$slot.kms" \
+  --source-commit "$reviewed_commit" --source-ref "$source_ref"
 ```
 
 During an approval roster change, the active quorum registers the successor

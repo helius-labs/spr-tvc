@@ -77,15 +77,20 @@ the epoch. Historical receipts verify with the public keys pinned for their
 epoch. Target approvals and retirement records verify under the roster
 active at the original S3 write. Publishing after a cutover requires
 approval from the incoming roster. Retiring an approval or acknowledgement
-signing key leaves custody receipts verifiable offline.
+signing key leaves custody receipts verifiable offline. The archive checks
+the independently pinned digest of the entire history, each predecessor link
+and registered rotation approval, and each ceremony’s Nitro proof at its
+recorded verification time.
 
 The custody ledger registers one wrapping-key set per epoch, release ID and
 PCR0–PCR4. Before signing, each approver checks that all six RSA wrapping
 keys have the installed policy for the exact parent and measurements. At
 first registration the ledger checks the domain and committed receipt. S3
 must record the write within the approval window. A new quorum approval may renew the deadline for the same set. Each share release
-checks the registered target and both installed KMS key policies. The operator
-checks the epoch, roster and deadline around KMS and relay calls. The relay
+checks the registered target and both installed KMS key policies. The
+custodian verifies build provenance against its independently reviewed ref
+and commit before requesting KMS recovery. The tool checks the epoch, roster
+and deadline around KMS and relay calls. The relay
 opens the share and wraps it to the approved RSA key inside Nitro.
 
 The wallet publishers raise the custody floor after the replacement attests.

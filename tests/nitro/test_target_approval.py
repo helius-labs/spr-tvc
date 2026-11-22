@@ -74,6 +74,7 @@ class TargetApprovalTests(unittest.TestCase):
         self.enterContext(patch("approval.kms", side_effect=self.kms))
         self.enterContext(patch("relay.kms", side_effect=self.kms))
         self.ledger = self.enterContext(patch("relay_wrap.load_epoch", side_effect=self.load_epoch))
+        self.reviewed = self.enterContext(patch("relay_wrap.require_reviewed_target"))
         self.registry = self.enterContext(patch("relay_wrap.require_registered_target"))
         self.active = self.enterContext(patch("relay_wrap.require_active_epoch"))
         self.enterContext(patch("relay_wrap.live_recipient", return_value=(BOOT, b"evidence")))
@@ -108,7 +109,8 @@ class TargetApprovalTests(unittest.TestCase):
         self.fail(operation)
 
     def wrap(self):
-        return release(self.trust, self.approval, self.build, 1, 7443, self.authorization)
+        return release(self.trust, self.approval, self.build, 1, 7443, self.authorization,
+                       source_commit="ab" * 20, source_ref="refs/heads/reviewed")
 
     def test_quorum_and_installed_policy_checked_before_opening_one_share(self):
         self.assertEqual(self.wrap(), b"c" * 256)
@@ -116,6 +118,14 @@ class TargetApprovalTests(unittest.TestCase):
         self.assertEqual(self.active.call_count, 3)
         self.assertEqual(self.calls, ["describe-key", "get-key-policy", "get-public-key",
                                       "describe-key", "get-key-policy", "get-public-key", "decrypt"])
+
+    def test_custodian_requires_an_independently_reviewed_target_before_opening_a_share(self):
+        self.reviewed.side_effect = ValueError("target does not match the verified build provenance")
+        with self.assertRaisesRegex(ValueError, "verified build provenance"):
+            self.wrap()
+        self.reviewed.assert_called_once_with(self.build, self.manifest, "ab" * 20, "refs/heads/reviewed")
+        self.assertNotIn("decrypt", self.calls)
+        self.relay.assert_not_called()
 
     def test_no_decrypt_without_quorum_or_with_duplicate_signer(self):
         signers = self.approval["signatures"]

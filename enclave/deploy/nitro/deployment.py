@@ -155,6 +155,14 @@ def target(trust, document, receipt, custodians, build):
     return roster["keys"], policies, next_keys
 
 
+def require_reviewed_target(build, manifest, source_commit, source_ref):
+    reviewed = verify_build(build, manifest["network"], source_commit, source_ref)
+    if any(manifest[field] != reviewed[field] for field in (
+        "configurationSha256", "eifSha256", "executableSha256", "pcrs",
+    )):
+        raise ValueError("target does not match the verified build provenance")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("trust", type=Path)
@@ -221,12 +229,8 @@ def main():
             print(canonical(result).decode())
             return
         require_active_epoch(trust, receipt["custody"]["epoch"])
-        reviewed = verify_build(args.build, receipt["network"], args.source_commit, args.source_ref)
         manifest = document["manifest"]
-        if any(manifest[field] != reviewed[field] for field in (
-            "configurationSha256", "eifSha256", "executableSha256", "pcrs",
-        )):
-            raise ValueError("target does not match the verified build provenance")
+        require_reviewed_target(args.build, manifest, args.source_commit, args.source_ref)
         if next_keys:
             successor = manifest["nextCustodians"]
             check_custody_roster(trust, str(int(manifest["custodyEpoch"]) + 1), successor, next_keys,

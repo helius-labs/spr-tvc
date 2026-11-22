@@ -9,7 +9,8 @@ from time import time
 
 from approval import add_approval, approval_roster, canonical, check_approvals, epoch_number, read_json, sha256
 from custody_ledger import load_epoch, require_active_epoch, verify_target_approval
-from deployment import require_registered_target, target
+from deployment import require_registered_target, require_reviewed_target, target
+from provenance import MAIN_REF
 from relay import live_recipient, recover_to_relay, relay_pins, relay_request, sealed_rsa_key
 
 LABEL = "relay-release"
@@ -43,13 +44,14 @@ def prepare(trust, approval, build, index, port, inspection_profile=None):
     return statement, roster["keys"], receipt, custodians[index - 1], evidence
 
 
-def release(trust, approval, build, index, port, authorization):
+def release(trust, approval, build, index, port, authorization, *, source_commit, source_ref=MAIN_REF):
     statement, keys, receipt, custodian, evidence = prepare(trust, approval, build, index, port)
     if authorization["manifest"] != statement:
         raise ValueError("relay release does not match the live boot and registered target")
     check_approvals(keys, LABEL, authorization)
     if len(authorization["signatures"]) != 2:
         raise ValueError("relay release requires exactly two signatures")
+    require_reviewed_target(build, approval["manifest"], source_commit, source_ref)
 
     def still_authorized():
         if time() >= statement["expiresAt"]:
@@ -89,12 +91,15 @@ def main():
     wrap = commands.add_parser("wrap")
     wrap.add_argument("authorization", type=Path)
     wrap.add_argument("output", type=Path)
+    wrap.add_argument("--source-commit", required=True)
+    wrap.add_argument("--source-ref", default=MAIN_REF)
     args = parser.parse_args()
     try:
         trust, approval = map(read_json, (args.trust, args.target))
         source = (trust, approval, args.build, args.slot, args.relay_port)
         if args.command == "wrap":
-            ciphertext = release(*source, read_json(args.authorization))
+            ciphertext = release(*source, read_json(args.authorization),
+                                 source_commit=args.source_commit, source_ref=args.source_ref)
             with args.output.open("xb") as file:
                 file.write(ciphertext)
         else:
