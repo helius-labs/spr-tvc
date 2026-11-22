@@ -1,4 +1,4 @@
-import { address, signatureBytes } from "@solana/kit";
+import { address, signatureBytes, type Address } from "@solana/kit";
 import { p256 } from "@noble/curves/p256";
 import { NullifierKey, ViewingKey, initializePoseidon } from "@heliuslabs/spr";
 import type { Bytes16, Bytes31 } from "@heliuslabs/spr/keypair";
@@ -213,5 +213,60 @@ it.each(["caller", "client"])("uses one %s deadline across all decrypt batches",
     nullifier.destroy();
     viewing.destroy();
     vi.useRealTimers();
+  }
+});
+
+it("binds subsequent replies to the opened owner, nullifier secret and each requested ciphertext length", async () => {
+  await initializePoseidon();
+  const { context } = fixture();
+  const owner = { address: ownerAddress as Address, signMessages: vi.fn() };
+  const proofs = { prove: vi.fn(), proveMerge: vi.fn() };
+  const secret = new Uint8Array(31).fill(5) as Bytes31;
+  const nullifier = NullifierKey.fromSecret(secret);
+  const viewing = ViewingKey.generate();
+  const viewingPublicKey = viewing.publicKey();
+  const service = decryptionServiceFromSession(sessionFromConnector(async () => context));
+  const bootstrap = { type: "Decrypt" as const, plaintexts: [], nullifier_secret: encodeLowerHex(secret) };
+  const publicKeys = {
+    type: "PublicKeys" as const, viewing_public_key: encodeLowerHex(viewingPublicKey.toBytes()),
+    nullifier_public_key: encodeLowerHex(nullifier.publicKey()),
+  };
+  const operation = vi.spyOn(exchange, "executeServiceCall")
+    .mockResolvedValueOnce(publicKeys)
+    .mockResolvedValueOnce({ ...bootstrap, nullifier_secret: "06".repeat(31) })
+    .mockResolvedValueOnce(publicKeys)
+    .mockResolvedValueOnce(bootstrap);
+  try {
+    await expect(service.open(owner, proofs)).rejects.toMatchObject({ code: "TRANSACTION_KEYS_IDENTITY_MISMATCH" });
+    const keys = await service.open(owner, proofs);
+    try {
+      owner.address = address("So11111111111111111111111111111111111111112");
+      const first = {
+        ciphertext: Uint8Array.of(1), viewingPublicKey, txViewingPublicKey: viewingPublicKey,
+        salt: new Uint8Array(16) as Bytes16, slotIndex: 0, label: "transfer" as const,
+      };
+      const requests = [first, { ...first, ciphertext: Uint8Array.of(2, 3), slotIndex: 1 }];
+      const valid = { ...bootstrap, plaintexts: ["ab", "cdef"] };
+      for (const invalid of [
+        { ...valid, nullifier_secret: "06".repeat(31) },
+        { ...valid, plaintexts: ["ab"] },
+        { ...valid, plaintexts: ["cdef", "ab"] },
+        { ...valid, plaintexts: ["AB", "cdef"] },
+        { ...valid, plaintexts: ["a\n", "cdef"] },
+      ]) {
+        operation.mockResolvedValueOnce(invalid);
+        await expect(keys.decrypt(requests)).rejects.toMatchObject({ code: "ReleaseBindingMismatch" });
+      }
+      operation.mockResolvedValueOnce(valid);
+      await expect(keys.decrypt(requests)).resolves.toEqual([Uint8Array.of(0xab), Uint8Array.of(0xcd, 0xef)]);
+      expect(operation.mock.calls.at(-1)?.[1]).toMatchObject({ type: "Decrypt", owner: { address: ownerAddress } });
+    } finally {
+      keys.destroy();
+    }
+  } finally {
+    operation.mockRestore();
+    nullifier.destroy();
+    viewing.destroy();
+    secret.fill(0);
   }
 });

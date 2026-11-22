@@ -1,7 +1,7 @@
 import type { DecryptRequest } from "@heliuslabs/spr";
 
 import { DecryptionServiceError } from "../protocol/error.js";
-import { encodeLowerHex, requireHex } from "../protocol/hex.js";
+import { encodeLowerHex } from "../protocol/hex.js";
 import type { DecryptItem, DecryptLabel } from "../protocol/types.js";
 
 const MAX_ITEMS_PER_BATCH = 256;
@@ -43,7 +43,7 @@ export async function batched<TItem, TAnswer>(
       await send(batch.slice(middle));
       return;
     }
-    if (answer.length !== batch.length) throw new Error("BatchMismatch");
+    if (answer.length !== batch.length) throw new DecryptionServiceError("ReleaseBindingMismatch");
     answers.push(...answer);
   };
   for (let start = 0; start < items.length; start += MAX_ITEMS_PER_BATCH) {
@@ -52,9 +52,14 @@ export async function batched<TItem, TAnswer>(
   return answers;
 }
 
-export function checkHexList(values: unknown, count: number, bytes?: number): asserts values is string[] {
-  if (!Array.isArray(values) || values.length !== count) {
+export function checkPlaintexts(values: unknown, items: readonly DecryptItem[]): void {
+  if (!Array.isArray(values) || values.length !== items.length) {
     throw new DecryptionServiceError("ReleaseBindingMismatch");
   }
-  for (const value of values) requireHex(value, bytes);
+  for (const [index, item] of items.entries()) {
+    const value: unknown = values[index];
+    if (typeof value !== "string" || value.length !== item.ciphertext.length || /[^0-9a-f]/.test(value)) {
+      throw new DecryptionServiceError("ReleaseBindingMismatch");
+    }
+  }
 }

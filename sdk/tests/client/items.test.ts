@@ -29,5 +29,5 @@ it("refuses incomplete results and does not send an empty batch", async () => {
   const call = vi.fn(async () => []);
   expect(await batched([], call)).toEqual([]);
   expect(call).not.toHaveBeenCalled();
-  await expect(batched([1], call)).rejects.toThrow("BatchMismatch");
+  await expect(batched([1], call)).rejects.toMatchObject({ code: "ReleaseBindingMismatch" });
 });

@@ -1,4 +1,4 @@
-import { NullifierKey, ShieldedAddress, ShieldedPublicKey, initializePoseidon, type Bytes32 } from "@heliuslabs/spr";
+import { NullifierKey, ShieldedAddress, ShieldedPublicKey, initializePoseidon, type Bytes32, type RequestContext } from "@heliuslabs/spr";
 import { X25519Keypair, type Bytes31 } from "@heliuslabs/spr/keypair";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -11,7 +11,8 @@ const bytes = (fill: number, length = 32) => new Uint8Array(length).fill(fill);
 
 beforeAll(() => initializePoseidon());
 
-function keys(secret: Bytes31, decrypt = vi.fn(async (items: readonly DecryptItem[]) => items.map((item) => item.ciphertext))) {
+function keys(secret: Bytes31, decrypt = vi.fn(async (items: readonly DecryptItem[], _context?: RequestContext) =>
+  items.map((item) => item.ciphertext))) {
   const nullifier = NullifierKey.fromSecret(secret);
   const address = ShieldedAddress.fromPublicKeys(
     ShieldedPublicKey.fromEd25519(bytes(1) as Bytes32),
@@ -55,5 +56,33 @@ describe("the keys of an address under the service", () => {
     } as const);
     expect(await held.decrypt([request(7), request(8)])).toEqual([bytes(7, 50), bytes(8, 50)]);
     expect(decrypt.mock.calls[0]?.[0].map((item) => item.slot_index)).toEqual(["7", "8"]);
+  });
+
+  it("aborts pending decrypts and prevents new requests after destruction", async () => {
+    let finish!: (value: string[]) => void;
+    const reply = new Promise<string[]>(resolve => { finish = resolve; });
+    const { address, nullifier, decrypt, keys: held } = keys(
+      bytes(5, 31) as Bytes31, vi.fn((_items: readonly DecryptItem[], _context?: RequestContext) => reply),
+    );
+    try {
+      const request = {
+        ciphertext: bytes(1), viewingPublicKey: address.viewingPublicKey,
+        txViewingPublicKey: address.viewingPublicKey, salt: bytes(0, 16) as never,
+        slotIndex: 0, label: "transfer",
+      } as const;
+      const pending = held.decrypt([request]);
+      const rejected = expect(pending).rejects.toMatchObject({ code: "KeyHandleDestroyed" });
+      const signal = decrypt.mock.calls[0]?.[1]?.signal;
+      expect(signal?.aborted).toBe(false);
+      held.destroy();
+      expect(signal?.aborted).toBe(true);
+      await rejected;
+      finish(["01"]);
+      await expect(held.decrypt([request])).rejects.toMatchObject({ code: "KeyHandleDestroyed" });
+      expect(decrypt).toHaveBeenCalledOnce();
+    } finally {
+      held.destroy();
+      nullifier.destroy();
+    }
   });
 });

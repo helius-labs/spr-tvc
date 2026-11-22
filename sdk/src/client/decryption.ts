@@ -1,5 +1,6 @@
 import { ShieldedAddress, ShieldedPublicKey, type Bytes32, type ProofService } from "@heliuslabs/spr";
 import { X25519PublicKey, type Bytes31 } from "@heliuslabs/spr/keypair";
+import { sha256 } from "@noble/hashes/sha256";
 import { getAddressEncoder, type Address, type MessagePartialSigner } from "@solana/kit";
 
 import type { BootProofResolver } from "../connection/backend.js";
@@ -7,11 +8,11 @@ import { requestScope, type DecryptionServiceRequestOptions } from "../connectio
 import { createDecryptionServiceSession, type DecryptionServiceSession } from "../connection/session.js";
 import type { DecryptionServiceTransport } from "../connection/http.js";
 import { DecryptionServiceError, DecryptionServiceHttpError } from "../protocol/error.js";
-import { requireHex } from "../protocol/hex.js";
+import { bytesEqual, requireHex } from "../protocol/hex.js";
 import { requireNetwork } from "../protocol/network.js";
 import { releaseForConnection, type ReleaseTrust } from "../protocol/releases.js";
 import type { DecryptItem, Network } from "../protocol/types.js";
-import { batched, checkHexList } from "./items.js";
+import { batched, checkPlaintexts } from "./items.js";
 import { executeServiceCall, type ServiceCall, type ServiceCallResult } from "./exchange.js";
 import { ServiceKeys, type DecryptionServiceKeys } from "./keys.js";
 const addressEncoder = getAddressEncoder();
@@ -98,7 +99,7 @@ export function decryptionServiceFromSession(
     signal: AbortSignal,
   ) {
     const result = await call({ type: "Decrypt", owner, items }, signal);
-    checkHexList(result.plaintexts, items.length);
+    checkPlaintexts(result.plaintexts, items);
     return result;
   }
 
@@ -108,13 +109,26 @@ export function decryptionServiceFromSession(
     },
     open(owner, proofs, options) {
       return withinRequest(options, async (signal) => {
-        const shielded = await address(owner.address, signal);
-        const bootstrap = await decrypt(owner, [], signal);
+        const signer = { address: owner.address, signMessages: owner.signMessages.bind(owner) };
+        const shielded = await address(signer.address, signal);
+        const bootstrap = await decrypt(signer, [], signal);
         const nullifierSecret = requireHex(bootstrap.nullifier_secret, 31) as Bytes31;
         try {
+          const nullifierDigest = sha256(nullifierSecret);
           return new ServiceKeys(shielded, nullifierSecret, proofs, (items, context) =>
             withinRequest(context, (batchSignal) =>
-              batched(items, async (batch) => (await decrypt(owner, batch, batchSignal)).plaintexts)),
+              batched(items, async (batch) => {
+                const reply = await decrypt(signer, batch, batchSignal);
+                const secret = requireHex(reply.nullifier_secret, 31);
+                try {
+                  if (!bytesEqual(sha256(secret), nullifierDigest)) {
+                    throw new DecryptionServiceError("ReleaseBindingMismatch");
+                  }
+                  return reply.plaintexts;
+                } finally {
+                  secret.fill(0);
+                }
+              })),
           );
         } finally {
           nullifierSecret.fill(0);

@@ -22,7 +22,8 @@ const keys = await service.open(owner, spr.proofService);
 Pass `recipient` to the SPR transfer builder. The transfer publishes the
 recipient's Solana address as its owner tag. `open` signs an empty batch to
 obtain the nullifier secret and returns SPR `WalletKeys`. Sync with those keys
-to sign and decrypt note batches. Call `keys.destroy()` when finished.
+to sign and decrypt note batches for that owner. Call `keys.destroy()` when
+finished to wipe local keys and cancel pending or future decryption.
 
 A relay can forward ciphertexts and return Boot Proofs. The SDK verifies the
 release and signing replica itself. The supplied prover receives the spend

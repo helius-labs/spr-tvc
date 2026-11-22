@@ -15,6 +15,8 @@ import type { TransactionKeyRequest } from "@heliuslabs/spr/transaction";
 import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha256";
 
+import { awaitWithSignal } from "../connection/request.js";
+import { DecryptionServiceError } from "../protocol/error.js";
 import { decodeLowerHex } from "../protocol/hex.js";
 import type { DecryptItem } from "../protocol/types.js";
 import { decryptItem } from "./items.js";
@@ -35,6 +37,7 @@ export class ServiceKeys implements DecryptionServiceKeys {
   readonly #local: LocalKeys;
   readonly #transactionKey: X25519PublicKey;
   readonly #decrypt: Decrypt;
+  readonly #lifetime = new AbortController();
 
   constructor(
     address: ShieldedAddress,
@@ -77,8 +80,10 @@ export class ServiceKeys implements DecryptionServiceKeys {
     requests: readonly DecryptRequest[],
     context?: RequestContext,
   ): Promise<readonly Uint8Array[]> {
+    const signal = context?.signal ? AbortSignal.any([context.signal, this.#lifetime.signal]) : this.#lifetime.signal;
+    signal.throwIfAborted();
     if (requests.length === 0) return [];
-    const plaintexts = await this.#decrypt(requests.map(decryptItem), context);
+    const plaintexts = await awaitWithSignal(this.#decrypt(requests.map(decryptItem), { ...context, signal }), signal);
     return plaintexts.map(decodeLowerHex);
   }
 
@@ -97,6 +102,7 @@ export class ServiceKeys implements DecryptionServiceKeys {
   proveIndexed: LocalKeys["proveIndexed"] = (request, context) => this.#local.proveIndexed(request, context);
 
   destroy(): void {
+    this.#lifetime.abort(new DecryptionServiceError("KeyHandleDestroyed"));
     this.#local.destroy();
   }
 }

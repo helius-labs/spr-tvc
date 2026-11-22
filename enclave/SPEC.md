@@ -68,8 +68,10 @@ signs the request.
    recipient's nullifier secret to the signed response public key. The
    replica signs an App Proof binding the request ID, operation, request
    digest, and encrypted result digest. The SDK verifies the proof before
-   opening the reply. The SPR wallet decodes each candidate and recomputes
-   its commitment before accepting it as a note.
+   opening the reply. The SDK binds the handle to the owner and verifies the
+   nullifier secret against the discovered public key. Later replies must
+   carry the same secret and one plaintext of the expected length per item.
+   The SPR wallet recomputes each candidate's commitment before accepting it.
 6. **Sweep.** The recipient wallet derives transaction viewing keys locally
    from the service nullifier secret and can sweep the notes into its
    shielded wallet using `transact`. `merge_transact` requires the registered
