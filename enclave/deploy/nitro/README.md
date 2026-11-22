@@ -317,8 +317,16 @@ approval roster. Commission the successor before switching approval rosters.
 The wire authorization signs the SHA-256 of
 `SPR/native-nitro/relay-release/v1` followed by a null byte and canonical
 statement JSON. KMS signatures retain DER encoding. Live six-account
-qualification and the approval-roster cutover drill are pending. Keep old
-plaintext-capable custody keys outside this trial.
+qualification and the approval-roster cutover drill are pending.
+
+The signed statement sets `expiresAt` to the earlier of the target's approval
+deadline and the next scheduled approval-roster activation, in Unix seconds.
+The relay reads the timestamp directly from its Nitro Secure Module before
+opening the share and again before returning ciphertext. Either failed clock
+read rejects the request. Stop the source relay and revoke its KMS access if
+the epoch closes ahead of schedule. Ciphertext already delivered to an approved
+target remains subject to that target's KMS policy.
+[Nitro attestation document fields](https://docs.aws.amazon.com/enclaves/latest/user/verify-root.html#term-attestation-document)
 
 ## Replace a compromised seed
 

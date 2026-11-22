@@ -10,7 +10,7 @@ use std::{
 };
 
 use aws_nitro_enclaves_nsm_api::{
-    api::{Request as NsmRequest, Response as NsmResponse},
+    api::{AttestationDoc, Request as NsmRequest, Response as NsmResponse},
     driver::{nsm_exit, nsm_init, nsm_process_request},
 };
 use axum::{
@@ -341,17 +341,30 @@ async fn relay_recipient(
         .public_key()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let binding = sha256(b"SPR/native-nitro/relay-recipient/v1");
-    issue_attestation(worker, move || {
+    with_nsm(worker, move || {
         attest(Some(public), Some(binding), Some(nonce.to_vec()))
     })
     .await
 }
 
-async fn relay_rewrap(State(relay): State<Arc<Relay>>, body: Bytes) -> Reply<Vec<u8>> {
+async fn relay_rewrap(
+    State(relay): State<Arc<Relay>>,
+    Extension(worker): Extension<Arc<Semaphore>>,
+    body: Bytes,
+) -> Reply<Vec<u8>> {
     let json = std::str::from_utf8(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
     let request: RelayRequest = parse_strict_json(json).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let ciphertext = relay.rewrap(request).ok_or(StatusCode::BAD_REQUEST)?;
-    Ok(([(CONTENT_TYPE, "application/octet-stream")], ciphertext))
+    with_nsm(worker, move || {
+        let ciphertext = relay
+            .rewrap(request, || {
+                // Read time from the enclave's NSM device on each check.
+                let (_, document) = attest(None, None, None).ok()?;
+                nsm_timestamp_ms(&document)
+            })
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        Ok(([(CONTENT_TYPE, "application/octet-stream")], ciphertext))
+    })
+    .await
 }
 
 async fn relay_prove(
@@ -362,7 +375,7 @@ async fn relay_prove(
     let json = std::str::from_utf8(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
     let request: RecoveryProof = parse_strict_json(json).map_err(|_| StatusCode::BAD_REQUEST)?;
     let binding = relay.prove(&request).ok_or(StatusCode::BAD_REQUEST)?;
-    issue_attestation(worker, move || {
+    with_nsm(worker, move || {
         attest(None, Some(binding), Some(request.nonce.to_vec()))
     })
     .await
@@ -381,7 +394,7 @@ async fn kms_attestation(
         .private
         .public_key_to_der()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    issue_attestation(worker, move || attest(Some(public), None, None)).await
+    with_nsm(worker, move || attest(Some(public), None, None)).await
 }
 
 async fn accept_shares(State(state): State<Arc<Bootstrap>>, body: Bytes) -> Reply<Vec<u8>> {
@@ -486,7 +499,7 @@ async fn custody_attestation(
     Extension(worker): Extension<Arc<Semaphore>>,
     nonce: Bytes,
 ) -> Reply<String> {
-    issue_attestation(worker, move || {
+    with_nsm(worker, move || {
         attested_json(
             "SPR/native-nitro/custody/v1",
             "result",
@@ -522,7 +535,7 @@ async fn client_attestation(
     })
     .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let public = service.ephemeral.public_bytes();
-    issue_attestation(worker, move || {
+    with_nsm(worker, move || {
         attested_json(
             "SPR/native-nitro/discovery/v1",
             "boot",
@@ -534,7 +547,7 @@ async fn client_attestation(
     .await
 }
 
-async fn issue_attestation<T: Send + 'static>(
+async fn with_nsm<T: Send + 'static>(
     worker: Arc<Semaphore>,
     generate: impl FnOnce() -> Reply<T> + Send + 'static,
 ) -> Reply<T> {
@@ -593,6 +606,20 @@ fn attest(
         }
         _ => Err(StatusCode::SERVICE_UNAVAILABLE),
     }
+}
+
+// The caller gets fresh COSE_Sign1 bytes directly from NSM, never over vsock.
+fn nsm_timestamp_ms(document: &[u8]) -> Option<u64> {
+    use serde_cbor::Value::{Array, Bytes, Map};
+
+    let Array(fields) = serde_cbor::from_slice(document).ok()? else {
+        return None;
+    };
+    let [Bytes(_), Map(_), Bytes(payload), Bytes(_)] = fields.as_slice() else {
+        return None;
+    };
+    let timestamp = AttestationDoc::from_binary(payload).ok()?.timestamp;
+    (timestamp > 0).then_some(timestamp)
 }
 
 // AWS assigns CID 3 to the EC2 parent. Linux VMADDR_CID_HOST is CID 2.

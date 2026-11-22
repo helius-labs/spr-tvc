@@ -11,6 +11,8 @@ use super::*;
 
 const DOMAIN: [u8; 32] = [0xbb; 32];
 const EPOCH: u64 = 7;
+const EXPIRES: u64 = 1_795_290_720;
+const BEFORE_EXPIRY_MS: u64 = EXPIRES * 1_000 - 1;
 
 fn rsa() -> PKey<Private> {
     PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap()
@@ -60,6 +62,7 @@ impl Fixture {
             ),
             relay_key_id: sha256(&self.relay.public_key().unwrap()),
             target_digest: [0x37; 32],
+            expires_at: EXPIRES,
             destination_public_key: self.destination.public_key_to_der().unwrap(),
         };
         let approvals = self.approve(&statement, [1, 3]);
@@ -82,12 +85,16 @@ impl Fixture {
             }
         })
     }
+
+    fn rewrap(&self, request: Request) -> Option<Vec<u8>> {
+        self.relay.rewrap(request, || Some(BEFORE_EXPIRY_MS))
+    }
 }
 
 #[test]
 fn rewraps_a_committed_share_for_the_two_signers_exact_destination() {
     let fix = Fixture::new();
-    let ciphertext = fix.relay.rewrap(fix.request()).unwrap();
+    let ciphertext = fix.rewrap(fix.request()).unwrap();
     assert_ne!(ciphertext, fix.share);
     let mut decrypt = Decrypter::new(&fix.destination).unwrap();
     decrypt.set_rsa_padding(Padding::PKCS1_OAEP).unwrap();
@@ -103,17 +110,17 @@ fn refuses_other_destinations_duplicate_approvals_and_another_boot() {
     let fix = Fixture::new();
     let mut request = fix.request();
     request.statement.destination_public_key = rsa().public_key_to_der().unwrap();
-    assert!(fix.relay.rewrap(request).is_none());
+    assert!(fix.rewrap(request).is_none());
     let mut request = fix.request();
     request.approvals = fix.approve(&request.statement, [1, 1]);
-    assert!(fix.relay.rewrap(request).is_none());
+    assert!(fix.rewrap(request).is_none());
     let mut request = fix.request();
     request.approvals[0].authority = 2;
-    assert!(fix.relay.rewrap(request).is_none());
+    assert!(fix.rewrap(request).is_none());
     let mut request = fix.request();
     request.statement.relay_key_id = [9; 32];
     request.approvals = fix.approve(&request.statement, [1, 3]);
-    assert!(fix.relay.rewrap(request).is_none());
+    assert!(fix.rewrap(request).is_none());
 }
 
 #[test]
@@ -130,14 +137,40 @@ fn checks_scope_and_commitment_even_after_two_approvals() {
         let mut request = fix.request();
         alter(&mut request.statement);
         request.approvals = fix.approve(&request.statement, [1, 3]);
-        assert!(fix.relay.rewrap(request).is_none());
+        assert!(fix.rewrap(request).is_none());
     }
     let mut request = fix.request();
     request.envelope = envelope(&rsa(), &fix.share);
-    assert!(fix.relay.rewrap(request).is_none());
+    assert!(fix.rewrap(request).is_none());
     let mut request = fix.request();
     request.envelope = envelope(&fix.relay.recipient, &[0x66; 41]);
-    assert!(fix.relay.rewrap(request).is_none());
+    assert!(fix.rewrap(request).is_none());
+}
+
+#[test]
+fn refuses_to_release_after_the_signed_deadline_or_without_nitro_time() {
+    let fix = Fixture::new();
+    let mut changed = fix.request();
+    changed.statement.expires_at += 1;
+    assert!(fix.rewrap(changed).is_none());
+    for expires in [0, 1 << 53] {
+        let mut invalid = fix.request();
+        invalid.statement.expires_at = expires;
+        invalid.approvals = fix.approve(&invalid.statement, [1, 3]);
+        assert!(fix.rewrap(invalid).is_none());
+    }
+
+    for mut ticks in [
+        [Some(EXPIRES * 1_000), Some(BEFORE_EXPIRY_MS)].into_iter(),
+        [Some(BEFORE_EXPIRY_MS), Some(EXPIRES * 1_000)].into_iter(),
+        [None, Some(BEFORE_EXPIRY_MS)].into_iter(),
+        [Some(BEFORE_EXPIRY_MS), None].into_iter(),
+    ] {
+        assert!(fix
+            .relay
+            .rewrap(fix.request(), || ticks.next().unwrap())
+            .is_none());
+    }
 }
 
 #[test]

@@ -34,6 +34,7 @@ struct Statement {
     relay_key_id: [u8; 32],
     #[serde(with = "hex")]
     target_digest: [u8; 32],
+    expires_at: u64,
     #[serde(with = "hex")]
     destination_public_key: Vec<u8>,
 }
@@ -114,7 +115,11 @@ impl Relay {
         self.recipient.public_key_to_der()
     }
 
-    pub(crate) fn rewrap(&self, request: Request) -> Option<Vec<u8>> {
+    pub(crate) fn rewrap(
+        &self,
+        request: Request,
+        mut now_ms: impl FnMut() -> Option<u64>,
+    ) -> Option<Vec<u8>> {
         let Request {
             statement,
             approvals,
@@ -125,6 +130,7 @@ impl Relay {
             || statement.custody_epoch != self.epoch
             || statement.relay_key_id != self.relay_key_id
             || statement.target_digest == [0; 32]
+            || !(1..(1 << 53)).contains(&statement.expires_at)
             || approvals[0].authority == approvals[1].authority
         {
             return None;
@@ -147,8 +153,13 @@ impl Relay {
             }
         }
         let destination = parse_recipient(&statement.destination_public_key).ok()?;
+        if now_ms()? / 1_000 >= statement.expires_at {
+            return None;
+        }
         let share = self.open_share(statement.slot, &statement.share_commitment, &envelope)?;
-        encrypt_share(&destination, &share).ok()
+        let ciphertext = encrypt_share(&destination, &share).ok()?;
+        drop(share);
+        (now_ms()? / 1_000 < statement.expires_at).then_some(ciphertext)
     }
 
     pub(crate) fn prove(&self, request: &RecoveryProof) -> Option<[u8; 32]> {

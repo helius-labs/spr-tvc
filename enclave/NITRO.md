@@ -25,8 +25,9 @@ target. Treat three exposed shares from one epoch as seed exposure.
 The [devnet relay trial](deploy/nitro/README.md#attested-recovery-relay-trial)
 uses separate sealed recovery keys. For a relay-pinned epoch, those keys release
 shares only to the measured relay. The relay checks the share commitment and
-requires two approvals of the exact RSA destination and relay boot. The
-approved target opens the resulting ciphertext through attested KMS. Fresh
+requires two approvals of the exact RSA destination, relay boot and deadline.
+The relay reads Nitro time before opening the share and again before returning
+ciphertext. The approved target opens the ciphertext through attested KMS. Fresh
 relay evidence confirms share recovery before an acknowledgement or retirement
 proof is signed. Production qualification and roster cutover are pending.
 

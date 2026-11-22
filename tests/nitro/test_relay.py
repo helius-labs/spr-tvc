@@ -7,7 +7,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from relay import prove_share, recover_to_relay
-from relay_wrap import LABEL, release
+from relay_wrap import LABEL, prepare, release
+from kms_policy import RSA_OAEP
 from nitro_fixtures import DOMAIN, HOST, key, pin, sign
 
 SCOPE = {"hostRole": HOST, "pcrs": {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)}}
@@ -21,6 +22,31 @@ KEYS = [pin(key(i, 9)) for i in (10, 11, 12)]
 
 
 class RelayTests(unittest.TestCase):
+    @patch("relay_wrap.time", return_value=10)
+    @patch("relay_wrap.live_recipient", return_value=("ab" * 32, b"evidence"))
+    @patch("relay_wrap.sealed_rsa_key", return_value=PUBLIC)
+    @patch("relay_wrap.require_registered_target")
+    @patch("relay_wrap.target", return_value=(KEYS, [{}], None))
+    @patch("relay_wrap.load_epoch", return_value=(None, RECEIPT, [CUSTODIAN]))
+    @patch("relay_wrap.relay_pins")
+    @patch("relay_wrap.verify_target_approval")
+    def test_release_deadline_is_capped_by_the_next_approval_roster(
+        self, verify, _pins, _epoch, _target, _registered, _sealed, _recipient, _time,
+    ):
+        schedule = [
+            {"fromEpoch": "1", "activeFrom": 0, "keys": KEYS},
+            {"fromEpoch": "2", "activeFrom": 20, "keys": [pin(key(i, 9)) for i in (13, 14, 15)]},
+        ]
+        trust = {**TRUST, "approvalKeys": schedule}
+        for target_deadline, expected in [(15, 15), (30, 20)]:
+            verify.return_value = {
+                "network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "1",
+                "wrappingKeys": [key(1)], "wrappingAlgorithm": RSA_OAEP, "expiresAt": target_deadline,
+            }
+            statement, *_ = prepare(trust, {}, pathlib.Path("build"), 1, 7443)
+            self.assertEqual(statement["expiresAt"], expected)
+            verify.assert_called_with(trust, {}, at=10)
+
     @patch("relay.sealed_rsa_key", return_value=PUBLIC)
     @patch("relay.key_result")
     def test_source_requests_only_attested_ciphertext_for_the_committed_recovery_key(self, kms, sealed):
@@ -60,8 +86,11 @@ class RelayTests(unittest.TestCase):
     @patch("relay_wrap.relay_request", return_value=b"x" * 256)
     @patch("relay_wrap.recover_to_relay", return_value=b"envelope")
     @patch("relay_wrap.prepare")
-    def test_release_checks_the_live_boot_and_exact_quorum_before_any_recovery(self, prepare, recover, request, _verify, active):
-        statement = {"custodyEpoch": "1", "relayKeyId": "ab" * 32, "destinationPublicKey": "cd" * 32}
+    @patch("relay_wrap.time", return_value=10)
+    def test_release_checks_the_live_boot_and_exact_quorum_before_any_recovery(
+        self, now, prepare, recover, request, _verify, active,
+    ):
+        statement = {"custodyEpoch": "1", "relayKeyId": "ab" * 32, "destinationPublicKey": "cd" * 32, "expiresAt": 20}
         prepare.return_value = (statement, KEYS, RECEIPT, CUSTODIAN, b"evidence")
         signatures = [sign(LABEL, statement, pin["keyArn"]) for pin in KEYS[:2]]
         approved = {"manifest": statement, "signatures": signatures}
@@ -80,6 +109,11 @@ class RelayTests(unittest.TestCase):
         payload = request.call_args.args[2]
         self.assertIn(b'"envelope":"656e76656c6f7065"', payload)
         self.assertEqual(active.call_count, 2)
+        request.reset_mock()
+        now.return_value = 20
+        with self.assertRaisesRegex(ValueError, "relay authorization has expired"):
+            release(*source, approved)
+        request.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

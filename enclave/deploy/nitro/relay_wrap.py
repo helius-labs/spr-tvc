@@ -5,6 +5,7 @@ import base64
 import http.client
 import subprocess
 from pathlib import Path
+from time import time
 
 from approval import add_approval, approval_roster, canonical, check_approvals, read_json, sha256
 from custody_ledger import load_epoch, require_active_epoch, verify_target_approval
@@ -18,7 +19,8 @@ LABEL = "relay-release"
 def prepare(trust, approval, build, index, port, inspection_profile=None):
     if not 1 <= index <= 6:
         raise ValueError("invalid custody slot")
-    manifest = verify_target_approval(trust, approval)
+    at = time()
+    manifest = verify_target_approval(trust, approval, at=at)
     if target_algorithm(manifest) != RSA_OAEP:
         raise ValueError("the relay requires an RSA target")
     epoch = manifest["custodyEpoch"]
@@ -28,12 +30,17 @@ def prepare(trust, approval, build, index, port, inspection_profile=None):
     require_registered_target(trust, manifest)
     if keys != approval_roster(trust, epoch=epoch)["keys"]:
         raise ValueError("the active approval keys do not match the epoch's relay roster")
+    expires = min(manifest["expiresAt"], next(
+        (entry["activeFrom"] for entry in trust["approvalKeys"] if entry["activeFrom"] > at),
+        manifest["expiresAt"],
+    ))
     destination = sealed_rsa_key(manifest["wrappingKeys"][index - 1], policies[index - 1], profile=inspection_profile)
     key_id, evidence = live_recipient(port, relay)
     statement = {
         "network": manifest["network"], "securityDomainId": manifest["securityDomainId"], "custodyEpoch": epoch,
         "slot": index, "shareCommitment": receipt["custody"]["shareCommitments"][index - 1],
-        "relayKeyId": key_id, "targetDigest": sha256(manifest), "destinationPublicKey": destination.hex(),
+        "relayKeyId": key_id, "targetDigest": sha256(manifest), "expiresAt": expires,
+        "destinationPublicKey": destination.hex(),
     }
     return statement, keys, receipt, custodians[index - 1], evidence
 
@@ -47,6 +54,8 @@ def release(trust, approval, build, index, port, authorization):
         raise ValueError("relay release requires exactly two signatures")
 
     def still_authorized():
+        if time() >= statement["expiresAt"]:
+            raise ValueError("relay authorization has expired")
         require_active_epoch(trust, statement["custodyEpoch"])
         verify_target_approval(trust, approval)
 
@@ -97,6 +106,8 @@ def main():
                 document = read_json(args.authorization)
                 if document["manifest"] != statement or len(document["signatures"]) >= 2:
                     raise ValueError("relay authorization changed or already has two signatures")
+                if time() >= statement["expiresAt"]:
+                    raise ValueError("relay authorization has expired")
                 verify_target_approval(trust, approval)
                 require_active_epoch(trust, statement["custodyEpoch"])
                 document = add_approval(keys, LABEL, document, args.key)

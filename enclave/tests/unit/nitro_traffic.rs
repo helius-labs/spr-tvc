@@ -3,6 +3,20 @@ use tower::ServiceExt;
 
 use super::*;
 
+#[test]
+fn reads_time_from_an_aws_nitro_document_and_rejects_malformed_evidence() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../sdk/tests/attestation/fixtures/aws-nitro-devnet.json"
+    ))
+    .unwrap();
+    let document = ::hex::decode(fixture["evidence"].as_str().unwrap()).unwrap();
+    assert_eq!(nsm_timestamp_ms(&document), Some(1_795_290_719_965));
+    let tagged = [&[0xd2], document.as_slice()].concat();
+    assert_eq!(nsm_timestamp_ms(&tagged), Some(1_795_290_719_965));
+    assert_eq!(nsm_timestamp_ms(&document[..document.len() - 1]), None);
+    assert_eq!(nsm_timestamp_ms(&[]), None);
+}
+
 #[tokio::test]
 async fn wallet_preflight_allows_only_credential_free_json_and_attestation_posts() {
     let transport = NativePair::generate().unwrap();
@@ -59,7 +73,7 @@ async fn cancelled_attestation_cannot_admit_another_kernel_call() {
     let worker = Arc::new(Semaphore::new(1));
     let (started, wait_for_worker) = oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
-    let request = tokio::spawn(issue_attestation(worker.clone(), move || {
+    let request = tokio::spawn(with_nsm(worker.clone(), move || {
         started.send(()).unwrap();
         blocked.recv_timeout(Duration::from_secs(2)).unwrap();
         Ok(([(CONTENT_TYPE, "application/json")], String::new()))
@@ -67,7 +81,7 @@ async fn cancelled_attestation_cannot_admit_another_kernel_call() {
     wait_for_worker.await.unwrap();
     request.abort();
     assert_eq!(
-        issue_attestation::<String>(worker.clone(), || panic!("worker was full"))
+        with_nsm::<String>(worker.clone(), || panic!("worker was full"))
             .await
             .unwrap_err(),
         StatusCode::TOO_MANY_REQUESTS
