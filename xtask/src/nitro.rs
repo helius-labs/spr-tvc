@@ -140,15 +140,19 @@ fn store_signed_policy(path: &Path, prior: &str, signed: &str) -> Result<()> {
     let lock = open_regular(&mut options, &parent.join(".nitro-sign.lock"))?;
     lock.try_lock()
         .context("lock signing directory for policy replacement")?;
-    ensure!(
-        read_policy(path)? == prior,
-        "policy changed during signing. Review the updated file and retry"
-    );
-    let mut output = tempfile::NamedTempFile::new_in(parent)?;
-    output.write_all(signed.as_bytes())?;
-    output.as_file().sync_all()?;
-    output.persist(path)?;
-    Ok(())
+    let result = (|| {
+        ensure!(
+            read_policy(path)? == prior,
+            "policy changed during signing. Review the updated file and retry"
+        );
+        let mut output = tempfile::NamedTempFile::new_in(parent)?;
+        output.write_all(signed.as_bytes())?;
+        output.as_file().sync_all()?;
+        output.persist(path)?;
+        Ok(())
+    })();
+    // A concurrent child process can briefly inherit the descriptor.
+    result.and(lock.unlock().context("unlock signing directory"))
 }
 
 pub(crate) fn sign(args: Args) -> Result<()> {

@@ -101,7 +101,10 @@ fn concurrent_signatures_cannot_overwrite_an_updated_policy() {
     let latest = read_policy(&path).unwrap();
     assert_eq!(latest, if first.is_ok() { "first" } else { "second" });
     let stale = store_signed_policy(&path, "unsigned", "stale").unwrap_err();
-    assert!(stale.to_string().contains("policy changed during signing"));
+    assert!(
+        stale.to_string().contains("policy changed during signing"),
+        "unexpected signing error: {stale:#}"
+    );
     store_signed_policy(&path, &latest, "both").unwrap();
     assert_eq!(read_policy(&path).unwrap(), "both");
 }
