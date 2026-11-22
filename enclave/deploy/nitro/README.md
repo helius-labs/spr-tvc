@@ -113,9 +113,10 @@ compares the record set in both buckets and checks each original S3 version
 ID, write time and record body. Replace the destination's receiving policy
 with the normal frozen ledger policy to close replication writes, then
 compare the destination with that checkpoint.
-When the source is unavailable, use an independently retained checkpoint
-that accounts for all committed writes. A checkpoint taken before the last
-committed write cannot authorize promotion.
+While the source is unavailable, the frozen replica can be inspected against
+an independently retained checkpoint. Writable promotion requires the
+original bucket to be reachable so its write deny and final record set can be
+verified.
 [S3 replication status](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication-status.html)
 
 ## Commit a custody epoch
@@ -226,28 +227,39 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
 
    ```sh
    python3 "$nitro/custody_ledger.py" trust.json policy "$ledger_admin_role" "$publisher_role" "$reader_role" --frozen > ledger-frozen-policy.json
-   python3 "$nitro/custody_archive.py" trust.json ledger-checkpoint
-   python3 "$nitro/custody_archive.py" recovered-trust.json ledger-checkpoint --expect "$ledger_checkpoint_sha256"
+   AWS_PROFILE="$source_read_profile" python3 "$nitro/custody_archive.py" trust.json ledger-checkpoint
    ```
 
    Suspend registration, share release and key retirement if the canonical
-   ledger becomes unavailable or incomplete. Resume only after the recovered
-   bucket matches an independently retained checkpoint covering all committed
-   writes. Keep the original ledger's write fence in force while promoting
-   the recovered bucket. Remove the old `ledgerReplica` entry when first
-   comparing the recovered bucket against the checkpoint.
+   ledger becomes unavailable or incomplete. Keep the original ledger frozen
+   throughout promotion and afterward. In `recovered-trust.json`, set `ledger`
+   to the original trust's pinned replica and replace the old `ledgerReplica`
+   entry with the new destination. Preserve the rest of the trust file.
 
-   Before resuming mainnet writes, pin a new `ledgerReplica` in the recovered
-   trust. Configure outbound replication and keep the promoted source frozen.
+   Mainnet promotion requires a new replica. Install the frozen policy and
+   configure outbound replication on the recovered bucket.
    Run S3 Batch Replication for the original versions in the custody prefix,
    including objects with status `REPLICA`. Use a separate Batch Operations
    role with `s3:InitiateReplication` scoped to that prefix. The live rule
-   handles writes after promotion. Verify the installed frozen source policy
-   and run `ledger-checkpoint --expect "$ledger_checkpoint_sha256"` against
-   the promoted source with the new replica pinned. The check requires the
-   exact version from the new destination even when the source still reports
-   `REPLICA`. Install and verify the normal writable policy on the promoted
-   source before resuming. [S3 Batch Replication](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-batch-replication-batch.html)
+   handles writes after promotion. [S3 Batch Replication](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-batch-replication-batch.html)
+
+   Verify the installed frozen policy on the recovered bucket. Then use a
+   read-only profile from each bucket owner's account with the checkpoint
+   permissions above. The recovery profile also needs
+   `s3:GetReplicationConfiguration` on the recovered bucket and list and read
+   access to the new replica. [S3 bucket policy permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketPolicy.html)
+
+   ```sh
+   python3 "$nitro/custody_archive.py" trust.json verify-promotion recovered-trust.json \
+     --expect "$ledger_checkpoint_sha256" \
+     --source-profile "$source_read_profile" --recovery-profile "$recovery_read_profile"
+   ```
+
+   The verifier matches both frozen buckets against the independently retained
+   checkpoint and checks the new destination's records and live rule. After it
+   succeeds, install and verify the writable policy on the recovered bucket
+   and distribute the recovered trust file. While the original bucket is
+   unreachable or its write deny is unverified, keep custody changes suspended.
 
    AWS Backup creates new object creation dates and version IDs on restore.
    [AWS Backup metadata](https://docs.aws.amazon.com/aws-backup/latest/devguide/s3-backups.html)

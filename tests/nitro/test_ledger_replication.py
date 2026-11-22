@@ -6,9 +6,10 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
-from custody_archive import ledger_checkpoint
+from custody_archive import ledger_checkpoint, verify_promotion
 from custody_ledger import (
-    check_installed_ledger, check_recovery_bucket, ledger_policy, ledger_replica_plan, require_frozen_ledger, write_once,
+    check_installed_ledger, check_recovery_bucket, custody_history_statement, ledger_policy, ledger_replica_plan,
+    replica_trust, replication_configuration, require_frozen_ledger, write_once,
 )
 from nitro_fixtures import DOMAIN
 
@@ -199,6 +200,84 @@ class LedgerReplicationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "pinned replica namespace differs"):
                     ledger_checkpoint(promoted)
             self.assertEqual(ledger_checkpoint(promoted, pin), pin)
+
+    def test_promotion_requires_the_original_fence_and_final_history(self):
+        trust = {**TRUST, "network": "mainnet", "walletTrustSha256": "a1" * 32}
+        new_replica = {"bucket": "custody-replacement", "account": "000000000011", "region": "eu-west-2",
+                       "role": f"arn:aws:iam::{DESTINATION_ACCOUNT}:role/replication"}
+        promoted = {**trust, "ledger": replica_trust(trust, REPLICA)["ledger"], "ledgerReplica": new_replica}
+        source_scope = {name: value for name, value in trust.items() if name != "ledgerReplica"}
+        policies = {
+            ledger["ledger"]["bucket"]: {"Statement": [custody_history_statement(ledger, frozen=True)]}
+            for ledger in (source_scope, promoted)
+        }
+        names = {bucket: ["1.json", "retired/1.json"] for bucket in (SOURCE_BUCKET, DESTINATION_BUCKET, new_replica["bucket"])}
+        profiles = {SOURCE_BUCKET: "source-read", DESTINATION_BUCKET: "recovery-read", new_replica["bucket"]: "recovery-read"}
+        replication = replication_configuration(promoted, new_replica)
+
+        def policy(ledger, *, profile):
+            bucket = ledger["ledger"]["bucket"]
+            self.assertEqual(profile, profiles[bucket])
+            return policies[bucket]
+
+        def list_names(ledger, _prefix, *, profile):
+            bucket = ledger["ledger"]["bucket"]
+            self.assertEqual(profile, profiles[bucket])
+            return names[bucket]
+
+        def read(ledger, name, *, profile):
+            bucket = ledger["ledger"]["bucket"]
+            self.assertEqual(profile, profiles[bucket])
+            self.assertIn(name, names[bucket])
+            return name.encode(), {"LastModified": "2026-11-01T00:00:00Z", "VersionId": f"version-{name}",
+                                   "ReplicationStatus": "COMPLETED" if bucket == SOURCE_BUCKET else "REPLICA"}
+
+        with (patch("custody_ledger.installed_ledger_policy", side_effect=policy),
+              patch("custody_ledger.require_no_ledger_lifecycle"),
+              patch("custody_ledger.storage", return_value={"ReplicationConfiguration": replication}) as storage,
+              patch("custody_archive.list_objects", side_effect=list_names),
+              patch("custody_archive.read_stored_payload", side_effect=read),
+              patch("custody_ledger.read_stored_payload", side_effect=read),
+              patch("custody_archive.require_profile_account") as account):
+            pin = ledger_checkpoint(source_scope, profile="source-read")
+
+            def verify(candidate=promoted):
+                return verify_promotion(trust, candidate, pin, "source-read", "recovery-read")
+
+            self.assertEqual(verify(), pin)
+            storage.assert_called_once_with(promoted, "get-bucket-replication", absent="ReplicationConfigurationNotFoundError",
+                                            profile="recovery-read")
+            self.assertEqual([call.args for call in account.call_args_list], [
+                ("source-read", TRUST["ledger"]["region"], SOURCE_ACCOUNT),
+                ("recovery-read", REPLICA["region"], DESTINATION_ACCOUNT),
+            ])
+            for ledger in (trust, promoted):
+                bucket = ledger["ledger"]["bucket"]
+                with self.subTest(writable=bucket), patch.dict(policies, {bucket: {"Statement": []}}):
+                    with self.assertRaisesRegex(ValueError, "requires the frozen bucket policy"):
+                        verify()
+            with patch.dict(names, {SOURCE_BUCKET: ["1.json", "retired/1.json", "retired/2.json"]}):
+                with self.assertRaisesRegex(ValueError, "differs from the independently pinned checkpoint"):
+                    verify()
+            with patch("custody_ledger.installed_ledger_policy", side_effect=[
+                policies[SOURCE_BUCKET], policies[DESTINATION_BUCKET], policies[DESTINATION_BUCKET], {"Statement": []},
+            ]):
+                with self.assertRaisesRegex(ValueError, "requires the frozen bucket policy"):
+                    verify()
+            with patch("custody_ledger.storage", return_value=None):
+                with self.assertRaisesRegex(ValueError, "does not match the pinned ledger replica"):
+                    verify()
+            with patch("custody_ledger.installed_ledger_policy", side_effect=OSError("original bucket unreachable")):
+                with self.assertRaisesRegex(OSError, "original bucket unreachable"):
+                    verify()
+            with self.assertRaisesRegex(ValueError, "original ledger's pinned replica"):
+                verify({**promoted, "ledger": {**promoted["ledger"], "account": "000000000012"}})
+            with self.assertRaisesRegex(ValueError, "preserve the custody trust"):
+                verify({**promoted, "walletTrustSha256": "b2" * 32})
+            with self.assertRaisesRegex(ValueError, "requires a new pinned replica"):
+                verify({name: value for name, value in promoted.items() if name != "ledgerReplica"})
+            with self.assertRaisesRegex(ValueError, "keep the original ledger frozen"):
+                verify({**promoted, "ledgerReplica": {**trust["ledger"], "role": new_replica["role"]}})
 
 
 if __name__ == "__main__":

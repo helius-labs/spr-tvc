@@ -147,11 +147,12 @@ def read_stored_object(trust, name):
     return parse_json(payload), metadata
 
 
-def read_stored_payload(trust, name):
+def read_stored_payload(trust, name, **options):
     _, prefix = ledger_prefix(trust)
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "record.json"
-        metadata = storage(trust, "get-object", ["--key", prefix + name, "--range", f"bytes=0-{MAX_DOCUMENT_BYTES}", str(path)])
+        metadata = storage(trust, "get-object",
+                           ["--key", prefix + name, "--range", f"bytes=0-{MAX_DOCUMENT_BYTES}", str(path)], **options)
         return read_document(path), metadata
 
 
@@ -176,14 +177,14 @@ def ledger_record_fingerprint(name, payload, metadata):
     return version, published_at, hashlib.sha256(payload).hexdigest()
 
 
-def read_replicated_record(trust, destination, name):
-    original, source_metadata = read_stored_payload(trust, name)
+def read_replicated_record(trust, destination, name, **options):
+    original, source_metadata = read_stored_payload(trust, name, **options)
     # Records inherited during promotion can still be marked REPLICA at the source.
     if source_metadata.get("ReplicationStatus") not in ("COMPLETED", "REPLICA"):
         raise ValueError(f"custody ledger record {name} has not completed S3 replication")
     fingerprint = ledger_record_fingerprint(name, original, source_metadata)
     try:
-        copied, replica_metadata = read_stored_payload(destination, name)
+        copied, replica_metadata = read_stored_payload(destination, name, **options)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise ValueError(f"could not read custody ledger record {name} from the pinned replica") from error
     if (replica_metadata.get("ReplicationStatus") != "REPLICA" or
@@ -221,7 +222,7 @@ def write_once(trust, name, document, subject):
             raise ValueError("a different record is already committed") from None
 
 
-def list_objects(trust, name):
+def list_objects(trust, name, **options):
     ledger, prefix = ledger_prefix(trust)
     scope = prefix + name
     args = ["--prefix", scope, "--max-keys", "100", "--no-paginate"]
@@ -229,7 +230,7 @@ def list_objects(trust, name):
     last_key = ""
     seen_tokens = set()
     while True:
-        page = storage(trust, "list-objects-v2", [*args, *continuation])
+        page = storage(trust, "list-objects-v2", [*args, *continuation], **options)
         if not isinstance(page, dict):
             raise ValueError("invalid custody ledger listing")
         entries = page.get("Contents", [])
@@ -404,12 +405,12 @@ def require_no_ledger_lifecycle(trust, **options):
         raise ValueError("custody ledger bucket must have no lifecycle configuration")
 
 
-def require_frozen_ledger(trust):
-    policy = installed_ledger_policy(trust)
+def require_frozen_ledger(trust, **options):
+    policy = installed_ledger_policy(trust, **options)
     statements = policy.get("Statement") if isinstance(policy, dict) else None
     if not isinstance(statements, list) or custody_history_statement(trust, frozen=True) not in statements:
         raise ValueError("custody ledger checkpoint requires the frozen bucket policy")
-    require_no_ledger_lifecycle(trust)
+    require_no_ledger_lifecycle(trust, **options)
 
 
 def check_ledger_bucket_controls(trust, **options):
@@ -430,7 +431,11 @@ def check_installed_ledger(trust, expected_policy):
     if installed_ledger_policy(trust) != expected_policy:
         raise ValueError("custody ledger bucket policy differs from the generated policy")
     check_ledger_bucket_controls(trust)
-    replication = storage(trust, "get-bucket-replication", absent="ReplicationConfigurationNotFoundError")
+    require_pinned_replication(trust)
+
+
+def require_pinned_replication(trust, **options):
+    replication = storage(trust, "get-bucket-replication", absent="ReplicationConfigurationNotFoundError", **options)
     replica = ledger_replica(trust)
     if replica is None:
         if replication is not None:
