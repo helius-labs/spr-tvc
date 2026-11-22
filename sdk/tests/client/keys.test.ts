@@ -1,5 +1,6 @@
 import { NullifierKey, ShieldedAddress, ShieldedPublicKey, ViewingKey, initializePoseidon, type Bytes32, type RequestContext } from "@heliuslabs/spr";
 import { X25519Keypair, X25519PublicKey, type Bytes31 } from "@heliuslabs/spr/keypair";
+import { LocalKeys } from "@heliuslabs/spr/client";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { encodeLowerHex } from "../../src/protocol/hex.js";
@@ -175,6 +176,72 @@ describe("the keys of an address under the service", () => {
     } finally {
       held.destroy();
       nullifier.destroy();
+    }
+  });
+
+  it.each(["prove", "proveMerge", "proveIndexed"] as const)(
+    "aborts pending %s calls and refuses to start another proof after destruction",
+    async (method) => {
+      let finish!: () => void;
+      const reply = new Promise<void>(resolve => { finish = resolve; });
+      const proof = { a: bytes(0, 64), b: bytes(0, 128), c: bytes(0, 64) } as Awaited<ReturnType<LocalKeys["prove"]>>;
+      const prove = method === "proveIndexed"
+        ? vi.spyOn(LocalKeys.prototype, method).mockImplementation(() => reply.then(() => ({
+            proof, resolution: { trees: [], publicInputHash: bytes(0) as Bytes32 },
+          })))
+        : vi.spyOn(LocalKeys.prototype, method).mockImplementation(() => reply.then(() => proof));
+      const controller = new AbortController();
+      const { nullifier, keys: held } = keys(bytes(5, 31) as Bytes31);
+      try {
+        // The stub isolates handle lifetime from the proof input decoder.
+        const cancelled = AbortSignal.abort(new DOMException("Request cancelled", "AbortError"));
+        await expect(held[method]({} as never, { signal: cancelled })).rejects.toBe(cancelled.reason);
+        expect(prove).not.toHaveBeenCalled();
+        const pending = held[method]({} as never, { signal: controller.signal, timeoutMs: 50 });
+        const signal = prove.mock.calls[0]?.[1]?.signal;
+        held.destroy();
+        await expect(pending).rejects.toMatchObject({ code: "KeyHandleDestroyed" });
+        finish();
+        expect(signal?.aborted).toBe(true);
+        expect(controller.signal.aborted).toBe(false);
+        expect(prove.mock.calls[0]?.[1]?.timeoutMs).toBe(50);
+        await expect(held[method]({} as never)).rejects.toMatchObject({ code: "KeyHandleDestroyed" });
+        expect(prove).toHaveBeenCalledOnce();
+      } finally {
+        finish();
+        held.destroy();
+        nullifier.destroy();
+        prove.mockRestore();
+      }
+    },
+  );
+
+  it("clears derived bytes and destroys transaction keys if the handle closes before return", async () => {
+    const derived = bytes(5) as Bytes32;
+    const minted = ViewingKey.generate();
+    const derive = vi.spyOn(LocalKeys.prototype, "derive").mockResolvedValue([derived]);
+    const transactionKeys = vi.spyOn(LocalKeys.prototype, "transactionKeys").mockResolvedValue([minted]);
+    const { nullifier, keys: held } = keys(bytes(5, 31) as Bytes31);
+    try {
+      const pendingDerivation = held.derive([]);
+      const pendingKeys = held.transactionKeys([]);
+      held.destroy();
+      await Promise.all([
+        expect(pendingDerivation).rejects.toMatchObject({ code: "KeyHandleDestroyed" }),
+        expect(pendingKeys).rejects.toMatchObject({ code: "KeyHandleDestroyed" }),
+      ]);
+      expect(derived).toEqual(bytes(0));
+      expect(() => minted.publicKey()).toThrow();
+      await expect(held.derive([])).rejects.toMatchObject({ code: "KeyHandleDestroyed" });
+      await expect(held.transactionKeys([])).rejects.toMatchObject({ code: "KeyHandleDestroyed" });
+      expect(derive).toHaveBeenCalledOnce();
+      expect(transactionKeys).toHaveBeenCalledOnce();
+    } finally {
+      held.destroy();
+      nullifier.destroy();
+      minted.destroy();
+      derive.mockRestore();
+      transactionKeys.mockRestore();
     }
   });
 });

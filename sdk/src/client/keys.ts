@@ -28,6 +28,7 @@ type Decrypt = (items: readonly DecryptItem[], context?: RequestContext) => Prom
 
 /** The SDK's `WalletKeys` for an address under its service keys. */
 export interface DecryptionServiceKeys extends WalletKeys {
+  /** Cancels pending operations and wipes the locally held keys. */
   destroy(): void;
 }
 
@@ -82,38 +83,64 @@ export class ServiceKeys implements DecryptionServiceKeys {
     requests: readonly DecryptRequest[],
     context?: RequestContext,
   ): Promise<readonly Uint8Array[]> {
-    const signal = context?.signal ? AbortSignal.any([context.signal, this.#lifetime.signal]) : this.#lifetime.signal;
-    signal.throwIfAborted();
+    const scope = this.#operationContext(context);
+    const { signal } = scope;
     if (requests.length === 0) return [];
     const items = requests.map((request) => {
       this.#requireViewingKey(request.viewingPublicKey);
       return decryptItem(request);
     });
-    const plaintexts = await awaitWithSignal(this.#decrypt(items, { ...context, signal }), signal);
+    const plaintexts = await awaitWithSignal(this.#decrypt(items, scope), signal);
     signal.throwIfAborted();
     return plaintexts.map(decodeLowerHex);
   }
 
-  derive(requests: readonly DeriveRequest[]): Promise<readonly Bytes32[]> {
-    return this.#local.derive(requests);
+  async derive(requests: readonly DeriveRequest[], context?: RequestContext): Promise<readonly Bytes32[]> {
+    const { signal } = this.#operationContext(context);
+    const answers = await this.#local.derive(requests);
+    if (signal.aborted) {
+      for (const answer of answers) answer.fill(0);
+      signal.throwIfAborted();
+    }
+    return answers;
   }
 
-  async transactionKeys(requests: readonly TransactionKeyRequest[]): Promise<readonly ViewingKey[]> {
-    return this.#local.transactionKeys(
+  async transactionKeys(requests: readonly TransactionKeyRequest[], context?: RequestContext): Promise<readonly ViewingKey[]> {
+    const { signal } = this.#operationContext(context);
+    const keys = await this.#local.transactionKeys(
       requests.map((request) => {
         this.#requireViewingKey(request.viewingPublicKey);
         return { ...request, viewingPublicKey: this.#transactionKey };
       }),
     );
+    if (signal.aborted) {
+      for (const key of keys) key.destroy();
+      signal.throwIfAborted();
+    }
+    return keys;
   }
 
   #requireViewingKey(key: X25519PublicKey): void {
     if (!this.#address.viewingPublicKey.equals(key)) throw new DecryptionServiceError("UnknownViewingKey");
   }
 
-  prove: LocalKeys["prove"] = (inputs, context) => this.#local.prove(inputs, context);
-  proveMerge: LocalKeys["proveMerge"] = (inputs, context) => this.#local.proveMerge(inputs, context);
-  proveIndexed: LocalKeys["proveIndexed"] = (request, context) => this.#local.proveIndexed(request, context);
+  prove: LocalKeys["prove"] = (inputs, context) => this.#proof(context, scope => this.#local.prove(inputs, scope));
+  proveMerge: LocalKeys["proveMerge"] = (inputs, context) => this.#proof(context, scope => this.#local.proveMerge(inputs, scope));
+  proveIndexed: LocalKeys["proveIndexed"] = (request, context) => this.#proof(context, scope => this.#local.proveIndexed(request, scope));
+
+  async #proof<T>(context: RequestContext | undefined, run: (scope: RequestContext) => Promise<T>): Promise<T> {
+    const scope = this.#operationContext(context);
+    const result = await awaitWithSignal(run(scope), scope.signal);
+    scope.signal.throwIfAborted();
+    return result;
+  }
+
+  #operationContext(context?: RequestContext): RequestContext & { signal: AbortSignal } {
+    const lifetime = this.#lifetime.signal;
+    const signal = context?.signal ? AbortSignal.any([lifetime, context.signal]) : lifetime;
+    signal.throwIfAborted();
+    return { ...context, signal };
+  }
 
   destroy(): void {
     this.#lifetime.abort(new DecryptionServiceError("KeyHandleDestroyed"));
