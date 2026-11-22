@@ -1681,7 +1681,14 @@ class CustodyLedgerTests(unittest.TestCase):
         with patch("retirement.qualified_policy", return_value=old):
             document = self.signed_retirement(qualified_manifest(self.trust, None, "1", "2"))
 
-        for change in ("revocation", "policy", "new boot", "key loss", "stable"):
+        for change, error in (
+            ("revocation", "wallet policy revoked"),
+            ("policy", "wallet policy changed before retirement"),
+            ("new boot", "wallet policy changed before retirement"),
+            ("key loss", "key is unavailable"),
+            ("replacement closure", "cannot verify retirement record for epoch 2"),
+            ("stable", None),
+        ):
             with self.subTest(change=change):
                 after_inventory = False
 
@@ -1697,6 +1704,10 @@ class CustodyLedgerTests(unittest.TestCase):
                         return old
                     if change == "revocation":
                         raise ValueError("wallet policy revoked")
+                    if change == "replacement closure":
+                        # A record occupied the closure slot during re-attestation.
+                        self.objects[f"spr-custody/devnet/{DOMAIN}/retired/2.json"] = b"{}"
+                        return old
                     evidence = copy.deepcopy(old.evidence)
                     if change == "policy":
                         evidence["walletPolicyDigest"] = "f0" * 32
@@ -1713,14 +1724,15 @@ class CustodyLedgerTests(unittest.TestCase):
                 with (patch("retirement.qualified_policy", side_effect=qualified),
                       patch("retirement.write_once", side_effect=inspect_then_publish),
                       patch("custody_ledger.storage", wraps=storage) as storage_call):
-                    if change == "stable":
+                    if error is None:
                         commit_retirement(self.trust, None, document)
                         self.assertIn(marker, self.objects)
                     else:
-                        with self.assertRaisesRegex(ValueError, "wallet policy (revoked|changed before retirement)|key is unavailable"):
+                        with self.assertRaisesRegex(ValueError, error):
                             commit_retirement(self.trust, None, document)
                         self.assertNotIn("put-object", [entry.args[1] for entry in storage_call.call_args_list])
                         self.assertNotIn(marker, self.objects)
+                self.objects.pop(f"spr-custody/devnet/{DOMAIN}/retired/2.json", None)
 
     @patch("retirement.require_recovery_quorum")
     @patch("retirement.qualified_policy")
@@ -2147,6 +2159,16 @@ class CustodyLedgerTests(unittest.TestCase):
             different_policy = observation(restarted, standby_observed, policy="df" * 32)
             query.side_effect = [observation(primary_observed, standby_observed), different_policy, different_policy]
             with self.assertRaisesRegex(ValueError, "no attested replacement qualified"):
+                inspect()
+
+            def close_while_confirming(command, **_options):
+                if command[-2] == "policy":
+                    self.objects[f"spr-custody/devnet/{DOMAIN}/retired/2.json"] = b"{}"
+                    return SimpleNamespace()
+                return observation(primary_observed, standby_observed)
+
+            query.side_effect = close_while_confirming
+            with self.assertRaisesRegex(ValueError, "cannot verify retirement record for epoch 2"):
                 inspect()
 
     def test_closed_epoch_can_requalify_with_a_fresh_trio_and_keep_its_original_record(self):

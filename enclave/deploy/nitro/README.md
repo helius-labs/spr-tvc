@@ -522,8 +522,9 @@ pinned history and excluded versions.
    registration when a replica is configured. Sign and publish recheck those
    conditions for the exact signed boot. After inspecting the ledger slot, the
    publisher rechecks the three recovery and wrapping pairs, then confirms the
-   same boot and agreed policy before writing. The live evidence expires at the
-   earliest of the wallet policy, Nitro proof freshness window, certificate
+   same boot and agreed policy and rechecks that the replacement epoch is open
+   before writing. The live evidence expires at the earliest of the wallet
+   policy, Nitro proof freshness window, certificate
    path, or 24-hour recovery window. Publication needs 30 seconds left to
    submit the ledger write. If the attested boot key or slots
    change, draft a new candidate and collect proofs for those slots. After a
@@ -582,8 +583,9 @@ pinned history and excluded versions.
    protections after confirming the live replacement. If a candidate fails a
    key, replication or repeated attestation check, both commands try another boot
    from the same observation. After the AWS checks, both commands read the two
-   signed policy heads again. A changed digest, revocation, disagreement, failed
-   read or expired boot evidence stops the command. `inspect` reports the
+   signed policy heads again, then recheck that the replacement epoch is open.
+   A changed digest, revocation, disagreement, failed read, closed epoch or
+   expired boot evidence stops the command. `inspect` reports the
    boot evidence deadline as `validUntilMs` in Unix milliseconds. Rerun
    inspection if it passes before scheduling deletion. The role needs `kms:DescribeKey` for the
    six replacement keys. Use

@@ -304,6 +304,7 @@ def commit_retirement(trust, wallet_trust, document):
         confirmed = qualified_policy(trust, wallet_trust, manifest, receipt["custody"], expected=boot.evidence)
         if confirmed.evidence != boot.evidence:
             raise ValueError("replacement boot or wallet policy changed before retirement")
+        require_active_epoch(trust, manifest["replacementEpoch"])
         require_recovery_window(manifest, remaining=LEDGER_WRITE_MARGIN_SECONDS)
         require_publication_roster(trust, manifest["approvalFromEpoch"])
         confirmed.require_current(remaining=LEDGER_WRITE_MARGIN_SECONDS)
@@ -413,13 +414,13 @@ def retirement_replica(trust, profile):
 def confirm_retirement_policy(trust, wallet_trust, qualification, boot, replica, replica_profile):
     if replica is not None:
         check_recovery_bucket(trust, replica, replica_profile)
-    require_active_epoch(trust, qualification["replacementEpoch"])
     boot.require_current()
     try:
         run_command([*retirement_command(qualification), "policy", boot.evidence["walletPolicyDigest"]],
                     input=pinned_wallet_trust(trust, wallet_trust), check=True, timeout=10)
     except subprocess.SubprocessError as error:
         raise ReplacementNotReady("could not confirm the replacement wallet policy after AWS checks") from error
+    require_active_epoch(trust, qualification["replacementEpoch"])
     require_current_requalification(trust, qualification)
     boot.require_current()
 
