@@ -1,4 +1,7 @@
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::{
+    fs::{File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Command,
@@ -102,16 +105,53 @@ fn decode_signature(
     Ok(signed)
 }
 
-pub(crate) fn sign(args: Args) -> Result<()> {
-    let path = std::path::absolute(args.policy)?;
+fn open_regular(options: &mut OpenOptions, path: &Path) -> Result<File> {
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    let file = options
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    ensure!(
+        file.metadata()?.is_file(),
+        "expected a regular file at {}",
+        path.display()
+    );
+    Ok(file)
+}
+
+fn read_policy(path: &Path) -> Result<String> {
     let mut text = String::new();
-    std::fs::File::open(&path)?
+    open_regular(OpenOptions::new().read(true), path)?
         .take(MAX_POLICY_BYTES as u64 + 1)
         .read_to_string(&mut text)?;
+    ensure!(text.len() <= MAX_POLICY_BYTES, "policy exceeds 32 KiB");
+    Ok(text)
+}
+
+fn store_signed_policy(path: &Path, prior: &str, signed: &str) -> Result<()> {
+    let parent = path.parent().context("missing policy parent")?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let lock = open_regular(&mut options, &parent.join(".nitro-sign.lock"))?;
+    lock.try_lock()
+        .context("lock signing directory for policy replacement")?;
     ensure!(
-        text.len() <= MAX_POLICY_BYTES && is_rfc8785(&text),
-        "use canonical policy JSON up to 32 KiB"
+        read_policy(path)? == prior,
+        "policy changed during signing. Review the updated file and retry"
     );
+    let mut output = tempfile::NamedTempFile::new_in(parent)?;
+    output.write_all(signed.as_bytes())?;
+    output.as_file().sync_all()?;
+    output.persist(path)?;
+    Ok(())
+}
+
+pub(crate) fn sign(args: Args) -> Result<()> {
+    let path = std::path::absolute(args.policy)?;
+    let text = read_policy(&path)?;
+    ensure!(is_rfc8785(&text), "use canonical policy JSON");
     let mut manifest: SignedPolicy = serde_json::from_str(&text)?;
     validate_action(&manifest.policy)?;
     let bytes = decode_lower_hex(&args.public_key)?;
@@ -201,11 +241,7 @@ pub(crate) fn sign(args: Args) -> Result<()> {
         canonical.len() <= MAX_POLICY_BYTES,
         "signed policy exceeds 32 KiB"
     );
-    let mut output =
-        tempfile::NamedTempFile::new_in(path.parent().context("missing policy parent")?)?;
-    output.write_all(canonical.as_bytes())?;
-    output.as_file().sync_all()?;
-    output.persist(&path)?;
+    store_signed_policy(&path, &text, &canonical)?;
     println!(
         "signed {} ({})",
         path.display(),

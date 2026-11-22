@@ -697,6 +697,8 @@ trust file independently.
 Collect the release quorum and two custody signatures on every policy.
 Each signer supplies `--custody-trust` to verify the publication pair. For
 activation, the signer also checks the approved targets against the ledger.
+`nitro-sign` uses `.nitro-sign.lock` in the policy's directory when saving.
+If the policy file changed during signing, review the updated file and rerun.
 For revocation, sign a target-free policy with both quorums using the local
 custody trust file. Publish the revocation without `--custody-trust` when the
 ledger is offline. Revocation needs the signing keys and publication buckets.
@@ -719,7 +721,10 @@ activation target and verifies its encrypted `PublicKeys` reply through
 uses a fixed public address and needs no wallet signature. The publisher
 rereads the peer and custody ledger after the probes, checks the active
 roster and cutover window, and writes against its original ETag. New primary
-policies need at least 30 seconds before expiry to submit the write.
+policies need more than 30 seconds before expiry to submit the write.
+For activation, each replica probe must also retain that margin after the
+final custody check. Wallet trust verification requires each probe to remain
+current through the last read of both policy buckets.
 For mainnet payment activation, give signers, the primary publisher, and wallet pin
 verifiers `kms:DescribeKey` on the registered recovery and wrapping keys.
 Each target needs three slots with both keys enabled in the same account.

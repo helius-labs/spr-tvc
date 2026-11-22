@@ -193,6 +193,29 @@ describe("operator replica probe", () => {
     await expect(probeNitroTarget(policy.targets[0]!, trust, controller.signal)).rejects.toThrow("operator deadline expired");
     expect(fetch).toHaveBeenCalledTimes(2);
   });
+
+  it.each(["attestation age", "certificate expiry", "elapsed time"])("discards a reply if %s invalidates the probe", async limit => {
+    const { policy } = JSON.parse(signedPolicy()) as { policy: NitroPolicy };
+    let wall = Date.now();
+    let elapsed = 0;
+    const time = vi.spyOn(Date, "now").mockImplementation(() => wall);
+    const ticks = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+    try {
+      const discovery = attestedDiscovery(undefined, undefined, BigInt(wall) + (limit === "certificate expiry" ? 999n : 120_000n));
+      if (limit === "attestation age") wall += 59_500;
+      const fetch = vi.fn().mockResolvedValueOnce(discovery).mockImplementationOnce(async (_url, init: RequestInit) => {
+        if (limit === "elapsed time") elapsed = 60_000;
+        else wall += 1_000;
+        return lookupReply(init, secrets, "6x5SYnLroiN7WYq8NQYU9KHcH4YjpBbwpUfVu3EB7ieH");
+      });
+      vi.stubGlobal("fetch", fetch);
+      await expect(probeNitroTarget(policy.targets[0]!, trust)).rejects.toThrow("ExpiredRequest");
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      time.mockRestore();
+      ticks.mockRestore();
+    }
+  });
 });
 
 describe("native client trust gate", () => {

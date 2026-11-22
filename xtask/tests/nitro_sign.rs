@@ -68,3 +68,44 @@ fn custody_signing_digest_matches_the_wire_vector() {
         "8ed7448f3867c9f0f322df52cbcf63866044c8b13032604a4d3f5cfc49547e8a"
     );
 }
+
+#[test]
+fn concurrent_signatures_cannot_overwrite_an_updated_policy() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("policy.json");
+    std::fs::write(&path, "unsigned").unwrap();
+    let (first, second) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| store_signed_policy(&path, "unsigned", "first"));
+        let second = scope.spawn(|| store_signed_policy(&path, "unsigned", "second"));
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    assert_ne!(first.is_ok(), second.is_ok());
+    let latest = read_policy(&path).unwrap();
+    assert_eq!(latest, if first.is_ok() { "first" } else { "second" });
+    let stale = store_signed_policy(&path, "unsigned", "stale").unwrap_err();
+    assert!(stale.to_string().contains("policy changed during signing"));
+    store_signed_policy(&path, &latest, "both").unwrap();
+    assert_eq!(read_policy(&path).unwrap(), "both");
+}
+
+#[cfg(unix)]
+#[test]
+fn refuses_named_pipes_and_symbolic_links_as_signing_inputs() {
+    let directory = tempfile::tempdir().unwrap();
+    let pipe = directory.path().join("pipe.json");
+    assert!(Command::new("mkfifo")
+        .arg(&pipe)
+        .status()
+        .unwrap()
+        .success());
+    let link = directory.path().join("link.json");
+    std::fs::write(directory.path().join("regular.json"), "unsigned").unwrap();
+    std::os::unix::fs::symlink(directory.path().join("regular.json"), &link).unwrap();
+    let (finished, result) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = finished.send(read_policy(&pipe).is_err() && read_policy(&link).is_err());
+    });
+    assert!(result
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .unwrap());
+}

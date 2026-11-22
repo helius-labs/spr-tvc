@@ -12,6 +12,7 @@ import {
 } from "../sdk/src/attestation/nitro-policy.js";
 import { readNitroPolicy, readPublishedNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
 import { probeNitroTarget } from "../sdk/src/client/nitro-probe.js";
+import { remainingReleasePolicyMs } from "../sdk/src/connection/operations.js";
 import { decodeDecimalU64 } from "../sdk/src/protocol/decimal.js";
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
 
@@ -30,8 +31,16 @@ type PublicationOptions = {
   nextTrust?: NitroTrust;
   emergencyFrom?: NitroTrust;
   run?: Run;
-  probe?: (target: NitroTarget, trust: NitroTrust) => Promise<unknown>;
+  probe?: (target: NitroTarget, trust: NitroTrust) => Promise<ReplicaProbe>;
 };
+
+type ReplicaProbe = Pick<Awaited<ReturnType<typeof probeNitroTarget>>, "window">;
+
+function requireFreshProbes(probes: readonly ReplicaProbe[], now: bigint, margin = 0): void {
+  if (probes.some(({ window }) => !(remainingReleasePolicyMs(window, now) > margin))) {
+    throw new Error("replica probe expired or has insufficient time remaining");
+  }
+}
 
 async function readPolicy(path: string): Promise<string> {
   const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
@@ -180,11 +189,12 @@ export async function publish(
     }
     await checkMirror();
     let confirmedCutover: bigint | undefined;
+    let probes: ReplicaProbe[] = [];
     if (activatesPrimary && custodyTrust) {
       const custodyPins = nextTrust ?? trust;
       const cutover = await checkActivationRoster(candidate, custodyTrust, custodyPins, run);
       requireCustodyWriteWindow(cutover, BigInt(Date.now()));
-      await Promise.all(policy.targets.map(target => probe(target, trust)));
+      probes = await Promise.all(policy.targets.map(target => probe(target, trust)));
       await checkMirror();
       confirmedCutover = await checkActivationRoster(candidate, custodyTrust, custodyPins, run);
     }
@@ -195,6 +205,7 @@ export async function publish(
       throw new Error("the signed policy expires too soon for conditional publication");
     }
     requireCustodyWriteWindow(confirmedCutover, beforeWrite);
+    requireFreshProbes(probes, beforeWrite, Number(WRITE_MARGIN_MS));
     const precondition = head ? ["--if-match", head.etag] : ["--if-none-match", "*"];
     try {
       await call("put-object", [...precondition, "--content-type", "application/json", "--cache-control", "no-store", "--body", candidate]);
@@ -237,13 +248,15 @@ export async function verifyDistributionPins(
     const candidate = join(directory, "published.json");
     await writeFile(candidate, published.text, { mode: 0o600, flag: "wx" });
     await checkActivationRoster(candidate, custodyTrust, trust, run);
-    await Promise.all(published.policy.targets.map(target => probe(target, trust)));
+    const probes = await Promise.all(published.policy.targets.map(target => probe(target, trust)));
     const nextCutover = await checkActivationRoster(candidate, custodyTrust, trust, run);
     const confirmed = await pinnedPublication(trust);
     if (confirmed.text !== published.text) throw new Error("signed policy changed during wallet trust verification");
-    if (nextCutover !== undefined && BigInt(Date.now()) >= nextCutover) {
+    const now = BigInt(Date.now());
+    if (nextCutover !== undefined && now >= nextCutover) {
       throw new Error("custody approval roster changed during wallet trust verification");
     }
+    requireFreshProbes(probes, now);
     return confirmed.checkpoint;
   } finally {
     await rm(directory, { recursive: true, force: true });

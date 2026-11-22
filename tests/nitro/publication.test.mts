@@ -62,6 +62,14 @@ function awsOnly(aws: (args: string[]) => Promise<{ stdout: string }>) {
   } };
 }
 
+function freshProbe(remaining = () => 60_000) {
+  return { window: {
+    releasePolicyValidFromMs: BigInt(now - 1_000),
+    releasePolicyExpiresAtMs: BigInt(now + 120_000),
+    policyFreshnessRemainingMs: remaining,
+  } };
+}
+
 test("one conditional publisher wins and replaying the exact policy is idempotent", async context => {
   let head = signed(first);
   context.mock.method(globalThis, "fetch", async () => new Response(signed(first)));
@@ -150,7 +158,7 @@ test("the primary leaves time for the conditional write before policy expiry", a
       if (command === "python3") return { stdout: JSON.stringify({ custodyKeys: trust.custodyKeys, nextCutover: null }) };
       return read.run(command, args);
     },
-    async probe() { current = now + 30_000; },
+    async probe() { current = now + 30_000; return freshProbe(); },
   }), /policy expires too soon/);
   await assert.rejects(publish(trust, primary.bucket, signed(next), read), /policy expires too soon/);
 });
@@ -231,6 +239,7 @@ test("requires a successful operation probe on every target before writing an ac
     assert.equal(supplied, pinned);
     checked.push(replica.endpoint);
     if (replica.endpoint === other.endpoint && failing) throw new Error("operation probe failed");
+    return freshProbe();
   };
   const run = async (command: string, args: string[]) => {
     if (command === "python3") return { stdout: JSON.stringify({ custodyKeys: trust.custodyKeys, nextCutover: null }) };
@@ -278,21 +287,51 @@ test("activation rejects an incompatible peer or invalid custody state observed 
   const options = { run, custodyTrust: "/pinned/custody.json" };
   const bucket = trust.publications[0].bucket;
   await assert.rejects(publish(trust, bucket, text, {
-    ...options, async probe() { retired = true; },
+    ...options, async probe() { retired = true; return freshProbe(); },
   }), /custody epoch is retired/);
   retired = false;
   await assert.rejects(publish(trust, bucket, text, {
-    ...options, async probe() { activeKeys = custodyKeys.slice(3); },
+    ...options, async probe() { activeKeys = custodyKeys.slice(3); return freshProbe(); },
   }), /active custody approval roster/);
   activeKeys = trust.custodyKeys;
   await assert.rejects(publish(trust, bucket, text, {
-    ...options, async probe() { cutover = String(Math.floor(Date.now() / 1_000) + 10); },
+    ...options, async probe() { cutover = String(Math.floor(Date.now() / 1_000) + 10); return freshProbe(); },
   }), /cutover is too close/);
   cutover = null;
   await assert.rejects(publish(trust, bucket, text, {
-    ...options, async probe() { peer = signed(first, [1, 0]); },
+    ...options, async probe() { peer = signed(first, [1, 0]); return freshProbe(); },
   }), /same signed predecessor/);
   assert.equal(writes, 0);
+});
+
+test("rechecks live replica evidence after the final custody read", async context => {
+  const [primary] = trust.publications;
+  const activation: NitroPolicy = {
+    ...first, action: "activate", targets: [target], sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest,
+  };
+  const text = signed(activation);
+  const predecessor = signed(first);
+  let peer = predecessor;
+  context.mock.method(globalThis, "fetch", async () => new Response(peer));
+  let remaining = 0;
+  let remainingAfterCustody = 30_000;
+  const options = {
+    custodyTrust: "custody.json",
+    async run(command: string, args: string[]) {
+      if (command === "python3") {
+        remaining = remainingAfterCustody;
+        return { stdout: JSON.stringify({ custodyKeys: trust.custodyKeys, nextCutover: null }) };
+      }
+      assert.ok(args.includes("get-object"));
+      await writeFile(args.at(-1)!, predecessor);
+      return { stdout: JSON.stringify({ ETag: '"predecessor"' }) };
+    },
+    async probe() { remaining = 60_000; return freshProbe(() => remaining); },
+  };
+  await assert.rejects(publish(trust, primary.bucket, text, options), /replica probe expired or has insufficient time/);
+  remainingAfterCustody = 0;
+  peer = text;
+  await assert.rejects(verifyDistributionPins(pins(activation), options), /replica probe expired or has insufficient time/);
 });
 
 test("mirrors the first publisher's policy into only the selected pinned bucket", async context => {
@@ -621,6 +660,7 @@ test("wallet activation pins require the active custody roster and a stable publ
   const probe = async (replica: typeof target) => {
     assert.deepEqual(replica, target);
     if (failing) throw new Error("operation probe failed");
+    return freshProbe();
   };
   const options = { custodyTrust, run, probe };
   await assert.rejects(verifyDistributionPins(incoming), /requires --custody-trust/);
@@ -633,7 +673,7 @@ test("wallet activation pins require the active custody roster and a stable publ
   failing = false;
   assert.equal((await verifyDistributionPins(incoming, options)).sequence, "2");
   await assert.rejects(verifyDistributionPins(incoming, {
-    ...options, async probe() { retired = true; },
+    ...options, async probe() { retired = true; return freshProbe(); },
   }), /custody epoch is retired/);
   retired = false;
   changedEnvelope = signed(activate, [1, 0], [0, 1, 3, 4]);
