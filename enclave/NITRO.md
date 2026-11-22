@@ -44,6 +44,9 @@ before review. The artifact packager runs the release binary against the exact
 configuration bytes it will measure, using the same checks as enclave startup.
 The native builder fetches OpenSSL from a pinned 3.5 LTS revision, verifies its
 source hash and checks the version reported by the statically linked binary.
+It checks the Linux x86-64 native lockfile against RustSec and verifies that
+the OpenSSL revision includes the vendor's published fixes. The release job
+repeats both checks after review and before signing the artifact.
 The written EIF must pass Nitro CLI's checksum check and match the build PCRs.
 The builder and operators independently read the EIF bytes. They check the
 checksum, recompute PCR0–PCR2, and pin PCR1 to the kernel, command line and

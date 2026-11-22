@@ -5,18 +5,16 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../../.."
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
-# OpenSSL 3.5 LTS with the November security fixes, ahead of the 3.5.10 tag.
-revision=d3202f0409356688ecf145c38eb0595b4990eb8b
-checksum=b9066686e138fe43c8aa9e233333f3f476af5954a5cf136ab9bb11755a71b09a
+source enclave/deploy/nitro/openssl.env
 curl --fail --silent --show-error --location --retry 2 --max-time 120 \
-    "https://codeload.github.com/openssl/openssl/tar.gz/$revision" --output "$work/openssl.tar.gz"
-printf '%s  %s\n' "$checksum" "$work/openssl.tar.gz" | sha256sum --check
+    "https://codeload.github.com/openssl/openssl/tar.gz/$OPENSSL_REVISION" --output "$work/openssl.tar.gz"
+printf '%s  %s\n' "$OPENSSL_SHA256" "$work/openssl.tar.gz" | sha256sum --check
 tar -xzf "$work/openssl.tar.gz" -C "$work"
 # Expose kernel headers to musl without adding the system's glibc headers.
 mkdir "$work/uapi"
 ln -s /usr/include/linux /usr/include/asm-generic /usr/include/x86_64-linux-gnu/asm "$work/uapi/"
 (
-    cd "$work/openssl-$revision"
+    cd "$work/openssl-$OPENSSL_REVISION"
     CC=musl-gcc CPPFLAGS="-I$work/uapi" ./Configure linux-x86_64 \
         no-shared no-module no-tests no-apps no-async no-engine -fPIC \
         --prefix="$work/install" --libdir=lib --openssldir=/etc/ssl
@@ -31,4 +29,4 @@ RUSTFLAGS='-C target-feature=+crt-static' \
 
 version=$(enclave/native/target/x86_64-unknown-linux-musl/release/spr-nitro-decryption-service --version)
 printf '%s\n' "$version"
-[[ "$version " == *" OpenSSL 3.5.10-dev "* ]]
+[[ "$version " == *" OpenSSL $OPENSSL_VERSION "* ]]

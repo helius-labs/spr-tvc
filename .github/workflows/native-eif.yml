@@ -8,10 +8,13 @@ on:
       - .github/workflows/publish-enclave-image.yml
       - Cargo.toml
       - enclave/Cargo.toml
+      - enclave/deploy/audit-dependencies.sh
       - enclave/deploy/nitro/approval.py
+      - enclave/deploy/nitro/audit_openssl.py
       - enclave/deploy/nitro/build-eif.sh
       - enclave/deploy/nitro/build-native.sh
       - enclave/deploy/nitro/eif.py
+      - enclave/deploy/nitro/openssl.env
       - enclave/deploy/nitro/provenance.py
       - enclave/native/**
       - enclave/src/**
@@ -50,6 +53,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Audit native dependencies
+        run: bash enclave/deploy/audit-dependencies.sh native
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: aws/aws-nitro-enclaves-cli
@@ -108,6 +113,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     environment: ${{ inputs.network == 'mainnet' && 'image-publish' || 'native-eif-devnet' }}
     permissions:
       actions: read
@@ -116,7 +122,6 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: inputs.network == 'mainnet'
         with:
           persist-credentials: false
       - name: Verify independent mainnet review
@@ -127,6 +132,8 @@ jobs:
         run: |
           timeout 20s gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/approvals" |
             python3 -B enclave/deploy/nitro/provenance.py check-review "$GITHUB_ACTOR_ID" "$GITHUB_RUN_ATTEMPT"
+      - name: Recheck native dependencies before attestation
+        run: bash enclave/deploy/audit-dependencies.sh native
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.build.outputs.artifact }}

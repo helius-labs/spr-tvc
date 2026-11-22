@@ -45,6 +45,10 @@ jobs:
         if: inputs.network == 'mainnet'
         run: test "$GITHUB_REF" = refs/heads/main && test "$GITHUB_REF_PROTECTED" = true
 
+      - name: Audit hosted mainnet dependencies
+        if: inputs.network == 'mainnet'
+        run: bash enclave/deploy/audit-dependencies.sh hosted
+
       - id: image
         env:
           NETWORK: ${{ inputs.network }}
