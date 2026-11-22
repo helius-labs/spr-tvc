@@ -119,7 +119,7 @@ async function checkEvidence(pin: NitroTarget) {
   const evidence = requireHex(decoded.evidence);
   const now = BigInt(Date.now());
   const binding = discoveryBinding(info);
-  const proofKey = await verifyNativeNitroEvidence(evidence, nonce, binding, pin.pcrs, now);
+  const { proofKey } = await verifyNativeNitroEvidence(evidence, nonce, binding, pin.pcrs, now);
   await assert.rejects(
     verifyNativeNitroEvidence(evidence, crypto.getRandomValues(new Uint8Array(32)), binding, pin.pcrs, now),
     /BootProofUnverified/,

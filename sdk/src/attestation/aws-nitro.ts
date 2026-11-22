@@ -61,7 +61,7 @@ function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 /** AWS supplies its bundle in root-to-leaf order. Verify it against the exact pinned root. */
 export async function verifyAwsNitroAttestation(
   cose: CoseSign1, certificate: Uint8Array, cabundle: Uint8Array[], nowMs: number,
-): Promise<void> {
+) {
   const headers = decodeCbor(cose.protectedHeaders);
   if (!(headers instanceof Map) || headers.size !== 1 || headers.get(1) !== -35 ||
       cose.signature.length !== 96) throw new Error("Invalid AWS Nitro COSE headers");
@@ -73,6 +73,8 @@ export async function verifyAwsNitroAttestation(
   if (encoded.some(der => der.length === 0 || der.length > 1024)) throw new Error("Invalid Nitro certificate size");
   const chain = [root, ...encoded.map(der => new x509.X509Certificate(exactArrayBuffer(der)))];
   const date = new Date(nowMs);
+  let notBefore = root.notBefore.getTime();
+  let notAfter = root.notAfter.getTime();
   for (let index = 0; index < chain.length; index++) {
     const cert = chain[index]!;
     const issuer = chain[Math.max(0, index - 1)]!;
@@ -89,6 +91,10 @@ export async function verifyAwsNitroAttestation(
         !(await cert.verify({ publicKey: issuer.publicKey, date }, crypto))) {
       throw new Error("Invalid AWS Nitro certificate chain");
     }
+    notBefore = Math.max(notBefore, cert.notBefore.getTime());
+    notAfter = Math.min(notAfter, cert.notAfter.getTime());
   }
   await verifyCoseSign1Signature(cose, certificate, crypto);
+  // X509Certificate.verify uses an open interval at both ends.
+  return { certificateValidFromMs: BigInt(notBefore) + 1n, certificateValidThroughMs: BigInt(notAfter) - 1n };
 }

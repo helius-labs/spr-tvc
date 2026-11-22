@@ -59,14 +59,16 @@ function publicPair(boot: readonly Uint8Array[]) {
   return boot.map(secret => encodeLowerHex(p256.getPublicKey(secret, false))).join("");
 }
 
-function attestedDiscovery(custodyDigest = "99".repeat(32), boot = secrets) {
+function attestedDiscovery(custodyDigest = "99".repeat(32), boot = secrets, certificateValidThroughMs = BigInt(Date.now()) + 120_000n) {
   const pair = publicPair(boot);
   const executable = "77".repeat(32);
   const identity = sha256(Uint8Array.from([
     ...new TextEncoder().encode("SPR/native-nitro/release/v1"),
     ...requireHex(executable, 32), ...requireHex(trust.noteSeedCommitment, 32), ...requireHex(custodyDigest, 32),
   ]));
-  vi.mocked(verifyNativeNitroEvidence).mockResolvedValue(pair);
+  vi.mocked(verifyNativeNitroEvidence).mockResolvedValue({
+    proofKey: pair, certificateValidFromMs: BigInt(Date.now()) - 1_000n, certificateValidThroughMs,
+  });
   return Response.json({ info: {
     version: 1, network: trust.network, security_domain_id: trust.securityDomainId, release_id: "nitro-2",
     manifest_digest: encodeLowerHex(identity), executable_digest: executable, quorum_public_key: pair,
@@ -125,6 +127,48 @@ afterEach(() => {
 });
 
 describe("native client trust gate", () => {
+  it("reattests at certificate expiry before sending another operation", async () => {
+    vi.useFakeTimers();
+    try {
+      const policy = signedPolicy();
+      const validThrough = BigInt(Date.now()) + 1_000n;
+      const initialDiscovery = attestedDiscovery(undefined, secrets, validThrough);
+      const fetch = policyHeads(vi.fn(), policy)
+        .mockResolvedValueOnce(initialDiscovery)
+        .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+      policyHeads(fetch, policy).mockImplementationOnce(() => attestedDiscovery(undefined, replacementBoot))
+        .mockImplementationOnce((_url, init) => lookupReply(init, replacementBoot));
+      vi.stubGlobal("fetch", fetch);
+      const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
+      await client.address(signer.address);
+      vi.setSystemTime(Number(validThrough + 1n));
+      await client.address(signer.address);
+      expect(verifyNativeNitroEvidence).toHaveBeenCalledTimes(2);
+      expect(fetch.mock.calls.map(([url]) => url.pathname).filter(path => !path.endsWith("policy.json"))).toEqual([
+        "/v1/nitro/attestation", "/v1/operations", "/v1/nitro/attestation", "/v1/operations",
+      ]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("sends no operation if certificate validity ends during the checkpoint write", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = checkpointStore();
+      const validThrough = BigInt(Date.now()) + 1_000n;
+      const fetch = policyHeads().mockResolvedValueOnce(attestedDiscovery(undefined, secrets, validThrough));
+      vi.stubGlobal("fetch", fetch);
+      const client = createNitroDecryptionService({ trust, policyStore: {
+        current: store.current,
+        async accept(checkpoint) {
+          vi.setSystemTime(Number(validThrough + 1n));
+          return store.accept(checkpoint);
+        },
+      } });
+      await expect(client.address(signer.address)).rejects.toMatchObject({ code: "ExpiredRequest" });
+      expect(fetch).toHaveBeenCalledTimes(3);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("retries an unsigned lookup once with fresh evidence after a replica stalls mid-response", async () => {
     vi.useFakeTimers();
     try {

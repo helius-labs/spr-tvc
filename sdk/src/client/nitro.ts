@@ -6,6 +6,7 @@ import {
 } from "../attestation/nitro-policy.js";
 import { readPublishedNitroPolicy } from "../attestation/nitro-publication.js";
 import type { ConnectedTvcRuntime } from "../connection/connect.js";
+import { requireCurrentReleasePolicy } from "../connection/operations.js";
 import { awaitWithSignal } from "../connection/request.js";
 import { sessionFromConnector } from "../connection/session.js";
 import { DecryptionServiceError } from "../protocol/error.js";
@@ -71,20 +72,25 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
         signal.throwIfAborted();
         continue;
       }
-      const { endpoint, info, proofKey } = connected;
-      currentTime();
-      await accept(checkpoint, signal);
+      const { endpoint, info, proofKey, certificateValidFromMs, certificateValidThroughMs } = connected;
       const now = currentTime();
-      next = index + 1;
       const sessionExpiry = now + CONNECTION_TTL_MS;
+      const policyExpiry = sessionExpiry < expiresAt ? sessionExpiry : expiresAt - 1n;
+      const window = {
+        releasePolicyValidFromMs: validFrom > certificateValidFromMs ? validFrom : certificateValidFromMs,
+        releasePolicyExpiresAtMs: policyExpiry < certificateValidThroughMs ? policyExpiry : certificateValidThroughMs,
+      };
+      requireCurrentReleasePolicy(window, now);
+      await accept(checkpoint, signal);
+      requireCurrentReleasePolicy(window, clock());
+      next = index + 1;
       return {
         backend: { endpoint },
         info,
         transport: nitroTransport,
         responseTimeoutMs: RESPONSE_TIMEOUT_MS,
         nowMs: clock,
-        releasePolicyValidFromMs: validFrom,
-        releasePolicyExpiresAtMs: sessionExpiry < expiresAt ? sessionExpiry : expiresAt - 1n,
+        ...window,
         async requireCurrentCheckpoint(signal) {
           const current = await awaitWithSignal(store.current(), signal);
           if (current?.digest !== checkpoint.digest || current.sequence !== checkpoint.sequence ||

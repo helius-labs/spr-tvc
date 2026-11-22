@@ -65,8 +65,12 @@ export async function connectNitroTarget(target: NitroTarget, trust: NitroTrust,
   }
   parseQosP256Public(transportKey);
   const binding = sha256(te.encode("SPR/native-nitro/discovery/v1" + canonicalizeJsonValue(info)));
-  const proofKey = await awaitWithSignal(
+  const verified = await awaitWithSignal(
     verifyNativeNitroEvidence(requireHex(evidence), nonce, binding, target.pcrs, BigInt(Date.now())), signal,
   );
-  return { endpoint, info, proofKey };
+  const now = BigInt(Date.now());
+  if (now < verified.certificateValidFromMs || now > verified.certificateValidThroughMs) {
+    throw new DecryptionServiceError("BootProofUnverified");
+  }
+  return { endpoint, info, ...verified };
 }

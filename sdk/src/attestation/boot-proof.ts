@@ -92,12 +92,12 @@ export async function verifyNativeNitroEvidence(
   discoveryBinding: Uint8Array,
   expectedPcrs: NitroPcrs,
   nowMs: bigint,
-): Promise<string> {
+) {
   try {
-    const attestation = await verifyNativeBinding(document, nonce, discoveryBinding, expectedPcrs, nowMs);
+    const { attestation, validity } = await verifyNativeBinding(document, nonce, discoveryBinding, expectedPcrs, nowMs);
     const publicKey = asBytes(attestation.get("public_key"));
     parseQosP256Public(publicKey);
-    return encodeLowerHex(publicKey);
+    return { proofKey: encodeLowerHex(publicKey), ...validity };
   } catch {
     throw new DecryptionServiceError("BootProofUnverified");
   }
@@ -111,7 +111,7 @@ export async function verifyNitroCustodyEvidence(
   nowMs: bigint,
 ): Promise<void> {
   try {
-    const attestation = await verifyNativeBinding(document, nonce, binding, expectedPcrs, nowMs);
+    const { attestation } = await verifyNativeBinding(document, nonce, binding, expectedPcrs, nowMs);
     if (attestation.get("public_key") != null) throw new DecryptionServiceError("BootProofUnverified");
   } catch {
     throw new DecryptionServiceError("BootProofUnverified");
@@ -124,7 +124,7 @@ async function verifyNativeBinding(
   binding: Uint8Array,
   expectedPcrs: NitroPcrs,
   nowMs: bigint,
-): Promise<AwsNitroAttestationDocument> {
+) {
   const decoded = decodeAttestation(document);
   const attestation = decoded.attestation;
   validateAwsAttestationShape(attestation);
@@ -137,8 +137,8 @@ async function verifyNativeBinding(
     throw new DecryptionServiceError("BootProofUnverified");
   }
   verifyIdentityPcrs(attestation, expectedPcrs);
-  await verifyAwsNitroAttestation(decoded.coseSign1, decoded.certificate, decoded.cabundle, Number(nowMs));
-  return attestation;
+  const validity = await verifyAwsNitroAttestation(decoded.coseSign1, decoded.certificate, decoded.cabundle, Number(nowMs));
+  return { attestation, validity };
 }
 
 export function computeQosLiveManifestCommitmentPcr(

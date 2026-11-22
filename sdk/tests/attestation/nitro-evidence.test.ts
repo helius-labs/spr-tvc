@@ -1,3 +1,4 @@
+import { X509Certificate } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import fixture from "./fixtures/aws-nitro-devnet.json";
 import { verifyAwsNitroAttestation } from "../../src/attestation/aws-nitro.js";
@@ -12,8 +13,16 @@ const now = BigInt(fixture.now);
 const { pcrs } = fixture;
 
 describe("native Nitro evidence from a disposable AWS enclave", () => {
-  it("verifies the real AWS root, certificate chain, signature and release and returns the replica key", async () => {
-    await expect(verifyNativeNitroEvidence(evidence, nonce, binding, pcrs, now)).resolves.toBe(fixture.proofKey);
+  it("verifies real AWS evidence and returns the replica key and the whole chain's validity", async () => {
+    const [, , payload] = decodeCbor(evidence) as Uint8Array[];
+    const document = decodeAwsNitroAttestationCbor(payload!) as Map<string, Uint8Array | Uint8Array[]>;
+    const der = [document.get("certificate") as Uint8Array, ...document.get("cabundle") as Uint8Array[]];
+    const certificates = der.map(bytes => new X509Certificate(bytes));
+    const start = Math.max(...certificates.map(cert => Date.parse(cert.validFrom)));
+    const end = Math.min(...certificates.map(cert => Date.parse(cert.validTo)));
+    await expect(verifyNativeNitroEvidence(evidence, nonce, binding, pcrs, now)).resolves.toEqual({
+      proofKey: fixture.proofKey, certificateValidFromMs: BigInt(start) + 1n, certificateValidThroughMs: BigInt(end) - 1n,
+    });
   });
 
   it.each([0, 1, 2, 3])("refuses a mismatch in pinned PCR %s", async (index) => {
