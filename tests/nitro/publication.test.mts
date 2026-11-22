@@ -307,3 +307,32 @@ test("ships only the exact current policy agreed by the two pinned buckets", asy
   await assert.rejects(verifyDistributionPins(pins(current)), /match the current policy/);
   assert.equal((await verifyDistributionPins({ ...pins(current), minimumCustodyEpoch: "2", recoveryOnly: true })).sequence, "2");
 });
+
+test("wallet activation pins require the active custody roster and a stable published envelope", async context => {
+  const activate: NitroPolicy = {
+    ...first, action: "activate", targets: [target], sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest,
+  };
+  const text = signed(activate, [0, 1], [0, 1, 3, 4]);
+  const incoming = { ...pins(activate), custodyKeys: custodyKeys.slice(3) };
+  let head = text;
+  context.mock.method(globalThis, "fetch", async () => new Response(head));
+  const custodyTrust = "/pinned/custody.json";
+  let nextCutover: string | null = null;
+  let changedEnvelope: string | undefined;
+  const run = async (command: string, args: string[]) => {
+    assert.equal(command, "python3");
+    assert.deepEqual(args.slice(2, 4), [custodyTrust, "check-serving-policy"]);
+    assert.equal(await readFile(args.at(-1)!, "utf8"), text);
+    if (changedEnvelope) head = changedEnvelope;
+    return { stdout: JSON.stringify({ custodyKeys: incoming.custodyKeys, nextCutover }) };
+  };
+  const options = { custodyTrust, run };
+  await assert.rejects(verifyDistributionPins(incoming), /requires --custody-trust/);
+  await assert.rejects(verifyDistributionPins(pins(activate), options), /active custody approval roster/);
+  nextCutover = String(Math.floor(Date.now() / 1_000));
+  await assert.rejects(verifyDistributionPins(incoming, options), /roster changed/);
+  nextCutover = null;
+  assert.equal((await verifyDistributionPins(incoming, options)).sequence, "2");
+  changedEnvelope = signed(activate, [1, 0], [0, 1, 3, 4]);
+  await assert.rejects(verifyDistributionPins(incoming, options), /signed policy changed/);
+});

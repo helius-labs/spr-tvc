@@ -59,6 +59,17 @@ function requireCustodyWriteWindow(nextCutover: bigint | undefined, now: bigint)
   }
 }
 
+async function checkActivationRoster(candidate: string, custodyTrust: string, trust: NitroTrust, run: Run) {
+  const { stdout } = await run("python3", ["-B", custodyLedger, custodyTrust, "check-serving-policy", candidate], 60_000);
+  const roster = parseStrictJson<{ custodyKeys: string[]; nextCutover: string | null }>(stdout, ["custodyKeys", "nextCutover"]);
+  const expected = trust.custodyKeys;
+  if (!Array.isArray(roster.custodyKeys) || roster.custodyKeys.length !== expected.length ||
+      !expected.every(key => roster.custodyKeys.includes(key))) {
+    throw new Error("activation requires the active custody approval roster");
+  }
+  return roster.nextCutover === null ? undefined : decodeDecimalU64(roster.nextCutover) * 1_000n;
+}
+
 export function bucketPolicy(trust: NitroTrust, name: string, administrator: string, publisher: string) {
   const { bucket, account, key } = publicationFor(trust, name);
   const ownerRole = new RegExp(`^arn:aws:iam::${account}:role/[A-Za-z0-9+=,.@_/-]+$`);
@@ -142,17 +153,9 @@ export async function publish(
       }
     }
     if (!needsWrite) return;
-    let nextCutover: bigint | undefined;
-    if (policy.action === "activate" && custodyTrust) {
-      const { stdout } = await run("python3", ["-B", custodyLedger, custodyTrust, "check-serving-policy", candidate], 60_000);
-      const roster = parseStrictJson<{ custodyKeys: string[]; nextCutover: string | null }>(stdout, ["custodyKeys", "nextCutover"]);
-      const expected = (nextTrust ?? trust).custodyKeys;
-      if (!Array.isArray(roster.custodyKeys) || roster.custodyKeys.length !== expected.length ||
-          !expected.every(key => roster.custodyKeys.includes(key))) {
-        throw new Error("activation requires the active custody approval roster");
-      }
-      if (roster.nextCutover !== null) nextCutover = decodeDecimalU64(roster.nextCutover) * 1_000n;
-    }
+    const nextCutover = policy.action === "activate" && custodyTrust
+      ? await checkActivationRoster(candidate, custodyTrust, nextTrust ?? trust, run)
+      : undefined;
     requireCustodyWriteWindow(nextCutover, BigInt(Date.now()));
     await Promise.all(policy.targets.map(target => connectNitroTarget(target, trust)));
     const beforeWrite = BigInt(Date.now());
@@ -171,33 +174,59 @@ export async function publish(
   }
 }
 
-/** Verify the exact current, witnessed revision before shipping a new pin file. */
-export async function verifyDistributionPins(trust: NitroTrust) {
-  validateNitroTrust(trust);
-  const { sameEnvelope, checkpoint } = await readPublishedNitroPolicy(trust, AbortSignal.timeout(5_000));
+async function pinnedPublication(trust: NitroTrust) {
+  const published = await readPublishedNitroPolicy(trust, AbortSignal.timeout(5_000));
+  const { sameEnvelope, checkpoint } = published;
   if (!sameEnvelope) throw new Error("both buckets must serve the same signed policy file");
   if (checkpoint.sequence !== trust.minimumSequence || checkpoint.digest !== trust.minimumPolicyDigest ||
       checkpoint.minimumCustodyEpoch !== trust.minimumCustodyEpoch ||
       checkpoint.recoveryOnly !== (trust.recoveryOnly ?? false)) {
     throw new Error("wallet pins must match the current policy agreed by both buckets");
   }
-  return checkpoint;
+  return published;
+}
+
+/** Verify the exact current, witnessed revision before shipping a new pin file. */
+export async function verifyDistributionPins(
+  trust: NitroTrust, { custodyTrust, run = runCommand }: Pick<PublicationOptions, "custodyTrust" | "run"> = {},
+) {
+  validateNitroTrust(trust);
+  const published = await pinnedPublication(trust);
+  if (published.policy.action === "revoke") return published.checkpoint;
+  if (!custodyTrust) throw new Error("activation requires --custody-trust");
+
+  const directory = await mkdtemp(join(tmpdir(), "spr-wallet-trust-"));
+  try {
+    const candidate = join(directory, "published.json");
+    await writeFile(candidate, published.text, { mode: 0o600, flag: "wx" });
+    const nextCutover = await checkActivationRoster(candidate, custodyTrust, trust, run);
+    const confirmed = await pinnedPublication(trust);
+    if (confirmed.text !== published.text) throw new Error("signed policy changed during wallet trust verification");
+    if (nextCutover !== undefined && BigInt(Date.now()) >= nextCutover) {
+      throw new Error("custody approval roster changed during wallet trust verification");
+    }
+    return confirmed.checkpoint;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 async function main() {
-  const [trustPath, bucket, policyPath, ...extra] = process.argv.slice(2);
-  const usage = "usage: nitro-publish.ts <wallet-trust.json> --check-wallet-trust | nitro-publish.ts <wallet-trust.json> <bucket> <signed-policy.json> [--custody-trust <custody-trust.json>] [--next-trust <incoming.json> | --emergency-from <outgoing.json>] | <wallet-trust.json> <bucket> --bucket-policy <administrator-role> <publisher-role>";
+  const [trustPath, bucket, ...args] = process.argv.slice(2);
+  const usage = "usage: nitro-publish.ts <wallet-trust.json> --check-wallet-trust [--custody-trust <custody-trust.json>] | nitro-publish.ts <wallet-trust.json> <bucket> <signed-policy.json> [--custody-trust <custody-trust.json>] [--next-trust <incoming.json> | --emergency-from <outgoing.json>] | <wallet-trust.json> <bucket> --bucket-policy <administrator-role> <publisher-role>";
   if (!trustPath || !bucket) {
     throw new Error(usage);
   }
   const trustText = await readPolicy(trustPath);
   const trust = parseStrictJson<NitroTrust>(trustText);
-  if (bucket === "--check-wallet-trust" && !policyPath) {
-    const checkpoint = await verifyDistributionPins(trust);
+  if (bucket === "--check-wallet-trust") {
+    const { values: { "custody-trust": custodyTrust } } = parseArgs({ args, options: { "custody-trust": { type: "string" } } });
+    const checkpoint = await verifyDistributionPins(trust, { ...(custodyTrust ? { custodyTrust } : {}) });
     const trustSha256 = createHash("sha256").update(trustText).digest("hex");
     console.log(JSON.stringify({ ...checkpoint, trustSha256 }, null, 2));
     return;
   }
+  const [policyPath, ...extra] = args;
   if (!policyPath) throw new Error(usage);
   validateNitroTrust(trust);
   if (policyPath === "--bucket-policy") {

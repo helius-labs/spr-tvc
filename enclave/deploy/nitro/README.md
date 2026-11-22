@@ -451,11 +451,14 @@ pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" 
 
 Before distributing a wallet trust file, run this read-only check. It requires
 both buckets to serve the exact same signed file at the pinned revision, with
-the expected custody floor and recovery mode. Use the reported `trustSha256`
-to identify the exact file in the wallet release.
+the expected custody floor and recovery mode. Run it with scoped custody ledger
+read access for an activation. It verifies the registered serving targets and
+active roster, then rechecks both buckets. For a target-free revocation during
+a ledger outage, omit `--custody-trust`. Use the reported `trustSha256` to
+identify the exact file in the wallet release.
 
 ```sh
-pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" --check-wallet-trust
+pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" --check-wallet-trust --custody-trust "$custody_trust"
 ```
 
 Wrap-key replacements for a new EIF use the existing receipt and new sealed key

@@ -207,8 +207,11 @@ The envelope carries `policy`, `signatures` and `custodySignatures`. Each list
 can carry up to eight distinct valid low-S P-256 signatures. A key can appear in
 only one list. Wallets count only their pinned keys for that list. For a
 planned signer rotation, the publisher verifies the same signed revision
-under both the outgoing and incoming trust. The incoming minimum sequence and policy digest pin the transition revision. Publish it to both buckets before distributing
-the incoming pins.
+under both the outgoing and incoming trust. The incoming minimum sequence and
+policy digest pin the transition revision. Publish it to both buckets before
+distributing the incoming pins. For an activation, the wallet trust check
+confirms the active custody roster, the registered serving targets and the
+same signed file in both buckets before reporting the trust file digest.
 
 ## Seed compromise and recovery
 

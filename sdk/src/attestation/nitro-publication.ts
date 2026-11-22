@@ -18,5 +18,5 @@ export async function readPublishedNitroPolicy(trust: NitroTrust, signal: AbortS
     return readNitroPolicy(url, deadline, account);
   };
   const texts = await Promise.all([read(primary), read(mirror)]);
-  return { ...verifyPublishedNitroPolicy(texts, trust, BigInt(Date.now())), sameEnvelope: texts[0] === texts[1] };
+  return { ...verifyPublishedNitroPolicy(texts, trust, BigInt(Date.now())), text: texts[0], sameEnvelope: texts[0] === texts[1] };
 }
