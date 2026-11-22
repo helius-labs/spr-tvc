@@ -231,6 +231,13 @@ custody record. Both serving and rotation use the same bootstrap:
    response-signing keys and listens on vsock port 44030. The boot transport ID
    is SHA-256 of the public pair. The native wire epoch names the custody epoch.
 
+The enclave requests evidence from its local Nitro Secure Module through
+`/dev/nsm` with a 4 KiB request buffer and a 12 KiB response buffer. It forwards
+the signed COSE bytes unchanged for KMS and wallet verification. For its local
+clock it makes a fresh request and reads one positive UTC timestamp from the
+returned document. The parent cannot supply the enclave's time document.
+[Linux NSM interface](https://github.com/torvalds/linux/blob/master/include/uapi/linux/nsm.h)
+
 See [Shamir secret sharing](https://doi.org/10.1145/359168.359176),
 [KMS recipient handling](https://docs.aws.amazon.com/kms/latest/developerguide/attested-calls.html),
 [KMS CMS algorithms](https://github.com/aws/aws-nitro-enclaves-sdk-c/blob/main/include/aws/nitro_enclaves/internal/cms.h)

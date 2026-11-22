@@ -8,10 +8,6 @@ use std::{
     time::Duration,
 };
 
-use aws_nitro_enclaves_nsm_api::{
-    api::{AttestationDoc, Request as NsmRequest, Response as NsmResponse},
-    driver::{nsm_exit, nsm_init, nsm_process_request},
-};
 use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, Request, State},
@@ -27,6 +23,7 @@ use openssl::{
     rsa::Rsa,
 };
 use serde::Serialize;
+use spr_nitro_nsm::now_ms as nsm_now_ms;
 use spr_tvc_protocol::{
     digest::sha256,
     encoding::{decimal_u64, hex, jcs_serialize, parse_strict_json},
@@ -340,7 +337,7 @@ async fn relay_recipient(
             .public_key()
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
         let binding = sha256(b"SPR/native-nitro/relay-recipient/v1");
-        attest(Some(public), Some(binding), Some(nonce.to_vec()))
+        attest(Some(&public), Some(&binding), Some(&nonce))
     })
     .await
 }
@@ -372,7 +369,7 @@ async fn relay_prove(
     let request: RecoveryProof = parse_strict_json(json).map_err(|_| StatusCode::BAD_REQUEST)?;
     with_worker_before(worker, deadline, move || {
         let binding = relay.prove(&request).ok_or(StatusCode::BAD_REQUEST)?;
-        attest(None, Some(binding), Some(request.nonce.to_vec()))
+        attest(None, Some(&binding), Some(&request.nonce))
     })
     .await
 }
@@ -386,7 +383,7 @@ async fn kms_attestation(
             .private_key()?
             .public_key_to_der()
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-        attest(Some(public), None, None)
+        attest(Some(&public), None, None)
     })
     .await
 }
@@ -592,7 +589,7 @@ fn attested_json(
         return Err(StatusCode::BAD_REQUEST);
     }
     let binding = sha256(&[domain.as_bytes(), value.as_bytes()].concat());
-    let (_, evidence) = attest(public, Some(binding), Some(nonce.to_vec()))?;
+    let (_, evidence) = attest(public.as_deref(), Some(&binding), Some(&nonce))?;
     let evidence = spr_tvc_protocol::encoding::encode_lower_hex(&evidence);
     Ok((
         [(CONTENT_TYPE, "application/json")],
@@ -600,53 +597,10 @@ fn attested_json(
     ))
 }
 
-fn attest(
-    public: Option<Vec<u8>>,
-    user_data: Option<[u8; 32]>,
-    nonce: Option<Vec<u8>>,
-) -> Reply<Vec<u8>> {
-    let fd = nsm_init();
-    if fd < 0 {
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
-    }
-    let response = nsm_process_request(
-        fd,
-        NsmRequest::Attestation {
-            public_key: public.map(Into::into),
-            user_data: user_data.map(|value| value.to_vec().into()),
-            nonce: nonce.map(Into::into),
-        },
-    );
-    nsm_exit(fd);
-    match response {
-        NsmResponse::Attestation { document } => {
-            Ok(([(CONTENT_TYPE, "application/cbor")], document))
-        }
-        _ => Err(StatusCode::SERVICE_UNAVAILABLE),
-    }
-}
-
-fn nsm_now_ms() -> Option<u64> {
-    let (_, document) = attest(None, None, None).ok()?;
-    nsm_timestamp_ms(&document)
-}
-
-// The caller gets fresh COSE_Sign1 bytes directly from NSM, never over vsock.
-fn nsm_timestamp_ms(document: &[u8]) -> Option<u64> {
-    use serde_cbor::Value::{Array, Bytes, Map, Tag};
-
-    let cose = match serde_cbor::from_slice(document).ok()? {
-        Tag(18, value) => *value,
-        value => value,
-    };
-    let Array(fields) = cose else {
-        return None;
-    };
-    let [Bytes(_), Map(_), Bytes(payload), Bytes(_)] = fields.as_slice() else {
-        return None;
-    };
-    let timestamp = AttestationDoc::from_binary(payload).ok()?.timestamp;
-    (timestamp > 0).then_some(timestamp)
+fn attest(public: Option<&[u8]>, user_data: Option<&[u8]>, nonce: Option<&[u8]>) -> Reply<Vec<u8>> {
+    let document = spr_nitro_nsm::attest(public, user_data, nonce)
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    Ok(([(CONTENT_TYPE, "application/cbor")], document))
 }
 
 // AWS assigns CID 3 to the EC2 parent. Linux VMADDR_CID_HOST is CID 2.

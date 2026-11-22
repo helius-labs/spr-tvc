@@ -17,6 +17,7 @@ on:
       - enclave/deploy/nitro/openssl.env
       - enclave/deploy/nitro/provenance.py
       - enclave/native/**
+      - enclave/nsm/**
       - enclave/src/**
       - protocol/**
       - rust-toolchain.toml
