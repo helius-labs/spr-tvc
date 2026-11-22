@@ -143,7 +143,9 @@ custody record. Both serving and rotation use the same bootstrap:
    big-endian length, followed by up to 6,144 bytes of ciphertext. Bootstrap
    and the relay accept CMS EnvelopedData with one RSA-2048 OAEP recipient,
    SHA-256 for both OAEP and MGF1, an empty OAEP label and AES-256-CBC content
-   encryption. The decrypted share is exactly 41 bytes. It contributes only
+   encryption. The enclave wipes its content-key buffer after initializing
+   AES and wipes its share buffer when it leaves scope, including on failure.
+   The decrypted share is exactly 41 bytes. It contributes only
    if its slot matches the frame and its epoch and commitment match the
    measured configuration. The enclave restores
    the seed from three distinct slots and verifies the seed commitment. It
@@ -231,6 +233,9 @@ is complete. [Cutover runbook](deploy/nitro/README.md#replace-a-compromised-seed
 2. POST a random 32-byte nonce to each attempted authorized target's `/v1/nitro/attestation`. Schedule fallback probes 200 ms apart and advance immediately when the preceding probe fails. Use the first verified boot and cancel unused probes. Each reply includes `boot` and AWS-signed COSE `evidence`. The `boot` object contains `info`, the three `bootstrapSlots` that restored this replica, and `bootedAtMs` as a decimal string from the Nitro Secure Module. The document signs the nonce, SHA-256 of `SPR/native-nitro/discovery/v1` followed by the canonical `boot` object, and the replica's response-signing public pair.
 3. Verify the exact pinned AWS root, the current certificate path and usages, the ES384 COSE signature, the signed timestamp and nonce, PCR0–PCR4 and the discovery bindings. Verify both public pairs before use. Compute the discovery release digest as SHA-256 of `SPR/native-nitro/release/v1` followed by the 32-byte executable hash, seed commitment and custody digest. The custody digest is SHA-256 of the RFC 8785 canonical `custody` object from the committed receipt. The signed target binds both that record and its epoch. The checkpoint remains in force if every listed replica is unavailable. Wallets send only after a replica attests. Raising the floor retires earlier epochs for that wallet. A later policy can authorize a previous build at or above that floor. New installs use independently pinned minimum values. The SDK uses one verified target for up to 60 seconds. The signed policy must be current for attestation and use. Every certificate in the attestation path must remain valid while the SDK uses that target.
 4. Encrypt the request to that boot's P-256 transport key. A decrypt approval binds the signer, network, release, boot transport key ID, ordered outputs, request ID and the ephemeral client response key. The enclave verifies the approval before deriving or opening note keys. Its signed response binds the operation, request digest and encrypted result. Before opening the reply, the SDK verifies the replica signature and rechecks the persisted checkpoint and session deadline. It checks recovered notes against their indexed commitments.
+
+The enclave opens request frames into a zeroizing buffer and passes plaintext
+to the request parser only after verifying the AES-GCM tag.
 
 The SDK gives each operation's HTTP exchange 12 seconds within the caller's
 deadline. A timed-out replica is discarded. On a transport failure, a stale

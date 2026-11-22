@@ -10,7 +10,7 @@ use openssl::{
     pkey::{PKey, Private, Public},
     rand::rand_bytes,
     sign::Signer,
-    symm::{decrypt_aead, encrypt_aead, Cipher},
+    symm::{encrypt_aead, Cipher, Crypter, Mode},
 };
 use spr_tvc_protocol::digest::sha256;
 use zeroize::Zeroizing;
@@ -60,7 +60,7 @@ impl NativePair {
         Ok(bytes)
     }
 
-    pub(crate) fn decrypt(&self, frame: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) fn decrypt(&self, frame: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
         let (nonce, frame) = frame.split_first_chunk::<NONCE>()?;
         let (sender, frame) = frame.split_first_chunk::<POINT>()?;
         let (length, sealed) = frame.split_first_chunk::<4>()?;
@@ -71,15 +71,16 @@ impl NativePair {
         let peer = NativePeer::parse(sender)?;
         let receiver = &self.public[..POINT];
         let key = cipher_key(&self.encryption, &peer.key, sender, receiver).ok()?;
-        decrypt_aead(
-            Cipher::aes_256_gcm(),
-            &key[..32],
-            Some(nonce),
-            &aad(sender, receiver),
-            ciphertext,
-            tag,
-        )
-        .ok()
+        let cipher = Cipher::aes_256_gcm();
+        let mut decrypt = Crypter::new(cipher, Mode::Decrypt, &key[..32], Some(nonce)).ok()?;
+        decrypt.aad_update(&aad(sender, receiver)).ok()?;
+        // OpenSSL writes plaintext in update and authenticates it in finalize.
+        let mut plaintext = Zeroizing::new(vec![0; ciphertext.len() + cipher.block_size()]);
+        let count = decrypt.update(ciphertext, &mut plaintext).ok()?;
+        decrypt.set_tag(tag).ok()?;
+        let rest = decrypt.finalize(&mut plaintext[count..]).ok()?;
+        plaintext.truncate(count + rest);
+        Some(plaintext)
     }
 }
 

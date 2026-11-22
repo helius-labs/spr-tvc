@@ -11,7 +11,7 @@ fn interoperates_with_spr_wire_and_requires_authenticated_canonical_frames() {
         .unwrap()
         .encrypt(message)
         .unwrap();
-    assert_eq!(native.decrypt(&incoming).unwrap(), message);
+    assert_eq!(native.decrypt(&incoming).unwrap().as_slice(), message);
 
     let native_response = NativePeer::parse(&qos.public_key().to_bytes()[..POINT])
         .unwrap()
@@ -34,4 +34,7 @@ fn interoperates_with_spr_wire_and_requires_authenticated_canonical_frames() {
     corrupt[NONCE + POINT] ^= 1;
     assert!(native.decrypt(&corrupt).is_none());
     assert!(native.decrypt(&incoming[..incoming.len() - 1]).is_none());
+    let mut corrupt = incoming;
+    *corrupt.last_mut().unwrap() ^= 1;
+    assert!(native.decrypt(&corrupt).is_none());
 }

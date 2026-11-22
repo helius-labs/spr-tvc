@@ -45,10 +45,7 @@ impl KeyPair {
             #[cfg(any(feature = "qos-runtime", feature = "local-dev", test))]
             Self::Qos(pair) => pair.decrypt(ciphertext).map_err(|_| Failure::Invalid),
             #[cfg(all(feature = "native-nitro", target_os = "linux"))]
-            Self::Native(pair) => pair
-                .decrypt(ciphertext)
-                .map(Zeroizing::new)
-                .ok_or(Failure::Invalid),
+            Self::Native(pair) => pair.decrypt(ciphertext).ok_or(Failure::Invalid),
         }
     }
 

@@ -13,6 +13,8 @@ use pkcs1::der::{
 
 use super::*;
 
+const CEK: [u8; CONTENT_KEY_BYTES] = [0x42; CONTENT_KEY_BYTES];
+const IV: [u8; AES_BLOCK_BYTES] = [0x13; AES_BLOCK_BYTES];
 const OAEP_SHA256: &str = concat!(
     "303c06092a864886f70d010107302f",
     "a00f300d06096086480165030402010500",
@@ -24,8 +26,11 @@ pub(crate) fn envelope(key: &PKey<Private>, share: &[u8]) -> Vec<u8> {
 }
 
 fn seal(key: &PKey<Private>, share: &[u8], padding: Padding) -> Vec<u8> {
-    let cek = [0x42; 32];
-    let iv = [0x13; 16];
+    let ciphertext = encrypt(Cipher::aes_256_cbc(), &CEK, Some(&IV), share).unwrap();
+    seal_ciphertext(key, ciphertext, padding)
+}
+
+fn seal_ciphertext(key: &PKey<Private>, ciphertext: Vec<u8>, padding: Padding) -> Vec<u8> {
     let mut wrap = Encrypter::new(key).unwrap();
     wrap.set_rsa_padding(padding).unwrap();
     let algorithm = if padding == Padding::PKCS1_OAEP {
@@ -35,8 +40,8 @@ fn seal(key: &PKey<Private>, share: &[u8], padding: Padding) -> Vec<u8> {
     } else {
         "300d06092a864886f70d0101010500"
     };
-    let mut wrapped = vec![0; wrap.encrypt_len(&cek).unwrap()];
-    let len = wrap.encrypt(&cek, &mut wrapped).unwrap();
+    let mut wrapped = vec![0; wrap.encrypt_len(&CEK).unwrap()];
+    let len = wrap.encrypt(&CEK, &mut wrapped).unwrap();
     wrapped.truncate(len);
     let recipient = RecipientInfo::Ktri(KeyTransRecipientInfo {
         version: CmsVersion::V2,
@@ -46,7 +51,7 @@ fn seal(key: &PKey<Private>, share: &[u8], padding: Padding) -> Vec<u8> {
     });
     let content_enc_alg = [
         ::hex::decode("301d060960864801650304012a0410").unwrap(),
-        iv.to_vec(),
+        IV.to_vec(),
     ]
     .concat();
     let enveloped = EnvelopedData {
@@ -56,10 +61,7 @@ fn seal(key: &PKey<Private>, share: &[u8], padding: Padding) -> Vec<u8> {
         encrypted_content: EncryptedContentInfo {
             content_type: DATA,
             content_enc_alg: Decode::from_der(&content_enc_alg).unwrap(),
-            encrypted_content: Some(
-                OctetString::new(encrypt(Cipher::aes_256_cbc(), &cek, Some(&iv), share).unwrap())
-                    .unwrap(),
-            ),
+            encrypted_content: Some(OctetString::new(ciphertext).unwrap()),
         },
         unprotected_attrs: None,
     };
@@ -91,12 +93,27 @@ fn rejects_other_rsa_padding_and_wrong_plaintext_size_before_admitting_shares() 
 }
 
 #[test]
+fn rejects_a_share_with_invalid_cbc_padding() {
+    let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+    let plaintext = [0; ENCRYPTED_SHARE_BYTES];
+    let mut encrypt = Crypter::new(Cipher::aes_256_cbc(), Mode::Encrypt, &CEK, Some(&IV)).unwrap();
+    encrypt.pad(false);
+    let mut ciphertext = vec![0; ENCRYPTED_SHARE_BYTES + AES_BLOCK_BYTES];
+    let count = encrypt.update(&plaintext, &mut ciphertext).unwrap();
+    let rest = encrypt.finalize(&mut ciphertext[count..]).unwrap();
+    ciphertext.truncate(count + rest);
+    let envelope = seal_ciphertext(&key, ciphertext, Padding::PKCS1_OAEP);
+    assert!(parse_kms_ciphertext(&envelope).is_some());
+    assert!(open_share(&key, &envelope).is_none());
+}
+
+#[test]
 fn accepts_aws_nitro_sdk_ber_at_the_algorithm_boundary() {
     // AWS Nitro Enclaves SDK for C, tests/kmstool-enclaves/cms_test.c,
     // input_ber, f2dbc3fb1ab9b4496ff8ebc077d24e5f24265923 (Apache-2.0).
     let ber = include_bytes!("../fixtures/aws-kms-recipient.ber");
     let cms = CmsContentInfo::from_der(ber).unwrap();
-    assert!(require_kms_suite(&cms.to_der().unwrap()).is_some());
+    assert!(parse_kms_ciphertext(&cms.to_der().unwrap()).is_some());
 }
 
 #[test]
@@ -117,7 +134,7 @@ fn independently_checks_oaep_hash_mgf_hash_and_content_cipher_oids() {
     for (offset, oid) in [(oaep, &sha256), (mgf, &sha256), (content, &aes256_cbc)] {
         let mut unsupported = encoded.clone();
         unsupported[offset + oid.len() - 1] ^= 1;
-        assert!(require_kms_suite(&unsupported).is_none());
+        assert!(parse_kms_ciphertext(&unsupported).is_none());
     }
 }
 
@@ -150,6 +167,6 @@ fn rejects_nonempty_oaep_labels_and_multiple_recipients() {
             .try_into()
             .unwrap();
         info.content = Any::encode_from(&data).unwrap();
-        assert!(require_kms_suite(&info.to_der().unwrap()).is_none());
+        assert!(parse_kms_ciphertext(&info.to_der().unwrap()).is_none());
     }
 }
