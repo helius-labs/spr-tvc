@@ -108,9 +108,11 @@ replicate records there, and the destination denies publisher writes and
 replicated deletions. [AWS replication permissions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/setting-repl-config-perm-overview.html)
 
 Replication is asynchronous. For a planned cutover, freeze the source and
-record a checkpoint after S3 reports `COMPLETED` for every record. Replace
-the destination's receiving policy with the normal frozen ledger policy to
-close replication writes, then compare the destination with that checkpoint.
+record a checkpoint once the pinned destination has every record. The tool
+compares the record set in both buckets and checks each original S3 version
+ID, write time and record body. Replace the destination's receiving policy
+with the normal frozen ledger policy to close replication writes, then
+compare the destination with that checkpoint.
 When the source is unavailable, use an independently retained checkpoint
 that accounts for all committed writes. A checkpoint taken before the last
 committed write cannot authorize promotion.
@@ -212,7 +214,10 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    Include the inspection role from the bucket owner's account in the reader
    list. Give its IAM identity policy
    `s3:GetBucketPolicy`, `s3:GetLifecycleConfiguration`, `s3:ListBucket` on the full
-   custody prefix, and `s3:GetObject` on its records. Retain the digest
+   custody prefix, and `s3:GetObject` on its records. When checkpointing a
+   source with a configured replica, include the checkpoint identity in the
+   recovery bucket's reader list and grant it the same listing and object
+   read permissions there. Retain the digest
    independently with evidence of the last committed write. The digest covers
    every receipt, target registration and retirement marker, including each
    object's original version ID, write time and exact bytes. Keep the pinned
@@ -229,9 +234,21 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    ledger becomes unavailable or incomplete. Resume only after the recovered
    bucket matches an independently retained checkpoint covering all committed
    writes. Keep the original ledger's write fence in force while promoting
-   the recovered bucket. Install and verify the normal writable policy on the
-   recovered bucket before resuming. Remove the old `ledgerReplica` entry from
-   the recovered trust when switching `ledger` to that bucket.
+   the recovered bucket. Remove the old `ledgerReplica` entry when first
+   comparing the recovered bucket against the checkpoint.
+
+   Before resuming mainnet writes, pin a new `ledgerReplica` in the recovered
+   trust. Configure outbound replication and keep the promoted source frozen.
+   Run S3 Batch Replication for the original versions in the custody prefix,
+   including objects with status `REPLICA`. Use a separate Batch Operations
+   role with `s3:InitiateReplication` scoped to that prefix. The live rule
+   handles writes after promotion. Verify the installed frozen source policy
+   and run `ledger-checkpoint --expect "$ledger_checkpoint_sha256"` against
+   the promoted source with the new replica pinned. The check requires the
+   exact version from the new destination even when the source still reports
+   `REPLICA`. Install and verify the normal writable policy on the promoted
+   source before resuming. [S3 Batch Replication](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-batch-replication-batch.html)
+
    AWS Backup creates new object creation dates and version IDs on restore.
    [AWS Backup metadata](https://docs.aws.amazon.com/aws-backup/latest/devguide/s3-backups.html)
 

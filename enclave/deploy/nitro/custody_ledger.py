@@ -166,11 +166,6 @@ def publication_time(metadata):
     return publication_datetime(metadata).timestamp()
 
 
-def require_record_replication(name, metadata):
-    if metadata.get("ReplicationStatus") != "COMPLETED":
-        raise ValueError(f"custody ledger record {name} has not completed S3 replication")
-
-
 def ledger_record_fingerprint(name, payload, metadata):
     if not 0 < len(payload) <= MAX_DOCUMENT_BYTES:
         raise ValueError(f"invalid custody ledger record size for {name}")
@@ -179,6 +174,22 @@ def ledger_record_fingerprint(name, payload, metadata):
         raise ValueError(f"custody ledger record {name} requires an original S3 version")
     published_at = publication_datetime(metadata).astimezone(timezone.utc).isoformat()
     return version, published_at, hashlib.sha256(payload).hexdigest()
+
+
+def read_replicated_record(trust, destination, name):
+    original, source_metadata = read_stored_payload(trust, name)
+    # Records inherited during promotion can still be marked REPLICA at the source.
+    if source_metadata.get("ReplicationStatus") not in ("COMPLETED", "REPLICA"):
+        raise ValueError(f"custody ledger record {name} has not completed S3 replication")
+    fingerprint = ledger_record_fingerprint(name, original, source_metadata)
+    try:
+        copied, replica_metadata = read_stored_payload(destination, name)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise ValueError(f"could not read custody ledger record {name} from the pinned replica") from error
+    if (replica_metadata.get("ReplicationStatus") != "REPLICA" or
+            fingerprint != ledger_record_fingerprint(name, copied, replica_metadata)):
+        raise ValueError(f"custody ledger record {name} differs from the pinned replica")
+    return original, fingerprint
 
 
 def require_publication_roster(trust, start):
@@ -252,8 +263,8 @@ def ledger_reader_policy(trust):
     bucket = f"arn:aws:s3:::{ledger['bucket']}"
     return {"Version": "2012-10-17", "Statement": [
         {"Sid": "ReadCustodyRecords", "Effect": "Allow", "Action": "s3:GetObject", "Resource": f"{bucket}/{prefix}*"},
-        {"Sid": "ListCustodyTargetsAndRetirement", "Effect": "Allow", "Action": "s3:ListBucket", "Resource": bucket,
-         "Condition": {"StringLike": {"s3:prefix": [f"{prefix}targets/*", f"{prefix}retired/*"]}}},
+        {"Sid": "ListCustodyRecords", "Effect": "Allow", "Action": "s3:ListBucket", "Resource": bucket,
+         "Condition": {"StringLike": {"s3:prefix": [prefix, f"{prefix}targets/*", f"{prefix}retired/*"]}}},
     ]}
 
 

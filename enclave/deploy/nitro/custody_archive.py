@@ -11,8 +11,8 @@ from approval import MAX_DOCUMENT_BYTES, canonical, epoch_number, fields, hex_di
 from custody_ledger import (
     check_commit, check_predecessor, check_registered_target, check_rotation_target,
     ledger_object, ledger_prefix, ledger_record_fingerprint, ledger_replica,
-    list_objects, publication_time, read_object, read_stored_object, read_stored_payload, record,
-    require_frozen_ledger, require_record_replication, rotation_target_name, verify_ceremony_capture,
+    list_objects, publication_time, read_object, read_replicated_record, read_stored_object, read_stored_payload,
+    record, replica_trust, require_frozen_ledger, rotation_target_name, verify_ceremony_capture,
 )
 
 MAX_ARCHIVE_ENTRY_BYTES = 2 * MAX_DOCUMENT_BYTES + 256
@@ -83,17 +83,22 @@ def ledger_checkpoint(trust, expected=None):
     require_frozen_ledger(trust)
     _, prefix = ledger_prefix(trust)
     replica = ledger_replica(trust)
+    destination = replica_trust(trust, replica) if replica is not None else None
     checksum = hashlib.sha256(b"SPR/native-nitro/ledger-checkpoint/v1\0" + prefix.encode())
     names = tuple(list_objects(trust, ""))
     if "1.json" not in names:
         raise ValueError("custody ledger checkpoint requires a committed genesis")
     for name in names:
-        payload, metadata = read_stored_payload(trust, name)
-        if replica is not None:
-            require_record_replication(name, metadata)
-        checksum.update(canonical([name, *ledger_record_fingerprint(name, payload, metadata)]) + b"\n")
+        if destination is None:
+            payload, metadata = read_stored_payload(trust, name)
+            fingerprint = ledger_record_fingerprint(name, payload, metadata)
+        else:
+            _, fingerprint = read_replicated_record(trust, destination, name)
+        checksum.update(canonical([name, *fingerprint]) + b"\n")
     if names != tuple(list_objects(trust, "")):
         raise ValueError("custody ledger changed during checkpoint")
+    if destination is not None and names != tuple(list_objects(destination, "")):
+        raise ValueError("pinned replica namespace differs from the custody ledger")
     require_frozen_ledger(trust)
     actual = checksum.hexdigest()
     if expected is not None and actual != expected:

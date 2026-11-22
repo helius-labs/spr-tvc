@@ -18,10 +18,10 @@ from approval import (
 )
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
-    check_recovery_bucket, find_retirement, ledger_object, ledger_record_fingerprint, ledger_replica, list_objects, load_epoch,
-    load_retirement, read_registered_target, read_stored_payload, recovery_deadline, replica_trust,
-    require_active_epoch, require_publication_roster,
-    require_record_replication, retirement_approval, retirement_bootstrap, retirement_object_name, retirement_recovery,
+    check_recovery_bucket, find_retirement, ledger_object, ledger_replica, list_objects, load_epoch,
+    load_retirement, read_registered_target, read_replicated_record, recovery_deadline, replica_trust,
+    require_active_epoch, require_publication_roster, retirement_approval, retirement_bootstrap,
+    retirement_object_name, retirement_recovery,
     retirement_target, rotation_target_name, sign_share_recovery, target_attestation, target_object_name,
     target_path, write_once,
 )
@@ -222,19 +222,6 @@ def require_retirement_replication(trust, marker, targets):
         return
     destination = replica_trust(trust, replica)
 
-    def confirm(name):
-        original, source_metadata = read_stored_payload(trust, name)
-        require_record_replication(name, source_metadata)
-        try:
-            copied, replica_metadata = read_stored_payload(destination, name)
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
-            raise ValueError(f"could not read custody ledger record {name} from the pinned replica") from error
-        if (replica_metadata.get("ReplicationStatus") != "REPLICA" or
-                ledger_record_fingerprint(name, original, source_metadata) !=
-                ledger_record_fingerprint(name, copied, replica_metadata)):
-            raise ValueError(f"custody ledger record {name} differs from the pinned replica")
-        return original
-
     replacement = marker["replacementEpoch"]
     registrations = {
         retirement_object_name(marker["epoch"]),
@@ -242,13 +229,14 @@ def require_retirement_replication(trust, marker, targets):
         *(target_object_name(target) for target in targets),
     }
     for number in range(1, epoch_number(replacement) + 1):
-        document = parse_json(confirm(ledger_object(trust, str(number))))
+        payload, _ = read_replicated_record(trust, destination, ledger_object(trust, str(number)))
+        document = parse_json(payload)
         if number > 1:
             manifest = document["authorization"]["manifest"]
             registrations.add(rotation_target_name(manifest, str(number - 1)))
 
     for name in sorted(registrations):
-        confirm(name)
+        read_replicated_record(trust, destination, name)
 
 
 def slot_inventory(trust, epoch, member, targets, index):

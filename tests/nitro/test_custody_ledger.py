@@ -540,7 +540,7 @@ class CustodyLedgerTests(unittest.TestCase):
         self.trust["ledgerReplica"] = {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1",
                                       "role": "arn:aws:iam::000000000008:role/replication"}
         prefix = f"spr-custody/devnet/{DOMAIN}/"
-        pending = set()
+        source_status = {}
         copied = set()
         marker_key = prefix + "retired/1.json"
         replica_change = {}
@@ -550,7 +550,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 reply = self.aws(region, service, operation, args, **options)
                 if operation == "get-object":
                     name = args[args.index("--key") + 1]
-                    reply["ReplicationStatus"] = "PENDING" if name in pending else "COMPLETED"
+                    reply["ReplicationStatus"] = source_status.get(name, "COMPLETED")
                 return reply
             self.assertEqual((region, service, operation), ("eu-west-1", "s3api", "get-object"))
             self.assertEqual(args[:4], ["--bucket", "custody-recovery", "--expected-bucket-owner", "000000000010"])
@@ -569,11 +569,12 @@ class CustodyLedgerTests(unittest.TestCase):
             _, _, keys = retirement_inventory(self.trust, "1", 1)
             self.assertIn(original_target["wrappingKeys"][0], keys)
             self.assertEqual(copied, set(self.objects))
+            source_status[prefix + "1.json"] = "REPLICA"
+            self.assertEqual(retirement_inventory(self.trust, "1", 1)[2], keys)
             for name in self.objects:
-                pending.add(name)
-                with self.subTest(pending=name), self.assertRaisesRegex(ValueError, "has not completed S3 replication"):
-                    retirement_inventory(self.trust, "1", 1)
-                pending.clear()
+                with self.subTest(pending=name), patch.dict(source_status, {name: "PENDING"}):
+                    with self.assertRaisesRegex(ValueError, "has not completed S3 replication"):
+                        retirement_inventory(self.trust, "1", 1)
             changed_time = datetime.fromtimestamp(self.now + 1, timezone.utc).isoformat()
             for change in ({"VersionId": "new-version"}, {"LastModified": changed_time},
                            {"ReplicationStatus": "PENDING"}, {"body": b"{}"}):
@@ -597,7 +598,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 result = inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet, replica_profile="recovery-read")
                 self.assertEqual(result, {"keys": [], "replacement": {"boot": "replacement"}})
                 check_bucket.assert_called_with(self.trust, self.trust["ledgerReplica"], "recovery-read")
-            pending.add(marker_key)
+            source_status[marker_key] = "PENDING"
             with self.assertRaisesRegex(ValueError, "has not completed S3 replication"):
                 verify_retired(self.trust, None, "1", [f"slot-{n}" for n in range(1, 7)], {}, 1)
             with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
@@ -740,7 +741,9 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertEqual(statements[statement["Sid"]], {**statement, "Principal": {"AWS": [READ_ROLE, PUBLISHER]}})
         self.assertEqual(readers[0]["Resource"], f"arn:aws:s3:::custody-journal/spr-custody/devnet/{DOMAIN}/*")
         self.assertEqual(readers[1]["Condition"], {
-            "StringLike": {"s3:prefix": [f"spr-custody/devnet/{DOMAIN}/{part}/*" for part in ("targets", "retired")]},
+            "StringLike": {"s3:prefix": [f"spr-custody/devnet/{DOMAIN}/",
+                                        f"spr-custody/devnet/{DOMAIN}/targets/*",
+                                        f"spr-custody/devnet/{DOMAIN}/retired/*"]},
         })
         guard = statements["RestrictBucketAdministration"]
         self.assertEqual(guard["Resource"], "arn:aws:s3:::custody-journal")

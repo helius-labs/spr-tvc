@@ -149,21 +149,56 @@ class LedgerReplicationTests(unittest.TestCase):
                 check_recovery_bucket(TRUST, REPLICA, "recovery-read")
             inspect.assert_not_called()
 
-    def test_source_checkpoint_requires_replication_of_each_record(self):
-        metadata = {"LastModified": "2026-11-01T00:00:00Z", "VersionId": "original-version",
-                    "ReplicationStatus": "COMPLETED"}
+    def test_checkpoint_requires_the_pinned_replica_before_and_after_promotion(self):
         names = ["1.json", "retired/1.json"]
-        with (patch("custody_archive.require_frozen_ledger"), patch("custody_archive.list_objects", return_value=names),
-              patch("custody_archive.read_stored_payload") as read):
-            def payload(_trust, name):
-                return b"{}", metadata if name == "retired/1.json" else {**metadata, "ReplicationStatus": "COMPLETED"}
+        new_replica = {"bucket": "custody-replacement", "account": "000000000011", "region": "eu-west-2",
+                       "role": f"arn:aws:iam::{DESTINATION_ACCOUNT}:role/replication"}
+        promoted = {key: TRUST[key] for key in ("network", "securityDomainId")}
+        promoted["ledger"] = {key: REPLICA[key] for key in TRUST["ledger"]}
+        records = {}
+        for bucket, status in ((SOURCE_BUCKET, "COMPLETED"), (DESTINATION_BUCKET, "REPLICA")):
+            records[bucket] = {
+                name: (name.encode(), {"LastModified": "2026-11-01T00:00:00Z", "VersionId": f"version-{name}",
+                                       "ReplicationStatus": status})
+                for name in names
+            }
 
-            read.side_effect = payload
-            self.assertEqual(len(ledger_checkpoint(TRUST)), 64)
-            for status in (None, "PENDING", "FAILED", "REPLICA"):
-                with self.subTest(status=status), patch.dict(metadata, {"ReplicationStatus": status}):
+        def read(trust, name):
+            try:
+                return records[trust["ledger"]["bucket"]][name]
+            except KeyError as error:
+                raise ValueError("missing S3 record") from error
+
+        def list_names(trust, _name):
+            return sorted(records[trust["ledger"]["bucket"]])
+
+        with (patch("custody_archive.require_frozen_ledger"), patch("custody_archive.list_objects", side_effect=list_names),
+              patch("custody_archive.read_stored_payload", side_effect=read),
+              patch("custody_ledger.read_stored_payload", side_effect=read)):
+            pin = ledger_checkpoint(TRUST)
+            self.assertEqual(ledger_checkpoint(promoted, pin), pin)
+            for status in (None, "PENDING", "FAILED"):
+                with self.subTest(status=status), patch.dict(records[SOURCE_BUCKET][names[-1]][1], {"ReplicationStatus": status}):
                     with self.assertRaisesRegex(ValueError, "retired/1.json has not completed"):
                         ledger_checkpoint(TRUST)
+
+            promoted["ledgerReplica"] = new_replica
+            with self.assertRaisesRegex(ValueError, "1.json from the pinned replica"):
+                ledger_checkpoint(promoted)
+            records[new_replica["bucket"]] = copy.deepcopy(records[DESTINATION_BUCKET])
+            body, metadata = records[new_replica["bucket"]][names[-1]]
+            for change in ({"VersionId": "wrong-version"}, {"LastModified": "2026-11-01T00:00:01Z"},
+                           {"ReplicationStatus": "COMPLETED"}):
+                with self.subTest(change=change), patch.dict(metadata, change):
+                    with self.assertRaisesRegex(ValueError, "retired/1.json differs from the pinned replica"):
+                        ledger_checkpoint(promoted)
+            with patch.dict(records[new_replica["bucket"]], {names[-1]: (body + b"x", metadata)}):
+                with self.assertRaisesRegex(ValueError, "retired/1.json differs from the pinned replica"):
+                    ledger_checkpoint(promoted)
+            with patch.dict(records[new_replica["bucket"]], {"retired/2.json": (body, metadata)}):
+                with self.assertRaisesRegex(ValueError, "pinned replica namespace differs"):
+                    ledger_checkpoint(promoted)
+            self.assertEqual(ledger_checkpoint(promoted, pin), pin)
 
 
 if __name__ == "__main__":

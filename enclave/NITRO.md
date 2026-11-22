@@ -98,9 +98,11 @@ to a bucket in a separate AWS account and region. A dedicated role can
 replicate records to the pinned owner. Replicated deletes and direct writes
 are denied on that bucket. The checkpoint verifier requires a frozen bucket
 policy and confirms that lifecycle rules are absent. When replication is
-configured, every source record must have completed replication. Recovery
-compares the checkpoint against the frozen recovered bucket before any new
-admission.
+configured, it compares every source record with the pinned destination.
+Recovery compares the checkpoint against the frozen recovered bucket before
+new admission. To reestablish replication after mainnet promotion, copy the
+inherited versions to the new destination with S3 Batch Replication and
+verify the same checkpoint against both buckets.
 
 The custody ledger registers one wrapping-key set per epoch, release ID and
 PCR0–PCR4. Before signing, each approver checks that all six RSA wrapping
