@@ -41,6 +41,7 @@ pub struct Service {
     pub(crate) ephemeral: KeyPair,
     pub(crate) quorum: KeyPair,
     pub(crate) note_seed: NoteSeed,
+    pub(crate) now_ms: fn() -> Option<u64>,
 }
 
 impl Service {
@@ -52,6 +53,7 @@ impl Service {
             ephemeral: KeyPair::Qos(ephemeral),
             quorum: KeyPair::Qos(quorum),
             note_seed,
+            now_ms: system_now_ms,
         }
     }
 
@@ -92,6 +94,18 @@ impl Service {
         );
         Ok(Self::new(info, ephemeral, quorum))
     }
+}
+
+#[cfg(any(feature = "local-dev", feature = "qos-runtime", test))]
+fn system_now_ms() -> Option<u64> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis()
+        .try_into()
+        .ok()
 }
 
 pub(crate) fn router(service: Arc<Service>) -> Router {

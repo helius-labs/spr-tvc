@@ -130,6 +130,7 @@ async fn serve(
         ephemeral: KeyPair::Native(ephemeral),
         quorum: KeyPair::Native(transport),
         note_seed,
+        now_ms: nsm_now_ms,
     });
     let booted_at_ms = nsm_now_ms().ok_or_else(|| io::Error::other("read Nitro bootstrap time"))?;
     nitro_http::serve(

@@ -14,7 +14,7 @@ import type { ServiceInfo } from "../../src/protocol/types.js";
 import * as exchange from "../../src/client/exchange.js";
 import { genesisHashForNetwork } from "../../src/protocol/network.js";
 import { decryptionServiceFromSession } from "../../src/client/decryption.js";
-import type { ServiceRequest } from "../../src/protocol/decryption.js";
+import { decryptMessage, serviceRequestDigest, type ServiceRequest } from "../../src/protocol/decryption.js";
 
 const ownerAddress = address("11111111111111111111111111111111");
 
@@ -91,6 +91,27 @@ it("checks the serialized request ceiling before asking for a signature or sendi
   expect(fetch).not.toHaveBeenCalled();
 });
 
+it.each([
+  { releasePolicyExpiresAtMs: 100_000n, freshness: undefined, expiresAt: "61000" },
+  { releasePolicyExpiresAtMs: 30_000n, freshness: undefined, expiresAt: "30001" },
+  { releasePolicyExpiresAtMs: 30_000n, freshness: () => 3_000, expiresAt: "4000" },
+])("signs the deadline that fits the verified session", async ({ releasePolicyExpiresAtMs, freshness, expiresAt }) => {
+  const { context, quorum, fetch } = fixture();
+  const signMessages = vi.fn<MessagePartialSigner["signMessages"]>(async () => [
+    { [ownerAddress]: signatureBytes(new Uint8Array(64).fill(1)) },
+  ]);
+  await expect(exchange.executeServiceCall({
+    ...context, releasePolicyExpiresAtMs, policyFreshnessRemainingMs: freshness,
+  }, {
+    type: "Decrypt", owner: { address: ownerAddress, signMessages }, items: [],
+  }, new AbortController().signal)).rejects.toMatchObject({ code: "OperationUnavailable" });
+  const body = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as { ciphertext: string };
+  const request = JSON.parse(new TextDecoder().decode(qosDecrypt(quorum, decodeLowerHex(body.ciphertext)))) as ServiceRequest;
+  expect(request.operation).toMatchObject({ type: "Decrypt", expires_at_ms: expiresAt });
+  expect(signMessages.mock.calls[0]?.[0][0]?.content).toEqual(
+    decryptMessage(new Uint8Array(32), "devnet", serviceRequestDigest(request)),
+  );
+});
 
 it("stops awaiting a cancelled owner approval and wipes the response key", async () => {
   const { context, fetch } = fixture();

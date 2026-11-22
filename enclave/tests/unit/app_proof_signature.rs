@@ -45,6 +45,7 @@ fn an_encrypted_result_must_fit_the_response_ceiling() {
         client_response_public_key: Vec::new(),
         operation: ServiceOperation::Decrypt {
             signer: "unused".into(),
+            expires_at_ms: 1,
             signature: [0; 64],
             items: Vec::new(),
         },

@@ -52,6 +52,8 @@ pub enum ServiceOperation {
     /// Opens `items`; `signature` is the base58 `signer`'s, over [`decrypt_message`].
     Decrypt {
         signer: String,
+        #[serde(with = "decimal_u64")]
+        expires_at_ms: u64,
         #[serde(with = "hex")]
         signature: [u8; 64],
         items: Vec<DecryptItem>,

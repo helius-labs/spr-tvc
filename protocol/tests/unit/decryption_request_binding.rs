@@ -18,6 +18,7 @@ fn request(operation: ServiceOperation) -> ServiceRequest {
 fn decrypt(signature: [u8; 64], slot_index: u64) -> ServiceOperation {
     ServiceOperation::Decrypt {
         signer: "11111111111111111111111111111111".to_owned(),
+        expires_at_ms: 1_795_290_720_000,
         signature,
         items: vec![DecryptItem {
             ciphertext: vec![1, 2, 3],
@@ -66,7 +67,7 @@ fn the_request_digest_covers_everything_but_the_signature() {
     // The TypeScript client checks the same vector.
     assert_eq!(
         encode_lower_hex(&digest),
-        "f1479856c87095008ca817c54605886c5b33a3ad19e15877b149b02c8bbed0b8"
+        "c7756715907ee016a5a564dc38aefb73a50f51db6d5bb568090b7c5871ae99b1"
     );
     assert_eq!(
         digest,
@@ -92,6 +93,27 @@ fn a_request_parses_strictly() {
     let json = encoding::jcs_serialize(&request).unwrap();
     assert_eq!(parse_service_request(&json).unwrap(), request);
     assert!(parse_service_request(&json.replacen('{', r#"{"extra":1,"#, 1)).is_err());
+}
+
+#[test]
+fn decrypt_requires_a_canonical_decimal_deadline() {
+    let request = request(decrypt([0; 64], 0));
+    let mut wire = serde_json::to_value(&request).unwrap();
+    assert_eq!(parse_service_request(&wire.to_string()).unwrap(), request);
+    for invalid in [
+        serde_json::json!(1_795_290_720_000u64),
+        serde_json::json!("01795290720000"),
+        serde_json::json!("0xff"),
+        serde_json::json!("18446744073709551616"),
+    ] {
+        wire["operation"]["expires_at_ms"] = invalid;
+        assert!(parse_service_request(&wire.to_string()).is_err());
+    }
+    wire["operation"]
+        .as_object_mut()
+        .unwrap()
+        .remove("expires_at_ms");
+    assert!(parse_service_request(&wire.to_string()).is_err());
 }
 
 #[test]

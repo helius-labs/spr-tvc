@@ -16,6 +16,7 @@ fn service() -> Arc<Service> {
         quorum: KeyPair::Native(transport),
         ephemeral: KeyPair::Native(NativePair::generate().unwrap()),
         note_seed: NoteSeed(Zeroizing::new([4; 32])),
+        now_ms: || Some(1_795_290_720_000),
     })
 }
 

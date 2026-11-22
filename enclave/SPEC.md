@@ -61,13 +61,16 @@ signs the request.
    salt and slot before asking the owner to sign. Transfer slots are unsigned
    32-bit integers. Ring deposits use slot zero. The SDK generates a fresh
    P-256 response key pair and keeps the private key. The owner signs a Solana
-   off-chain message that binds the network, target release and Quorum identity, fresh request ID,
-   ordered items, and response public key. The SDK seals the signed request
+   off-chain message that binds the network, target release and Quorum identity,
+   fresh request ID, ordered items, response public key, and exclusive deadline
+   `expires_at_ms`. The SDK sets the deadline within 60 seconds and within the
+   verified session. It seals the signed request
    to the pinned Quorum encryption key. An empty batch uses the same
    authorization to obtain the service nullifier secret.
 4. **Open inside the enclave.** The enclave authenticates the envelope,
    checks that it targets the running release, and verifies the owner's
-   Ed25519 signature. The verified signer address alone selects the recipient
+   Ed25519 signature. The deadline must be in the future. The verified signer
+   address alone selects the recipient
    viewing secret for every item. Each item's ephemeral viewing public key
    is the sender's X25519 input. The enclave accepts up to 256 items. Any
    malformed item fails the entire batch.
@@ -75,7 +78,10 @@ signs the request.
    recipient's nullifier secret to the signed response public key. It writes
    canonical JSON directly into a fixed-capacity buffer and wipes that buffer
    after encryption. The replica signs an App Proof binding the request ID,
-   operation, request digest, and encrypted result digest. The SDK verifies
+   operation, request digest, and encrypted result digest. The enclave checks
+   the deadline again before releasing the encrypted reply. Native Nitro reads
+   time from its local Nitro Secure Module. The QOS and loopback implementations
+   use their system clock. A clock read failure denies decryption. The SDK verifies
    the proof and checks that the release is still current before opening
    the reply. It binds the handle to the owner and verifies the nullifier
    secret against the discovered public key. Later replies must
@@ -105,8 +111,9 @@ signs the request.
   The indexer sees the wallet's queries.
 - **Enclave to wallet.** The QOS envelope encrypts to the one-time response
   key. A relay cannot change that key without invalidating the owner's
-  signature. A replay can elicit another reply to the original key. The App
-  Proof authenticates the reply, and the response private key opens it.
+  signature. Until the signed deadline, a replay can elicit another reply to
+  the original key. The App Proof authenticates the reply, and the response
+  private key can open a previously issued reply after the deadline.
 - **Wallet to prover.** The configured prover receives the transaction
   witness, including the service nullifier secret when proving a spend of a
   service note. The wallet relies on the prover to protect that data.

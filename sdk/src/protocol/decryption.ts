@@ -16,6 +16,7 @@ export type ServiceOperation =
   | {
       readonly type: "Decrypt";
       readonly signer: string;
+      readonly expires_at_ms: string;
       /** The signer's signature over `decryptMessage`. */
       readonly signature: string;
       readonly items: readonly DecryptItem[];

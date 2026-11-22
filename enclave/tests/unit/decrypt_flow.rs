@@ -18,6 +18,7 @@ use crate::service::router;
 use crate::testing;
 
 const RESPONSE_SECRET: [u8; 32] = [0x42; 32];
+const APPROVAL_EXPIRES_AT_MS: u64 = 1_795_290_720_000;
 
 fn recipient_signer() -> SigningKey {
     SigningKey::from_bytes(&[5; 32])
@@ -39,7 +40,9 @@ fn service_with_quorum_seed(quorum_seed: u8) -> Service {
     let ephemeral = P256Pair::generate().unwrap();
     let info =
         testing::release().service_info([0x22; 32], [0x33; 32], quorum.public_key().to_bytes());
-    Service::new(info, ephemeral, quorum)
+    let mut service = Service::new(info, ephemeral, quorum);
+    service.now_ms = || Some(APPROVAL_EXPIRES_AT_MS - 1);
+    service
 }
 
 fn service() -> Service {
@@ -143,6 +146,7 @@ fn decrypt(
         service,
         ServiceOperation::Decrypt {
             signer: base58(owner),
+            expires_at_ms: APPROVAL_EXPIRES_AT_MS,
             signature: [0; 64],
             items,
         },

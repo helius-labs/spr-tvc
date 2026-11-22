@@ -43,11 +43,13 @@ fn execute(service: &Service, body: &[u8]) -> Result<String, Failure> {
         }
         ServiceOperation::Decrypt {
             signer,
+            expires_at_ms,
             signature,
             items,
         } => {
             let address =
                 owner::verify_decrypt(signer, signature, service.info.network, &request_digest)?;
+            require_unexpired(service, *expires_at_ms)?;
             let keys = service.note_seed.for_address(&address);
             let plaintexts = open_ciphertexts(&keys.viewing, items)?;
             ServiceResult::Decrypt(DecryptedOutputs {
@@ -56,13 +58,25 @@ fn execute(service: &Service, body: &[u8]) -> Result<String, Failure> {
             })
         }
     };
-    respond(
+    let response = respond(
         &service.ephemeral,
         &request,
         request_digest,
         &response_key,
         &result,
-    )
+    )?;
+    if let ServiceOperation::Decrypt { expires_at_ms, .. } = request.operation {
+        require_unexpired(service, expires_at_ms)?;
+    }
+    Ok(response)
+}
+
+fn require_unexpired(service: &Service, expires_at_ms: u64) -> Result<(), Failure> {
+    let now = (service.now_ms)().ok_or(Failure::Unavailable)?;
+    if now >= expires_at_ms {
+        return Err(Failure::Invalid);
+    }
+    Ok(())
 }
 
 fn targets_release(request: &ServiceRequest, info: &ServiceInfo) -> bool {

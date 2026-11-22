@@ -47,13 +47,16 @@ and `ciphertext`. Its envelope contains canonical JSON with `version`,
 | Operation | Result |
 | --- | --- |
 | `PublicKeys { address }` | `viewing_public_key` and `nullifier_public_key` (32 bytes for the nullifier key) |
-| `Decrypt { signer, signature, items }` | `plaintexts` (one per item in order) and `nullifier_secret` (31 bytes). Accepts 0–256 items. |
+| `Decrypt { signer, expires_at_ms, signature, items }` | `plaintexts` (one per item in order) and `nullifier_secret` (31 bytes). Accepts 0–256 items. |
 
 The operation and its result each carry a `type` tag. `Decrypt` requires the
 signer's 64-byte Ed25519 signature over a Solana off-chain message v0, format
 0, with one signer. Its application domain is
 `SHA256("TSPP/decryption-service/decrypt/v1")`.
 The payload is `TSPP/decryption-service/decrypt/v1/<network>/<hex request digest>`.
+`expires_at_ms` is the exclusive deadline in Unix milliseconds as a canonical
+decimal string. It is included in the request digest. The enclave checks its
+clock after verifying the owner signature and again before returning the reply.
 
 The response contains `version`, `request_id`, `encrypted_result`, and
 `tvc_app_proof`. The App Proof carries `scheme`

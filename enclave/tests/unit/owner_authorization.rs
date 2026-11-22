@@ -12,7 +12,7 @@ fn a_decrypt_needs_the_owner_signature_over_this_request_and_network() {
     refused(&service, &decrypt(&service, &owner, other(NETWORK), items));
 
     type Edit = fn(&mut ServiceRequest);
-    let edits: [(&str, Edit); 8] = [
+    let edits: [(&str, Edit); 9] = [
         ("signer", |request| {
             let ServiceOperation::Decrypt { signer, .. } = &mut request.operation else {
                 unreachable!()
@@ -24,6 +24,12 @@ fn a_decrypt_needs_the_owner_signature_over_this_request_and_network() {
                 unreachable!()
             };
             signature[0] ^= 1;
+        }),
+        ("deadline", |request| {
+            let ServiceOperation::Decrypt { expires_at_ms, .. } = &mut request.operation else {
+                unreachable!()
+            };
+            *expires_at_ms += 1;
         }),
         ("ciphertext", |request| {
             request_items(request)[0].ciphertext[0] ^= 1
@@ -53,6 +59,41 @@ fn a_decrypt_needs_the_owner_signature_over_this_request_and_network() {
             "{field}",
         );
     }
+}
+
+#[test]
+fn a_signed_request_expires_before_note_work_or_release() {
+    use std::cell::Cell;
+
+    let mut service = service();
+    let owner = recipient_signer();
+    let request = decrypt(&service, &owner, NETWORK, Vec::new());
+    assert!(call(&service, &request).is_ok());
+
+    service.now_ms = || Some(APPROVAL_EXPIRES_AT_MS);
+    refused(&service, &request);
+    service.now_ms = || Some(APPROVAL_EXPIRES_AT_MS + 1);
+    refused(&service, &request);
+    service.now_ms = || None;
+    assert_eq!(
+        encrypted_response(&service, &request),
+        Err(Failure::Unavailable)
+    );
+    assert!(call(&service, &public_keys(&service, &owner)).is_ok());
+
+    let mut unsigned = request.clone();
+    let ServiceOperation::Decrypt { signature, .. } = &mut unsigned.operation else {
+        unreachable!()
+    };
+    *signature = [0; 64];
+    refused(&service, &unsigned);
+
+    thread_local! {
+        static FIRST_READ: Cell<bool> = const { Cell::new(true) };
+    }
+    service.now_ms =
+        || FIRST_READ.with(|first| Some(APPROVAL_EXPIRES_AT_MS - u64::from(first.replace(false))));
+    refused(&service, &request);
 }
 
 #[test]
@@ -131,6 +172,7 @@ fn only_an_address_a_key_can_sign_for_has_service_keys() {
             },
             ServiceOperation::Decrypt {
                 signer: address,
+                expires_at_ms: APPROVAL_EXPIRES_AT_MS,
                 signature: [0; 64],
                 items: Vec::new(),
             },
