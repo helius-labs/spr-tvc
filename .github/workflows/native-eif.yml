@@ -3,7 +3,12 @@ name: Build native Nitro EIF
 on:
   pull_request:
     paths:
+      - .cargo/config.toml
       - .github/workflows/native-eif.yml
+      - .github/workflows/publish-enclave-image.yml
+      - Cargo.toml
+      - enclave/Cargo.toml
+      - enclave/deploy/nitro/approval.py
       - enclave/deploy/nitro/build-eif.sh
       - enclave/deploy/nitro/provenance.py
       - enclave/native/**
