@@ -4,6 +4,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { getAddressEncoder, type Address, type MessagePartialSigner } from "@solana/kit";
 
 import type { BootProofResolver } from "../connection/backend.js";
+import type { ConnectedTvcRuntime } from "../connection/connect.js";
 import { requestScope, type DecryptionServiceRequestOptions } from "../connection/request.js";
 import { createDecryptionServiceSession, type DecryptionServiceSession } from "../connection/session.js";
 import type { DecryptionServiceTransport } from "../connection/http.js";
@@ -71,13 +72,18 @@ export function decryptionServiceFromSession(
   ): Promise<ServiceCallResult<T>> {
     let retry = retryPublicKeys && operation.type === "PublicKeys";
     for (;;) {
-      const context = await session.context(signal);
-      if (forPayment && context.recoveryOnly) throw new DecryptionServiceError("ReleasePolicyRecoveryOnly");
+      let context: ConnectedTvcRuntime | undefined;
       try {
+        context = await session.context(signal);
+        if (forPayment && context.recoveryOnly) {
+          await context.requireCurrentCheckpoint?.(signal);
+          throw new DecryptionServiceError("ReleasePolicyRecoveryOnly");
+        }
         return await executeServiceCall(context, operation, signal);
       } catch (error) {
-        const recoverable = retryableExchangeFailure(error);
-        if (recoverable || (error instanceof DecryptionServiceHttpError && error.status !== 429)) {
+        const recoverable = context ? retryableExchangeFailure(error)
+          : error instanceof DecryptionServiceError && error.code === "ReleasePolicySuperseded";
+        if (context && (recoverable || (error instanceof DecryptionServiceHttpError && error.status !== 429))) {
           session.forget(context);
         }
         if (!retry || !recoverable) throw error;

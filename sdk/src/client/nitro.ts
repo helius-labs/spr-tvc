@@ -57,6 +57,14 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
     const freshnessDeadline = performance.now() + CONNECTION_TTL_MS;
     const policyFreshnessRemainingMs = () => freshnessDeadline - performance.now();
     const { policy, checkpoint, validFrom, expiresAt, update } = await readPublishedNitroPolicy(trust, signal);
+    async function requireCurrentCheckpoint(signal?: AbortSignal): Promise<void> {
+      const current = await awaitWithSignal(store.current(), signal);
+      if (current?.digest !== checkpoint.digest || current.sequence !== checkpoint.sequence ||
+          current.minimumCustodyEpoch !== checkpoint.minimumCustodyEpoch ||
+          current.recoveryOnly !== checkpoint.recoveryOnly) {
+        throw new DecryptionServiceError("ReleasePolicySuperseded");
+      }
+    }
     function currentTime(): bigint {
       const now = clock();
       if (now < validFrom || now >= expiresAt) throw new DecryptionServiceError("ReleasePolicyInvalid");
@@ -85,6 +93,8 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
         }
       }
       probeSignal.throwIfAborted();
+      await requireCurrentCheckpoint(probeSignal);
+      currentTime();
       const connected = await connectNitroTarget(policy.targets[index]!, trust, probeSignal);
       if (requiredBootKeyId !== undefined && connected.info.quorum_key_id !== requiredBootKeyId) {
         throw new DecryptionServiceError("BootProofUnverified");
@@ -108,13 +118,15 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
       return candidate;
     });
     const { connected, index, window } = await Promise.any(candidates)
-      .catch(() => {
+      .catch(async () => {
         signal.throwIfAborted();
+        await requireCurrentCheckpoint(signal);
         currentTime();
         throw new DecryptionServiceError("BootProofUnverified", "no authorized Nitro replica reachable");
       })
       .finally(() => race.abort());
     signal.throwIfAborted();
+    await requireCurrentCheckpoint(signal);
     requireCurrentReleasePolicy(window, currentTime());
     next = index + 1;
     return {
@@ -123,14 +135,7 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
       recoveryOnly: policy.recoveryOnly,
       nowMs: clock,
       ...window,
-      async requireCurrentCheckpoint(signal) {
-        const current = await awaitWithSignal(store.current(), signal);
-        if (current?.digest !== checkpoint.digest || current.sequence !== checkpoint.sequence ||
-            current.minimumCustodyEpoch !== checkpoint.minimumCustodyEpoch ||
-            current.recoveryOnly !== checkpoint.recoveryOnly) {
-          throw new DecryptionServiceError("ReleasePolicySuperseded");
-        }
-      },
+      requireCurrentCheckpoint,
     };
   });
   return decryptionServiceFromSession(session, genesisHashForNetwork(trust.network), { requestTimeoutMs: config.requestTimeoutMs, retryPublicKeys: true });

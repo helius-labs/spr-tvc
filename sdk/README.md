@@ -65,6 +65,9 @@ The wallet requires an exact match at the checkpoint sequence and an exact
 predecessor link at the next sequence. It checks the saved revision before
 sending, after owner approval, and before opening a reply. Policy acceptance
 commits before replica attestation.
+The SDK rechecks the checkpoint before probing each target and before caching
+the winning boot. An unsigned lookup can refresh once if another wallet instance
+supersedes that checkpoint during attestation.
 The wallet refreshes on use after 60 seconds from the start of the policy
 fetch. Both elapsed and wall time bound that window. Signed policy and
 certificate expiry can end it earlier.

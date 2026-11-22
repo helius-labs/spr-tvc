@@ -574,7 +574,7 @@ describe("native client trust gate", () => {
     const fetch = policyHeads()
       .mockResolvedValueOnce(new Response('{"info":{},"evidence":"00"}'));
     vi.stubGlobal("fetch", fetch);
-    const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, async accept() { return true; } } });
+    const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
     await expect(client.open(signer, proofs)).rejects.toThrow("no authorized Nitro replica");
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(fetch.mock.calls[2]?.[0].href).toBe("https://replica.example.com/v1/nitro/attestation");
@@ -585,8 +585,9 @@ describe("native client trust gate", () => {
   it("rejects discovery for a different custody record at the expected epoch", async () => {
     const fetch = policyHeads().mockResolvedValueOnce(attestedDiscovery("ab".repeat(32)));
     vi.stubGlobal("fetch", fetch);
-    const accept = vi.fn(async () => true);
-    const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept } });
+    const store = checkpointStore();
+    const accept = vi.fn(store.accept);
+    const client = createNitroDecryptionService({ trust, policyStore: { ...store, accept } });
     await expect(client.open(signer, proofs)).rejects.toThrow("no authorized Nitro replica");
     expect(accept).toHaveBeenCalledOnce();
     expect(signMessages).not.toHaveBeenCalled();
@@ -701,6 +702,52 @@ describe("native client trust gate", () => {
     expect(fetch).toHaveBeenCalledTimes(6);
     expect(fetch.mock.calls.filter(([url]) => url.pathname === "/v1/operations")).toHaveLength(1);
     expect(signMessages).toHaveBeenCalledOnce();
+  });
+
+  it.each(["fails", "succeeds"] as const)("observes a revocation during attestation when the first probe %s", async outcome => {
+    const { policy } = JSON.parse(twoReplicas()) as { policy: NitroPolicy };
+    const recoveryOnly = outcome === "succeeds";
+    const old = signedPolicy({ ...policy, recoveryOnly });
+    const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(old).policy));
+    const revoked = signedPolicy({ sequence: "3", previousPolicyDigest, action: "revoke", targets: [], recoveryOnly });
+    let published = old;
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const oldClient = createNitroDecryptionService({ trust });
+    const newClient = createNitroDecryptionService({ trust });
+    const fetch = vi.fn(async (url: URL, init: RequestInit) => {
+      if (url.pathname.endsWith("/policy.json")) return new Response(published);
+      if (url.pathname === "/v1/nitro/attestation") {
+        if (url.hostname === "replica.example.com") {
+          published = revoked;
+          await expect(newClient.address(signer.address)).rejects.toMatchObject({ code: "ReleasePolicyRevoked" });
+          return recoveryOnly ? attestedDiscovery() : new Response(null, { status: 503 });
+        }
+        return attestedDiscovery(undefined, replacementBoot);
+      }
+      return lookupReply(init, replacementBoot);
+    });
+    vi.stubGlobal("fetch", fetch);
+    await expect(oldClient.address(signer.address)).rejects.toMatchObject({ code: "ReleasePolicyRevoked" });
+    expect(fetch.mock.calls.map(([url]) => url.href).filter(url => !url.endsWith("/policy.json")))
+      .toEqual(["https://replica.example.com/v1/nitro/attestation"]);
+    expect(signMessages).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a cached recovery-only session after the shared checkpoint is revoked", async () => {
+    const old = signedPolicy({ recoveryOnly: true });
+    const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(old).policy));
+    const revoked = signedPolicy({ sequence: "3", previousPolicyDigest, action: "revoke", targets: [], recoveryOnly: true });
+    const fetch = policyHeads(vi.fn(), old).mockResolvedValueOnce(attestedDiscovery());
+    policyHeads(fetch, revoked);
+    policyHeads(fetch, revoked);
+    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const client = createNitroDecryptionService({ trust });
+    await expect(client.address(signer.address)).rejects.toMatchObject({ code: "ReleasePolicyRecoveryOnly" });
+    await expect(createNitroDecryptionService({ trust }).address(signer.address))
+      .rejects.toMatchObject({ code: "ReleasePolicyRevoked" });
+    await expect(client.address(signer.address)).rejects.toMatchObject({ code: "ReleasePolicyRevoked" });
+    expect(fetch.mock.calls.filter(([url]) => url.pathname === "/v1/operations")).toHaveLength(0);
   });
 
   it.each(["both clocks advance", "wall clock rolls back", "monotonic clock pauses"] as const)(
