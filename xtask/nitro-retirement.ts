@@ -7,21 +7,25 @@ import { MAX_CLOCK_SKEW_MS } from "../sdk/src/protocol/constants.js";
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
 
 async function main() {
-  const [network, domain, seed, canaryDigest, epoch, custodyDigest, ...extra] = process.argv.slice(2);
-  if (!network || !domain || !seed || !canaryDigest || !epoch || !custodyDigest || extra.length) {
-    throw new Error("usage: nitro-retirement.ts <network> <domain> <seed> <canary-digest> <replacement-epoch> <custody-digest> < wallet-trust.json");
+  const [network, domain, epoch, custodyDigest, mode, value, canaryDigest, ...extra] = process.argv.slice(2);
+  const expectedPolicyDigest = mode === "policy" && canaryDigest === undefined ? value : undefined;
+  const probe = mode === "probe" && value && canaryDigest ? { seed: value, canaryDigest } : undefined;
+  if (!network || !domain || !epoch || !custodyDigest || extra.length || (!expectedPolicyDigest && !probe)) {
+    throw new Error("expected network, domain, replacement epoch, custody digest and either probe <seed> <canary-digest> or policy <digest>");
   }
   const trust = parseStrictJson<NitroTrust>(readFileSync(0, "utf8"));
   validateNitroTrust(trust);
-  if (trust.network !== network || trust.securityDomainId !== domain || trust.noteSeedCommitment !== seed) {
+  if (trust.network !== network || trust.securityDomainId !== domain ||
+      (probe && trust.noteSeedCommitment !== probe.seed)) {
     throw new Error("wallet trust does not match the committed custody domain");
   }
   const signal = AbortSignal.timeout(20_000);
   const startedAt = BigInt(Date.now());
   const before = await readPublishedNitroPolicy(trust, signal);
-  requireRetirementPolicy(before, epoch, custodyDigest);
+  requireRetirementPolicy(before, epoch, custodyDigest, expectedPolicyDigest);
+  if (!probe) return;
   const candidates = before.policy.targets.filter(target => target.custodyEpoch === epoch && target.custodyDigest === custodyDigest);
-  const canary = createDecryptionCanary({ ...trust, canaryDigest });
+  const canary = createDecryptionCanary({ ...trust, canaryDigest: probe.canaryDigest });
   const targets = await Promise.allSettled(candidates.map(async target => {
     const { info, bootstrapSlots, bootedAtMs, window } = await probeNitroTarget(target, trust, { signal, canary });
     return {

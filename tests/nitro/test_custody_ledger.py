@@ -10,6 +10,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from io import BytesIO, StringIO
+from subprocess import CalledProcessError
 from threading import Lock
 from types import SimpleNamespace
 from unittest.mock import ANY, call, patch
@@ -1062,10 +1063,13 @@ class CustodyLedgerTests(unittest.TestCase):
             with patch.dict(replica_change, {"missing": True}):
                 with self.assertRaisesRegex(ValueError, "could not read.*retired/1.json from the pinned replica"):
                     retirement_inventory(self.trust, "1", 1)
+            boot = self.live_qualification(replacement)
             with (patch("retirement.check_recovery_bucket") as check_bucket,
                   patch("retirement.inspect_inventory", return_value={"keys": []}) as inspect,
                   patch("retirement.inspect_old_parents", return_value=[]),
-                  patch("retirement.qualify_key_retirement", return_value=LiveBoot({"boot": "replacement"}, (self.now + 60) * 1000)) as qualify):
+                  patch("retirement.pinned_wallet_trust", return_value=self.wallet_pins),
+                  patch("retirement.run_command"),
+                  patch("retirement.qualify_key_retirement", return_value=boot) as qualify):
                 wallet = pathlib.Path("wallet-trust.json")
                 with self.assertRaisesRegex(ValueError, "provide --replica-profile"):
                     inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)
@@ -1079,8 +1083,8 @@ class CustodyLedgerTests(unittest.TestCase):
                     inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet, replica_profile="recovery-read")
                 check_bucket.side_effect = None
                 result = inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet, replica_profile="recovery-read")
-                self.assertEqual(result, {"keys": [], "terminatedParents": [], "replacement": {"boot": "replacement"},
-                                          "validUntilMs": str((self.now + 60) * 1000)})
+                self.assertEqual(result, {"keys": [], "terminatedParents": [], "replacement": boot.evidence,
+                                          "validUntilMs": str(boot.valid_until_ms)})
                 check_bucket.assert_called_with(self.trust, self.trust["ledgerReplica"], "recovery-read")
             source_status[marker_key] = "PENDING"
             with self.assertRaisesRegex(ValueError, "has not completed S3 replication"):
@@ -1838,7 +1842,8 @@ class CustodyLedgerTests(unittest.TestCase):
             result = inspect_slot()
             self.assertEqual(result["terminatedParents"], [parent.return_value])
             self.assertEqual(result["replacement"], expected)
-            self.assertEqual(query.call_count, 2)
+            self.assertEqual(query.call_count, 3)
+            self.assertEqual(query.call_args.args[0][-2:], ["policy", policy_digest])
             self.assertEqual(query.call_args.kwargs["input"], self.wallet_pins)
             _, _, members = load_epoch(self.trust, "2")
             quorum.assert_called_once_with(self.trust, {**marker, **expected}, [members[slot - 1] for slot in boot["slots"]])
@@ -1901,8 +1906,35 @@ class CustodyLedgerTests(unittest.TestCase):
                        **NEXT_ROLES,
                        "role": "arn:aws:iam::000000000008:role/replication"}
             with (patch.dict(self.trust, {"ledgerReplica": replica}), patch("retirement.require_retirement_replication"),
-                  patch("retirement.check_recovery_bucket"), patch("retirement.read_replicated_record") as read_replica):
+                  patch("retirement.check_recovery_bucket") as check_bucket,
+                  patch("retirement.read_replicated_record") as read_replica):
                 options = {"wallet_trust": wallet, "host_profiles": host_profiles, "replica_profile": "recovery-read"}
+                query.return_value.stdout = evidence(observed)
+                query.reset_mock()
+
+                def revoke_during_replica_check(args, **_kwargs):
+                    if args[-2] == "policy":
+                        check_bucket.assert_called_once_with(self.trust, replica, "recovery-read")
+                        self.assertEqual(args[-2:], ["policy", policy_digest])
+                        raise CalledProcessError(1, args)
+                    check_bucket.assert_not_called()
+                    return query.return_value
+
+                query.side_effect = revoke_during_replica_check
+                with self.assertRaisesRegex(ValueError, "could not confirm the replacement wallet policy after AWS checks"):
+                    inspect_keys(self.trust, "1", 1, False, **options)
+                self.assertEqual(query.call_count, 3)
+
+                def policy_read_crosses_deadline(args, **_kwargs):
+                    if args[-2] == "policy":
+                        self.now += 60
+                    return query.return_value
+
+                query.side_effect = policy_read_crosses_deadline
+                with patch.object(self, "now", self.now), self.assertRaisesRegex(ValueError, "replacement evidence expired"):
+                    inspect_keys(self.trust, "1", 1, False, **options)
+                query.side_effect = None
+                query.return_value.stdout = evidence(standby_observed)
                 read_replica.side_effect = ValueError("registered standby has not completed S3 replication")
                 with self.assertRaisesRegex(ValueError, "standby has not completed S3 replication"):
                     inspect_keys(self.trust, "1", 1, False, **options)
@@ -2063,7 +2095,7 @@ class CustodyLedgerTests(unittest.TestCase):
             unavailable.clear()
             restarted = {**primary_observed, "bootstrap": {**primary_boot, "bootKeyId": "1a" * 32}}
             query.side_effect = [observation(primary_observed, standby_observed), observation(restarted, standby_observed),
-                                 observation(restarted, standby_observed)]
+                                 observation(restarted, standby_observed), SimpleNamespace()]
             self.assertEqual(inspect()["replacement"]["replacementTargetSha256"], sha256(standby))
             different_policy = observation(restarted, standby_observed, policy="df" * 32)
             query.side_effect = [observation(primary_observed, standby_observed), different_policy, different_policy]
@@ -2291,8 +2323,8 @@ class CustodyLedgerTests(unittest.TestCase):
             quorum.reset_mock()
 
             def attest(*_args, **_options):
-                self.assertEqual(registrations.call_count, 2 if query.call_count == 3 else 1)
-                if query.call_count == 3:
+                self.assertEqual(registrations.call_count, 2 if query.call_count >= 3 else 1)
+                if query.call_count >= 3:
                     self.assertEqual(host_state.call_count, 4)
                     self.assertEqual(len(visited), 2 * len(inventory))
                 return SimpleNamespace(stdout=stale if query.call_count == 1 else ready)
@@ -2300,7 +2332,8 @@ class CustodyLedgerTests(unittest.TestCase):
             query.side_effect = attest
             with patch("retirement.replacement_targets", wraps=replacement_targets) as registrations:
                 report = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
-            self.assertEqual(query.call_count, 3)
+            self.assertEqual(query.call_count, 4)
+            self.assertEqual(query.call_args.args[0][-2:], ["policy", "fe" * 32])
             self.assertEqual(set(inventory), set(visited))
             self.assertEqual(len(visited), 2 * len(inventory))
             self.assertEqual(report["retirementSha256"], sha256(retired))
@@ -2349,6 +2382,23 @@ class CustodyLedgerTests(unittest.TestCase):
                 check_bucket.side_effect = None
                 verified = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5, replica_profile="recovery-read")
                 self.assertEqual(verified, report)
+
+                query.reset_mock()
+                check_bucket.reset_mock()
+
+                def change_policy_after_replica_check(args, **_kwargs):
+                    if args[-2] == "policy":
+                        check_bucket.assert_called_once_with(self.trust, replica, "recovery-read")
+                        self.assertEqual(args[-2:], ["policy", "fe" * 32])
+                        raise CalledProcessError(1, args)
+                    check_bucket.assert_not_called()
+                    return query.return_value
+
+                query.side_effect = change_policy_after_replica_check
+                with self.assertRaisesRegex(ValueError, "could not confirm the replacement wallet policy after AWS checks"):
+                    verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5, replica_profile="recovery-read")
+                self.assertEqual(query.call_count, 3)
+                query.side_effect = None
 
                 def replica_check_crosses_deadline(*_args):
                     self.now += 60

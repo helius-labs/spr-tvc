@@ -224,6 +224,8 @@ if a candidate fails its key, replication or repeated attestation check.
 The second attestation must confirm the selected boot ID, bootstrap time,
 slots and policy digest. Inspection and reporting then check the replica's
 installed protections and confirm the replacement epoch is still active.
+After those AWS checks, both signed heads must still agree on the policy
+digest that authorized the selected boot, and its evidence must still be fresh.
 If the proven trio is unavailable or its epoch has been retired, three
 custodians of the same or a newer active receipt can prove recovery again.
 The new proof binds the original retirement digest and a boot after that

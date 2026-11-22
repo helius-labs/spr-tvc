@@ -369,9 +369,11 @@ export function nextNitroPublication(
 }
 
 export function requireRetirementPolicy(
-  { policy, sameEnvelope }: ReturnType<typeof verifyPublishedNitroPolicy>, replacementEpoch: string, custodyDigest: string,
+  { policy, sameEnvelope, checkpoint }: ReturnType<typeof verifyPublishedNitroPolicy>,
+  replacementEpoch: string, custodyDigest: string, expectedPolicyDigest?: string,
 ) {
   if (!sameEnvelope || policy.action !== "activate" ||
+      (expectedPolicyDigest !== undefined && checkpoint.digest !== expectedPolicyDigest) ||
       decodeDecimalU64(policy.minimumCustodyEpoch) < decodeDecimalU64(replacementEpoch) ||
       !policy.targets.some(target => target.custodyEpoch === replacementEpoch && target.custodyDigest === custodyDigest)) invalid();
 }

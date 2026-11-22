@@ -572,10 +572,11 @@ pinned history and excluded versions.
    write second. Inspection and the final report check the replica's bucket
    protections after confirming the live replacement. If a candidate fails a
    key, replication or repeated attestation check, both commands try another boot
-   from the same observation. Both commands reject evidence that expires during
-   the remaining checks. `inspect` reports `validUntilMs` as a Unix millisecond
-   timestamp for the live boot evidence. Rerun inspection if that deadline
-   passes before scheduling deletion. The role needs `kms:DescribeKey` for the
+   from the same observation. After the AWS checks, both commands read the two
+   signed policy heads again. A changed digest, revocation, disagreement, failed
+   read or expired boot evidence stops the command. `inspect` reports the
+   boot evidence deadline as `validUntilMs` in Unix milliseconds. Rerun
+   inspection if it passes before scheduling deletion. The role needs `kms:DescribeKey` for the
    six replacement keys. Use
    `inspect --check-inactive` for the historical key state check after scheduling.
 

@@ -111,16 +111,21 @@ def replacement_targets(trust, scope):
     return candidates
 
 
+def retirement_command(scope):
+    root = Path(__file__).resolve().parents[3]
+    return [
+        "pnpm", "--dir", str(root / "example"), "exec", "tsx", str(root / "xtask/nitro-retirement.ts"),
+        scope["network"], scope["securityDomainId"], scope["replacementEpoch"], scope["replacementCustodyDigest"],
+    ]
+
+
 def attested_boots(pinned_trust, candidates, scope, custody, *, after_ms=0, deadline=None, expected=None, required_slots=None):
     timeout = 25 if deadline is None else min(25, deadline - time.monotonic())
     if timeout <= 0:
         raise ReplacementNotReady("replacement boot wait expired")
-    root = Path(__file__).resolve().parents[3]
     seed, canary_digest = note_identity(custody)
-    reply = run_command([
-        "pnpm", "--dir", str(root / "example"), "exec", "tsx", str(root / "xtask/nitro-retirement.ts"),
-        scope["network"], scope["securityDomainId"], seed, canary_digest, scope["replacementEpoch"], scope["replacementCustodyDigest"],
-    ], input=pinned_trust, stdout=subprocess.PIPE, check=True, timeout=timeout)
+    reply = run_command([*retirement_command(scope), "probe", seed, canary_digest],
+                        input=pinned_trust, stdout=subprocess.PIPE, check=True, timeout=timeout)
     evidence = parse_json(reply.stdout)
     fields(evidence, "policyDigest", "targets")
     matches = []
@@ -405,6 +410,20 @@ def retirement_replica(trust, profile):
     return replica
 
 
+def confirm_retirement_policy(trust, wallet_trust, qualification, boot, replica, replica_profile):
+    if replica is not None:
+        check_recovery_bucket(trust, replica, replica_profile)
+    require_active_epoch(trust, qualification["replacementEpoch"])
+    boot.require_current()
+    try:
+        run_command([*retirement_command(qualification), "policy", boot.evidence["walletPolicyDigest"]],
+                    input=pinned_wallet_trust(trust, wallet_trust), check=True, timeout=10)
+    except subprocess.SubprocessError as error:
+        raise ReplacementNotReady("could not confirm the replacement wallet policy after AWS checks") from error
+    require_current_requalification(trust, qualification)
+    boot.require_current()
+
+
 def inspect_keys(trust, epoch, index, check_inactive, *, wallet_trust=None, replica_profile=None, host_profiles=None,
                  requalification=None):
     if check_inactive and requalification is not None:
@@ -421,11 +440,7 @@ def inspect_keys(trust, epoch, index, check_inactive, *, wallet_trust=None, repl
     if not check_inactive:
         result["terminatedParents"] = inspect_old_parents(targets, host_profiles or {})
         boot = qualify_key_retirement(trust, wallet_trust, qualification, published_at)
-        if replica is not None:
-            check_recovery_bucket(trust, replica, replica_profile)
-        require_active_epoch(trust, qualification["replacementEpoch"])
-        require_current_requalification(trust, qualification)
-        boot.require_current()
+        confirm_retirement_policy(trust, wallet_trust, qualification, boot, replica, replica_profile)
         result["replacement"] = boot.evidence
         result["validUntilMs"] = str(boot.valid_until_ms)
         if requalification is not None:
@@ -588,11 +603,7 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
         return attested_boots(pinned_trust, candidates, qualification, custody, after_ms=after_ms, expected=boot)[0]
 
     boot = ready_boot(trust, qualification, boots, replacement_custodians, confirm=confirm)
-    if replica is not None:
-        check_recovery_bucket(trust, replica, replica_profile)
-    require_active_epoch(trust, qualification["replacementEpoch"])
-    require_current_requalification(trust, qualification)
-    boot.require_current()
+    confirm_retirement_policy(trust, wallet_trust, qualification, boot, replica, replica_profile)
     report = {
         "retirementSha256": sha256(document), "retirementObservedAtMs": str(after_ms),
         "retired": {
