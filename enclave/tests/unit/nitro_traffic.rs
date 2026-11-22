@@ -19,15 +19,20 @@ fn service() -> Arc<Service> {
     })
 }
 
-#[tokio::test]
-async fn wallet_preflight_allows_only_credential_free_json_and_attestation_posts() {
-    let router = serving_router(
+fn app(operations: Arc<OperationTraffic>) -> Router {
+    serving_router(
         service(),
         BootstrapEvidence {
             slots: [1, 3, 5],
             booted_at_ms: 1_795_290_719_965,
         },
-    );
+        operations,
+    )
+}
+
+#[tokio::test]
+async fn wallet_preflight_allows_only_credential_free_json_and_attestation_posts() {
+    let router = app(Arc::new(OperationTraffic::new()));
     for path in ["/v1/nitro/attestation", "/v1/operations"] {
         let request = Request::builder()
             .method(Method::OPTIONS)
@@ -64,16 +69,68 @@ async fn wallet_preflight_allows_only_credential_free_json_and_attestation_posts
 }
 
 #[tokio::test]
+async fn operation_overload_leaves_metadata_available_without_reading_request_bodies() {
+    struct Unreadable;
+    impl axum::body::HttpBody for Unreadable {
+        type Data = Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Self::Error>>> {
+            panic!("the dispatcher polled the body");
+        }
+    }
+
+    let operations = Arc::new(OperationTraffic::new());
+    let router = app(operations.clone());
+    let _load = operations
+        .requests
+        .try_acquire_many(MAX_SERVING_REQUESTS.try_into().unwrap())
+        .unwrap();
+    for (method, path, content_type, expected) in [
+        (Method::GET, "/health", "", StatusCode::OK),
+        (Method::GET, "/v1/info", "", StatusCode::OK),
+        (Method::GET, "/v1/unknown", "", StatusCode::NOT_FOUND),
+        (Method::GET, "/v1/ping", "", StatusCode::METHOD_NOT_ALLOWED),
+        (
+            Method::POST,
+            "/v1/operations",
+            "text/plain",
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            Method::POST,
+            "/v1/operations",
+            "application/json",
+            StatusCode::TOO_MANY_REQUESTS,
+        ),
+    ] {
+        let request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::CONTENT_TYPE, content_type)
+            .body(Body::new(Unreadable))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            expected
+        );
+    }
+}
+
+#[tokio::test]
 async fn crypto_waits_for_capacity_without_blocking_health_or_discovery() {
     let service = State(service());
-    let worker = Extension(Arc::new(Semaphore::new(1)));
+    let operations = Extension(Arc::new(OperationTraffic::new()));
     for path in ["/v1/ping", "/v1/operations"] {
-        let permit = worker.0.try_acquire().unwrap();
+        let permit = operations.0.worker.try_acquire().unwrap();
         let request = Request::post(path)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from("{}"))
             .unwrap();
-        let response = serve_request(service.clone(), worker.clone(), request);
+        let response = serve_request(service.clone(), operations.clone(), request);
         tokio::pin!(response);
         tokio::select! {
             biased;
@@ -84,7 +141,7 @@ async fn crypto_waits_for_capacity_without_blocking_health_or_discovery() {
             let request = Request::get(public_path).body(Body::empty()).unwrap();
             let response = tokio::time::timeout(
                 SERVING_DEADLINE,
-                serve_request(service.clone(), worker.clone(), request),
+                serve_request(service.clone(), operations.clone(), request),
             )
             .await
             .unwrap();

@@ -459,6 +459,10 @@ pinned history and excluded versions.
    Open one HTTP/1 request per upstream vsock connection. The enclave closes
    the connection after its response and caps concurrent serving connections
    at 64. Headers have a 16 KiB limit and three-second read deadline.
+   Ping and operations have 32 request slots and one shared crypto worker.
+   Health and discovery use only the connection budget. They reply without
+   reading a body. Unsupported routes, methods and operation content types
+   are rejected before the body is read.
    Bound request sizes and ingress concurrency, keep each HTTPS slot tied to
    one boot at a time, and qualify it with wallet attestation and an
    owner-signed canary.

@@ -100,33 +100,41 @@ pub(crate) fn router(service: Arc<Service>) -> Router {
 
 async fn dispatch(State(service): State<Arc<Service>>, request: Request<Body>) -> Response<Body> {
     dispatch_with_crypto(service, request, |operation, service, body| async move {
-        operation(&service, &body)
+        match read_operation_body(&service, body).await {
+            Ok(body) => operation(&service, &body),
+            Err(error) => error.into_response(),
+        }
     })
     .await
 }
 
 type Operation = fn(&Service, &[u8]) -> Response<Body>;
 
-pub(crate) async fn dispatch_with_crypto<F>(
-    service: Arc<Service>,
-    request: Request<Body>,
-    run: impl FnOnce(Operation, Arc<Service>, Bytes) -> F,
-) -> Response<Body>
-where
-    F: Future<Output = Response<Body>>,
-{
-    let (parts, body) = request.into_parts();
-    let body_limit = usize::try_from(
+pub(crate) async fn read_operation_body(
+    service: &Service,
+    body: Body,
+) -> Result<Bytes, PublicError> {
+    let limit = usize::try_from(
         service
             .info
             .max_encrypted_request_bytes
             .min(MAX_ENCRYPTED_REQUEST_BYTES),
     )
     .unwrap_or(usize::MAX);
-    let Ok(body) = to_bytes(body, body_limit).await else {
-        return PublicError::RequestTooLarge.into_response();
-    };
+    to_bytes(body, limit)
+        .await
+        .map_err(|_| PublicError::RequestTooLarge)
+}
 
+pub(crate) async fn dispatch_with_crypto<F>(
+    service: Arc<Service>,
+    request: Request<Body>,
+    run: impl FnOnce(Operation, Arc<Service>, Body) -> F,
+) -> Response<Body>
+where
+    F: Future<Output = Response<Body>>,
+{
+    let (parts, body) = request.into_parts();
     match (parts.method.as_str(), parts.uri.path()) {
         ("POST", "/v1/ping" | "/v1/operations") if !has_json_content_type(&parts.headers) => {
             PublicError::InvalidRequest.into_response()

@@ -1,7 +1,7 @@
 //! Native Nitro startup. The parent forwards KMS ciphertext over vsock.
 
 use std::{
-    future::pending,
+    future::{pending, Future},
     io,
     num::NonZeroU64,
     sync::{Arc, Mutex, MutexGuard},
@@ -45,7 +45,7 @@ use crate::{
     native_crypto::NativePair,
     nitro_http,
     release::NETWORK,
-    service::dispatch_with_crypto,
+    service::{dispatch_with_crypto, read_operation_body},
     wire::KeyPair,
     Release, Service,
 };
@@ -140,6 +140,7 @@ async fn serve(
                 slots,
                 booted_at_ms,
             },
+            Arc::new(OperationTraffic::new()),
         ),
         MAX_SERVING_CONNECTIONS,
         pending(),
@@ -154,7 +155,25 @@ struct BootstrapEvidence {
     booted_at_ms: u64,
 }
 
-fn serving_router(service: Arc<Service>, bootstrap: BootstrapEvidence) -> Router {
+struct OperationTraffic {
+    requests: Semaphore,
+    worker: Arc<Semaphore>,
+}
+
+impl OperationTraffic {
+    fn new() -> Self {
+        Self {
+            requests: Semaphore::new(MAX_SERVING_REQUESTS),
+            worker: Arc::new(Semaphore::new(1)),
+        }
+    }
+}
+
+fn serving_router(
+    service: Arc<Service>,
+    bootstrap: BootstrapEvidence,
+    operations: Arc<OperationTraffic>,
+) -> Router {
     let attestation = Router::new()
         .route("/v1/nitro/attestation", post(client_attestation))
         .layer(DefaultBodyLimit::max(32))
@@ -166,11 +185,7 @@ fn serving_router(service: Arc<Service>, bootstrap: BootstrapEvidence) -> Router
         ));
     Router::new()
         .fallback(serve_request)
-        .layer(Extension(Arc::new(Semaphore::new(1))))
-        .layer(middleware::from_fn_with_state(
-            Arc::new(Semaphore::new(MAX_SERVING_REQUESTS)),
-            limit_serving_request,
-        ))
+        .layer(Extension(operations))
         .merge(attestation)
         .layer(
             CorsLayer::new()
@@ -184,16 +199,23 @@ fn serving_router(service: Arc<Service>, bootstrap: BootstrapEvidence) -> Router
 
 async fn serve_request(
     State(service): State<Arc<Service>>,
-    Extension(worker): Extension<Arc<Semaphore>>,
+    Extension(operations): Extension<Arc<OperationTraffic>>,
     request: Request,
 ) -> Response {
     dispatch_with_crypto(service, request, |operation, service, body| async move {
-        let Ok(permit) = worker.acquire_owned().await else {
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
-        };
-        run_with_permit(permit, move || operation(&service, &body))
-            .await
-            .unwrap_or_else(IntoResponse::into_response)
+        within_request_budget(&operations.requests, async {
+            let body = match read_operation_body(&service, body).await {
+                Ok(body) => body,
+                Err(error) => return error.into_response(),
+            };
+            let Ok(permit) = operations.worker.clone().acquire_owned().await else {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            };
+            run_with_permit(permit, move || operation(&service, &body))
+                .await
+                .unwrap_or_else(IntoResponse::into_response)
+        })
+        .await
     })
     .await
 }
@@ -203,13 +225,20 @@ async fn limit_serving_request(
     request: Request,
     next: Next,
 ) -> Response {
+    within_request_budget(&capacity, next.run(request)).await
+}
+
+async fn within_request_budget(
+    capacity: &Semaphore,
+    work: impl Future<Output = Response>,
+) -> Response {
     let Ok(_permit) = capacity.try_acquire() else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
     tokio::select! {
         biased;
         _ = tokio::time::sleep(SERVING_DEADLINE) => StatusCode::REQUEST_TIMEOUT.into_response(),
-        response = next.run(request) => response,
+        response = work => response,
     }
 }
 

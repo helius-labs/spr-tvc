@@ -213,7 +213,11 @@ async fn every_other_request_gets_a_generic_json_error() {
             invalid,
         ),
         (
-            request("GET", "/health", "", oversized),
+            request("POST", "/v1/operations", "text/plain", oversized.clone()),
+            invalid,
+        ),
+        (
+            request("POST", "/v1/operations", json, oversized),
             (StatusCode::PAYLOAD_TOO_LARGE, "RequestTooLarge"),
         ),
     ];
