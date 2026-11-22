@@ -2,17 +2,19 @@ import assert from "node:assert/strict";
 import { createECDH } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { test } from "node:test";
-import { nitroPolicySigningDigest, type NitroPolicy, type NitroTrust } from "../../sdk/src/attestation/nitro-policy.js";
+import { nitroCustodySigningDigest, nitroPolicySigningDigest, type NitroPolicy, type NitroTrust } from "../../sdk/src/attestation/nitro-policy.js";
 import { signP256Prehash } from "../../sdk/src/crypto/p256.js";
 import { encodeLowerHex } from "../../sdk/src/protocol/hex.js";
 import { bucketPolicy, publish } from "../../xtask/nitro-publish.js";
 
 const secrets = [1, 2, 3, 4].map(byte => Buffer.alloc(32, byte));
-const keys = secrets.map(secret => {
+const custodySecrets = [5, 6, 7].map(byte => Buffer.alloc(32, byte));
+function publicKey(secret: Uint8Array) {
   const key = createECDH("prime256v1");
   key.setPrivateKey(secret);
   return key.getPublicKey("hex", "uncompressed");
-});
+}
+const keys = secrets.map(publicKey);
 const trust: NitroTrust = {
   network: "devnet", securityDomainId: "ab".repeat(32), noteSeedCommitment: "de".repeat(32),
   minimumSequence: "1", minimumCustodyEpoch: "1", threshold: 2,
@@ -21,6 +23,7 @@ const trust: NitroTrust = {
     { bucket: "release-peer", account: "000000000002", region: "eu-west-1" },
   ],
   keys: keys.slice(0, 2),
+  custodyKeys: custodySecrets.map(publicKey),
 };
 const now = Date.now();
 const first: NitroPolicy = {
@@ -33,7 +36,9 @@ function signed(policy: NitroPolicy, signers = [0, 1]) {
   const digest = nitroPolicySigningDigest(policy);
   return JSON.stringify({ policy, signatures: signers.map(index => ({
     key: keys[index], signature: encodeLowerHex(signP256Prehash(secrets[index]!, digest)),
-  })) });
+  })), custodySignatures: policy.action === "activate" ? custodySecrets.slice(0, 2).map((secret, index) => ({
+    key: trust.custodyKeys[index], signature: encodeLowerHex(signP256Prehash(secret, nitroCustodySigningDigest(policy))),
+  })) : [] });
 }
 
 function awsOnly(aws: (args: string[]) => Promise<{ stdout: string }>) {

@@ -44,6 +44,8 @@ export type NitroTrust = {
   readonly threshold: number;
   /** Uncompressed SEC1 P-256 public keys pinned by the wallet integrator. */
   readonly keys: readonly string[];
+  /** Three independently pinned custody approval keys in the same SEC1 format. */
+  readonly custodyKeys: readonly string[];
 };
 
 export type NitroPolicyCheckpoint = {
@@ -64,6 +66,9 @@ export type NitroPolicyStore = {
 
 const MAX_TARGETS = 8;
 const MAX_AUTHORITIES = 8;
+const CUSTODY_QUORUM = 2;
+const CUSTODY_KEY_COUNT = 3;
+const POLICY_ENVELOPE_KEYS = ["policy", "signatures", "custodySignatures"];
 const MAX_LIFETIME_MS = 7n * 24n * 60n * 60n * 1000n;
 const POLICY_KEYS = [
   "version", "action", "network", "securityDomainId", "noteSeedCommitment", "sequence",
@@ -109,6 +114,10 @@ export function nitroPolicySigningDigest(policy: NitroPolicy): Uint8Array {
   return sha256(te.encode("SPR/native-nitro/release-policy/v1" + canonicalizeJsonValue(policy)));
 }
 
+export function nitroCustodySigningDigest(policy: NitroPolicy): Uint8Array {
+  return sha256(te.encode("SPR/native-nitro/custody-release-policy/v1" + canonicalizeJsonValue(policy)));
+}
+
 export function validateNitroTrust(trust: NitroTrust): void {
   if (trust.network !== "devnet" && trust.network !== "mainnet") invalid();
   checkDigest(trust.securityDomainId, 32);
@@ -120,15 +129,38 @@ export function validateNitroTrust(trust: NitroTrust): void {
   if (decodeDecimalU64(trust.minimumSequence) < 1n || decodeDecimalU64(trust.minimumCustodyEpoch) < 1n ||
       !Array.isArray(trust.keys) || trust.keys.length > MAX_AUTHORITIES ||
       !Number.isSafeInteger(trust.threshold) || trust.threshold < 2 ||
-      trust.threshold > trust.keys.length || new Set(trust.keys).size !== trust.keys.length) invalid();
-  for (const key of trust.keys) parseUncompressedSec1(requireHex(key, 65));
+      trust.threshold > trust.keys.length) invalid();
+  if (!Array.isArray(trust.custodyKeys) || trust.custodyKeys.length !== CUSTODY_KEY_COUNT) invalid();
+  const keys = [...trust.keys, ...trust.custodyKeys];
+  if (new Set(keys).size !== keys.length) invalid();
+  for (const key of keys) parseUncompressedSec1(requireHex(key, 65));
+}
+
+type PolicySignature = { key: string; signature: string };
+
+function verifyQuorum(
+  signatures: readonly PolicySignature[], pins: readonly string[], threshold: number,
+  digest: Uint8Array, seen: Set<string>,
+): void {
+  if (!Array.isArray(signatures) || signatures.length < threshold || signatures.length > MAX_AUTHORITIES) invalid();
+  let approvals = 0;
+  for (const signature of signatures) {
+    assertExactObjectKeys(signature, ["key", "signature"], "ReleasePolicyInvalid");
+    const { key } = signature;
+    if (seen.has(key)) invalid();
+    verifyP256Prehash(requireHex(key, 65), digest, requireHex(signature.signature, 64));
+    seen.add(key);
+    if (pins.includes(key)) approvals++;
+  }
+  if (approvals < threshold) invalid();
 }
 
 function verifySignedPolicy(text: string, trust: NitroTrust) {
-  const { policy, signatures } = parseStrictJson<{
+  const { policy, signatures, custodySignatures } = parseStrictJson<{
     policy: NitroPolicy;
-    signatures: readonly { key: string; signature: string }[];
-  }>(text, ["policy", "signatures"]);
+    signatures: readonly PolicySignature[];
+    custodySignatures: readonly PolicySignature[];
+  }>(text, POLICY_ENVELOPE_KEYS);
   assertExactObjectKeys(policy, POLICY_KEYS, "ReleasePolicyInvalid");
   if (policy.version !== 1 || policy.network !== trust.network ||
       policy.securityDomainId !== trust.securityDomainId ||
@@ -162,20 +194,12 @@ function verifySignedPolicy(text: string, trust: NitroTrust) {
     assertExactObjectKeys(target.pcrs, ["0", "1", "2", "3"], "ReleasePolicyInvalid");
     for (const pcr of Object.values(target.pcrs)) checkDigest(pcr, 48);
   }
-  if (!Array.isArray(signatures) || signatures.length < trust.threshold ||
-      signatures.length > MAX_AUTHORITIES) invalid();
   const digest = nitroPolicySigningDigest(policy);
   const seen = new Set<string>();
-  let approvals = 0;
-  for (const signature of signatures) {
-    assertExactObjectKeys(signature, ["key", "signature"], "ReleasePolicyInvalid");
-    const { key } = signature;
-    if (seen.has(key)) invalid();
-    verifyP256Prehash(requireHex(key, 65), digest, requireHex(signature.signature, 64));
-    seen.add(key);
-    if (trust.keys.includes(key)) approvals++;
-  }
-  if (approvals < trust.threshold) invalid();
+  verifyQuorum(signatures, trust.keys, trust.threshold, digest, seen);
+  if (policy.action === "activate") {
+    verifyQuorum(custodySignatures, trust.custodyKeys, CUSTODY_QUORUM, nitroCustodySigningDigest(policy), seen);
+  } else if (!Array.isArray(custodySignatures) || custodySignatures.length !== 0) invalid();
   return {
     policy, validFrom, expiresAt,
     checkpoint: { sequence: policy.sequence, digest: encodeLowerHex(digest), minimumCustodyEpoch: policy.minimumCustodyEpoch },
@@ -224,7 +248,7 @@ export function nextNitroPublication(
     if (next.policy.sequence !== "1") invalid();
     return true;
   }
-  const { policy } = parseStrictJson<{ policy: NitroPolicy }>(previous, ["policy", "signatures"]);
+  const { policy } = parseStrictJson<{ policy: NitroPolicy }>(previous, POLICY_ENVELOPE_KEYS);
   if (previousTrust.network !== trust.network || previousTrust.securityDomainId !== trust.securityDomainId ||
       previousTrust.noteSeedCommitment !== trust.noteSeedCommitment ||
       canonicalizeJsonValue(previousTrust.publications) !== canonicalizeJsonValue(trust.publications)) invalid();

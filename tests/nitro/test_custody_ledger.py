@@ -1,3 +1,4 @@
+import base64
 import copy
 import hashlib
 import json
@@ -407,8 +408,9 @@ class CustodyLedgerTests(unittest.TestCase):
                   "noteSeedCommitment": replacement["custody"]["noteSeedCommitment"], "minimumCustodyEpoch": "2",
                   "targets": [replica]}
 
-        def check(**overrides):
-            check_serving_policy(self.trust, {"policy": {**policy, **overrides}, "signatures": []})
+        def check(custody_signer=None, **overrides):
+            check_serving_policy(self.trust, {"policy": {**policy, **overrides}, "signatures": [],
+                                             "custodySignatures": []}, custody_signer)
 
         with self.assertRaisesRegex(ValueError, "object missing"):
             check()
@@ -423,6 +425,11 @@ class CustodyLedgerTests(unittest.TestCase):
             check()
         del self.objects[name]
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, registered))
+        key_pin = approval_roster(self.trust)["keys"][0]
+        signer = (key_pin["keyArn"], base64.b64decode(key_pin["publicKey"])[-65:].hex())
+        check(custody_signer=signer)
+        with self.assertRaisesRegex(ValueError, "active custody approval roster"):
+            check(custody_signer=(signer[0], "04" + "00" * 64))
         # The wrap deadline can pass after a valid registration.
         self.now = registered["expiresAt"]
         check()
@@ -444,6 +451,11 @@ class CustodyLedgerTests(unittest.TestCase):
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, old))
         check(minimumCustodyEpoch="1", targets=[replica, {**replica, **target_attestation(old), "custodyEpoch": "1",
                                                           "custodyDigest": sha256(previous["custody"])}])
+        self.rotate_approvals("3")
+        with self.assertRaisesRegex(ValueError, "active custody approval roster"):
+            check(custody_signer=signer)
+        next_pin = approval_roster(self.trust)["keys"][0]
+        check(custody_signer=(next_pin["keyArn"], base64.b64decode(next_pin["publicKey"])[-65:].hex()))
         self.objects[f"spr-custody/devnet/{DOMAIN}/retired/2.json"] = b"{}"
         with self.assertRaisesRegex(ValueError, "cannot verify retirement"):
             check()

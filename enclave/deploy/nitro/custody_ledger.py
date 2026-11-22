@@ -14,7 +14,7 @@ from pathlib import Path
 from approval import (
     KEY_ARN, ROLE_ARN, MAX_DOCUMENT_BYTES, add_approval, approval_keys, approval_roster, arn, aws, canonical, check_approvals,
     epoch_number, fields, file_digest, get_signing_key, hex_digest, key_result, kms, parse_json, read_document,
-    read_json, require_kms_key, sha256, signing_key,
+    read_json, require_kms_key, sha256, signing_key, signing_sec1,
 )
 from kms_policy import acknowledgement_policy, boot_pins, context, recovery_policy, validate_custodian_roles
 from provenance import MAIN_REF, verify as verify_build
@@ -388,8 +388,8 @@ def require_active_epoch(trust, epoch):
         raise ValueError("custody epoch is retired")
 
 
-def check_serving_policy(trust, document):
-    fields(document, "policy", "signatures")
+def check_serving_policy(trust, document, custody_signer=None):
+    fields(document, "policy", "signatures", "custodySignatures")
     policy = document["policy"]
     targets = policy["targets"]
     if policy["action"] != "activate" or not isinstance(targets, list) or not 1 <= len(targets) <= 8:
@@ -423,6 +423,10 @@ def check_serving_policy(trust, document):
 
     with ThreadPoolExecutor(max_workers=len(by_epoch)) as workers:
         list(workers.map(check_epoch, by_epoch.items()))
+    if custody_signer is not None:
+        key_arn, public = custody_signer
+        if not any(pin["keyArn"] == key_arn and signing_sec1(pin) == public for pin in approval_roster(trust)["keys"]):
+            raise ValueError("custody policy signer must match a key in the active custody approval roster")
 
 
 def verify_archive(trust, document, expected_digest):
@@ -620,6 +624,7 @@ def main():
     post.add_argument("candidate", type=Path)
     check = commands.add_parser("check-serving-policy")
     check.add_argument("candidate", type=Path)
+    check.add_argument("--custody-signer", nargs=2, metavar=("KEY_ARN", "SEC1_HEX"))
     get = commands.add_parser("read")
     get.add_argument("epoch")
     get.add_argument("--custody-digest", action="store_true")
@@ -674,7 +679,7 @@ def main():
             publish(trust, document)
             return
         if args.command == "check-serving-policy":
-            check_serving_policy(trust, document)
+            check_serving_policy(trust, document, args.custody_signer)
             return
         signed = (sign_epoch(trust, document, args.key, args.build, args.source_commit, args.source_ref) if args.command == "sign"
                   else acknowledge(trust, document, args.share))

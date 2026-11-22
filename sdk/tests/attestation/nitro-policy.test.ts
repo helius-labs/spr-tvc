@@ -1,14 +1,14 @@
 import { p256 } from "@noble/curves/p256";
 import { describe, expect, it } from "vitest";
 import {
-  advancesNitroPolicy, nextNitroPublication, nitroPolicySigningDigest, nitroPublication, validateNitroTrust, verifyNitroPolicy,
+  advancesNitroPolicy, nextNitroPublication, nitroCustodySigningDigest, nitroPolicySigningDigest, nitroPublication, validateNitroTrust, verifyNitroPolicy,
   requireRetirementPolicy, verifyPublishedNitroPolicy,
   type NitroPolicy, type NitroTrust,
 } from "../../src/attestation/nitro-policy.js";
 import { signP256Prehash } from "../../src/crypto/p256.js";
 import { encodeLowerHex } from "../../src/protocol/hex.js";
 
-const privateKeys = Array.from({ length: 9 }, (_, index) => new Uint8Array(32).fill(index + 1));
+const privateKeys = Array.from({ length: 15 }, (_, index) => new Uint8Array(32).fill(index + 1));
 const keys = privateKeys.map(key => encodeLowerHex(p256.getPublicKey(key, false)));
 const now = 1_750_000_000_000n;
 const trust: NitroTrust = {
@@ -17,6 +17,7 @@ const trust: NitroTrust = {
   noteSeedCommitment: "22".repeat(32),
   threshold: 2,
   keys: keys.slice(0, 3),
+  custodyKeys: keys.slice(9, 12),
   minimumSequence: "9",
   minimumCustodyEpoch: "1",
   publications: [
@@ -51,11 +52,22 @@ function signatures(policy: NitroPolicy, ...signers: number[]) {
     signature: encodeLowerHex(signP256Prehash(privateKeys[index]!, nitroPolicySigningDigest(policy))),
   }));
 }
+function custodySignatures(policy: NitroPolicy, signers = [9, 10]) {
+  return signers.map(index => ({
+    key: keys[index]!,
+    signature: encodeLowerHex(signP256Prehash(privateKeys[index]!, nitroCustodySigningDigest(policy))),
+  }));
+}
 function manifest(policy: NitroPolicy, ...signers: number[]) {
-  return JSON.stringify({ policy, signatures: signatures(policy, ...signers) });
+  return JSON.stringify({ policy, signatures: signatures(policy, ...signers),
+    custodySignatures: policy.action === "activate" ? custodySignatures(policy) : [] });
 }
 
 describe("native Nitro release policy", () => {
+  it("matches the operator custody signing digest", () => {
+    const policy = { sequence: "1", network: "devnet" } as NitroPolicy;
+    expect(encodeLowerHex(nitroCustodySigningDigest(policy))).toBe("8ed7448f3867c9f0f322df52cbcf63866044c8b13032604a4d3f5cfc49547e8a");
+  });
   it("authorizes two distinct trusted P-256 signatures over a canonical policy", () => {
     validateNitroTrust(trust);
     const verified = verifyNitroPolicy(manifest(binding, 0, 2), trust, now);
@@ -73,7 +85,7 @@ describe("native Nitro release policy", () => {
     const oldSignatures = signatures(binding, 0, 2);
     expect(() => verifyNitroPolicy(JSON.stringify({
       policy: { ...binding, targets: [{ ...binding.targets[0], endpoint: "https://new.example.com/" }] },
-      signatures: oldSignatures,
+      signatures: oldSignatures, custodySignatures: custodySignatures(binding),
     }), trust, now)).toThrow("InvalidSignature");
     expect(() => validateNitroTrust({ ...trust, keys: [keys[0]!, keys[0]!] })).toThrow();
     expect(() => validateNitroTrust({ ...trust, threshold: 1 })).toThrow();
@@ -86,7 +98,7 @@ describe("native Nitro release policy", () => {
     expect(() => verifyNitroPolicy(manifest(binding, ...signers, 8), trust, now)).toThrow();
     expect(() => verifyNitroPolicy(manifest(binding, 0, 1, 3, 3), trust, now)).toThrow();
     const [first, second, other] = signatures(binding, 0, 1, 3);
-    expect(() => verifyNitroPolicy(JSON.stringify({ policy: binding, signatures: [first, second, {
+    expect(() => verifyNitroPolicy(JSON.stringify({ policy: binding, custodySignatures: custodySignatures(binding), signatures: [first, second, {
       ...other, signature: first!.signature,
     }] }), trust, now)).toThrow("InvalidSignature");
   });
@@ -112,11 +124,39 @@ describe("native Nitro release policy", () => {
     }, 0, 1), trust, now)).toThrow();
   });
 
+  it("requires two custody approvals of the exact activation, independently of the release quorum", () => {
+    const approvals = custodySignatures(binding);
+    const release = signatures(binding, 0, 1);
+    for (const missing of [[], approvals.slice(0, 1), [approvals[0], approvals[0]],
+      custodySignatures(binding, [9, 12]), signatures(binding, 9, 10), release]) {
+      expect(() => verifyNitroPolicy(JSON.stringify({ policy: binding, signatures: release, custodySignatures: missing }), trust, now))
+        .toThrow();
+    }
+    const changed = { ...binding, targets: [{ ...binding.targets[0]!, releaseId: "different-enclave" }] };
+    expect(() => verifyNitroPolicy(JSON.stringify({
+      policy: changed, signatures: signatures(changed, 0, 1), custodySignatures: approvals,
+    }), trust, now)).toThrow("InvalidSignature");
+    expect(() => validateNitroTrust({ ...trust, custodyKeys: [keys[0]!, keys[10]!, keys[11]!] })).toThrow();
+    expect(() => validateNitroTrust({ ...trust, custodyKeys: [keys[9]!, keys[9]!, keys[11]!] })).toThrow();
+  });
+
+  it("supports an activation approved by both custody rosters during rotation", () => {
+    const approvals = custodySignatures(binding, [9, 10, 12, 13]);
+    const dual = JSON.stringify({ policy: binding, signatures: signatures(binding, 0, 1), custodySignatures: approvals });
+    const incoming = { ...trust, custodyKeys: keys.slice(12, 15) };
+    expect(verifyPublishedNitroPolicy([dual, dual], trust, now).policy).toEqual(binding);
+    expect(verifyPublishedNitroPolicy([dual, dual], incoming, now).policy).toEqual(binding);
+    expect(() => verifyNitroPolicy(manifest(binding, 0, 1), incoming, now)).toThrow();
+  });
+
   it("requires an explicit signed revocation with no targets", () => {
     const revoke = { ...binding, action: "revoke", targets: [] } as const;
     expect(verifyNitroPolicy(manifest(revoke, 0, 1), trust, now).policy).toEqual(revoke);
+    expect(() => verifyNitroPolicy(JSON.stringify({
+      policy: revoke, signatures: signatures(revoke, 0, 1), custodySignatures: custodySignatures(revoke),
+    }), trust, now)).toThrow();
     expect(() => verifyNitroPolicy(manifest({ ...binding, action: "revoke" }, 0, 1), trust, now)).toThrow();
-    expect(() => verifyNitroPolicy(JSON.stringify({ policy: revoke, signatures: signatures(binding, 0, 1) }), trust, now)).toThrow();
+    expect(() => verifyNitroPolicy(JSON.stringify({ policy: revoke, signatures: signatures(binding, 0, 1), custodySignatures: [] }), trust, now)).toThrow();
   });
 
   it("rejects unmeasured, ambiguous or insecure routes", () => {

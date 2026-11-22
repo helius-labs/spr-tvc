@@ -21,7 +21,7 @@ import {
   advancesNitroPolicy, createNitroDecryptionService, type NitroPolicy,
   type NitroPolicyCheckpoint, type NitroTarget, type NitroTrust,
 } from "../../sdk/src/client/nitro.js";
-import { nitroPolicySigningDigest, nitroPublication } from "../../sdk/src/attestation/nitro-policy.js";
+import { nitroCustodySigningDigest, nitroPolicySigningDigest, nitroPublication } from "../../sdk/src/attestation/nitro-policy.js";
 import { signP256Prehash } from "../../sdk/src/crypto/p256.js";
 import { encodeLowerHex, requireHex } from "../../sdk/src/protocol/hex.js";
 import type { ServiceInfo } from "../../sdk/src/protocol/types.js";
@@ -42,6 +42,7 @@ function target(name: string): NitroTarget {
 }
 const { domain, seed } = JSON.parse(readFileSync(resolve(directory, "inputs.json"), "utf8"));
 const secrets = Array.from({ length: 3 }, () => p256.utils.randomPrivateKey());
+const custodySecrets = Array.from({ length: 3 }, () => p256.utils.randomPrivateKey());
 const trust: NitroTrust = {
   network: "devnet", securityDomainId: domain, noteSeedCommitment: seed,
   minimumSequence: "1", minimumCustodyEpoch: "1", threshold: 2,
@@ -50,6 +51,7 @@ const trust: NitroTrust = {
     { bucket: "rehearsal-peer", region: "eu-west-1", account: "000000000001" },
   ],
   keys: secrets.map(secret => encodeLowerHex(p256.getPublicKey(secret, false))),
+  custodyKeys: custodySecrets.map(secret => encodeLowerHex(p256.getPublicKey(secret, false))),
 };
 const start = Date.now() - 30_000;
 const heads: [string, string] = ["", ""];
@@ -64,7 +66,10 @@ function signPolicy(sequence: string, replicas: readonly NitroTarget[], minimumC
   const signatures = secrets.slice(0, 2).map((secret, i) => ({
     key: trust.keys[i]!, signature: encodeLowerHex(signP256Prehash(secret, digest)),
   }));
-  return JSON.stringify({ policy, signatures });
+  const custodySignatures = custodySecrets.slice(0, 2).map((secret, i) => ({
+    key: trust.custodyKeys[i]!, signature: encodeLowerHex(signP256Prehash(secret, nitroCustodySigningDigest(policy))),
+  }));
+  return JSON.stringify({ policy, signatures, custodySignatures });
 }
 const server = createServer((request, response) => {
   const index = paths.indexOf(request.url ?? "");

@@ -267,7 +267,7 @@ deletion and configure CORS for wallet origins to `GET` with
 `x-amz-expected-bucket-owner`. The wallet reads both buckets directly.
 Pass absolute file paths to commands run with `pnpm --dir example`.
 
-The canonical policy starts with `{"policy":...,"signatures":[]}`. Its policy
+The canonical envelope starts with `{"custodySignatures":[],"policy":...,"signatures":[]}`. Its policy
 fields are `version`, `action`, `network`, `securityDomainId`, `noteSeedCommitment`,
 `minimumCustodyEpoch`, `sequence`, `previousPolicyDigest`, `validFromMs`, `expiresAtMs` and `targets`.
 Sequence 1 has `previousPolicyDigest: null`. Each later sequence signs the
@@ -279,14 +279,18 @@ Each target contains `endpoint`, `releaseId`, `executableSha256`,
 Register each serving target before signing an activation. The signing and
 publication tools match its executable, release ID and PCR0–PCR3 to the
 registered serving image and verify its committed, active custody epoch.
-Give release signers and both publishers scoped ledger read access using
-`reader-policy` and distribute the custody trust file independently. A revoke
-policy needs only the wallet signing and publication flow. Pin network, domain, seed
-commitment, minimum sequence, minimum custody epoch, signer keys, threshold and
-`publications` with two `{bucket, region, account}` entries in `wallet-trust.json`.
-List the primary first and the mirror second.
-Times, sequence
-and epochs are canonical decimal strings. The wallet stores the sequence,
+Give release signers, custody signers and both publishers scoped ledger read
+access using `reader-policy`. Distribute the custody trust file independently.
+For activation, collect release signatures and two custody signatures from the
+active custody approval roster. Each signer checks the exact proposed targets.
+For revocation, leave `custodySignatures` empty and omit `--custody-trust`.
+
+Pin network, domain, seed commitment, minimum sequence, minimum custody epoch,
+release `keys` and `threshold`, the three `custodyKeys`, and `publications` with
+two `{bucket, region, account}` entries in `wallet-trust.json`. The key lists
+must be disjoint and use uncompressed SEC1 hex. Export that format with
+`python3 "$nitro/approval.py" "$key_arn" --sec1`. List the primary bucket first.
+Times, sequence and epochs are canonical decimal strings. The wallet stores the sequence,
 policy digest and custody floor atomically. `activate` requires a verified
 replica before the wallet advances the checkpoint. An emergency `revoke`
 requires an empty target list and advances the checkpoint as soon as the wallet
@@ -301,6 +305,7 @@ connections. Retirement requires agreement. Set alerts for mismatched heads
 and approaching expiration.
 
 ```sh
+cargo xtask nitro-sign policy.json --custody --key "$custody_key_arn" --public-key "$custody_sec1_hex" --custody-trust "$custody_trust"
 cargo xtask nitro-sign policy.json --key "$signing_key_arn" --public-key "$signer_sec1_hex" --custody-trust "$custody_trust"
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" --bucket-policy "$bucket_admin_role" "$publisher_role"
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" "$signed_policy" --custody-trust "$custody_trust"
@@ -311,9 +316,11 @@ ARNs. Custodian replacements use a measured rotation.
 
 ### Rotate wallet signing keys
 
-1. Have the outgoing and incoming quorums sign the same next revision. Keep
-   the domain, bucket pins and custody floor. The file can carry up to eight
-   distinct signatures.
+1. Have the outgoing and incoming quorums for the rotating authority sign the
+   same next revision. For a custody roster change, collect outgoing signatures
+   before the operator cutover and incoming signatures after it. Keep the domain,
+   bucket pins and custody floor, and allow time to complete the rollout before
+   the current wallet policy expires.
 2. Publish that signed file to both buckets using the outgoing trust. Confirm
    both copies verify under the incoming trust before distributing the new pins.
    Pin the transition revision as the minimum sequence in the new trust bundle.

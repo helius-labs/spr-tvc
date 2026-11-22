@@ -6,7 +6,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { verifyNativeNitroEvidence } from "../../src/attestation/boot-proof.js";
 import { indexedDbNitroPolicyStore } from "../../src/attestation/nitro-checkpoint.js";
-import { nitroPolicySigningDigest, type NitroPolicy, type NitroPolicyCheckpoint, type NitroTrust } from "../../src/attestation/nitro-policy.js";
+import { nitroCustodySigningDigest, nitroPolicySigningDigest, type NitroPolicy, type NitroPolicyCheckpoint, type NitroTrust } from "../../src/attestation/nitro-policy.js";
 import { createNitroDecryptionService } from "../../src/client/nitro.js";
 import { signP256Message, signP256Prehash } from "../../src/crypto/p256.js";
 import { qosDecrypt, qosEncrypt } from "../../src/crypto/qos.js";
@@ -19,6 +19,7 @@ import { canonicalizeJsonValue } from "../../src/protocol/jcs.js";
 vi.mock("../../src/attestation/boot-proof.js", () => ({ verifyNativeNitroEvidence: vi.fn() }));
 
 const secrets = [1, 2].map(value => new Uint8Array(32).fill(value));
+const custodySecrets = [5, 6, 7].map(value => new Uint8Array(32).fill(value));
 const trust: NitroTrust = {
   network: "mainnet", securityDomainId: "55".repeat(32), noteSeedCommitment: "66".repeat(32),
   minimumSequence: "1", minimumCustodyEpoch: "1", threshold: 2,
@@ -27,6 +28,7 @@ const trust: NitroTrust = {
     { bucket: "release-peer", region: "eu-west-1", account: "000000000002" },
   ],
   keys: secrets.map(secret => encodeLowerHex(p256.getPublicKey(secret, false))),
+  custodyKeys: custodySecrets.map(secret => encodeLowerHex(p256.getPublicKey(secret, false))),
 };
 
 function signedPolicy(overrides: Partial<NitroPolicy> = {}) {
@@ -48,7 +50,9 @@ function signedPolicy(overrides: Partial<NitroPolicy> = {}) {
   return JSON.stringify({ policy, signatures: secrets.map((secret, index) => ({
     key: trust.keys[index],
     signature: encodeLowerHex(signP256Prehash(secret, nitroPolicySigningDigest(policy))),
-  })) });
+  })), custodySignatures: policy.action === "activate" ? custodySecrets.slice(0, 2).map((secret, index) => ({
+    key: trust.custodyKeys[index], signature: encodeLowerHex(signP256Prehash(secret, nitroCustodySigningDigest(policy))),
+  })) : [] });
 }
 
 function policyHeads(fetch = vi.fn(), first = signedPolicy(), second = first) {
@@ -127,6 +131,19 @@ afterEach(() => {
 });
 
 describe("native client trust gate", () => {
+  it("refuses a release-only activation before replica contact, checkpoint writes or wallet approval", async () => {
+    const activation = JSON.parse(signedPolicy());
+    const fetch = policyHeads(vi.fn(), JSON.stringify({ ...activation, custodySignatures: [] }));
+    const accept = vi.fn(async () => true);
+    vi.stubGlobal("fetch", fetch);
+    const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept } });
+    await expect(client.open(signer, proofs)).rejects.toThrow("ReleasePolicyInvalid");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(verifyNativeNitroEvidence).not.toHaveBeenCalled();
+    expect(accept).not.toHaveBeenCalled();
+    expect(signMessages).not.toHaveBeenCalled();
+  });
+
   it("reattests at certificate expiry before sending another operation", async () => {
     vi.useFakeTimers();
     try {

@@ -123,6 +123,10 @@ def signing_key(key):
     return public
 
 
+def signing_sec1(key):
+    return base64.b64decode(signing_key(key))[len(P256_SPKI_PREFIX) - 1:].hex()
+
+
 def approval_roster(trust, *, epoch=None, at=None):
     schedule = trust["approvalKeys"]
     if not isinstance(schedule, list) or not schedule:
@@ -232,8 +236,10 @@ def get_signing_key(key):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Export the public key of an immutable P-256 KMS signing key.")
     parser.add_argument("key_arn")
+    parser.add_argument("--sec1", action="store_true", help="output the uncompressed public key as lowercase hex")
     args = parser.parse_args()
     try:
-        print(canonical(get_signing_key(args.key_arn)).decode())
+        key = get_signing_key(args.key_arn)
+        print(signing_sec1(key) if args.sec1 else canonical(key).decode())
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
         raise SystemExit(str(error)) from None

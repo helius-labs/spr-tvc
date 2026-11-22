@@ -38,8 +38,10 @@ and system clock, including when a caller supplies a fresh signed policy.
 Import `createNitroDecryptionService` from
 `@heliuslabs/spr-decryption-service/nitro`. Pin two policy publication buckets
 with independent AWS owners, plus their regions, the network, security domain,
-note seed commitment, minimum sequence and custody epoch, and signer quorum.
-The SDK reads both policies and uses the current signed revision. In browsers, the SDK stores the
+note seed commitment, minimum sequence and custody epoch, release quorum and
+three independent `custodyKeys`. An activation must carry the release quorum
+and two custody signatures over the exact policy. A revocation needs only the
+release quorum. The SDK reads both policy heads. In browsers, it stores the
 checkpoint in IndexedDB. Other runtimes supply an atomic durable `policyStore`
 scoped to the network and domain. Its `accept` method persists the next
 checkpoint before succeeding. Apply `advancesNitroPolicy` against the stored

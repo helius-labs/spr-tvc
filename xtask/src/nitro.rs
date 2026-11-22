@@ -19,9 +19,9 @@ const MAX_POLICY_BYTES: usize = 32_768;
 #[derive(Parser)]
 #[command(bin_name = "cargo xtask nitro-sign")]
 pub(crate) struct Args {
-    /// Canonical JSON manifest with a policy and a signatures array.
+    /// Canonical JSON policy envelope with release and custody signature lists.
     policy: PathBuf,
-    /// Immutable ARN of the release signer's ECC_NIST_P256 key.
+    /// Immutable ARN of the signer's ECC_NIST_P256 key.
     #[arg(long)]
     key: String,
     /// Independently pinned uncompressed SEC1 public key in lowercase hex.
@@ -30,13 +30,17 @@ pub(crate) struct Args {
     /// Pinned custody trust file for an activation.
     #[arg(long)]
     custody_trust: Option<PathBuf>,
+    /// Sign as a custody approver for an activation.
+    #[arg(long)]
+    custody: bool,
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct SignedPolicy {
     policy: serde_json::Value,
     signatures: Vec<Approval>,
+    custody_signatures: Vec<Approval>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -54,15 +58,14 @@ struct KmsSignature {
     signing_algorithm: String,
 }
 
-fn digest(policy: &serde_json::Value) -> Result<[u8; 32]> {
+fn digest(policy: &serde_json::Value, custody: bool) -> Result<[u8; 32]> {
+    let domain = if custody {
+        b"SPR/native-nitro/custody-release-policy/v1".as_slice()
+    } else {
+        b"SPR/native-nitro/release-policy/v1".as_slice()
+    };
     let canonical = jcs_serialize(policy)?;
-    Ok(sha256(
-        &[
-            b"SPR/native-nitro/release-policy/v1".as_slice(),
-            canonical.as_bytes(),
-        ]
-        .concat(),
-    ))
+    Ok(sha256(&[domain, canonical.as_bytes()].concat()))
 }
 
 fn validate_action(policy: &serde_json::Value) -> Result<()> {
@@ -107,6 +110,11 @@ pub(crate) fn sign(args: Args) -> Result<()> {
     );
     let mut manifest: SignedPolicy = serde_json::from_str(&text)?;
     validate_action(&manifest.policy)?;
+    let activate = manifest.policy["action"] == "activate";
+    ensure!(
+        activate || (!args.custody && manifest.custody_signatures.is_empty()),
+        "revocation accepts release signatures only"
+    );
     let bytes = decode_lower_hex(&args.public_key)?;
     ensure!(
         bytes.len() == 65 && bytes[0] == 4,
@@ -114,13 +122,19 @@ pub(crate) fn sign(args: Args) -> Result<()> {
     );
     let public = VerifyingKey::from_sec1_bytes(&bytes)?;
     ensure!(
-        manifest.signatures.len() < 8
-            && !manifest
-                .signatures
-                .iter()
-                .any(|prior| prior.key == args.public_key),
-        "too many approvals or signing key already present"
+        !manifest
+            .signatures
+            .iter()
+            .chain(&manifest.custody_signatures)
+            .any(|prior| prior.key == args.public_key),
+        "signing key already present"
     );
+    let approvals = if args.custody {
+        &mut manifest.custody_signatures
+    } else {
+        &mut manifest.signatures
+    };
+    ensure!(approvals.len() < 8, "too many approvals");
 
     let parts: Vec<_> = args.key.split(':').collect();
     let ["arn", "aws", "kms", region, account, key] = parts.as_slice() else {
@@ -134,7 +148,7 @@ pub(crate) fn sign(args: Args) -> Result<()> {
         "expected an immutable KMS key ARN"
     );
 
-    if manifest.policy["action"] == "activate" {
+    if activate {
         let trust = args
             .custody_trust
             .context("activation requires --custody-trust")?;
@@ -142,17 +156,20 @@ pub(crate) fn sign(args: Args) -> Result<()> {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../enclave/deploy/nitro/custody_ledger.py");
         let mut candidate = tempfile::NamedTempFile::new()?;
         candidate.write_all(text.as_bytes())?;
-        crate::tools::capture_check(
-            Command::new("python3")
-                .arg("-B")
-                .arg(script)
-                .arg(trust)
-                .arg("check-serving-policy")
-                .arg(candidate.path()),
-        )?;
+        let mut check = Command::new("python3");
+        check
+            .arg("-B")
+            .arg(script)
+            .arg(trust)
+            .arg("check-serving-policy")
+            .arg(candidate.path());
+        if args.custody {
+            check.args(["--custody-signer", &args.key, &args.public_key]);
+        }
+        crate::tools::capture_check(&mut check)?;
     }
 
-    let digest = digest(&manifest.policy)?;
+    let digest = digest(&manifest.policy, args.custody)?;
     let mut command = Command::new("aws");
     command.env("AWS_IGNORE_CONFIGURED_ENDPOINT_URLS", "true");
     command.args([
@@ -176,7 +193,7 @@ pub(crate) fn sign(args: Args) -> Result<()> {
     ]);
     let signed: KmsSignature = serde_json::from_slice(&crate::tools::capture_check(&mut command)?)?;
     let signature = decode_signature(&signed, &args.key, &public, &digest)?;
-    manifest.signatures.push(Approval {
+    approvals.push(Approval {
         key: args.public_key,
         signature: encode_lower_hex(&signature.to_bytes()),
     });
