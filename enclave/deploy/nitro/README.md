@@ -409,6 +409,9 @@ the registered target for `pcrs`. Obtain `custodyDigest` with
 Register each serving target before signing an activation. The signing and
 publication tools match its executable, release ID and PCR0–PCR4 to the
 registered serving image and verify its committed, active custody epoch.
+Both publishers require the activation's wallet custody pins to match the
+active roster in their independently distributed custody trust file. They
+leave at least 30 seconds before a scheduled roster cutover to submit the S3 write.
 Give release signers, custody signers and both publishers scoped ledger read
 access using `reader-policy`. Distribute the custody trust file independently.
 Collect the release quorum and two custody signatures on every policy.
@@ -468,7 +471,8 @@ ARNs. Custodian replacements use a measured rotation.
 2. Pin the transition sequence and its `minimumPolicyDigest` in the incoming trust.
    Publish the same signed file to both buckets using the outgoing trust and
    pass `--next-trust "$incoming_trust"` to each publication. The tool checks
-   both sets of pins before writing. Distribute the incoming trust after both
+   both sets of pins before writing. For custody rotation, publish the
+   activation after the incoming roster activates. Distribute the incoming trust after both
    copies are in place.
 3. After wallets adopt the new trust, publish the next revision with the incoming
    quorum and retire the outgoing keys.

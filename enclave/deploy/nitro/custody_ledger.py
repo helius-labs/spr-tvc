@@ -489,10 +489,13 @@ def check_serving_policy(trust, document, custody_signer=None):
 
     with ThreadPoolExecutor(max_workers=len(by_epoch)) as workers:
         list(workers.map(check_epoch, by_epoch.items()))
-    if custody_signer is not None:
-        key_arn, public = custody_signer
-        if not any(pin["keyArn"] == key_arn and signing_sec1(pin) == public for pin in approval_roster(trust)["keys"]):
-            raise ValueError("custody policy signer must match a key in the active custody approval roster")
+    now = time.time()
+    roster = approval_roster(trust, at=now)
+    keys = [(pin["keyArn"], signing_sec1(pin)) for pin in roster["keys"]]
+    if custody_signer is not None and tuple(custody_signer) not in keys:
+        raise ValueError("custody policy signer must match a key in the active custody approval roster")
+    next_cutover = next((str(entry["activeFrom"]) for entry in trust["approvalKeys"] if entry["activeFrom"] > now), None)
+    return {"custodyKeys": [public for _, public in keys], "nextCutover": next_cutover}
 
 
 def draft(trust, capture, build, host, roster):
@@ -740,7 +743,7 @@ def main():
             publish(trust, document)
             return
         if args.command == "check-serving-policy":
-            check_serving_policy(trust, document, args.custody_signer)
+            print(canonical(check_serving_policy(trust, document, args.custody_signer)).decode())
             return
         signed = (sign_epoch(trust, document, args.key, args.build, args.source_commit, args.source_ref,
                              args.inspection_profiles, args.relay_build)

@@ -608,8 +608,8 @@ class CustodyLedgerTests(unittest.TestCase):
                   "targets": [replica]}
 
         def check(custody_signer=None, **overrides):
-            check_serving_policy(self.trust, {"policy": {**policy, **overrides}, "signatures": [],
-                                             "custodySignatures": []}, custody_signer)
+            return check_serving_policy(self.trust, {"policy": {**policy, **overrides}, "signatures": [],
+                                                    "custodySignatures": []}, custody_signer)
 
         with self.assertRaisesRegex(ValueError, "object missing"):
             check()
@@ -655,11 +655,18 @@ class CustodyLedgerTests(unittest.TestCase):
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, old))
         check(minimumCustodyEpoch="1", targets=[replica, {**replica, **target_attestation(old), "custodyEpoch": "1",
                                                           "custodyDigest": sha256(previous["custody"])}])
-        self.rotate_approvals("3")
+        incoming = schedule("3", 9, self.now + 60)
+        self.trust["approvalKeys"].append(incoming)
+        self.assertEqual(check(), {"custodyKeys": [base64.b64decode(pin["publicKey"])[-65:].hex()
+                                                   for pin in self.trust["approvalKeys"][0]["keys"]],
+                                   "nextCutover": str(incoming["activeFrom"])})
+        self.now = incoming["activeFrom"]
         with self.assertRaisesRegex(ValueError, "active custody approval roster"):
             check(custody_signer=signer)
         next_pin = approval_roster(self.trust)["keys"][0]
-        check(custody_signer=(next_pin["keyArn"], base64.b64decode(next_pin["publicKey"])[-65:].hex()))
+        self.assertEqual(check(custody_signer=(next_pin["keyArn"], base64.b64decode(next_pin["publicKey"])[-65:].hex())),
+                         {"custodyKeys": [base64.b64decode(pin["publicKey"])[-65:].hex() for pin in incoming["keys"]],
+                          "nextCutover": None})
         self.objects[f"spr-custody/devnet/{DOMAIN}/retired/2.json"] = b"{}"
         with self.assertRaisesRegex(ValueError, "cannot verify retirement"):
             check()

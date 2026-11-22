@@ -8,13 +8,14 @@ import { encodeLowerHex } from "../../sdk/src/protocol/hex.js";
 import { bucketPolicy, publish, verifyDistributionPins } from "../../xtask/nitro-publish.js";
 
 const secrets = [1, 2, 3, 4].map(byte => Buffer.alloc(32, byte));
-const custodySecrets = [5, 6, 7].map(byte => Buffer.alloc(32, byte));
+const custodySecrets = [5, 6, 7, 8, 9, 10].map(byte => Buffer.alloc(32, byte));
 function publicKey(secret: Uint8Array) {
   const key = createECDH("prime256v1");
   key.setPrivateKey(secret);
   return key.getPublicKey("hex", "uncompressed");
 }
 const keys = secrets.map(publicKey);
+const custodyKeys = custodySecrets.map(publicKey);
 const trustBase = {
   network: "devnet", securityDomainId: "ab".repeat(32), noteSeedCommitment: "de".repeat(32),
   minimumSequence: "1", minimumCustodyEpoch: "1", threshold: 2,
@@ -23,7 +24,7 @@ const trustBase = {
     { bucket: "release-peer", account: "000000000002", region: "eu-west-1" },
   ],
   keys: keys.slice(0, 2),
-  custodyKeys: custodySecrets.map(publicKey),
+  custodyKeys: custodyKeys.slice(0, 3),
 } satisfies Omit<NitroTrust, "minimumPolicyDigest">;
 const now = Date.now();
 const first: NitroPolicy = {
@@ -31,18 +32,23 @@ const first: NitroPolicy = {
   noteSeedCommitment: trustBase.noteSeedCommitment, sequence: "1", minimumCustodyEpoch: "1", previousPolicyDigest: null,
   validFromMs: String(now - 1000), expiresAtMs: String(now + 60_000), targets: [],
 };
+const target = {
+  endpoint: "https://replica.example.com/", releaseId: "candidate", custodyEpoch: "1", executableSha256: "11".repeat(32),
+  custodyDigest: "22".repeat(32),
+  pcrs: { 0: "12".repeat(48), 1: "23".repeat(48), 2: "34".repeat(48), 3: "45".repeat(48), 4: "56".repeat(48) },
+};
 
 function pins(policy: NitroPolicy): NitroTrust {
   return { ...trustBase, minimumSequence: policy.sequence, minimumPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(policy)) };
 }
 const trust = pins(first);
 
-function signed(policy: NitroPolicy, signers = [0, 1]) {
+function signed(policy: NitroPolicy, signers = [0, 1], custodySigners = [0, 1]) {
   const digest = nitroPolicySigningDigest(policy);
   return JSON.stringify({ policy, signatures: signers.map(index => ({
     key: keys[index], signature: encodeLowerHex(signP256Prehash(secrets[index]!, digest)),
-  })), custodySignatures: custodySecrets.slice(0, 2).map((secret, index) => ({
-    key: trust.custodyKeys[index], signature: encodeLowerHex(signP256Prehash(secret, nitroCustodySigningDigest(policy))),
+  })), custodySignatures: custodySigners.map(index => ({
+    key: custodyKeys[index], signature: encodeLowerHex(signP256Prehash(custodySecrets[index]!, nitroCustodySigningDigest(policy))),
   })) });
 }
 
@@ -90,19 +96,18 @@ test("one conditional publisher wins and replaying the exact policy is idempoten
   assert.equal(committed, 1);
 });
 
-test("requires custody registration and live attestation before publishing any activation", async context => {
+test("requires custody registration, the active roster and live attestation before publishing an activation", async context => {
   const fetch = context.mock.method(globalThis, "fetch", async () => new Response(null, { status: 503 }));
-  const activate: NitroPolicy = { ...first, action: "activate", targets: [{
-    endpoint: "https://replica.example.com/", releaseId: "candidate", custodyEpoch: "1", executableSha256: "11".repeat(32),
-    custodyDigest: "22".repeat(32),
-    pcrs: { 0: "12".repeat(48), 1: "23".repeat(48), 2: "34".repeat(48), 3: "45".repeat(48), 4: "56".repeat(48) },
-  }] };
+  const activate: NitroPolicy = { ...first, action: "activate", targets: [target] };
   const text = signed(activate);
   const bucket = trust.publications[0].bucket;
   await assert.rejects(publish(pins(activate), bucket, text), /requires --custody-trust/);
   const custodyTrust = "/pinned/custody.json";
   let checked = 0;
   let approved = false;
+  let roster: { custodyKeys: readonly string[]; nextCutover: string | null } = {
+    custodyKeys: custodyKeys.slice(3), nextCutover: null,
+  };
   const run = async (command: string, args: string[]) => {
     assert.equal(command, "python3");
     assert.ok(args[1]?.endsWith("/custody_ledger.py"));
@@ -111,14 +116,48 @@ test("requires custody registration and live attestation before publishing any a
     assert.equal(fetch.mock.callCount(), 0);
     checked += 1;
     if (!approved) throw new Error("target is absent from the custody ledger");
-    return { stdout: "" };
+    return { stdout: JSON.stringify(roster) };
   };
   await assert.rejects(publish(pins(activate), bucket, text, { custodyTrust, run }), /absent from the custody ledger/);
   assert.equal(fetch.mock.callCount(), 0);
   approved = true;
+  await assert.rejects(publish(pins(activate), bucket, text, { custodyTrust, run }), /active custody approval roster/);
+  roster = { custodyKeys: trust.custodyKeys, nextCutover: String(Math.floor(Date.now() / 1_000) + 10) };
+  await assert.rejects(publish(pins(activate), bucket, text, { custodyTrust, run }), /cutover is too close/);
+  roster.nextCutover = null;
   await assert.rejects(publish(pins(activate), bucket, text, { custodyTrust, run }), /BootProofUnverified/);
   assert.equal(fetch.mock.callCount(), 1);
-  assert.equal(checked, 2);
+  assert.equal(checked, 4);
+});
+
+test("qualifies a planned custody transition only after the incoming roster activates", async context => {
+  const activate: NitroPolicy = {
+    ...first, action: "activate", targets: [target], sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest,
+  };
+  const incoming = { ...pins(activate), custodyKeys: custodyKeys.slice(3) };
+  const text = signed(activate, [0, 1], [0, 1, 3, 4]);
+  let attestationRequests = 0;
+  context.mock.method(globalThis, "fetch", async (url: URL) => {
+    if (url.origin === new URL(target.endpoint).origin) {
+      attestationRequests += 1;
+      return new Response(null, { status: 503 });
+    }
+    return new Response(signed(first));
+  });
+  let activeKeys = trust.custodyKeys;
+  const run = async (command: string, args: string[]) => {
+    if (command === "python3") return { stdout: JSON.stringify({ custodyKeys: activeKeys, nextCutover: null }) };
+    assert.equal(command, "aws");
+    assert.ok(args.includes("get-object"));
+    await writeFile(args.at(-1)!, signed(first));
+    return { stdout: JSON.stringify({ ETag: '"predecessor"' }) };
+  };
+  const options = { run, custodyTrust: "/pinned/custody.json", nextTrust: incoming };
+  await assert.rejects(publish(trust, trust.publications[0].bucket, text, options), /active custody approval roster/);
+  assert.equal(attestationRequests, 0);
+  activeKeys = [...incoming.custodyKeys].reverse();
+  await assert.rejects(publish(trust, trust.publications[0].bucket, text, options), /BootProofUnverified/);
+  assert.equal(attestationRequests, 1);
 });
 
 test("mirrors the first publisher's policy into only the selected pinned bucket", async context => {

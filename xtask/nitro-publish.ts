@@ -10,10 +10,12 @@ import {
   nextNitroPublication, nitroPublication, requireNitroTrustTransition, validateNitroTrust, verifyNitroPolicy, type NitroTrust,
 } from "../sdk/src/attestation/nitro-policy.js";
 import { readNitroPolicy, readPublishedNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
+import { decodeDecimalU64 } from "../sdk/src/protocol/decimal.js";
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
 
 const execute = promisify(execFile);
 const MAX_BYTES = 32_768;
+const CUSTODY_WRITE_MARGIN_MS = 30_000n;
 const custodyLedger = fileURLToPath(new URL("../enclave/deploy/nitro/custody_ledger.py", import.meta.url));
 type Run = (command: string, args: string[], timeout: number) => Promise<{ stdout: string }>;
 const runCommand: Run = (command, args, timeout) => execute(command, args, {
@@ -49,6 +51,12 @@ function publicationFor(trust: NitroTrust, bucket: string) {
   const publication = trust.publications.find(candidate => candidate.bucket === bucket);
   if (!publication) throw new Error("expected one of the pinned publication buckets");
   return nitroPublication(trust, publication);
+}
+
+function requireCustodyWriteWindow(nextCutover: bigint | undefined, now: bigint): void {
+  if (nextCutover !== undefined && now + CUSTODY_WRITE_MARGIN_MS >= nextCutover) {
+    throw new Error("custody approval cutover is too close for publication");
+  }
 }
 
 export function bucketPolicy(trust: NitroTrust, name: string, administrator: string, publisher: string) {
@@ -134,11 +142,22 @@ export async function publish(
       }
     }
     if (!needsWrite) return;
+    let nextCutover: bigint | undefined;
     if (policy.action === "activate" && custodyTrust) {
-      await run("python3", ["-B", custodyLedger, custodyTrust, "check-serving-policy", candidate], 60_000);
+      const { stdout } = await run("python3", ["-B", custodyLedger, custodyTrust, "check-serving-policy", candidate], 60_000);
+      const roster = parseStrictJson<{ custodyKeys: string[]; nextCutover: string | null }>(stdout, ["custodyKeys", "nextCutover"]);
+      const expected = (nextTrust ?? trust).custodyKeys;
+      if (!Array.isArray(roster.custodyKeys) || roster.custodyKeys.length !== expected.length ||
+          !expected.every(key => roster.custodyKeys.includes(key))) {
+        throw new Error("activation requires the active custody approval roster");
+      }
+      if (roster.nextCutover !== null) nextCutover = decodeDecimalU64(roster.nextCutover) * 1_000n;
     }
+    requireCustodyWriteWindow(nextCutover, BigInt(Date.now()));
     await Promise.all(policy.targets.map(target => connectNitroTarget(target, trust)));
-    verifyNitroPolicy(text, trust, BigInt(Date.now()));
+    const beforeWrite = BigInt(Date.now());
+    verifyNitroPolicy(text, trust, beforeWrite);
+    requireCustodyWriteWindow(nextCutover, beforeWrite);
     const precondition = head ? ["--if-match", head.etag] : ["--if-none-match", "*"];
     try {
       await call("put-object", [...precondition, "--content-type", "application/json", "--cache-control", "no-store", "--body", candidate]);
