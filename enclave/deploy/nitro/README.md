@@ -309,7 +309,7 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
 
 ## Recover an occupied ledger slot
 
-Use this procedure when unapproved objects occupy write-once slots.
+Use this procedure when uncommitted objects occupy write-once slots.
 Freeze the original ledger and pause custody changes. Obtain the latest
 independently retained checkpoint for the complete valid history. Prepare
 `recovered-trust.json` with a fresh bucket in a separate account and region
@@ -320,9 +320,11 @@ Save the record names relative to the custody prefix as a JSON array in
 `excluded-records.json`. The draft resolves each name to its exact S3
 version in the frozen source. Two current custody approvers independently
 check and sign that mapping. The plan must fit the 64 KiB custody document
-limit. Every other version must match the pinned
-checkpoint. An approval quorum for an excluded slot in this network and
-security domain blocks repair of that slot.
+limit. Every retained version must match the pinned checkpoint. Repair
+preserves a receipt with its approval quorum and all six valid custodian
+acknowledgements, a target approved at its publication time, and a retirement
+with its approval quorum and three valid replacement proofs. If the tool
+cannot read a replacement receipt needed to verify a retirement, repair stops.
 
 ```sh
 python3 "$nitro/custody_archive.py" trust.json draft-repair recovered-trust.json excluded-records.json \
@@ -735,8 +737,11 @@ current through the last read of both policy buckets.
 An activation with `recoveryOnly: false` lets wallets use the listed targets to
 resolve new payment destinations. On mainnet, even a running enclave must
 retain three recoverable slots per target. Each slot needs its recovery and
-wrapping keys enabled in the slot's account. Give signers, the primary publisher
-and wallet pin verifiers `kms:DescribeKey` on those keys. Add
+wrapping keys enabled in the slot's account. The publisher and wallet pin
+verifier check the exact three slots in the target's attested boot. If a slot
+is unavailable, qualify a boot using three healthy slots before accepting
+new payments. Give signers, the primary publisher and wallet pin verifiers
+`kms:DescribeKey` on those keys. Add
 `--replica-profile "$replica_read_profile"` to `nitro-sign`, primary publication
 and `--check-wallet-trust` for a mainnet payment policy. The read-only profile
 must be in the custody replica owner's account. It checks versioning, ownership,

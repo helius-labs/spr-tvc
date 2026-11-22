@@ -18,7 +18,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/de
 from approval import MAX_DOCUMENT_BYTES, approval_keys, approval_roster, canonical, sha256
 from custody_archive import (
     MAX_ARCHIVE_ENTRY_BYTES, archive, draft_repair, ledger_checkpoint, repair_transfer,
-    require_unapproved_record, sign_repair, verify_archive, verify_ledger_records, verify_promotion,
+    require_uncommitted_record, sign_repair, verify_archive, verify_ledger_records, verify_promotion,
 )
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
@@ -683,6 +683,19 @@ class CustodyLedgerTests(unittest.TestCase):
                     "account": "000000000010", "role": "arn:aws:iam::000000000008:role/replication"}}
         recovered = {**self.trust, "ledger": {"bucket": "clean-recovery", "region": "eu-west-2", "account": "000000000011"}}
         prefix = f"spr-custody/devnet/{DOMAIN}/"
+        retired_name = "retired/1.json"
+        retired_key = prefix + retired_name
+        retired_version = hashlib.sha256(retired_key.encode()).hexdigest()
+        with self.assertRaisesRegex(ValueError, "complete custody approval"):
+            require_uncommitted_record(self.trust, retired_name, retired_version)
+        with patch("custody_archive.load_epoch", side_effect=ValueError("replacement read unavailable")):
+            with self.assertRaisesRegex(ValueError, "replacement read unavailable"):
+                require_uncommitted_record(self.trust, retired_name, retired_version)
+        invalid_proofs = copy.deepcopy(retired)
+        invalid_proofs["recoveryProofs"][0]["signature"] = retired["signatures"][0]["signature"]
+        with patch.dict(self.objects, {retired_key: canonical(invalid_proofs)}):
+            require_uncommitted_record(self.trust, retired_name, retired_version)
+
         bad = "retired/2.json"
         bad_key = prefix + bad
         other = "operator note-é"
@@ -749,7 +762,7 @@ class CustodyLedgerTests(unittest.TestCase):
                     repair_transfer(original, recovered, pin, plan, "source-read", "recovery-read", csv)
             self.assertEqual(csv.getvalue(), "")
             with (patch.dict(self.objects),
-                  patch("custody_archive.require_unapproved_record", side_effect=source_changes)):
+                  patch("custody_archive.require_uncommitted_record", side_effect=source_changes)):
                 with self.assertRaisesRegex(ValueError, "custody bucket custody-journal changed after verification"):
                     draft_repair(original, recovered, pin, exclusions, "source-read")
 
@@ -793,9 +806,8 @@ class CustodyLedgerTests(unittest.TestCase):
                     plan_with_invalid = draft_repair(original, recovered, pin, exclusions, "source-read")
                     self.assertEqual(plan_with_invalid["manifest"]["excluded"][bad], f"invalid-{len(invalid)}")
             approved = self.signed_subject(RETIREMENT, {**retired["manifest"], "epoch": "2", "replacementEpoch": "3"})
-            self.objects[bad_key] = canonical(approved)
-            with self.assertRaisesRegex(ValueError, "valid custody approval quorum"):
-                draft_repair(original, recovered, pin, exclusions, "source-read")
+            self.objects[bad_key] = canonical({**approved, "recoveryProofs": []})
+            self.assertEqual(draft_repair(original, recovered, pin, exclusions, "source-read")["manifest"], plan["manifest"])
 
     def test_receipt_and_target_approvals_protect_only_their_signed_slots(self):
         prefix = f"spr-custody/devnet/{DOMAIN}/"
@@ -803,10 +815,15 @@ class CustodyLedgerTests(unittest.TestCase):
         publish(self.trust, receipt)
         target = self.replacement_target(epoch="1")
         target_name = target_object_name(target)
+        invalid_acks = copy.deepcopy(receipt)
+        invalid_acks["acknowledgements"][0]["signature"] = receipt["authorization"]["signatures"][0]["signature"]
         for name, payload, protected in (
             ("1.json", receipt, True),
+            ("1.json", {**receipt, "acknowledgements": []}, False),
+            ("1.json", invalid_acks, False),
             ("2.json", receipt, False),
             (target_name, self.signed_subject(TARGET_APPROVAL, target), True),
+            (target_name, self.signed_subject(TARGET_APPROVAL, {**target, "expiresAt": self.now}), False),
             (target_name, self.signed_subject(TARGET_APPROVAL, {**target, "releaseId": "different"}), False),
             (target_name, self.signed_subject(TARGET_APPROVAL, {**target, "securityDomainId": "fa" * 32}), False),
             (target_name, {"manifest": {**target, "hostRole": 0}, "signatures": []}, False),
@@ -816,10 +833,10 @@ class CustodyLedgerTests(unittest.TestCase):
                 self.objects[key_name] = canonical(payload)
                 version = hashlib.sha256(key_name.encode()).hexdigest()
                 if protected:
-                    with self.assertRaisesRegex(ValueError, "valid custody approval quorum"):
-                        require_unapproved_record(self.trust, name, version)
+                    with self.assertRaisesRegex(ValueError, "complete custody approval"):
+                        require_uncommitted_record(self.trust, name, version)
                 else:
-                    require_unapproved_record(self.trust, name, version)
+                    require_uncommitted_record(self.trust, name, version)
 
     def test_retirement_inventory_requires_the_actual_replicas_of_its_dependencies(self):
         publish(self.trust, self.sign(self.document(1)))
@@ -1356,6 +1373,15 @@ class CustodyLedgerTests(unittest.TestCase):
             check_release_policy(self.trust, document, replica_profile="replica-read")
             self.assertCountEqual([call.args[0] for call in kms.call_args_list],
                                   [*recovery, *primary["wrappingKeys"], *standby["wrappingKeys"]])
+            bad_metadata.add(standby["wrappingKeys"][-1])
+            check_release_policy(self.trust, document, replica_profile="replica-read",
+                                 bootstrap_slots=[[3, 4, 6], [3, 4, 5]])
+            with self.assertRaisesRegex(ValueError, "target standby has an unavailable attested bootstrap slot"):
+                check_release_policy(self.trust, document, replica_profile="replica-read",
+                                     bootstrap_slots=[[3, 4, 5], [3, 4, 6]])
+            for invalid in ([[3, 4, 5]], [[3, 3, 4], [3, 4, 5]], [[3, 4, 7], [3, 4, 5]]):
+                with self.subTest(slots=invalid), self.assertRaisesRegex(ValueError, "three distinct attested bootstrap slots"):
+                    check_release_policy(self.trust, document, replica_profile="replica-read", bootstrap_slots=invalid)
             # Each set has four keys, but only two slots have both keys.
             bad_metadata.update(standby["wrappingKeys"][-2:])
             with self.assertRaisesRegex(ValueError, "target standby requires three enabled recovery and wrapping pairs"):

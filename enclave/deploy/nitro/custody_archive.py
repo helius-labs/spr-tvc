@@ -16,11 +16,11 @@ from approval import (
     fields, hex_digest, open_regular, parse_json, read_json, require_profile_account, sha256, unique_object,
 )
 from custody_ledger import (
-    LABEL, RETIREMENT, TARGET_APPROVAL, check_custody_history_entry, check_recovery_bucket, ledger_object, ledger_prefix,
-    ledger_record_fingerprint, ledger_record_version, ledger_replica, list_ledger_versions, load_retirement,
+    LABEL, RETIREMENT, TARGET_APPROVAL, check_commit, check_custody_history_entry, check_recovery_bucket, ledger_object,
+    ledger_prefix, ledger_record_fingerprint, ledger_record_version, ledger_replica, list_ledger_versions, load_epoch, load_retirement,
     publication_time, read_registered_target, read_replicated_record, read_stored_object, read_stored_payload,
-    replica_trust, require_frozen_ledger, require_pinned_replication, retirement_object_name, rotation_target_name,
-    storage, target_object_name, verify_ceremony_capture,
+    record, replica_trust, require_frozen_ledger, require_pinned_replication, retirement_object_name, retirement_recovery,
+    rotation_target_name, storage, target_object_name, verify_ceremony_capture, verify_retirement, verify_target_approval,
 )
 
 MAX_ARCHIVE_ENTRY_BYTES = 2 * MAX_DOCUMENT_BYTES + 256
@@ -156,30 +156,27 @@ def check_repair_name(prefix, name):
         raise ValueError("invalid excluded ledger record name")
 
 
-def approval_for_slot(trust, name, label, document):
+def matches_slot(trust, name, label, document):
     try:
         if label == LABEL:
-            approval = document["authorization"]
-            scope = approval["manifest"]["capture"]["receipt"]
+            scope = document["authorization"]["manifest"]["capture"]["receipt"]
             expected = ledger_object(trust, scope["custody"]["epoch"])
         else:
             scope = document["manifest"]
-            approval = {"manifest": scope, "signatures": document["signatures"]}
             if label == TARGET_APPROVAL:
                 if not isinstance(scope["hostRole"], str):
-                    return None
+                    return False
                 expected = target_object_name(scope)
             else:
                 expected = retirement_object_name(scope["epoch"])
-        if (name == expected and
-                (scope["network"], scope["securityDomainId"]) == (trust["network"], trust["securityDomainId"])):
-            return approval
+        return name == expected and (scope["network"], scope["securityDomainId"]) == (
+            trust["network"], trust["securityDomainId"]
+        )
     except (KeyError, TypeError, ValueError):
-        return None
-    return None
+        return False
 
 
-def require_unapproved_record(trust, name, version, **options):
+def require_uncommitted_record(trust, name, version, **options):
     label = next((label for pattern, label in (
         (RECEIPT_NAME, LABEL), (TARGET_NAME, TARGET_APPROVAL), (RETIREMENT_NAME, RETIREMENT)
     ) if pattern.fullmatch(name)), None)
@@ -203,15 +200,32 @@ def require_unapproved_record(trust, name, version, **options):
         document = parse_json(payload)
     except ValueError:
         return
-    approval = approval_for_slot(trust, name, label, document)
-    if approval is None:
+    if not matches_slot(trust, name, label, document):
         return
-    keys = approval_keys(trust, name.removesuffix(".json")) if label == LABEL else approval_roster(trust, at=published_at)["keys"]
     try:
-        check_approvals(keys, label, approval)
-    except (ValueError, TypeError):
+        if label == LABEL:
+            receipt, custodians = record(trust, document)
+            check_commit(trust, document, receipt, custodians)
+        elif label == TARGET_APPROVAL:
+            verify_target_approval(trust, document, at=published_at)
+        else:
+            marker = verify_retirement(trust, document, name.removeprefix("retired/").removesuffix(".json"), published_at)
+            proofs = document["recoveryProofs"]
+            if not isinstance(proofs, list) or len(proofs) != 3:
+                return
+    except (ValueError, TypeError, KeyError):
         return
-    raise ValueError(f"cannot exclude {name} with a valid custody approval quorum for that slot")
+
+    if label == RETIREMENT:
+        # A failed ledger read cannot establish that the signed marker is invalid.
+        _, replacement, custodians = load_epoch(trust, marker["replacementEpoch"], **options)
+        if sha256(replacement) != marker["replacementReceiptSha256"]:
+            raise ValueError("cannot authenticate the replacement receipt for retirement repair")
+        try:
+            retirement_recovery(document, custodians)
+        except (ValueError, TypeError, KeyError):
+            return
+    raise ValueError(f"cannot exclude {name} with a complete custody approval for that slot")
 
 
 def repair_bindings(trust, promoted, expected):
@@ -254,7 +268,7 @@ def repair_source(trust, promoted, expected, plan, profile, *, minimum):
     require_profile_account(profile, source["region"], source["account"])
     _, versions = checkpoint(original, expected, excluded=excluded, profile=profile)
     for name, version in excluded.items():
-        require_unapproved_record(original, name, version, profile=profile)
+        require_uncommitted_record(original, name, version, profile=profile)
     require_unchanged_versions(original, {**versions, **excluded}, profile=profile)
     require_frozen_ledger(original, profile=profile)
     require_current_repair(trust, manifest)

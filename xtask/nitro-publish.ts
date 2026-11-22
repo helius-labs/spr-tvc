@@ -35,7 +35,10 @@ type PublicationOptions = {
   probe?: (target: NitroTarget, trust: NitroTrust) => Promise<ReplicaProbe>;
 };
 
-type ReplicaProbe = Pick<Awaited<ReturnType<typeof probeNitroTarget>>, "window">;
+type ReplicaProbe = {
+  readonly bootstrapSlots: readonly [number, number, number];
+  readonly window: Awaited<ReturnType<typeof probeNitroTarget>>["window"];
+};
 
 function requireFreshProbes(probes: readonly ReplicaProbe[], now: bigint, margin = 0): void {
   if (probes.some(({ window }) => !(remainingReleasePolicyMs(window, now) > margin))) {
@@ -73,9 +76,15 @@ function requireCustodyWriteWindow(nextCutover: bigint | undefined, now: bigint)
   }
 }
 
-async function checkActivationRoster(candidate: string, custodyTrust: string, trust: NitroTrust, run: Run, replicaProfile?: string) {
+async function checkActivationRoster(
+  candidate: string, custodyTrust: string, trust: NitroTrust, run: Run, replicaProfile?: string,
+  paymentProbes?: readonly ReplicaProbe[],
+) {
   const args = ["-B", custodyLedger, custodyTrust, "check-release-policy", candidate];
   if (replicaProfile !== undefined) args.push("--replica-profile", replicaProfile);
+  if (paymentProbes && (trust.network === "mainnet" || replicaProfile !== undefined)) {
+    args.push("--bootstrap-slots", JSON.stringify(paymentProbes.map(probe => probe.bootstrapSlots)));
+  }
   const { stdout } = await run("python3", args, 60_000);
   const roster = parseStrictJson<{ custodyKeys: string[]; nextCutover: string | null }>(stdout, ["custodyKeys", "nextCutover"]);
   const expected = trust.custodyKeys;
@@ -199,7 +208,9 @@ export async function publish(
       requireCustodyWriteWindow(cutover, BigInt(Date.now()));
       probes = await Promise.all(policy.targets.map(target => probe(target, trust)));
       await checkMirror();
-      confirmedCutover = await checkActivationRoster(candidate, custodyTrust, custodyPins, run, replicaProfile);
+      confirmedCutover = await checkActivationRoster(
+        candidate, custodyTrust, custodyPins, run, replicaProfile, policy.recoveryOnly ? undefined : probes,
+      );
     }
     const latestPrimary = isSecond ? await readPeer() : undefined;
     const beforeWrite = BigInt(Date.now());
@@ -253,7 +264,9 @@ export async function verifyDistributionPins(
     await writeFile(candidate, published.text, { mode: 0o600, flag: "wx" });
     await checkActivationRoster(candidate, custodyTrust, trust, run, replicaProfile);
     const probes = await Promise.all(published.policy.targets.map(target => probe(target, trust)));
-    const nextCutover = await checkActivationRoster(candidate, custodyTrust, trust, run, replicaProfile);
+    const nextCutover = await checkActivationRoster(
+      candidate, custodyTrust, trust, run, replicaProfile, published.policy.recoveryOnly ? undefined : probes,
+    );
     const confirmed = await pinnedPublication(trust);
     if (confirmed.text !== published.text) throw new Error("signed policy changed during wallet trust verification");
     const now = BigInt(Date.now());

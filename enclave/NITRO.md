@@ -118,6 +118,10 @@ the replacement registration. The verifier allows equal S3 timestamps.
 An exact target registration retry verifies the stored record at its original
 write time and confirms the epoch is open. Retiring an approval or
 acknowledgement signing key leaves custody receipts verifiable offline.
+Repair can exclude an incomplete record from the recovered ledger if the frozen
+source retains it and every retained version matches the independent checkpoint.
+Two current custody approvers sign the exact excluded versions. A complete
+receipt, target approval or retirement for its occupied slot blocks exclusion.
 The archive checks the independently pinned receipt chain and its publication
 times, each registered rotation approval, and each ceremony’s Nitro proof at
 its recorded verification time. An independently retained
@@ -292,9 +296,11 @@ a proof from that same boot and pass the wallet's X25519 and BN254 key checks.
 Wallet trust distribution and retirement use
 the same probe. A planned transition matches the incoming pins. The publisher
 rechecks the peer's signed file, the registered targets, epoch closure and
-the active custody roster after probing. Payment activation on mainnet also
-checks the pinned replica's installed protections using a read-only identity
-in the replica account. Devnet can rehearse the same checks. The primary
+the active custody roster after probing. For mainnet payments, the publisher
+and wallet pin verifier require both keys to remain enabled in each slot
+named by that target's attested bootstrap. They also check the pinned replica's
+installed protections using a read-only identity in the replica account.
+Devnet can rehearse the same checks. The primary
 submits the conditional write with more than 30 seconds until policy expiry,
 replica probe expiry, or custody roster cutover. A revocation has no targets. Its sequence, custody floor and
 recovery flag can permanently change wallet state, so it also requires both quorums.

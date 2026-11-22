@@ -771,7 +771,7 @@ def wrapping_pairs(target, custodians):
 
 def require_payment_recovery_quorums(target_slots):
     keys = list(dict.fromkeys(
-        key for _, _, pairs in target_slots for pair in pairs for key in pair
+        key for _, _, pairs, _ in target_slots for pair in pairs for key in pair
     ))
 
     def enabled(key):
@@ -783,12 +783,16 @@ def require_payment_recovery_quorums(target_slots):
 
     with ThreadPoolExecutor(max_workers=min(len(keys), 24)) as workers:
         available = {key for key, valid in zip(keys, workers.map(enabled, keys), strict=True) if valid}
-    for epoch, release, pairs in target_slots:
-        if sum(recovery in available and wrapping in available for recovery, wrapping in pairs) < 3:
+    for epoch, release, pairs, bootstrapped in target_slots:
+        ready = {slot for slot, (recovery, wrapping) in enumerate(pairs, 1)
+                 if recovery in available and wrapping in available}
+        if len(ready) < 3:
             raise ValueError(f"custody epoch {epoch} target {release} requires three enabled recovery and wrapping pairs")
+        if bootstrapped is not None and not ready.issuperset(bootstrapped):
+            raise ValueError(f"custody epoch {epoch} target {release} has an unavailable attested bootstrap slot")
 
 
-def check_release_policy(trust, document, custody_signer=None, *, replica_profile=None):
+def check_release_policy(trust, document, custody_signer=None, *, replica_profile=None, bootstrap_slots=None):
     fields(document, "policy", "signatures", "custodySignatures")
     policy = document["policy"]
     targets = policy["targets"]
@@ -810,13 +814,20 @@ def check_release_policy(trust, document, custody_signer=None, *, replica_profil
         raise ValueError("mainnet payment activation requires --replica-profile")
     if verify_payment_recovery and ledger_backup is None:
         raise ValueError("payment recovery verification requires a pinned custody ledger replica")
+    if bootstrap_slots is not None and (
+            not verify_payment_recovery or not isinstance(bootstrap_slots, list) or len(bootstrap_slots) != len(targets) or
+            any(not isinstance(slots, list) or len(slots) != 3 or
+                any(type(slot) is not int or slot not in range(1, 7) for slot in slots) or len(set(slots)) != 3
+                for slots in bootstrap_slots)):
+        raise ValueError("expected three distinct attested bootstrap slots in policy target order")
     by_epoch = {}
     floor = epoch_number(policy["minimumCustodyEpoch"])
-    for target in targets:
+    for index, target in enumerate(targets):
         epoch = target["custodyEpoch"]
         if epoch_number(epoch) < floor:
             raise ValueError("serving target is below the wallet custody floor")
-        by_epoch.setdefault(epoch, []).append(target)
+        slots = None if bootstrap_slots is None else bootstrap_slots[index]
+        by_epoch.setdefault(epoch, []).append((target, slots))
 
     def check_epoch(item):
         epoch, replicas = item
@@ -827,7 +838,7 @@ def check_release_policy(trust, document, custody_signer=None, *, replica_profil
         custody_digest, receipt_digest = sha256(custody), sha256(receipt)
         registrations = set()
         target_slots = []
-        for replica in replicas:
+        for replica, slots in replicas:
             if replica["custodyDigest"] != custody_digest:
                 raise ValueError("serving target does not match the committed custody record")
             identity = {"releaseId": replica["releaseId"], "pcrs": replica["pcrs"]}
@@ -838,7 +849,7 @@ def check_release_policy(trust, document, custody_signer=None, *, replica_profil
                 raise ValueError("serving executable does not match the custody-approved target")
             registrations.add(name)
             pairs = wrapping_pairs(registered, custodians)
-            target_slots.append((epoch, registered["releaseId"], pairs))
+            target_slots.append((epoch, registered["releaseId"], pairs, slots))
         return registrations, target_slots
 
     with ThreadPoolExecutor(max_workers=len(by_epoch)) as workers:
@@ -1103,6 +1114,7 @@ def main():
     post.add_argument("candidate", type=Path)
     check = commands.add_parser("check-release-policy")
     check.add_argument("--replica-profile")
+    check.add_argument("--bootstrap-slots", help="JSON array of attested slot triples in policy target order")
     check.add_argument("candidate", type=Path)
     check.add_argument("--custody-signer", nargs=2, metavar=("KEY_ARN", "SEC1_HEX"))
     get = commands.add_parser("read")
@@ -1163,8 +1175,9 @@ def main():
             publish(trust, document)
             return
         if args.command == "check-release-policy":
+            slots = parse_json(args.bootstrap_slots.encode()) if args.bootstrap_slots is not None else None
             print(canonical(check_release_policy(trust, document, args.custody_signer,
-                                                 replica_profile=args.replica_profile)).decode())
+                                                 replica_profile=args.replica_profile, bootstrap_slots=slots)).decode())
             return
         signed = (sign_epoch(trust, document, args.key, args.build, args.review,
                              args.inspection_profiles, args.relay_build)

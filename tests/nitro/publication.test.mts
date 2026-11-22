@@ -63,7 +63,7 @@ function awsOnly(aws: (args: string[]) => Promise<{ stdout: string }>) {
 }
 
 function freshProbe(remaining = () => 60_000) {
-  return { window: {
+  return { bootstrapSlots: [1, 2, 3] as const, window: {
     releasePolicyValidFromMs: BigInt(now - 1_000),
     releasePolicyExpiresAtMs: BigInt(now + 120_000),
     policyFreshnessRemainingMs: remaining,
@@ -315,12 +315,19 @@ test("rechecks live replica evidence after the final custody read", async contex
   context.mock.method(globalThis, "fetch", async () => new Response(peer));
   let remaining = 0;
   let remainingAfterCustody = 30_000;
+  let unavailableBootstrap = false;
   const options = {
     custodyTrust: "custody.json",
     replicaProfile: "replica-read",
     async run(command: string, args: string[]) {
       if (command === "python3") {
-        assert.deepEqual(args.slice(5), ["--replica-profile", "replica-read"]);
+        const profiles = ["--replica-profile", "replica-read"];
+        if (args.includes("--bootstrap-slots")) {
+          assert.deepEqual(args.slice(5), [...profiles, "--bootstrap-slots", "[[1,2,3]]"]);
+          if (unavailableBootstrap) throw new Error("unavailable attested bootstrap slot");
+        } else {
+          assert.deepEqual(args.slice(5), profiles);
+        }
         remaining = remainingAfterCustody;
         return { stdout: JSON.stringify({ custodyKeys: trust.custodyKeys, nextCutover: null }) };
       }
@@ -334,6 +341,10 @@ test("rechecks live replica evidence after the final custody read", async contex
   remainingAfterCustody = 0;
   peer = text;
   await assert.rejects(verifyDistributionPins(pins(activation), options), /replica probe expired or has insufficient time/);
+  unavailableBootstrap = true;
+  await assert.rejects(verifyDistributionPins(pins(activation), options), /unavailable attested bootstrap slot/);
+  peer = predecessor;
+  await assert.rejects(publish(trust, primary.bucket, text, options), /unavailable attested bootstrap slot/);
 });
 
 test("mirrors the first publisher's policy into only the selected pinned bucket", async context => {
