@@ -58,6 +58,7 @@ export type ConnectedTvcRuntime = {
   readonly backend: EnclaveBackend;
   readonly info: ServiceInfo;
   readonly transport: DecryptionServiceTransport;
+  readonly responseTimeoutMs?: number;
   readonly releasePolicyValidFromMs: bigint;
   readonly releasePolicyExpiresAtMs: bigint;
   readonly requireCurrentCheckpoint?: (signal?: AbortSignal) => Promise<void>;

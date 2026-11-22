@@ -48,7 +48,10 @@ approval returns, and before opening the reply.
 A signed activation advances the checkpoint after a replica attests. A signed
 revocation advances it immediately and returns `ReleasePolicyRevoked`.
 
-The same `address` and `open` APIs work with the attested client. The SDK
-conveys an unavailable session to the caller so the next action can select
-another replica. It never resubmits a wallet approval to a different target.
+The same `address` and `open` APIs work with the attested client. Nitro allows
+12 seconds for an operation's HTTP response within the caller's overall
+deadline. An unsigned key lookup can retry once after fresh policy checks and
+attestation. A rate-limit response goes straight to the caller. Each signed
+decrypt uses one boot and one wallet approval. After a replica failure, the
+next explicit call can establish a fresh session.
 See [release configuration](../enclave/deploy/nitro/README.md).

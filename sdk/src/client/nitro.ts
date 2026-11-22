@@ -22,6 +22,7 @@ export type NitroDecryptionServiceConfig = {
 };
 
 const CONNECTION_TTL_MS = 60_000n;
+const RESPONSE_TIMEOUT_MS = 12_000;
 const clock = () => BigInt(Date.now());
 
 /** Uses an independently pinned release quorum and attests the selected Nitro replica. */
@@ -80,6 +81,7 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
         backend: { endpoint },
         info,
         transport: nitroTransport,
+        responseTimeoutMs: RESPONSE_TIMEOUT_MS,
         nowMs: clock,
         releasePolicyValidFromMs: validFrom,
         releasePolicyExpiresAtMs: sessionExpiry < expiresAt ? sessionExpiry : expiresAt - 1n,
@@ -99,5 +101,5 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
     }
     throw new DecryptionServiceError("BootProofUnverified", "no authorized Nitro replica reachable");
   });
-  return decryptionServiceFromSession(session, config.requestTimeoutMs);
+  return decryptionServiceFromSession(session, { requestTimeoutMs: config.requestTimeoutMs, retryPublicKeys: true });
 }

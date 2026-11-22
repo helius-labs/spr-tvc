@@ -188,7 +188,7 @@ export async function sealedExchange(
   const maxResponseBytes = BigInt(context.info.max_encrypted_response_bytes);
   const responseText = await sendToEnclave(
     context.backend.endpoint, encrypted, context.transport,
-    maxResponseBytes * 2n + RESPONSE_ENVELOPE_SLACK, signal,
+    maxResponseBytes * 2n + RESPONSE_ENVELOPE_SLACK, signal, context.responseTimeoutMs,
   );
   const response = parseStrictJson<EncryptedResponse>(responseText, ENCRYPTED_RESPONSE_KEYS);
   if (

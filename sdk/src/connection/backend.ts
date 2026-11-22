@@ -1,4 +1,4 @@
-import { awaitWithSignal } from "./request.js";
+import { awaitWithSignal, requestScope } from "./request.js";
 import { DecryptionServiceError } from "../protocol/error.js";
 import { canonicalizeJsonValue } from "../protocol/jcs.js";
 import type {
@@ -102,10 +102,22 @@ export async function sendToEnclave(
   transport: DecryptionServiceTransport,
   maxAnswerBytes: bigint,
   signal?: AbortSignal,
+  timeoutMs?: number,
 ): Promise<string> {
-  const response = await postJson(
-    transport, endpointUrl(endpoint, "/v1/operations"), canonicalizeJsonValue(request), signal,
-  );
-  const code = response.status >= 500 ? "OperationUnavailable" : "OperationRejected";
-  return readAnswer(response, code, maxAnswerBytes, signal);
+  const scope = timeoutMs === undefined ? undefined : requestScope({ timeoutMs, ...(signal ? { signal } : {}) });
+  const responseSignal = scope?.signal ?? signal;
+  try {
+    const response = await postJson(
+      transport, endpointUrl(endpoint, "/v1/operations"), canonicalizeJsonValue(request), responseSignal,
+    );
+    const code = response.status >= 500 ? "OperationUnavailable" : "OperationRejected";
+    return await readAnswer(response, code, maxAnswerBytes, responseSignal);
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (scope?.signal.aborted) throw new DecryptionServiceError("EndpointUnavailable", "replica response timed out");
+    if (scope && error instanceof TypeError) throw new DecryptionServiceError("EndpointUnavailable");
+    throw error;
+  } finally {
+    scope?.dispose();
+  }
 }

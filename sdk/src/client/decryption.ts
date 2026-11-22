@@ -46,7 +46,7 @@ export type DecryptionService = {
 
 export function decryptionServiceFromSession(
   session: DecryptionServiceSession,
-  requestTimeoutMs?: number,
+  { requestTimeoutMs, retryPublicKeys = false }: { requestTimeoutMs?: number | undefined; retryPublicKeys?: boolean } = {},
 ): DecryptionService {
   async function withinRequest<T>(
     options: DecryptionServiceRequestOptions | undefined,
@@ -64,15 +64,22 @@ export function decryptionServiceFromSession(
     operation: T,
     signal: AbortSignal,
   ): Promise<ServiceCallResult<T>> {
-    const context = await session.context(signal);
-    try {
-      return await executeServiceCall(context, operation, signal);
-    } catch (error) {
-      if ((error instanceof DecryptionServiceHttpError && error.status !== 429) ||
-          (error instanceof DecryptionServiceError && ["EndpointUnavailable", "ReleasePolicySuperseded"].includes(error.code))) {
-        session.forget(context);
+    let retry = retryPublicKeys && operation.type === "PublicKeys";
+    for (;;) {
+      const context = await session.context(signal);
+      try {
+        return await executeServiceCall(context, operation, signal);
+      } catch (error) {
+        if ((error instanceof DecryptionServiceHttpError && error.status !== 429) ||
+            (error instanceof DecryptionServiceError && [
+              "EndpointUnavailable", "ReleasePolicySuperseded", "BootProofUnverified", "ReleaseBindingMismatch",
+            ].includes(error.code))) {
+          session.forget(context);
+        }
+        if (!retry || !retryableLookupFailure(error)) throw error;
+        signal.throwIfAborted();
+        retry = false;
       }
-      throw error;
     }
   }
 
@@ -117,6 +124,12 @@ export function decryptionServiceFromSession(
   };
 }
 
+function retryableLookupFailure(error: unknown): boolean {
+  // A restarted boot rejects requests sealed to the old key with a generic 400.
+  if (error instanceof DecryptionServiceHttpError) return error.status === 400 || error.status === 408 || error.status >= 500;
+  return error instanceof DecryptionServiceError && error.code === "EndpointUnavailable";
+}
+
 /** A client of the decryption service at `config.endpoint`, verified against its release. */
 export function createDecryptionService(config: DecryptionServiceConfig): DecryptionService {
   const network = requireNetwork(config.network);
@@ -129,6 +142,6 @@ export function createDecryptionService(config: DecryptionServiceConfig): Decryp
       ...(network === "devnet" && nowMs !== undefined ? { nowMs } : {}),
       ...(transport === undefined ? {} : { transport }),
     }),
-    requestTimeoutMs,
+    { requestTimeoutMs },
   );
 }

@@ -134,7 +134,7 @@ it.each([undefined, 25])("bounds stalled verification with client timeout %s", a
   vi.useFakeTimers();
   try {
     const connect = vi.fn((_signal: AbortSignal) => new Promise<ConnectedTvcRuntime>(() => {}));
-    const service = decryptionServiceFromSession(sessionFromConnector(connect), timeoutMs);
+    const service = decryptionServiceFromSession(sessionFromConnector(connect), { requestTimeoutMs: timeoutMs });
     for (const invalid of [0, -1, NaN, Infinity, 0.5, 2_147_483_648]) {
       await expect(service.address(ownerAddress, { timeoutMs: invalid })).rejects.toThrow("InvalidRequestTimeout");
     }
@@ -165,7 +165,7 @@ it.each(["caller", "client"])("uses one %s deadline across all decrypt batches",
   const viewing = ViewingKey.generate();
   const viewingPublicKey = viewing.publicKey();
   const service = decryptionServiceFromSession(
-    sessionFromConnector(async () => context), source === "client" ? 10 : undefined,
+    sessionFromConnector(async () => context), { requestTimeoutMs: source === "client" ? 10 : undefined },
   );
   const operation = vi.spyOn(exchange, "executeServiceCall")
     .mockResolvedValueOnce({
