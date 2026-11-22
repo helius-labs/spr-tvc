@@ -20,8 +20,9 @@ Pin `trust.json` outside the host and artifact distributor. It contains
 `network`, `securityDomainId` (32 random bytes in lowercase hex), `approvalKeys`,
 `recoveryRelays`, the ordered wallet policy `publications` pair, and `ledger`.
 Each bucket lists `bucket`, `region` and `account` (the 12-digit bucket owner's
-account ID). For each wallet policy bucket, pin its `administratorRole` and
-`publisherRole` as separate IAM role ARNs in `publicationRoles`, keyed by
+account ID). In `ledger`, also pin `administratorRole` to the IAM role ARN
+allowed to administer the custody bucket. For each wallet policy bucket, pin
+its `administratorRole` and `publisherRole` in `publicationRoles`, keyed by
 bucket name. Keep the file under independent custody administration.
 Each `approvalKeys` entry contains `fromEpoch`, `activeFrom`
 in Unix seconds, and three exported key objects. Start at epoch `"1"` with
@@ -32,7 +33,7 @@ owns share 1.
 
 ```sh
 nitro=enclave/deploy/nitro
-python3 "$nitro/custody_ledger.py" trust.json policy "$ledger_admin_role" "$publisher_role" "$reader_role" > ledger-policy.json
+python3 "$nitro/custody_ledger.py" trust.json policy "$publisher_role" "$reader_role" > ledger-policy.json
 python3 "$nitro/custody_ledger.py" trust.json reader-policy > ledger-reader-policy.json
 python3 "$nitro/custody_ledger.py" trust.json recovery-policy "$custodian_role" "$retirement_role" 1 > recovery-policy.json
 python3 "$nitro/custody_ledger.py" trust.json acknowledgement-policy "$custodian_role" "$retirement_role" > ack-policy.json
@@ -49,7 +50,7 @@ The bucket accepts only the replication configuration pinned below. Check the
 installed controls with the same role list before publishing custody records.
 
 ```sh
-python3 "$nitro/custody_ledger.py" trust.json policy "$ledger_admin_role" "$publisher_role" "$reader_role" --check-installed
+python3 "$nitro/custody_ledger.py" trust.json policy "$publisher_role" "$reader_role" --check-installed
 ```
 
 Run the check with AWS CLI v2 supporting `--cli-error-format json` and with
@@ -99,13 +100,14 @@ inspecting that slot's keys.
 
 Mainnet activation requires S3 replicas that preserve the original version IDs
 and write times used to verify historical approvals. Add `ledgerReplica` to
-custody trust with the destination `bucket`, `account`, `region`, and the dedicated
+custody trust with the destination `bucket`, `account`, `region`, its
+`administratorRole` ARN in the destination account, and the dedicated
 replication `role` ARN in the source account. Use a separate account and region.
 Set up both private, versioned, bucket-owner-enforced buckets before genesis.
 The source uses SSE-S3 for custody records. [S3 replication](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication.html)
 
 ```sh
-python3 "$nitro/custody_ledger.py" trust.json replica-plan "$replica_admin_role" "$replica_publisher_role" "$replica_reader_role" > replica-plan.json
+python3 "$nitro/custody_ledger.py" trust.json replica-plan "$replica_publisher_role" "$replica_reader_role" > replica-plan.json
 ```
 
 Create the source role with `roleTrust` and `rolePermissions`. Install
@@ -114,7 +116,10 @@ from the updated trust file and install `replication` as the S3 replication
 configuration on the source. Run `policy --check-installed` on the source.
 The recovery account administers the destination. Only the pinned S3 role can
 replicate records there, and the destination denies publisher writes and
-replicated deletions. [AWS replication permissions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/setting-repl-config-perm-overview.html)
+replicated deletions. Payment activation, retirement inspection and promotion
+also require the installed policy to deny changes to the bucket controls by
+any role other than the independently pinned administrator.
+[AWS replication permissions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/setting-repl-config-perm-overview.html)
 
 Replication is asynchronous. For a planned cutover, freeze the source and
 record a checkpoint once the pinned destination has every record. The tool
@@ -254,15 +259,16 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    [S3 version listing](https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectVersions.html)
 
    ```sh
-   python3 "$nitro/custody_ledger.py" trust.json policy "$ledger_admin_role" "$publisher_role" "$reader_role" --frozen > ledger-frozen-policy.json
+   python3 "$nitro/custody_ledger.py" trust.json policy "$publisher_role" "$reader_role" --frozen > ledger-frozen-policy.json
    AWS_PROFILE="$source_read_profile" python3 "$nitro/custody_archive.py" trust.json ledger-checkpoint
    ```
 
    Suspend registration, share release and key retirement if the canonical
    ledger becomes unavailable or incomplete. Keep the original ledger frozen
-   throughout promotion and afterward. In `recovered-trust.json`, set `ledger`
-   to the original trust's pinned replica and replace the old `ledgerReplica`
-   entry with the new destination. Preserve the rest of the trust file.
+   throughout promotion and afterward. In `recovered-trust.json`, copy
+   `bucket`, `account`, `region` and `administratorRole` from the original
+   pinned replica to `ledger`. Set `ledgerReplica` to the new destination
+   and preserve the rest of the trust file.
 
    Mainnet promotion requires a new replica. Install the frozen policy and
    configure outbound replication on the recovered bucket.
@@ -519,7 +525,7 @@ pinned history and excluded versions.
    the ledger installation check, excluding `s3:GetReplicationConfiguration`.
    Inspection checks the profile's account through STS, then checks versioning,
    bucket ownership, public access blocks, the write and deletion policy,
-   and absence of lifecycle rules. [S3 bucket policy permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketPolicy.html)
+   the pinned administrator restriction, and absence of lifecycle rules. [S3 bucket policy permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketPolicy.html)
 
    Include retirement signers, publishers and inspectors in both reader
    lists. Grant `s3:ListBucket` for the source custody prefix and

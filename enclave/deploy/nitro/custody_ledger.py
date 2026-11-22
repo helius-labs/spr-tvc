@@ -98,10 +98,12 @@ def validate_roster(trust, custodians, host):
 
 def ledger_prefix(trust):
     ledger = trust["ledger"]
-    fields(ledger, "bucket", "account", "region")
+    fields(ledger, "bucket", "account", "region", "administratorRole")
     if not (re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", ledger["bucket"]) and
             re.fullmatch(r"[0-9]{12}", ledger["account"]) and re.fullmatch(r"[a-z0-9-]+", ledger["region"])):
         raise ValueError("expected pinned custody bucket, AWS account and region")
+    if arn(ROLE_ARN, ledger["administratorRole"])[1] != ledger["account"]:
+        raise ValueError("bucket administrator must be in the custody ledger account")
     network, domain = trust["network"], trust["securityDomainId"]
     validate_scope(network, domain, "custody", "1")
     return ledger, f"spr-custody/{network}/{domain}/"
@@ -361,18 +363,20 @@ def ledger_replica(trust):
     if "ledgerReplica" not in trust:
         return None
     replica = trust["ledgerReplica"]
-    fields(replica, "bucket", "region", "account", "role")
+    fields(replica, "bucket", "region", "account", "administratorRole", "role")
     source, _ = ledger_prefix(trust)
     destination, _ = ledger_prefix(replica_trust(trust, replica))
     if (any(source[field] == destination[field] for field in ("bucket", "account", "region")) or
             arn(ROLE_ARN, replica["role"])[1] != source["account"]):
         raise ValueError("ledger replication requires a source role and a separate bucket, account and region")
+    if replica["role"] == source["administratorRole"]:
+        raise ValueError("ledger replication requires its own role")
     return replica
 
 
 def replica_trust(trust, replica):
     return {"network": trust["network"], "securityDomainId": trust["securityDomainId"],
-            "ledger": {name: replica[name] for name in ("bucket", "region", "account")}}
+            "ledger": {name: replica[name] for name in ("bucket", "region", "account", "administratorRole")}}
 
 
 def replication_configuration(trust, replica):
@@ -384,12 +388,26 @@ def replication_configuration(trust, replica):
     }]}
 
 
-def ledger_policy(trust, administrator, publisher, readers, *, frozen=False):
+def ledger_administration_statement(trust):
+    ledger, _ = ledger_prefix(trust)
+    return {
+        "Sid": "RestrictBucketAdministration", "Effect": "Deny", "Principal": "*",
+        "Action": ["s3:DeleteBucket", "s3:DeleteBucketPolicy", "s3:PutBucketPolicy", "s3:PutBucketVersioning",
+                   "s3:PutLifecycleConfiguration", "s3:PutReplicationConfiguration", "s3:PutBucketOwnershipControls",
+                   "s3:PutBucketAcl", "s3:PutBucketPublicAccessBlock", "s3:PutEncryptionConfiguration",
+                   "s3:PutBucketObjectLockConfiguration"],
+        "Resource": f"arn:aws:s3:::{ledger['bucket']}",
+        "Condition": {"StringNotEquals": {"aws:PrincipalArn": ledger["administratorRole"]}},
+    }
+
+
+def ledger_policy(trust, publisher, readers, *, frozen=False):
     read, listing = ledger_reader_policy(trust)["Statement"]
     ledger = trust["ledger"]
+    administrator = ledger["administratorRole"]
     if arn(ROLE_ARN, publisher)[1] != ledger["account"]:
         raise ValueError("publisher must be a dedicated role in the custody ledger account")
-    if arn(ROLE_ARN, administrator)[1] != ledger["account"] or administrator in {publisher, *readers}:
+    if administrator in {publisher, *readers}:
         raise ValueError("bucket administrator must be a separate role in the custody ledger account")
     for reader in readers:
         arn(ROLE_ARN, reader)
@@ -402,12 +420,7 @@ def ledger_policy(trust, administrator, publisher, readers, *, frozen=False):
     principals = {"AWS": sorted(data_roles)}
     allowed_to_read = [administrator, *sorted(data_roles | replica_role)]
     policy = {"Version": "2012-10-17", "Statement": [
-        {"Sid": "RestrictBucketAdministration", "Effect": "Deny", "Principal": "*",
-         "Action": ["s3:DeleteBucket", "s3:DeleteBucketPolicy", "s3:PutBucketPolicy", "s3:PutBucketVersioning",
-                    "s3:PutLifecycleConfiguration", "s3:PutReplicationConfiguration", "s3:PutBucketOwnershipControls",
-                    "s3:PutBucketAcl", "s3:PutBucketPublicAccessBlock", "s3:PutEncryptionConfiguration",
-                    "s3:PutBucketObjectLockConfiguration"],
-         "Resource": listing["Resource"], "Condition": {"StringNotEquals": {"aws:PrincipalArn": administrator}}},
+        ledger_administration_statement(trust),
         {"Sid": "RestrictRecordReads", "Effect": "Deny", "Principal": "*", "Action": "s3:GetObject*", "Resource": resource,
          "Condition": {"StringNotEquals": {"aws:PrincipalArn": allowed_to_read}}},
         {"Sid": "RestrictBucketListing", "Effect": "Deny", "Principal": "*", "Action": "s3:ListBucket*",
@@ -430,13 +443,13 @@ def ledger_policy(trust, administrator, publisher, readers, *, frozen=False):
     return policy
 
 
-def ledger_replica_plan(trust, administrator, publisher, readers):
+def ledger_replica_plan(trust, publisher, readers):
     replica = ledger_replica(trust)
     if replica is None:
         raise ValueError("pin ledgerReplica before configuring replication")
     source, prefix = ledger_prefix(trust)
     destination = replica_trust(trust, replica)
-    destination_policy = ledger_policy(destination, administrator, publisher, readers, frozen=True)
+    destination_policy = ledger_policy(destination, publisher, readers, frozen=True)
     history, restriction = replica_history_statements(destination, replica["role"])
     destination_policy["Statement"] = [history if rule["Sid"] == history["Sid"] else rule
                                        for rule in destination_policy["Statement"]]
@@ -481,6 +494,8 @@ def require_frozen_ledger(trust, **options):
     statements = policy.get("Statement") if isinstance(policy, dict) else None
     if not isinstance(statements, list) or custody_history_statement(trust, frozen=True) not in statements:
         raise ValueError("custody ledger checkpoint requires the frozen bucket policy")
+    if ledger_administration_statement(trust) not in statements:
+        raise ValueError("custody ledger is missing the pinned bucket administration policy")
     check_ledger_bucket_controls(trust, **options)
 
 
@@ -525,6 +540,8 @@ def check_recovery_bucket(trust, replica, profile):
         rule not in statements for rule in replica_history_statements(destination, replica["role"])
     ):
         raise ValueError("custody recovery bucket is missing the pinned replica write and delete protections")
+    if ledger_administration_statement(destination) not in statements:
+        raise ValueError("custody recovery bucket is missing the pinned bucket administration policy")
 
 
 def read_epoch_record(trust, epoch, **options):
@@ -1121,13 +1138,11 @@ def main():
     get.add_argument("epoch")
     get.add_argument("--custody-digest", action="store_true")
     policy = commands.add_parser("policy")
-    policy.add_argument("administrator")
     policy.add_argument("publisher")
     policy.add_argument("readers", nargs="+")
     policy.add_argument("--check-installed", action="store_true")
     policy.add_argument("--frozen", action="store_true", help="deny all object writes on this custody prefix")
     replica_plan = commands.add_parser("replica-plan")
-    replica_plan.add_argument("administrator")
     replica_plan.add_argument("publisher")
     replica_plan.add_argument("readers", nargs="+")
     commands.add_parser("reader-policy")
@@ -1142,7 +1157,7 @@ def main():
     try:
         trust = read_json(args.trust)
         if args.command == "policy":
-            expected = ledger_policy(trust, args.administrator, args.publisher, args.readers, frozen=args.frozen)
+            expected = ledger_policy(trust, args.publisher, args.readers, frozen=args.frozen)
             if args.check_installed:
                 check_installed_ledger(trust, expected)
                 print("Custody ledger bucket controls verified")
@@ -1150,7 +1165,7 @@ def main():
                 print(canonical(expected).decode())
             return
         if args.command == "replica-plan":
-            print(canonical(ledger_replica_plan(trust, args.administrator, args.publisher, args.readers)).decode())
+            print(canonical(ledger_replica_plan(trust, args.publisher, args.readers)).decode())
             return
         if args.command == "reader-policy":
             print(canonical(ledger_reader_policy(trust)).decode())
