@@ -1,8 +1,9 @@
 import { p256 } from "@noble/curves/p256";
+import { ed25519 } from "@noble/curves/ed25519";
 import { sha256 } from "@noble/hashes/sha256";
-import { address, signatureBytes, type MessagePartialSigner } from "@solana/kit";
+import { address, getAddressEncoder, signatureBytes, type MessagePartialSigner } from "@solana/kit";
 import { NullifierKey, ViewingKey, initializePoseidon, type ProofService } from "@heliuslabs/spr";
-import type { Bytes16, Bytes31 } from "@heliuslabs/spr/keypair";
+import { X25519PublicKey, type Bytes16, type Bytes31 } from "@heliuslabs/spr/keypair";
 import { BN254_MODULUS_DEC } from "@heliuslabs/spr/transaction";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,7 +15,7 @@ import { createNitroDecryptionService } from "../../src/client/nitro.js";
 import { signP256Message, signP256Prehash } from "../../src/crypto/p256.js";
 import { qosDecrypt, qosEncrypt } from "../../src/crypto/qos.js";
 import { TVC_APP_PROOF_SCHEME } from "../../src/protocol/constants.js";
-import { SERVICE_PROOF_TYPE, serviceRequestDigest, type ServiceRequest, type ServiceResult } from "../../src/protocol/decryption.js";
+import { decryptMessage, SERVICE_PROOF_TYPE, serviceRequestDigest, type ServiceRequest, type ServiceResult } from "../../src/protocol/decryption.js";
 import { resultDigest } from "../../src/protocol/digest.js";
 import { encodeLowerHex, requireHex } from "../../src/protocol/hex.js";
 import { canonicalizeJsonValue } from "../../src/protocol/jcs.js";
@@ -147,7 +148,6 @@ describe("operator replica probe", () => {
   it("requires the operation route and a signed reply from the attested boot", async () => {
     const { policy } = JSON.parse(signedPolicy()) as { policy: NitroPolicy };
     const target = policy.targets[0]!;
-    const probeAddress = "6x5SYnLroiN7WYq8NQYU9KHcH4YjpBbwpUfVu3EB7ieH";
     const fetch = vi.fn<(url: URL, init: RequestInit) => Promise<Response>>();
     vi.stubGlobal("fetch", fetch);
     fetch.mockResolvedValueOnce(attestedDiscovery()).mockResolvedValueOnce(new Response(null, { status: 503 }));
@@ -171,27 +171,83 @@ describe("operator replica probe", () => {
       await expect(probeNitroTarget(target, trust)).rejects.toThrow(error);
     }
 
-    fetch.mockResolvedValueOnce(attestedDiscovery())
-      .mockImplementationOnce(async (_url, init) => lookupReply(init, secrets, probeAddress));
-    const boot = await probeNitroTarget(target, trust);
-    expect(boot.bootstrapSlots).toEqual([1, 3, 5]);
     const paths = ["/v1/nitro/attestation", "/v1/operations"];
-    expect(fetch.mock.calls.map(([url]) => url.pathname)).toEqual(Array.from({ length: 6 }, () => paths).flat());
-    expect(signMessages).not.toHaveBeenCalled();
+    expect(fetch.mock.calls.map(([url]) => url.pathname)).toEqual(Array.from({ length: 5 }, () => paths).flat());
   });
 
-  it("honors an operator deadline while the operation route is stalled", async () => {
+  it.each([
+    ["valid", undefined],
+    ["wrong plaintext", "canary plaintext"],
+    ["wrong nullifier", "canary nullifier key"],
+    ["different boot", "BootProofUnverified"],
+    ["unavailable decrypt", "HTTP 503"],
+  ])("qualifies only a signed canary that opens on the same boot (%s)", async (fault, error) => {
+    await initializePoseidon();
+    const { policy } = JSON.parse(signedPolicy()) as { policy: NitroPolicy };
+    const viewing = ViewingKey.generate();
+    const secret = new Uint8Array(31).fill(9) as Bytes31;
+    const nullifier = NullifierKey.fromSecret(secret);
+    let owner: string | undefined;
+    const fetch = vi.fn(async (url: URL, init: RequestInit) => {
+      if (url.pathname === "/v1/nitro/attestation") return attestedDiscovery();
+      const request = openRequest(init, secrets);
+      const operation = request.operation;
+      if (operation.type === "PublicKeys") {
+        owner = operation.address;
+        return signedReply(request, secrets, {
+          type: "PublicKeys", viewing_public_key: encodeLowerHex(viewing.publicKey().toBytes()),
+          nullifier_public_key: encodeLowerHex(nullifier.publicKey()),
+        });
+      }
+      expect(operation.signer).toBe(owner);
+      expect(BigInt(operation.expires_at_ms)).toBeGreaterThan(BigInt(Date.now()));
+      const ownerBytes = new Uint8Array(getAddressEncoder().encode(address(operation.signer)));
+      expect(ed25519.verify(requireHex(operation.signature, 64),
+        decryptMessage(ownerBytes, trust.network, serviceRequestDigest(request)), ownerBytes)).toBe(true);
+      expect(operation.items).toHaveLength(1);
+      const item = operation.items[0]!;
+      expect(item.label).toBe("Transfer");
+      const plaintext = viewing.decryptUtxo(requireHex(item.ciphertext),
+        X25519PublicKey.fromBytes(requireHex(item.ephemeral_viewing_public_key, 33)),
+        requireHex(item.salt, 16) as Bytes16, Number(item.slot_index));
+      if (fault === "unavailable decrypt") return new Response(null, { status: 503 });
+      if (fault === "wrong plaintext") plaintext[0] = plaintext[0]! ^ 1;
+      return signedReply(request, fault === "different boot" ? replacementBoot : secrets, {
+        type: "Decrypt", plaintexts: [encodeLowerHex(plaintext)],
+        nullifier_secret: fault === "wrong nullifier" ? "10".repeat(31) : encodeLowerHex(secret),
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+    try {
+      const probe = probeNitroTarget(policy.targets[0]!, trust);
+      if (error) await expect(probe).rejects.toThrow(error);
+      else expect((await probe).bootstrapSlots).toEqual([1, 3, 5]);
+      expect(fetch.mock.calls.map(([url]) => url.pathname)).toEqual([
+        "/v1/nitro/attestation", "/v1/operations", "/v1/operations",
+      ]);
+    } finally {
+      viewing.destroy();
+      nullifier.destroy();
+      secret.fill(0);
+    }
+  });
+
+  it.each(["PublicKeys", "Decrypt"])("honors the operator deadline during %s", async stalled => {
     const { policy } = JSON.parse(signedPolicy()) as { policy: NitroPolicy };
     const controller = new AbortController();
     const fetch = vi.fn()
       .mockResolvedValueOnce(attestedDiscovery())
-      .mockImplementationOnce(() => {
+      .mockImplementation((_url, init: RequestInit) => {
+        const { operation } = openRequest(init, secrets);
+        if (operation.type !== stalled && operation.type === "PublicKeys") {
+          return lookupReply(init, secrets, operation.address);
+        }
         controller.abort(new Error("operator deadline expired"));
         return new Promise<Response>(() => {});
       });
     vi.stubGlobal("fetch", fetch);
     await expect(probeNitroTarget(policy.targets[0]!, trust, controller.signal)).rejects.toThrow("operator deadline expired");
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(stalled === "PublicKeys" ? 2 : 3);
   });
 
   it.each(["attestation age", "certificate expiry", "elapsed time"])("discards a reply if %s invalidates the probe", async limit => {
@@ -206,7 +262,9 @@ describe("operator replica probe", () => {
       const fetch = vi.fn().mockResolvedValueOnce(discovery).mockImplementationOnce(async (_url, init: RequestInit) => {
         if (limit === "elapsed time") elapsed = 60_000;
         else wall += 1_000;
-        return lookupReply(init, secrets, "6x5SYnLroiN7WYq8NQYU9KHcH4YjpBbwpUfVu3EB7ieH");
+        const { operation } = openRequest(init, secrets);
+        if (operation.type !== "PublicKeys") throw new Error("expected the first operation");
+        return lookupReply(init, secrets, operation.address);
       });
       vi.stubGlobal("fetch", fetch);
       await expect(probeNitroTarget(policy.targets[0]!, trust)).rejects.toThrow("ExpiredRequest");

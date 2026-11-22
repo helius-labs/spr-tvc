@@ -294,11 +294,12 @@ followed by the same canonical JSON. The SDK verifies both quorums before
 contacting a replica. Separate key pins prevent the release quorum from
 substituting its own recipient keys through an unapproved image. The primary publisher
 checks the predecessor and matches the activation's wallet custody pins to
-the active operator roster. For each target it attests the boot and sends an
-encrypted `PublicKeys` request through the wallet route. The reply must carry
-a proof from that same boot and pass the wallet's X25519 and BN254 key checks.
-Wallet trust distribution and retirement use
-the same probe. A planned transition matches the incoming pins. The publisher
+the active operator roster. For each target it attests the boot, looks up a
+fresh synthetic owner's keys, and sends an owner-signed request to open one
+synthetic note. Both encrypted replies must authenticate to the attested boot.
+The operator checks the plaintext and derives the published nullifier key from
+the returned secret. Wallet trust distribution and retirement use the same
+probe. A planned transition matches the incoming pins. The publisher
 rechecks the peer's signed file, the registered targets, epoch closure and
 the active custody roster after probing. For mainnet payments, the publisher
 and wallet pin verifier require both keys to remain enabled in each slot
