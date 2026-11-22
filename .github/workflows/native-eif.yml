@@ -10,6 +10,7 @@ on:
       - enclave/Cargo.toml
       - enclave/deploy/nitro/approval.py
       - enclave/deploy/nitro/build-eif.sh
+      - enclave/deploy/nitro/build-native.sh
       - enclave/deploy/nitro/provenance.py
       - enclave/native/**
       - enclave/src/**
@@ -67,8 +68,7 @@ jobs:
           CONFIGURATION_JSON: ${{ inputs.configuration }}
           RELEASE_BUILD: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
-          RUSTFLAGS='-C target-feature=+crt-static' \
-            cargo build --release --locked --manifest-path enclave/native/Cargo.toml --target x86_64-unknown-linux-musl
+          bash enclave/deploy/nitro/build-native.sh
           if [[ "$RELEASE_BUILD" == true ]]; then
             printf '%s' "$CONFIGURATION_JSON" > "$RUNNER_TEMP/configuration.json"
           else

@@ -94,7 +94,9 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
 1. Create `configuration.json` with `releaseId`, `securityDomainId` and
    `deployment`. Initialization uses `{"mode":"initialize","recipientPublicKeys":[...]}`.
    Each recipient is the lowercase-hex DER SPKI of its RSA recovery key, in roster order.
-   The measured binary validates the packaged configuration before EIF creation.
+   The EIF workflow statically links the pinned OpenSSL 3.5 LTS source, checks
+   the linked version, and runs the measured binary against the exact
+   configuration before packaging.
    Dispatch `publish-enclave-image.yml` with the public configuration. For
    devnet, use the reviewed branch and record its full Git ref and commit SHA
    independently of the build. Dispatch mainnet builds from protected `main`.

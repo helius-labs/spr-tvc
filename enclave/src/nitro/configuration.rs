@@ -17,6 +17,7 @@ use crate::{
 };
 
 #[derive(Parser)]
+#[command(version = openssl::version::version())]
 pub struct Config {
     #[arg(default_value = "/configuration.json")]
     pub(super) configuration: PathBuf,

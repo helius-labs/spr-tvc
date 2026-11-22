@@ -21,6 +21,7 @@ jobs:
         with:
           node-version: "24"
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libssl-dev musl-tools
       - run: just ci
       - name: Pack standalone TypeScript SDK
         run: |
@@ -38,12 +39,9 @@ jobs:
       - name: Build native Nitro service
         env:
           SPR_NETWORK: mainnet
-          RUSTFLAGS: -C target-feature=+crt-static
         run: |
           rustup target add x86_64-unknown-linux-musl
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends musl-tools
-          cargo build --locked --release --manifest-path enclave/native/Cargo.toml --target x86_64-unknown-linux-musl
+          bash enclave/deploy/nitro/build-native.sh
           cargo tree --locked --manifest-path enclave/native/Cargo.toml --target x86_64-unknown-linux-musl -e normal > "$RUNNER_TEMP/native-graph"
           if grep -Eq 'qos_(core|p256)|tokio v1\.48|crypto-bigint v0\.[56]\.' "$RUNNER_TEMP/native-graph"; then
             exit 1
