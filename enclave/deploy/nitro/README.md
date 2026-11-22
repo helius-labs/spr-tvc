@@ -303,20 +303,23 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
 
 ## Recover an occupied ledger slot
 
-Use this procedure for a single unapproved object in a write-once slot.
+Use this procedure when unapproved objects occupy write-once slots.
 Freeze the original ledger and pause custody changes. Obtain the latest
 independently retained checkpoint for the complete valid history. Prepare
 `recovered-trust.json` with a fresh bucket in a separate account and region
 and preserve all other custody and wallet pins. Mainnet still requires a
 new replica. Use the checkpoint inspection roles and tooling above.
 
-Draft the repair with the record name relative to the custody prefix.
-Two current custody approvers independently check the frozen source and
-sign the plan. Every other version must exactly match the pinned digest.
-A record with a valid custody approval quorum blocks repair.
+Save the record names relative to the custody prefix as a JSON array in
+`excluded-records.json`. The draft resolves each name to its exact S3
+version in the frozen source. Two current custody approvers independently
+check and sign that mapping. The plan must fit the 64 KiB custody document
+limit. Every other version must match the pinned
+checkpoint. An approval quorum for an excluded slot in this network and
+security domain blocks repair of that slot.
 
 ```sh
-python3 "$nitro/custody_archive.py" trust.json draft-repair recovered-trust.json "$record" \
+python3 "$nitro/custody_archive.py" trust.json draft-repair recovered-trust.json excluded-records.json \
   --expect "$ledger_checkpoint_sha256" --source-profile "$source_read_profile" > repair-draft.json
 python3 "$nitro/custody_archive.py" trust.json sign-repair recovered-trust.json repair-draft.json "$first_approval_key" \
   --expect "$ledger_checkpoint_sha256" --source-profile "$source_read_profile" > repair-first.json
@@ -342,9 +345,9 @@ After the transfer, apply the normal frozen policy to the recovered bucket
 to close inbound replication. Backfill its new replica for mainnet and run
 the standard `verify-promotion` command with `--repair repair.json` before
 enabling writes there. The original remains frozen and retains the
-excluded version. Archive the signed repair plan and transfer report. If
+excluded versions. Archive the signed repair plan and transfer report. If
 the plan expires before promotion, collect fresh approvals over the same
-pinned history and excluded version.
+pinned history and excluded versions.
 
 ## Commission a measured target
 

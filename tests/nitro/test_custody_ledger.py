@@ -18,7 +18,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/de
 from approval import MAX_DOCUMENT_BYTES, approval_keys, approval_roster, canonical, sha256
 from custody_archive import (
     MAX_ARCHIVE_ENTRY_BYTES, archive, draft_repair, ledger_checkpoint, repair_transfer,
-    sign_repair, verify_archive, verify_ledger_records, verify_promotion,
+    require_unapproved_record, sign_repair, verify_archive, verify_ledger_records, verify_promotion,
 )
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
@@ -641,7 +641,7 @@ class CustodyLedgerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "requires the frozen bucket policy"):
                 ledger_checkpoint(self.trust, pinned)
 
-    def test_repair_preserves_the_pinned_history_and_excludes_only_one_unapproved_version(self):
+    def test_repair_preserves_the_pinned_history_and_excludes_only_the_approved_versions(self):
         publish(self.trust, self.sign(self.document(1)))
         rotation, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
         publish(self.trust, self.sign(rotation))
@@ -660,8 +660,12 @@ class CustodyLedgerTests(unittest.TestCase):
         prefix = f"spr-custody/devnet/{DOMAIN}/"
         bad = "retired/2.json"
         bad_key = prefix + bad
+        other = "operator note-é"
+        other_key = prefix + other
+        exclusions = [bad, other]
         good = dict(self.objects)
-        self.objects[bad_key] = b"{}"
+        copied = canonical(retired)
+        self.objects.update({bad_key: copied, other_key: b"{}"})
         admin = ADMIN.replace("000000000008", "000000000011")
         publisher = PUBLISHER.replace("000000000008", "000000000011")
         recovered_policy = ledger_policy(recovered, admin, publisher, [READ_ROLE], frozen=True)
@@ -692,8 +696,16 @@ class CustodyLedgerTests(unittest.TestCase):
               patch("custody_archive.add_approval", side_effect=lambda _keys, label, plan, key_arn: {
                   **plan, "signatures": [*plan["signatures"], sign(label, plan["manifest"], key_arn)],
               })):
-            plan = draft_repair(original, recovered, pin, bad, "source-read")
-            self.assertEqual(plan["manifest"]["excluded"], {"name": bad, "versionId": hashlib.sha256(bad_key.encode()).hexdigest()})
+            with self.assertRaisesRegex(ValueError, "distinct excluded ledger record names"):
+                draft_repair(original, recovered, pin, [bad, bad], "source-read")
+            with self.assertRaisesRegex(ValueError, "missing from the frozen ledger"):
+                draft_repair(original, recovered, pin, [*exclusions, "absent.json"], "source-read")
+            with self.assertRaisesRegex(ValueError, "independently pinned checkpoint"):
+                draft_repair(original, recovered, pin, [bad], "source-read")
+            plan = draft_repair(original, recovered, pin, exclusions, "source-read")
+            self.assertEqual(plan["manifest"]["excluded"], {
+                name: hashlib.sha256((prefix + name).encode()).hexdigest() for name in exclusions
+            })
             for signer in approval_keys(original)[:2]:
                 plan = sign_repair(original, recovered, pin, plan, "source-read", signer["keyArn"])
             self.assertEqual(len(plan["signatures"]), 2)
@@ -707,7 +719,8 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertEqual(csv.getvalue().splitlines(), [
                 f"custody-journal,{name},{hashlib.sha256(name.encode()).hexdigest()}" for name in sorted(good)
             ])
-            self.assertEqual(self.objects[bad_key], b"{}")
+            self.assertEqual(self.objects[bad_key], copied)
+            self.assertEqual(self.objects[other_key], b"{}")
 
             def promote(repair=plan):
                 return verify_promotion(original, recovered, pin, "source-read", "recovery-read", repair=repair)
@@ -738,13 +751,36 @@ class CustodyLedgerTests(unittest.TestCase):
             for invalid in (b"", b"x" * (MAX_DOCUMENT_BYTES + 1)):
                 with (self.subTest(size=len(invalid)), patch.dict(self.objects, {bad_key: invalid}),
                       patch.dict(self.versions, {bad_key: f"invalid-{len(invalid)}"})):
-                    self.assertEqual(draft_repair(original, recovered, pin, bad, "source-read")["manifest"]["excluded"],
-                                     {"name": bad, "versionId": f"invalid-{len(invalid)}"})
-            self.objects.pop(bad_key)
-            approved = self.signed_subject(RETIREMENT, {**retired["manifest"], "epoch": "2"})
+                    plan_with_invalid = draft_repair(original, recovered, pin, exclusions, "source-read")
+                    self.assertEqual(plan_with_invalid["manifest"]["excluded"][bad], f"invalid-{len(invalid)}")
+            approved = self.signed_subject(RETIREMENT, {**retired["manifest"], "epoch": "2", "replacementEpoch": "3"})
             self.objects[bad_key] = canonical(approved)
             with self.assertRaisesRegex(ValueError, "valid custody approval quorum"):
-                draft_repair(original, recovered, pin, bad, "source-read")
+                draft_repair(original, recovered, pin, exclusions, "source-read")
+
+    def test_receipt_and_target_approvals_protect_only_their_signed_slots(self):
+        prefix = f"spr-custody/devnet/{DOMAIN}/"
+        receipt = self.sign(self.document(1))
+        publish(self.trust, receipt)
+        target = self.replacement_target(epoch="1")
+        target_name = target_object_name(target)
+        for name, payload, protected in (
+            ("1.json", receipt, True),
+            ("2.json", receipt, False),
+            (target_name, self.signed_subject(TARGET_APPROVAL, target), True),
+            (target_name, self.signed_subject(TARGET_APPROVAL, {**target, "releaseId": "different"}), False),
+            (target_name, self.signed_subject(TARGET_APPROVAL, {**target, "securityDomainId": "fa" * 32}), False),
+            (target_name, {"manifest": {**target, "hostRole": 0}, "signatures": []}, False),
+        ):
+            with self.subTest(name=name, protected=protected):
+                key_name = prefix + name
+                self.objects[key_name] = canonical(payload)
+                version = hashlib.sha256(key_name.encode()).hexdigest()
+                if protected:
+                    with self.assertRaisesRegex(ValueError, "valid custody approval quorum"):
+                        require_unapproved_record(self.trust, name, version)
+                else:
+                    require_unapproved_record(self.trust, name, version)
 
     def test_retirement_inventory_requires_the_actual_replicas_of_its_dependencies(self):
         publish(self.trust, self.sign(self.document(1)))

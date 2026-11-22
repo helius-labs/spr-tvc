@@ -46,7 +46,7 @@ def read_json(path):
 
 
 def canonical(value):
-    # Operator documents use ASCII field names and strings. No floating point fields.
+    # Custody signatures and hashes use sorted keys and ASCII JSON escapes.
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode()
 
 

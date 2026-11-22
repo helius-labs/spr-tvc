@@ -162,8 +162,19 @@ class LedgerReplicationTests(unittest.TestCase):
         with patch("custody_ledger.storage", side_effect=[page_one, page_two]) as storage:
             self.assertEqual(list_ledger_versions(TRUST, profile="reader"), {"1.json": "one", "2.json": "two"})
             args = ["--prefix", PREFIX, "--max-keys", "32", "--no-paginate"]
-            storage.assert_called_with(TRUST, "list-object-versions",
-                                       [*args, "--key-marker", first["Key"], "--version-id-marker", "one"], profile="reader")
+            self.assertEqual(storage.call_args.args[:2], (TRUST, "list-object-versions"))
+            self.assertEqual(storage.call_args.args[2][:-1], [*args, "--cli-input-json"])
+            self.assertEqual(json.loads(storage.call_args.args[2][-1]),
+                             {"KeyMarker": first["Key"], "VersionIdMarker": "one"})
+            self.assertEqual(storage.call_args.kwargs, {"profile": "reader"})
+
+        odd = {**first, "Key": PREFIX + "1.json\x00"}
+        with patch("custody_ledger.storage",
+                   side_effect=[{**page_one, "Versions": [odd], "NextKeyMarker": odd["Key"]}, page_two]) as storage:
+            self.assertEqual(list_ledger_versions(TRUST), {"1.json\x00": "one", "2.json": "two"})
+            wire_marker = storage.call_args.args[2][-1]
+            self.assertNotIn("\x00", wire_marker)
+            self.assertEqual(json.loads(wire_marker)["KeyMarker"], odd["Key"])
 
         for bad, message in (
             ({**page_two, "Versions": [{**first, "IsLatest": False}, second]}, "one current version"),

@@ -331,7 +331,7 @@ def list_ledger_versions(trust, **options):
                 not isinstance(version, str) or not version or version == "null" or (key, version) in seen_markers):
             raise ValueError("invalid custody ledger version continuation")
         seen_markers.add((key, version))
-        continuation = ["--key-marker", key, "--version-id-marker", version]
+        continuation = ["--cli-input-json", canonical({"KeyMarker": key, "VersionIdMarker": version}).decode()]
 
 
 def ledger_reader_policy(trust):

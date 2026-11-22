@@ -19,12 +19,16 @@ from custody_ledger import (
     LABEL, RETIREMENT, TARGET_APPROVAL, check_custody_history_entry, check_recovery_bucket, ledger_object, ledger_prefix,
     ledger_record_fingerprint, ledger_record_version, ledger_replica, list_ledger_versions, load_retirement,
     publication_time, read_object, read_registered_target, read_replicated_record, read_stored_object, read_stored_payload,
-    replica_trust, require_frozen_ledger, require_pinned_replication, rotation_target_name, storage, verify_ceremony_capture,
+    replica_trust, require_frozen_ledger, require_pinned_replication, retirement_object_name, rotation_target_name,
+    storage, target_object_name, verify_ceremony_capture,
 )
 
 MAX_ARCHIVE_ENTRY_BYTES = 2 * MAX_DOCUMENT_BYTES + 256
 REPAIR_APPROVAL = "ledger-repair"
 REPAIR_WINDOW_SECONDS = 24 * 60 * 60
+RECEIPT_NAME = re.compile(r"([1-9][0-9]{0,19})\.json")
+TARGET_NAME = re.compile(r"targets/([1-9][0-9]{0,19})/[0-9a-f]{64}\.json")
+RETIREMENT_NAME = re.compile(r"retired/([1-9][0-9]{0,19})\.json")
 
 
 def custody_history(trust, epoch, **options):
@@ -76,12 +80,12 @@ def verify_ledger_records(trust, names, **options):
     for name in names:
         if name in receipts:
             continue
-        if target := re.fullmatch(r"targets/([^/]+)/[0-9a-f]{64}\.json", name):
+        if target := TARGET_NAME.fullmatch(name):
             epoch = target[1]
             if epoch not in digests:
                 raise ValueError("registered target is missing its custody receipt")
             read_registered_target(trust, name, epoch, digests[epoch], **options)
-        elif retirement := re.fullmatch(r"retired/([^/]+)\.json", name):
+        elif retirement := RETIREMENT_NAME.fullmatch(name):
             load_retirement(trust, retirement[1], **options)
         else:
             raise ValueError(f"unexpected custody ledger record {name}")
@@ -100,12 +104,10 @@ def checkpoint(trust, expected, *, excluded=None, **options):
     destination = replica_trust(trust, replica) if replica is not None else None
     checksum = hashlib.sha256(b"SPR/native-nitro/ledger-checkpoint/v1\0" + prefix.encode())
     versions = list_ledger_versions(trust, **options)
-    names = tuple(sorted(versions))
-    if excluded is not None:
-        name = excluded["name"]
-        if versions.get(name) != excluded["versionId"]:
-            raise ValueError("excluded record does not match the frozen ledger version")
-        names = tuple(key for key in names if key != name)
+    excluded = excluded or {}
+    if any(versions.get(name) != version for name, version in excluded.items()):
+        raise ValueError("excluded record does not match the frozen ledger version")
+    names = tuple(name for name in sorted(versions) if name not in excluded)
     if "1.json" not in names:
         raise ValueError("custody ledger checkpoint requires a committed genesis")
     records = {}
@@ -148,14 +150,40 @@ def check_promotion_scope(trust, promoted):
     return original, next_replica
 
 
-def check_repair_name(name):
-    if (not isinstance(name, str) or not re.fullmatch(r"[a-zA-Z0-9_./-]{1,512}", name) or
-            any(part in {"", ".", ".."} for part in name.split("/"))):
+def check_repair_name(prefix, name):
+    if not isinstance(name, str) or len((prefix + name).encode()) > 1024:
         raise ValueError("invalid excluded ledger record name")
 
 
-def require_unapproved_record(trust, excluded, **options):
-    name, version = excluded["name"], excluded["versionId"]
+def approval_for_slot(trust, name, label, document):
+    try:
+        if label == LABEL:
+            approval = document["authorization"]
+            scope = approval["manifest"]["capture"]["receipt"]
+            expected = ledger_object(trust, scope["custody"]["epoch"])
+        else:
+            scope = document["manifest"]
+            approval = {"manifest": scope, "signatures": document["signatures"]}
+            if label == TARGET_APPROVAL:
+                if not isinstance(scope["hostRole"], str):
+                    return None
+                expected = target_object_name(scope)
+            else:
+                expected = retirement_object_name(scope["epoch"])
+        if (name == expected and
+                (scope["network"], scope["securityDomainId"]) == (trust["network"], trust["securityDomainId"])):
+            return approval
+    except (KeyError, TypeError, ValueError):
+        return None
+    return None
+
+
+def require_unapproved_record(trust, name, version, **options):
+    label = next((label for pattern, label in (
+        (RECEIPT_NAME, LABEL), (TARGET_NAME, TARGET_APPROVAL), (RETIREMENT_NAME, RETIREMENT)
+    ) if pattern.fullmatch(name)), None)
+    if label is None:
+        return
     _, prefix = ledger_prefix(trust)
     head = storage(trust, "head-object", ["--key", prefix + name], **options)
     if ledger_record_version(name, head) != version:
@@ -174,26 +202,15 @@ def require_unapproved_record(trust, excluded, **options):
         document = parse_json(payload)
     except ValueError:
         return
-    if not isinstance(document, dict):
+    approval = approval_for_slot(trust, name, label, document)
+    if approval is None:
         return
-
-    if epoch := re.fullmatch(r"([1-9][0-9]{0,19})\.json", name):
-        try:
-            epoch_number(epoch[1])
-        except ValueError:
-            return
-        label, keys, approval = LABEL, approval_keys(trust, epoch[1]), document.get("authorization")
-    elif re.fullmatch(r"(targets|retired)/.+\.json", name):
-        label = TARGET_APPROVAL if name.startswith("targets/") else RETIREMENT
-        keys = approval_roster(trust, at=published_at)["keys"]
-        approval = {field: document.get(field) for field in ("manifest", "signatures")}
-    else:
-        return
+    keys = approval_keys(trust, name.removesuffix(".json")) if label == LABEL else approval_roster(trust, at=published_at)["keys"]
     try:
         check_approvals(keys, label, approval)
     except (ValueError, TypeError):
         return
-    raise ValueError("cannot exclude a record with a valid custody approval quorum")
+    raise ValueError(f"cannot exclude {name} with a valid custody approval quorum for that slot")
 
 
 def repair_bindings(trust, promoted, expected):
@@ -221,27 +238,37 @@ def repair_source(trust, promoted, expected, plan, profile, *, minimum):
     if (any(manifest[field] != value for field, value in bindings.items()) or type(expires) is not int or
             not now < expires <= now + REPAIR_WINDOW_SECONDS):
         raise ValueError("repair must match the pinned checkpoint, trust bundles, current quorum and deadline")
-    fields(excluded, "name", "versionId")
-    check_repair_name(excluded["name"])
-    ledger_record_version(excluded["name"], {"VersionId": excluded["versionId"]})
+    if not isinstance(excluded, dict) or not excluded:
+        raise ValueError("repair requires at least one excluded ledger version")
+    source, prefix = ledger_prefix(original)
+    for name, version in excluded.items():
+        check_repair_name(prefix, name)
+        ledger_record_version(name, {"VersionId": version})
     check_approvals(approval_keys(trust), REPAIR_APPROVAL, plan, minimum=minimum)
-    source = original["ledger"]
     require_profile_account(profile, source["region"], source["account"])
     _, versions = checkpoint(original, expected, excluded=excluded, profile=profile)
-    require_unapproved_record(original, excluded, profile=profile)
+    for name, version in excluded.items():
+        require_unapproved_record(original, name, version, profile=profile)
     require_frozen_ledger(original, profile=profile)
     require_current_repair(trust, manifest)
     return versions
 
 
-def draft_repair(trust, promoted, expected, name, profile):
+def draft_repair(trust, promoted, expected, names, profile):
     original, bindings = repair_bindings(trust, promoted, expected)
-    check_repair_name(name)
     source, prefix = ledger_prefix(original)
+    if not isinstance(names, list) or not names:
+        raise ValueError("provide distinct excluded ledger record names")
+    for name in names:
+        check_repair_name(prefix, name)
+    if len(set(names)) != len(names):
+        raise ValueError("provide distinct excluded ledger record names")
     require_profile_account(profile, source["region"], source["account"])
     require_frozen_ledger(original, profile=profile)
-    head = storage(original, "head-object", ["--key", prefix + name], profile=profile)
-    excluded = {"name": name, "versionId": ledger_record_version(name, head)}
+    versions = list_ledger_versions(original, profile=profile)
+    if any(name not in versions for name in names):
+        raise ValueError("excluded record is missing from the frozen ledger")
+    excluded = {name: versions[name] for name in names}
     plan = {"manifest": {**bindings, "excluded": excluded, "expiresAt": int(time.time()) + REPAIR_WINDOW_SECONDS},
             "signatures": []}
     repair_source(trust, promoted, expected, plan, profile, minimum=0)
@@ -299,6 +326,13 @@ def verify_promotion(trust, promoted, expected, source_profile, recovery_profile
     return expected
 
 
+def print_repair(plan):
+    payload = canonical(plan) + b"\n"
+    if len(payload) > MAX_DOCUMENT_BYTES:
+        raise ValueError("repair plan exceeds the ledger document limit")
+    sys.stdout.buffer.write(payload)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("trust", type=Path)
@@ -319,7 +353,7 @@ def main():
         command.add_argument("recovered_trust", type=Path)
         command.add_argument("--expect", required=True, metavar="SHA256")
         command.add_argument("--source-profile", required=True)
-    draft.add_argument("record", help="name under the custody ledger prefix")
+    draft.add_argument("records", type=Path, help="JSON array of names relative to the custody ledger prefix")
     sign.add_argument("plan", type=Path)
     sign.add_argument("key", help="custody approval KMS key ARN")
     transfer.add_argument("plan", type=Path)
@@ -342,12 +376,12 @@ def main():
                                    args.source_profile, args.recovery_profile, replica_profile=args.replica_profile,
                                    repair=repair))
         elif args.command == "draft-repair":
-            plan = draft_repair(trust, read_json(args.recovered_trust), args.expect, args.record, args.source_profile)
-            print(canonical(plan).decode())
+            plan = draft_repair(trust, read_json(args.recovered_trust), args.expect, read_json(args.records), args.source_profile)
+            print_repair(plan)
         elif args.command == "sign-repair":
             plan = sign_repair(trust, read_json(args.recovered_trust), args.expect,
                                read_json(args.plan), args.source_profile, args.key)
-            print(canonical(plan).decode())
+            print_repair(plan)
         elif args.command == "repair-transfer":
             repair_transfer(trust, read_json(args.recovered_trust), args.expect, read_json(args.plan),
                             args.source_profile, args.recovery_profile, sys.stdout)
