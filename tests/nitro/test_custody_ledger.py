@@ -135,6 +135,11 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertEqual(receipt, record(self.trust, winner)[0])
         publish(self.trust, winner)
 
+    def test_reports_both_failures_when_a_ledger_write_cannot_be_confirmed(self):
+        with patch("custody_ledger.storage", side_effect=[ValueError("write timed out"), ValueError("read denied")]):
+            with self.assertRaisesRegex(ValueError, r"could not confirm ledger write \(write timed out\).*\(read denied\)"):
+                write_once(self.trust, "1.json", {}, lambda document: document)
+
     def test_rotated_receipt_requires_current_predecessor_and_new_recovery_keys(self):
         first = self.sign(self.document(1))
         publish(self.trust, first)
@@ -573,7 +578,9 @@ class CustodyLedgerTests(unittest.TestCase):
                                     "KeyState": "Enabled" if state == "foreign" else state}}
 
         with patch("retirement.kms", side_effect=describe):
-            qualification.return_value = self.qualification(self.replacement_target())
+            replacement = self.replacement_target()
+            register_target(self.trust, self.signed_subject(TARGET_APPROVAL, replacement))
+            qualification.return_value = self.qualification(replacement)
             marker = qualified_manifest(self.trust, None, "1", "2")
             retirement = self.signed_retirement(marker)
             with self.assertRaisesRegex(ValueError, "only 2 proven replacement recovery keys"):
@@ -625,11 +632,24 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertNotIn(path, self.objects)
         commit_retirement(self.trust, None, retired)
         commit_retirement(self.trust, None, retired)
+        self.trust["approvalKeys"].append(schedule("3", 9))
+        qualification.reset_mock()
+        quorum.reset_mock()
         with patch("retirement.time.time", return_value=deadline + 1):
+            with patch("retirement.write_once") as write:
+                commit_retirement(self.trust, None, retired)
+                for conflict in (other, {**retired, "recoveryProofs": proofs[:2]}):
+                    with self.assertRaisesRegex(ValueError, "different retirement record"):
+                        commit_retirement(self.trust, None, conflict)
+                write.assert_not_called()
             self.assertIn(key(1), key_inventory(self.trust, "1", 1)[1])
+        qualification.assert_not_called()
+        quorum.assert_not_called()
         self.timestamps[path] = datetime.fromtimestamp(deadline, timezone.utc).isoformat()
         with self.assertRaisesRegex(ValueError, "outside the recovery window"):
             key_inventory(self.trust, "1", 1)
+        with self.assertRaisesRegex(ValueError, "outside the recovery window"):
+            commit_retirement(self.trust, None, retired)
 
     @patch("retirement.qualified_policy")
     def test_replacement_custodian_proves_recovery_only_after_opening_the_committed_share(self, qualification):

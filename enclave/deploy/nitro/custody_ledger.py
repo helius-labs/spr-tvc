@@ -147,9 +147,13 @@ def write_once(trust, name, document, subject):
             path = Path(directory) / "record.json"
             path.write_bytes(payload)
             storage(trust, "put-object", ["--key", prefix + name, "--if-none-match", "*", "--body", str(path)])
-    except (ValueError, subprocess.TimeoutExpired):
+    except (ValueError, subprocess.TimeoutExpired) as write_error:
         # Resolve ambiguous writes by reading the authenticated immutable subject.
-        if subject(read_object(trust, name)) != subject(document):
+        try:
+            stored = read_object(trust, name)
+        except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as read_error:
+            raise ValueError(f"could not confirm ledger write ({write_error}). Readback failed ({read_error})") from None
+        if subject(stored) != subject(document):
             raise ValueError("a different record is already committed") from None
 
 
@@ -304,18 +308,13 @@ def verify_retirement(trust, document, epoch):
     return manifest
 
 
-def read_retirement(trust, epoch):
+def load_retirement(trust, epoch):
     document, metadata = read_stored_object(trust, retirement_object_name(epoch))
     marker = verify_retirement(trust, document, epoch)
     committed = datetime.fromisoformat(metadata["LastModified"])
     deadline = recovery_deadline(marker)
     if committed.tzinfo is None or not deadline - RECOVERY_WINDOW_SECONDS <= committed.timestamp() < deadline:
         raise ValueError("retirement was published outside the recovery window")
-    return document, marker
-
-
-def load_retirement(trust, epoch):
-    document, marker = read_retirement(trust, epoch)
     _, previous, custodians = load_epoch(trust, epoch)
     replacement_epoch = marker["replacementEpoch"]
     _, replacement, replacement_custodians = load_epoch(trust, replacement_epoch)
@@ -328,16 +327,21 @@ def load_retirement(trust, epoch):
     target = read_registered_target(trust, name, replacement_epoch, marker["replacementReceiptSha256"])
     if target["mode"] != "serve" or sha256(target) != marker["replacementTargetSha256"]:
         raise ValueError("replacement target does not match the registered serving enclave")
-    return marker, custodians
+    return document, custodians
+
+
+def find_retirement(trust, epoch):
+    name = retirement_object_name(epoch)
+    if name not in list_objects(trust, name):
+        return None
+    try:
+        return load_retirement(trust, epoch)
+    except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError) as error:
+        raise ValueError(f"cannot verify retirement record for epoch {epoch}: {error}") from error
 
 
 def require_active_epoch(trust, epoch):
-    name = retirement_object_name(epoch)
-    if name in list_objects(trust, name):
-        try:
-            load_retirement(trust, epoch)
-        except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError) as error:
-            raise ValueError(f"cannot verify retirement record for epoch {epoch}: {error}") from error
+    if find_retirement(trust, epoch) is not None:
         raise ValueError("custody epoch is retired")
 
 

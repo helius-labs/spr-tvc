@@ -12,9 +12,9 @@ from approval import (
     parse_json, read_json, require_kms_key, sha256,
 )
 from custody_ledger import (
-    RECOVERY_SPECS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, list_objects, load_epoch, load_retirement,
-    read_registered_target, read_retirement, recovery_deadline, require_active_epoch, retirement_approval, retirement_object_name,
-    retirement_recovery, sign_share_recovery, target_attestation, verify_retirement, write_once,
+    RECOVERY_SPECS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, find_retirement, list_objects, load_epoch,
+    load_retirement, read_registered_target, recovery_deadline, require_active_epoch, retirement_approval, retirement_object_name,
+    retirement_recovery, sign_share_recovery, target_attestation, write_once,
 )
 from kms_policy import key_policy, recovery_policy, target_context
 
@@ -121,7 +121,6 @@ def verify_qualification(trust, wallet_trust, document):
     if manifest != {**scope, **policy, "recoveryDeadline": manifest["recoveryDeadline"]}:
         raise ValueError("retirement no longer matches the qualified replacement and wallet policy")
     require_recovery_quorum(proven)
-    return custodians
 
 
 def sign_retirement(trust, wallet_trust, document, key):
@@ -134,26 +133,28 @@ def sign_retirement(trust, wallet_trust, document, key):
 
 def commit_retirement(trust, wallet_trust, document):
     approval = retirement_approval(document)
-    check_approvals(approval_keys(trust), RETIREMENT, approval)
-    custodians = verify_qualification(trust, wallet_trust, document)
     manifest = approval["manifest"]
     epoch = manifest["epoch"]
+    existing = find_retirement(trust, epoch)
+    if existing is not None:
+        stored, _ = existing
+        if stored != document:
+            raise ValueError("a different retirement record is already committed")
+        return
+    check_approvals(approval_keys(trust), RETIREMENT, approval)
+    verify_qualification(trust, wallet_trust, document)
     # Leave room for the AWS CLI's 25-second request deadline.
     require_recovery_window(manifest, remaining=30)
 
-    def subject(stored):
-        marker = verify_retirement(trust, stored, epoch)
-        retirement_recovery(stored, custodians)
-        return marker
-
-    write_once(trust, retirement_object_name(epoch), document, subject)
-    read_retirement(trust, epoch)
+    write_once(trust, retirement_object_name(epoch), document, lambda stored: stored)
+    load_retirement(trust, epoch)
 
 
 def key_inventory(trust, epoch, index):
     if index not in range(1, 7):
         raise ValueError("invalid custody slot")
-    marker, custodians = load_retirement(trust, epoch)
+    document, custodians = load_retirement(trust, epoch)
+    marker = document["manifest"]
     member = custodians[index - 1]
     custodian, admin = member["custodianRole"], member["retirementRole"]
     keys = {member["recoveryKeyArn"]: recovery_policy(custodian, admin, epoch)}

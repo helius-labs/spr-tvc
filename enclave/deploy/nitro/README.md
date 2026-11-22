@@ -208,10 +208,13 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    `kms:DescribeKey` on the proven recovery keys and check that at least
    three are enabled. Draft, sign and publish check that both public buckets
    agree before and after attestation and that a live replacement matches
-   the registered serving target. If the policy changes or the window closes,
-   draft a new candidate. A committed record closes the old epoch to new
-   wraps. Its key inventory includes wrapping keys registered before the
-   commit, including those for requests in flight.
+   the registered serving target. After a timeout, retry the same signed
+   document. The tool verifies a committed record against its historical
+   roster and S3 timestamp, even after the recovery window closes. If the
+   write never committed and the window or policy changed, draft a new
+   candidate. A committed record closes the old epoch to new wraps. Its key
+   inventory includes wrapping keys registered before the commit, including
+   those for requests in flight.
 
    ```sh
    python3 "$nitro/retirement.py" trust.json draft wallet-trust.json 1 2 > retire-draft.json
@@ -224,11 +227,14 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    python3 "$nitro/retirement.py" trust.json inspect 1 "$share_index"
    ```
 
-   Each retirement role checks its inventory against the installed KMS policies,
-   schedules approved keys for deletion, and repeats `inspect` with
-   `--check-inactive`. Capture the results before AWS deletes the key metadata.
-   Cold-boot again with exactly three current slots and open a note from
-   before rotation. Retain the old signed receipt and its public trust pins.
+   Before scheduling any deletion, cold-boot with exactly three current slots
+   and open a note from before rotation. Each retirement role verifies its
+   inventory, schedules approved keys, and repeats `inspect --check-inactive`.
+   Scheduling immediately disables cryptographic use. Canceling leaves the
+   key disabled, and the sealed policy grants no permission to re-enable it.
+   Capture the results before AWS deletes the metadata. Repeat the cold boot
+   and canary after retirement. Retain the old signed receipt and public
+   trust pins. [AWS key deletion](https://docs.aws.amazon.com/kms/latest/APIReference/API_ScheduleKeyDeletion.html) · [AWS cancellation behavior](https://docs.aws.amazon.com/kms/latest/APIReference/API_CancelKeyDeletion.html)
 5. A leaked threshold of old shares still exposes the underlying seed.
    Refreshing shares controls future access. A seed compromise requires
    owner-authorized migration to a new seed domain.
