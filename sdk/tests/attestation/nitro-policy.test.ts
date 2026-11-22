@@ -11,7 +11,7 @@ import { encodeLowerHex } from "../../src/protocol/hex.js";
 const privateKeys = Array.from({ length: 15 }, (_, index) => new Uint8Array(32).fill(index + 1));
 const keys = privateKeys.map(key => encodeLowerHex(p256.getPublicKey(key, false)));
 const now = 1_750_000_000_000n;
-const trust: NitroTrust = {
+const trustBase = {
   network: "mainnet",
   securityDomainId: "11".repeat(32),
   noteSeedCommitment: "22".repeat(32),
@@ -24,13 +24,13 @@ const trust: NitroTrust = {
     { bucket: "release-test", region: "eu-north-1", account: "000000000001" },
     { bucket: "release-peer", region: "eu-west-1", account: "000000000002" },
   ],
-};
+} satisfies Omit<NitroTrust, "minimumPolicyDigest">;
 const binding: NitroPolicy = {
   version: 1,
   action: "activate", recoveryOnly: false,
-  network: trust.network,
-  securityDomainId: trust.securityDomainId,
-  noteSeedCommitment: trust.noteSeedCommitment,
+  network: trustBase.network,
+  securityDomainId: trustBase.securityDomainId,
+  noteSeedCommitment: trustBase.noteSeedCommitment,
   sequence: "9",
   previousPolicyDigest: "ab".repeat(32),
   minimumCustodyEpoch: "1",
@@ -45,6 +45,11 @@ const binding: NitroPolicy = {
     pcrs: { 0: "11".repeat(48), 1: "22".repeat(48), 2: "33".repeat(48), 3: "44".repeat(48), 4: "56".repeat(48) },
   }],
 };
+
+function pinned(policy: NitroPolicy, base: Omit<NitroTrust, "minimumPolicyDigest"> = trustBase): NitroTrust {
+  return { ...base, minimumSequence: policy.sequence, minimumPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(policy)) };
+}
+const trust = pinned(binding);
 
 function signatures(policy: NitroPolicy, ...signers: number[]) {
   return signers.map(index => ({
@@ -116,19 +121,20 @@ describe("native Nitro release policy", () => {
 
   it("preserves recovery-only mode through later releases and emergency revocation", () => {
     const recover = { ...binding, recoveryOnly: true };
+    const recoveryTrust = pinned(recover);
     const current = manifest(recover, 0, 1);
     const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(recover));
     const next = { ...recover, sequence: "10", previousPolicyDigest };
-    expect(nextNitroPublication(manifest(next, 0, 1), current, trust, now)).toBe(true);
+    expect(nextNitroPublication(manifest(next, 0, 1), current, recoveryTrust, now)).toBe(true);
     for (const successor of [next, { ...next, action: "revoke", targets: [] } as const]) {
-      expect(nextNitroPublication(manifest(successor, 0, 1), current, trust, now)).toBe(true);
+      expect(nextNitroPublication(manifest(successor, 0, 1), current, recoveryTrust, now)).toBe(true);
       const reopened = manifest({ ...successor, recoveryOnly: false }, 0, 1);
-      expect(() => nextNitroPublication(reopened, current, trust, now)).toThrow();
-      expect(() => verifyPublishedNitroPolicy([reopened, current], trust, now)).toThrow();
+      expect(() => nextNitroPublication(reopened, current, recoveryTrust, now)).toThrow();
+      expect(() => verifyPublishedNitroPolicy([reopened, current], recoveryTrust, now)).toThrow();
     }
     expect(() => verifyNitroPolicy(manifest(binding, 0, 1), { ...trust, recoveryOnly: true }, now)).toThrow();
     expect(() => verifyNitroPolicy(manifest({ ...binding, recoveryOnly: undefined } as unknown as NitroPolicy, 0, 1), trust, now)).toThrow();
-    expect(verifyNitroPolicy(current, { ...trust, recoveryOnly: true }, now).checkpoint.recoveryOnly).toBe(true);
+    expect(verifyNitroPolicy(current, { ...recoveryTrust, recoveryOnly: true }, now).checkpoint.recoveryOnly).toBe(true);
   });
 
   it("checks the inclusive start, exclusive expiration and maximum policy lifetime", () => {
@@ -168,7 +174,7 @@ describe("native Nitro release policy", () => {
 
   it("requires both quorums for a revocation with no targets", () => {
     const revoke = { ...binding, action: "revoke", targets: [] } as const;
-    expect(verifyNitroPolicy(manifest(revoke, 0, 1), trust, now).policy).toEqual(revoke);
+    expect(verifyNitroPolicy(manifest(revoke, 0, 1), pinned(revoke), now).policy).toEqual(revoke);
     const oneQuorum = { ...revoke, recoveryOnly: true, minimumCustodyEpoch: "18446744073709551615" };
     expect(() => verifyNitroPolicy(JSON.stringify({
       policy: oneQuorum, signatures: signatures(oneQuorum, 0, 1), custodySignatures: [],
@@ -202,9 +208,10 @@ describe("native Nitro release policy", () => {
     };
     expect(() => verifyNitroPolicy(manifest({ ...binding, targets: [missingParent] }, 0, 1), trust, now))
       .toThrow("InvalidCanonicalJson");
-    expect(() => verifyNitroPolicy(manifest({
+    const devnet = {
       ...binding, network: "devnet", targets: [{ ...first, endpoint: "http://127.0.0.1/" }],
-    }, 0, 1), { ...trust, network: "devnet" }, now)).not.toThrow();
+    } as const;
+    expect(() => verifyNitroPolicy(manifest(devnet, 0, 1), pinned(devnet, { ...trustBase, network: "devnet" }), now)).not.toThrow();
   });
 
   it("rejects duplicate JSON fields before applying a valid signature", () => {
@@ -217,7 +224,7 @@ describe("native Nitro release policy", () => {
   it("requires every signed target to meet the policy custody floor", () => {
     const oldTarget = binding.targets[0]!;
     const next: NitroPolicy = {
-      ...binding, sequence: "10", minimumCustodyEpoch: "2",
+      ...binding, sequence: "10", minimumCustodyEpoch: "2", previousPolicyDigest: trust.minimumPolicyDigest,
       targets: [{ ...oldTarget, custodyEpoch: "2" }],
     };
     const retired = verifyNitroPolicy(manifest(next, 0, 1), trust, now).checkpoint;
@@ -237,6 +244,20 @@ describe("native Nitro release policy", () => {
     expect(advancesNitroPolicy(first, { ...first, sequence: "9", digest: "ab" })).toBe(false);
   });
 
+  it("rejects an independently signed fork at and directly after the shipped revision", () => {
+    const fork = { ...binding, targets: binding.targets.map(target => ({ ...target, releaseId: "other" })) };
+    const disputed = manifest(fork, 0, 1);
+    expect(() => verifyPublishedNitroPolicy([disputed, disputed], trust, now)).toThrow("ReleasePolicyInvalid");
+    const successor = { ...fork, sequence: "10", previousPolicyDigest: pinned(fork).minimumPolicyDigest };
+    const signed = manifest(successor, 0, 1);
+    expect(() => verifyPublishedNitroPolicy([signed, signed], trust, now)).toThrow("ReleasePolicyInvalid");
+    expect(() => verifyPublishedNitroPolicy([signed, disputed], trust, now)).toThrow("ReleasePolicyInvalid");
+    expect(() => validateNitroTrust({ ...trust, minimumPolicyDigest: "00".repeat(32) })).toThrow("ReleasePolicyInvalid");
+    const { minimumPolicyDigest, ...missingDigest } = trust;
+    expect(() => validateNitroTrust({ ...missingDigest, digest: minimumPolicyDigest } as unknown as NitroTrust))
+      .toThrow("UnknownJsonField");
+  });
+
   it("resolves two pinned publication buckets and rejects a shared bucket or owner", () => {
     const [first, second] = trust.publications;
     const publication = nitroPublication(trust, first);
@@ -250,17 +271,18 @@ describe("native Nitro release policy", () => {
 
   it("publishes one signed successor of the current digest, including after the current policy expires", () => {
     const expired = { ...binding, validFromMs: String(now - 1000n), expiresAtMs: String(now - 2n) };
+    const expiredTrust = pinned(expired);
     const prior = manifest(expired, 0, 1);
     const successor = { ...binding, sequence: "10", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(expired)) };
-    expect(nextNitroPublication(manifest(successor, 0, 1), prior, trust, now)).toBe(true);
-    expect(nextNitroPublication(manifest(successor, 0, 1), manifest(successor, 0, 2), trust, now)).toBe(false);
+    expect(nextNitroPublication(manifest(successor, 0, 1), prior, expiredTrust, now)).toBe(true);
+    expect(nextNitroPublication(manifest(successor, 0, 1), manifest(successor, 0, 2), expiredTrust, now)).toBe(false);
     expect(() => nextNitroPublication(manifest({ ...successor, action: "revoke", targets: [] }, 0, 1),
-      manifest(successor, 0, 1), trust, now)).toThrow();
+      manifest(successor, 0, 1), expiredTrust, now)).toThrow();
     for (const invalid of [{ ...successor, sequence: "11" }, { ...successor, previousPolicyDigest: "44".repeat(32) }, binding]) {
-      expect(() => nextNitroPublication(manifest(invalid, 0, 1), prior, trust, now)).toThrow();
+      expect(() => nextNitroPublication(manifest(invalid, 0, 1), prior, expiredTrust, now)).toThrow();
     }
     const genesis = { ...binding, sequence: "1", previousPolicyDigest: null };
-    expect(nextNitroPublication(manifest(genesis, 0, 1), undefined, { ...trust, minimumSequence: "1" }, now)).toBe(true);
+    expect(nextNitroPublication(manifest(genesis, 0, 1), undefined, pinned(genesis), now)).toBe(true);
     expect(() => nextNitroPublication(manifest(successor, 0, 1), undefined, trust, now)).toThrow();
   });
 
@@ -279,11 +301,11 @@ describe("native Nitro release policy", () => {
 
   it("rolls disjoint signer rosters through a dual-signed revision on both buckets", () => {
     const original = { ...trust, keys: keys.slice(0, 2) };
-    const rotated = { ...trust, keys: keys.slice(2, 4), minimumSequence: "10" };
     const head = manifest(binding, 0, 1);
     const bridge: NitroPolicy = {
       ...binding, sequence: "10", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(binding)),
     };
+    const rotated = pinned(bridge, { ...trustBase, keys: keys.slice(2, 4) });
     const dual = manifest(bridge, 0, 1, 2, 3);
     expect(nextNitroPublication(dual, head, original, now)).toBe(true);
     expect(verifyPublishedNitroPolicy([dual, head], original, now)).toMatchObject({ policy: bridge, agreed: false });
@@ -307,7 +329,7 @@ describe("native Nitro release policy", () => {
     const replacement = { ...binding.targets[0]!, custodyEpoch: "2", custodyDigest: "77".repeat(32) };
     const policy = { ...binding, minimumCustodyEpoch: "2", targets: [replacement] };
     const retire = (candidate: NitroPolicy, time = now) => {
-      const published = verifyPublishedNitroPolicy([manifest(candidate, 0, 1), manifest(candidate, 1, 2)], trust, time);
+      const published = verifyPublishedNitroPolicy([manifest(candidate, 0, 1), manifest(candidate, 1, 2)], pinned(candidate), time);
       requireRetirementPolicy(published, "2", replacement.custodyDigest);
     };
     expect(() => retire(policy)).not.toThrow();
@@ -327,7 +349,7 @@ describe("native Nitro release policy", () => {
   it("allows the primary to advance if the mirror serves its predecessor, even when that predecessor expired", () => {
     const prior = { ...binding, validFromMs: String(now - 1000n), expiresAtMs: String(now - 2n) };
     const next = { ...binding, sequence: "10", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(prior)) };
-    const currentTrust = { ...trust, minimumSequence: "10" };
+    const currentTrust = pinned(next);
     const heads = [manifest(next, 0, 1), manifest(prior, 0, 1)] as const;
     expect(verifyPublishedNitroPolicy(heads, currentTrust, now)).toMatchObject({ policy: next, agreed: false });
     expect(verifyPublishedNitroPolicy([heads[0], manifest(next, 0, 2)], currentTrust, now)).toMatchObject({ policy: next, agreed: true });

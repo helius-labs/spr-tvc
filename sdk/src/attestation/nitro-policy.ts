@@ -42,6 +42,8 @@ export type NitroTrust = {
   readonly noteSeedCommitment: string;
   readonly minimumCustodyEpoch: string;
   readonly minimumSequence: string;
+  /** Release-policy signing digest at minimumSequence. */
+  readonly minimumPolicyDigest: string;
   /** Pin recovery mode when distributing the old domain after a cutover. */
   readonly recoveryOnly?: boolean;
   readonly publications: readonly [primary: Publication, mirror: Publication];
@@ -73,6 +75,10 @@ const MAX_TARGETS = 8;
 const MAX_AUTHORITIES = 8;
 const CUSTODY_QUORUM = 2;
 const CUSTODY_KEY_COUNT = 3;
+const TRUST_KEYS = [
+  "network", "securityDomainId", "noteSeedCommitment", "minimumCustodyEpoch",
+  "minimumSequence", "minimumPolicyDigest", "publications", "threshold", "keys", "custodyKeys",
+];
 const POLICY_ENVELOPE_KEYS = ["policy", "signatures", "custodySignatures"];
 const MAX_LIFETIME_MS = 7n * 24n * 60n * 60n * 1000n;
 const POLICY_KEYS = [
@@ -124,10 +130,14 @@ export function nitroCustodySigningDigest(policy: NitroPolicy): Uint8Array {
 }
 
 export function validateNitroTrust(trust: NitroTrust): void {
+  if (typeof trust !== "object" || trust === null) invalid();
+  const recoveryPin = Object.hasOwn(trust, "recoveryOnly");
+  assertExactObjectKeys(trust, recoveryPin ? [...TRUST_KEYS, "recoveryOnly"] : TRUST_KEYS, "ReleasePolicyInvalid");
   if (trust.network !== "devnet" && trust.network !== "mainnet") invalid();
-  if (trust.recoveryOnly !== undefined && typeof trust.recoveryOnly !== "boolean") invalid();
+  if (recoveryPin && typeof trust.recoveryOnly !== "boolean") invalid();
   checkDigest(trust.securityDomainId, 32);
   checkDigest(trust.noteSeedCommitment, 32);
+  checkDigest(trust.minimumPolicyDigest, 32);
   if (!Array.isArray(trust.publications) || trust.publications.length !== 2) invalid();
   const first = nitroPublication(trust, trust.publications[0]);
   const second = nitroPublication(trust, trust.publications[1]);
@@ -204,10 +214,14 @@ function verifySignedPolicy(text: string, trust: NitroTrust) {
   const seen = new Set<string>();
   verifyQuorum(signatures, trust.keys, trust.threshold, digest, seen);
   verifyQuorum(custodySignatures, trust.custodyKeys, CUSTODY_QUORUM, nitroCustodySigningDigest(policy), seen);
+  const digestHex = encodeLowerHex(digest);
+  const anchor = decodeDecimalU64(trust.minimumSequence);
+  if ((sequence === anchor && digestHex !== trust.minimumPolicyDigest) ||
+      (sequence === anchor + 1n && policy.previousPolicyDigest !== trust.minimumPolicyDigest)) invalid();
   return {
     policy, signatures, custodySignatures, validFrom, expiresAt,
     checkpoint: {
-      sequence: policy.sequence, digest: encodeLowerHex(digest),
+      sequence: policy.sequence, digest: digestHex,
       minimumCustodyEpoch: policy.minimumCustodyEpoch, recoveryOnly: policy.recoveryOnly,
     },
   };

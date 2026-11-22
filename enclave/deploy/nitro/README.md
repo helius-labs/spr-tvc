@@ -384,12 +384,15 @@ revocation, sign the target-free policy with both quorums and omit
 `--custody-trust`. Revocation needs access to the signing keys and publication
 buckets, even when the ledger and replicas are offline.
 
-Pin network, domain, seed commitment, minimum sequence, minimum custody epoch,
+Pin network, domain, seed commitment, minimum sequence, minimum policy digest,
+minimum custody epoch,
 release `keys` and `threshold`, the three `custodyKeys`, and `publications` with
 two `{bucket, region, account}` entries in `wallet-trust.json`. The key lists
 must be disjoint and use uncompressed SEC1 hex. Export that format with
 `python3 "$nitro/approval.py" "$key_arn" --sec1`. List the primary bucket first.
-Times, sequence and epochs are canonical decimal strings. The wallet stores the
+The `minimumPolicyDigest` is the release signing digest printed by
+`cargo xtask nitro-sign` for the pinned `minimumSequence`. Times, sequence and
+epochs are canonical decimal strings. The wallet stores the
 sequence, policy digest, custody floor and recovery mode atomically once
 it verifies both signed heads, before contacting a replica. An activation
 still requires fresh replica attestation before use. A revocation has an
@@ -410,6 +413,15 @@ pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" 
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" "$signed_policy" --custody-trust "$custody_trust"
 ```
 
+Before distributing a wallet trust file, run this read-only check. It requires
+both buckets to serve the pinned revision with the expected custody floor and
+recovery mode. Use the reported `trustSha256` to identify the exact file in
+the wallet release.
+
+```sh
+pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" --check-wallet-trust
+```
+
 Wrap-key replacements for a new EIF use the existing receipt and new sealed key
 ARNs. Custodian replacements use a measured rotation.
 
@@ -420,7 +432,7 @@ ARNs. Custodian replacements use a measured rotation.
    before the operator cutover and incoming signatures after it. Keep the domain,
    bucket pins and custody floor, and allow time to complete the rollout before
    the current wallet policy expires.
-2. Pin the transition revision as `minimumSequence` in the incoming trust.
+2. Pin the transition sequence and its `minimumPolicyDigest` in the incoming trust.
    Publish the same signed file to both buckets using the outgoing trust and
    pass `--next-trust "$incoming_trust"` to each publication. The tool checks
    both sets of pins before writing. Distribute the incoming trust after both
@@ -429,7 +441,7 @@ ARNs. Custodian replacements use a measured rotation.
    quorum and retire the outgoing keys.
 
 If the outgoing quorum is unavailable or compromised, independently
-distribute incoming trust pinned to the successor's sequence. Publish under
+distribute incoming trust pinned to the successor's sequence and digest. Publish under
 that trust with `--emergency-from "$outgoing_trust"` to authenticate the
 existing predecessor. The successor needs both quorums under the incoming
 pins. Wallets resume once they use the new trust and both buckets publish

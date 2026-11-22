@@ -169,7 +169,12 @@ pub(crate) fn sign(args: Args) -> Result<()> {
         crate::tools::capture_check(&mut check)?;
     }
 
-    let digest = digest(&manifest.policy, args.custody)?;
+    let policy_digest = digest(&manifest.policy, false)?;
+    let digest = if args.custody {
+        digest(&manifest.policy, true)?
+    } else {
+        policy_digest
+    };
     let mut command = Command::new("aws");
     command.env("AWS_IGNORE_CONFIGURED_ENDPOINT_URLS", "true");
     command.args([
@@ -207,7 +212,11 @@ pub(crate) fn sign(args: Args) -> Result<()> {
     output.write_all(canonical.as_bytes())?;
     output.as_file().sync_all()?;
     output.persist(&path)?;
-    println!("signed {}", path.display());
+    println!(
+        "signed {} ({})",
+        path.display(),
+        encode_lower_hex(&policy_digest)
+    );
     Ok(())
 }
 

@@ -163,7 +163,10 @@ agree. During rollout the primary can advance by one signed revision with a
 nondecreasing custody floor while the mirror serves its exact predecessor.
 The primary's policy authorizes the connection. A mirror that is ahead, a
 missing or invalid head, a fork, a gap or an expired primary blocks new
-connections. A policy is fully published when both buckets agree. Custody
+connections. A policy is fully published when both buckets agree. Shipped pins name the
+minimum sequence and its exact release signing digest. At that sequence the
+digest must match. The immediate successor must name that digest as its
+predecessor. Custody
 retirement rechecks agreement after attesting the replacement. If both
 publishers replay the same old policy, the independent wallet pins, policy
 lifetime and local checkpoint bound acceptance.
@@ -172,8 +175,7 @@ The envelope carries `policy`, `signatures` and `custodySignatures`. Each list
 can carry up to eight distinct valid low-S P-256 signatures. A key can appear in
 only one list. Wallets count only their pinned keys for that list. For a
 planned signer rotation, the publisher verifies the same signed revision
-under both the outgoing and incoming trust. The incoming minimum sequence
-pins the transition revision. Publish it to both buckets before distributing
+under both the outgoing and incoming trust. The incoming minimum sequence and policy digest pin the transition revision. Publish it to both buckets before distributing
 the incoming pins.
 
 ## Seed compromise and recovery

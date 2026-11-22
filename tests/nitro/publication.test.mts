@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { nitroCustodySigningDigest, nitroPolicySigningDigest, type NitroPolicy, type NitroTrust } from "../../sdk/src/attestation/nitro-policy.js";
 import { signP256Prehash } from "../../sdk/src/crypto/p256.js";
 import { encodeLowerHex } from "../../sdk/src/protocol/hex.js";
-import { bucketPolicy, publish } from "../../xtask/nitro-publish.js";
+import { bucketPolicy, publish, verifyDistributionPins } from "../../xtask/nitro-publish.js";
 
 const secrets = [1, 2, 3, 4].map(byte => Buffer.alloc(32, byte));
 const custodySecrets = [5, 6, 7].map(byte => Buffer.alloc(32, byte));
@@ -15,7 +15,7 @@ function publicKey(secret: Uint8Array) {
   return key.getPublicKey("hex", "uncompressed");
 }
 const keys = secrets.map(publicKey);
-const trust: NitroTrust = {
+const trustBase = {
   network: "devnet", securityDomainId: "ab".repeat(32), noteSeedCommitment: "de".repeat(32),
   minimumSequence: "1", minimumCustodyEpoch: "1", threshold: 2,
   publications: [
@@ -24,13 +24,18 @@ const trust: NitroTrust = {
   ],
   keys: keys.slice(0, 2),
   custodyKeys: custodySecrets.map(publicKey),
-};
+} satisfies Omit<NitroTrust, "minimumPolicyDigest">;
 const now = Date.now();
 const first: NitroPolicy = {
-  version: 1, action: "revoke", recoveryOnly: false, network: trust.network, securityDomainId: trust.securityDomainId,
-  noteSeedCommitment: trust.noteSeedCommitment, sequence: "1", minimumCustodyEpoch: "1", previousPolicyDigest: null,
+  version: 1, action: "revoke", recoveryOnly: false, network: trustBase.network, securityDomainId: trustBase.securityDomainId,
+  noteSeedCommitment: trustBase.noteSeedCommitment, sequence: "1", minimumCustodyEpoch: "1", previousPolicyDigest: null,
   validFromMs: String(now - 1000), expiresAtMs: String(now + 60_000), targets: [],
 };
+
+function pins(policy: NitroPolicy): NitroTrust {
+  return { ...trustBase, minimumSequence: policy.sequence, minimumPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(policy)) };
+}
+const trust = pins(first);
 
 function signed(policy: NitroPolicy, signers = [0, 1]) {
   const digest = nitroPolicySigningDigest(policy);
@@ -94,7 +99,7 @@ test("requires custody registration and live attestation before publishing any a
   }] };
   const text = signed(activate);
   const bucket = trust.publications[0].bucket;
-  await assert.rejects(publish(trust, bucket, text), /requires --custody-trust/);
+  await assert.rejects(publish(pins(activate), bucket, text), /requires --custody-trust/);
   const custodyTrust = "/pinned/custody.json";
   let checked = 0;
   let approved = false;
@@ -108,10 +113,10 @@ test("requires custody registration and live attestation before publishing any a
     if (!approved) throw new Error("target is absent from the custody ledger");
     return { stdout: "" };
   };
-  await assert.rejects(publish(trust, bucket, text, { custodyTrust, run }), /absent from the custody ledger/);
+  await assert.rejects(publish(pins(activate), bucket, text, { custodyTrust, run }), /absent from the custody ledger/);
   assert.equal(fetch.mock.callCount(), 0);
   approved = true;
-  await assert.rejects(publish(trust, bucket, text, { custodyTrust, run }), /BootProofUnverified/);
+  await assert.rejects(publish(pins(activate), bucket, text, { custodyTrust, run }), /BootProofUnverified/);
   assert.equal(fetch.mock.callCount(), 1);
   assert.equal(checked, 2);
 });
@@ -134,7 +139,7 @@ test("mirrors the first publisher's policy into only the selected pinned bucket"
   }
   await publish(trust, peer.bucket, signed(first), awsOnly(aws));
   await assert.rejects(publish(trust, "unexpected-bucket", signed(first), awsOnly(aws)), /pinned publication buckets/);
-  await assert.rejects(publish(trust, peer.bucket, signed({ ...first, minimumCustodyEpoch: "2" }), awsOnly(aws)), /exact signed policy/);
+  await assert.rejects(publish(trust, peer.bucket, signed(first, [1, 0]), awsOnly(aws)), /exact signed policy/);
   assert.equal(writes, 1);
 });
 
@@ -168,7 +173,7 @@ test("publishes a rollover revision with both quorums and mirrors its exact sign
     heads.set(bucket, await readFile(args.at(-1)!, "utf8"));
     return { stdout: "{}" };
   });
-  const rotated = { ...trust, keys: keys.slice(2), minimumSequence: bridge.sequence };
+  const rotated = { ...pins(bridge), keys: keys.slice(2) };
   const transition = { ...runner, nextTrust: rotated };
   await assert.rejects(publish(trust, primary.bucket, dual, runner), /outside the supplied trust bundles/);
   await assert.rejects(publish(trust, primary.bucket, partial, transition), /ReleasePolicyInvalid/);
@@ -198,7 +203,7 @@ test("an emergency transition authenticates the predecessor without requiring it
   const [primary] = trust.publications;
   const predecessor = signed(first);
   const successor = { ...first, sequence: "2", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(first)) };
-  const incoming = { ...trust, keys: keys.slice(2), minimumSequence: successor.sequence };
+  const incoming = { ...pins(successor), keys: keys.slice(2) };
   const text = signed(successor, [2, 3]);
   context.mock.method(globalThis, "fetch", async () => new Response(predecessor));
   let writes = 0;
@@ -237,4 +242,23 @@ test("each wallet policy bucket separates control-plane administration from publ
     assert.throws(() => bucketPolicy(trust, bucket, publisher, publisher), /separate administrator and publisher/);
     assert.throws(() => bucketPolicy(trust, bucket, administrator.replace(account, "000000000003"), publisher), /publication account/);
   }
+});
+
+test("ships only the exact current policy agreed by the two pinned buckets", async context => {
+  let current = { ...first, sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest };
+  let peer = first;
+  context.mock.method(globalThis, "fetch", async (url: URL, options: RequestInit) => {
+    const isPrimary = url.hostname.startsWith(trust.publications[0].bucket + ".");
+    const account = trust.publications[isPrimary ? 0 : 1].account;
+    assert.equal(new Headers(options.headers).get("x-amz-expected-bucket-owner"), account);
+    return new Response(signed(isPrimary ? current : peer));
+  });
+  await assert.rejects(verifyDistributionPins(pins(current)), /agreed by both buckets/);
+  peer = current;
+  await assert.rejects(verifyDistributionPins(trust), /match the current policy/);
+  await assert.rejects(verifyDistributionPins({ ...pins(current), minimumPolicyDigest: "99".repeat(32) }), /ReleasePolicyInvalid/);
+  assert.equal((await verifyDistributionPins(pins(current))).sequence, current.sequence);
+  current = peer = { ...current, minimumCustodyEpoch: "2", recoveryOnly: true };
+  await assert.rejects(verifyDistributionPins(pins(current)), /match the current policy/);
+  assert.equal((await verifyDistributionPins({ ...pins(current), minimumCustodyEpoch: "2", recoveryOnly: true })).sequence, "2");
 });

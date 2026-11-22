@@ -43,7 +43,7 @@ function target(name: string): NitroTarget {
 const { domain, seed } = JSON.parse(readFileSync(resolve(directory, "inputs.json"), "utf8"));
 const secrets = Array.from({ length: 3 }, () => p256.utils.randomPrivateKey());
 const custodySecrets = Array.from({ length: 3 }, () => p256.utils.randomPrivateKey());
-const trust: NitroTrust = {
+const trust = {
   network: "devnet", securityDomainId: domain, noteSeedCommitment: seed,
   minimumSequence: "1", minimumCustodyEpoch: "1", threshold: 2,
   publications: [
@@ -52,7 +52,7 @@ const trust: NitroTrust = {
   ],
   keys: secrets.map(secret => encodeLowerHex(p256.getPublicKey(secret, false))),
   custodyKeys: custodySecrets.map(secret => encodeLowerHex(p256.getPublicKey(secret, false))),
-};
+} satisfies Omit<NitroTrust, "minimumPolicyDigest">;
 const start = Date.now() - 30_000;
 const heads: [string, string] = ["", ""];
 function signPolicy(sequence: string, replicas: readonly NitroTarget[], minimumCustodyEpoch: string, previous?: string): string {
@@ -97,7 +97,7 @@ globalThis.fetch = (input, init) => {
 const checkpoint: { value?: NitroPolicyCheckpoint } = {};
 function clientFor(state = checkpoint) {
   return createNitroDecryptionService({
-    trust,
+    trust: { ...trust, minimumPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(JSON.parse(initial).policy)) },
     policyStore: { async current() { return state.value; }, async accept(next) {
       if (!advancesNitroPolicy(state.value, next)) return false;
       state.value = next;

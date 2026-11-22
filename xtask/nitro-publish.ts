@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -8,7 +9,7 @@ import { connectNitroTarget } from "../sdk/src/attestation/nitro-connection.js";
 import {
   nextNitroPublication, nitroPublication, requireNitroTrustTransition, validateNitroTrust, verifyNitroPolicy, type NitroTrust,
 } from "../sdk/src/attestation/nitro-policy.js";
-import { readNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
+import { readNitroPolicy, readPublishedNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
 
 const execute = promisify(execFile);
@@ -38,7 +39,7 @@ async function readPolicy(path: string): Promise<string> {
       size += bytesRead;
     }
     if (size > MAX_BYTES) throw new Error("JSON document exceeds 32 KiB");
-    return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, size));
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, size));
   } finally {
     await file.close();
   }
@@ -151,13 +152,33 @@ export async function publish(
   }
 }
 
+/** Verify the exact current, witnessed revision before shipping a new pin file. */
+export async function verifyDistributionPins(trust: NitroTrust) {
+  validateNitroTrust(trust);
+  const { agreed, checkpoint } = await readPublishedNitroPolicy(trust, AbortSignal.timeout(5_000));
+  if (!agreed || checkpoint.sequence !== trust.minimumSequence || checkpoint.digest !== trust.minimumPolicyDigest ||
+      checkpoint.minimumCustodyEpoch !== trust.minimumCustodyEpoch ||
+      checkpoint.recoveryOnly !== (trust.recoveryOnly ?? false)) {
+    throw new Error("wallet pins must match the current policy agreed by both buckets");
+  }
+  return checkpoint;
+}
+
 async function main() {
   const [trustPath, bucket, policyPath, ...extra] = process.argv.slice(2);
-  const usage = "usage: nitro-publish.ts <wallet-trust.json> <bucket> <signed-policy.json> [--custody-trust <custody-trust.json>] [--next-trust <incoming.json> | --emergency-from <outgoing.json>] | <wallet-trust.json> <bucket> --bucket-policy <administrator-role> <publisher-role>";
-  if (!trustPath || !bucket || !policyPath) {
+  const usage = "usage: nitro-publish.ts <wallet-trust.json> --check-wallet-trust | nitro-publish.ts <wallet-trust.json> <bucket> <signed-policy.json> [--custody-trust <custody-trust.json>] [--next-trust <incoming.json> | --emergency-from <outgoing.json>] | <wallet-trust.json> <bucket> --bucket-policy <administrator-role> <publisher-role>";
+  if (!trustPath || !bucket) {
     throw new Error(usage);
   }
-  const trust = parseStrictJson<NitroTrust>(await readPolicy(trustPath));
+  const trustText = await readPolicy(trustPath);
+  const trust = parseStrictJson<NitroTrust>(trustText);
+  if (bucket === "--check-wallet-trust" && !policyPath) {
+    const checkpoint = await verifyDistributionPins(trust);
+    const trustSha256 = createHash("sha256").update(trustText).digest("hex");
+    console.log(JSON.stringify({ ...checkpoint, trustSha256 }, null, 2));
+    return;
+  }
+  if (!policyPath) throw new Error(usage);
   validateNitroTrust(trust);
   if (policyPath === "--bucket-policy") {
     const [administrator, publisher] = extra;

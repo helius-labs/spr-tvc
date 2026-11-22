@@ -23,7 +23,7 @@ const secrets = [1, 2].map(value => new Uint8Array(32).fill(value));
 const custodySecrets = [5, 6, 7].map(value => new Uint8Array(32).fill(value));
 const trust: NitroTrust = {
   network: "mainnet", securityDomainId: "55".repeat(32), noteSeedCommitment: "66".repeat(32),
-  minimumSequence: "1", minimumCustodyEpoch: "1", threshold: 2,
+  minimumSequence: "1", minimumPolicyDigest: "88".repeat(32), minimumCustodyEpoch: "1", threshold: 2,
   publications: [
     { bucket: "release-test", region: "eu-north-1", account: "000000000001" },
     { bucket: "release-peer", region: "eu-west-1", account: "000000000002" },
@@ -568,4 +568,16 @@ describe("native client trust gate", () => {
     expect(accept).not.toHaveBeenCalled();
     expect(signMessages).not.toHaveBeenCalled();
   });
+});
+
+it("refuses a fully signed direct successor of another bootstrap revision before touching storage", async () => {
+  const wrong = signedPolicy({ previousPolicyDigest: "00".repeat(31) + "01" });
+  const fetch = policyHeads(vi.fn(), wrong);
+  vi.stubGlobal("fetch", fetch);
+  const accept = vi.fn(async () => true);
+  const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept } });
+  await expect(client.open(signer, proofs)).rejects.toMatchObject({ code: "ReleasePolicyInvalid" });
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(accept).not.toHaveBeenCalled();
+  expect(signMessages).not.toHaveBeenCalled();
 });

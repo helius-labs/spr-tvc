@@ -48,7 +48,8 @@ and `@solana/kit` packages in the wallet project.
 Import `createNitroDecryptionService` from
 `@heliuslabs/spr-decryption-service/nitro`. Pin two policy publication buckets
 with independent AWS owners, plus their regions, the network, security domain,
-note seed commitment, minimum sequence and custody epoch, release quorum and
+note seed commitment, minimum sequence and its policy digest, minimum custody
+epoch, release quorum and
 three independent `custodyKeys`. Both activation and revocation require the release quorum and two custody
 signatures over the exact policy. The SDK reads both policy heads. In browsers, it stores the
 checkpoint in IndexedDB. Other runtimes supply an atomic durable `policyStore`
