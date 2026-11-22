@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createECDH } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import {
   nitroCustodySigningDigest, nitroPolicySigningDigest, nitroPublication, verifyPublishedNitroPolicy,
@@ -712,11 +714,23 @@ test("mainnet checks both installed publication buckets before enabling payments
   let peer = text;
   context.mock.method(globalThis, "fetch", async () => new Response(peer));
   const inspected = new Set<string>();
+  const dir = await mkdtemp(join(tmpdir(), "spr-publication-roles-"));
+  context.after(() => rm(dir, { force: true, recursive: true }));
+  const custodyTrust = join(dir, "custody.json");
+  const role = (account: string, name: string) => `arn:aws:iam::${account}:role/${name}`;
+  const publicationRoles = Object.fromEntries(mainnet.publications.map(({ bucket, account }) => [
+    bucket, { administratorRole: role(account, "admin"), publisherRole: role(account, "publisher") },
+  ]));
+  const custody = {
+    network: mainnet.network, securityDomainId: mainnet.securityDomainId,
+    publications: mainnet.publications, publicationRoles,
+  };
+  await writeFile(custodyTrust, JSON.stringify(custody));
   let unsafe = "";
   let probes = 0;
   let writes = 0;
   const options = {
-    custodyTrust: "custody.json",
+    custodyTrust,
     publicationProfiles: ["primary-read", "mirror-read"],
     async run(command: string, args: string[]) {
       if (command === "python3") {
@@ -756,7 +770,11 @@ test("mainnet checks both installed publication buckets before enabling payments
         return { stdout: JSON.stringify({ VersionId: hazard === "version-id" ? "null" : `version-${pin.account}` }) };
       }
       assert.ok(args.includes("get-bucket-policy"));
-      const policy = bucketPolicy(mainnet, pin.bucket, `arn:aws:iam::${pin.account}:role/admin`, `arn:aws:iam::${pin.account}:role/publisher`);
+      const policy = bucketPolicy(
+        mainnet, pin.bucket,
+        role(pin.account, hazard === "administrator" ? "different-admin" : "admin"),
+        role(pin.account, hazard === "publisher" ? "different-publisher" : "publisher"),
+      );
       if (hazard === "policy") policy.Statement.pop();
       return { stdout: JSON.stringify({ Policy: JSON.stringify(policy) }) };
     },
@@ -765,10 +783,25 @@ test("mainnet checks both installed publication buckets before enabling payments
   const missingProfiles = { custodyTrust: options.custodyTrust, run: options.run, probe: options.probe };
   await assert.rejects(publish(mainnet, primary.bucket, text, missingProfiles), /provide --publication-profile twice/);
   await assert.rejects(verifyDistributionPins(mainnet, missingProfiles), /provide --publication-profile twice/);
+  for (const [invalid, message] of [
+    [{ ...custody, publicationRoles: undefined }, /requires role pins for both publication buckets/],
+    [{ ...custody, network: "devnet" }, /must pin the wallet's publication domain and buckets/],
+    [{ ...custody, publications: [mirror, primary] }, /must pin the wallet's publication domain and buckets/],
+    [{ ...custody, publicationRoles: { ...publicationRoles, [mirror.bucket]: publicationRoles[primary.bucket] } },
+      /use separate administrator and publisher roles in the publication account/],
+  ] as const) {
+    await writeFile(custodyTrust, JSON.stringify(invalid));
+    await assert.rejects(publish(mainnet, primary.bucket, text, options), message);
+    await assert.rejects(verifyDistributionPins(mainnet, options), message);
+  }
   assert.equal(probes, 0);
+  await writeFile(custodyTrust, JSON.stringify(custody));
   for (const [hazard, message] of [
     ["lifecycle", /must have no lifecycle/], ["permission", /AccessDenied/], ["versioning", /requires versioning/],
-    ["ownership", /requires bucket-owner-enforced ownership/], ["policy", /differs from the generated bucket policy/],
+    ["ownership", /requires bucket-owner-enforced ownership/],
+    ["policy", /differs from the custody-pinned bucket policy/],
+    ["administrator", /differs from the custody-pinned bucket policy/],
+    ["publisher", /differs from the custody-pinned bucket policy/],
   ] as const) {
     unsafe = hazard;
     await assert.rejects(publish(mainnet, primary.bucket, text, options), message);
@@ -784,6 +817,7 @@ test("mainnet checks both installed publication buckets before enabling payments
   assert.equal(writes, 1);
 
   inspected.clear();
+  await writeFile(custodyTrust, JSON.stringify({ ...custody, publicationRoles: undefined }));
   const recovery = { ...activation, recoveryOnly: true };
   peer = signed(recovery);
   const recoveryPins = { ...pins(recovery), network: recovery.network, recoveryOnly: true };

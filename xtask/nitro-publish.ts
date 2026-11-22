@@ -20,6 +20,7 @@ import { parseStrictJson } from "../sdk/src/protocol/json.js";
 
 const execute = promisify(execFile);
 const MAX_BYTES = 32_768;
+const MAX_CUSTODY_TRUST_BYTES = 2 * MAX_BYTES;
 const WRITE_MARGIN_MS = 30_000n;
 const custodyLedger = fileURLToPath(new URL("../enclave/deploy/nitro/custody_ledger.py", import.meta.url));
 type Run = (command: string, args: string[], timeout: number) => Promise<{ stdout: string }>;
@@ -49,18 +50,18 @@ function requireFreshProbes(probes: readonly ReplicaProbe[], now: bigint, margin
   }
 }
 
-async function readPolicy(path: string): Promise<string> {
+async function readDocument(path: string, maxBytes = MAX_BYTES): Promise<string> {
   const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
     if (!(await file.stat()).isFile()) throw new Error("expected a regular policy or trust file");
-    const buffer = Buffer.alloc(MAX_BYTES + 1);
+    const buffer = Buffer.alloc(maxBytes + 1);
     let size = 0;
     while (size < buffer.length) {
       const { bytesRead } = await file.read(buffer, size, buffer.length - size, size);
       if (bytesRead === 0) break;
       size += bytesRead;
     }
-    if (size > MAX_BYTES) throw new Error("JSON document exceeds 32 KiB");
+    if (size > maxBytes) throw new Error(`JSON document exceeds ${maxBytes / 1024} KiB`);
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, size));
   } finally {
     await file.close();
@@ -136,21 +137,51 @@ export function bucketPolicy(trust: NitroTrust, name: string, administrator: str
   ] };
 }
 
-function paymentPublicationProfiles(trust: NitroTrust, policy: NitroPolicy, profiles?: readonly string[]) {
+async function pinnedPublicationPolicies(trust: NitroTrust, custodyTrust: string) {
+  const custody = parseStrictJson<Pick<NitroTrust, "network" | "securityDomainId" | "publications"> & {
+    publicationRoles: Record<string, { administratorRole: string; publisherRole: string }>;
+  }>(await readDocument(custodyTrust, MAX_CUSTODY_TRUST_BYTES));
+  if (custody?.network !== trust.network || custody.securityDomainId !== trust.securityDomainId ||
+      canonicalizeJsonValue(custody.publications ?? null) !== canonicalizeJsonValue(trust.publications)) {
+    throw new Error("custody trust must pin the wallet's publication domain and buckets");
+  }
+  const { publicationRoles } = custody;
+  if (!publicationRoles || typeof publicationRoles !== "object" || Object.keys(publicationRoles).length !== 2) {
+    throw new Error("custody trust requires role pins for both publication buckets");
+  }
+  return trust.publications.map(pin => {
+    const roles = publicationRoles[pin.bucket];
+    if (typeof roles?.administratorRole !== "string" || typeof roles.publisherRole !== "string" ||
+        Object.keys(roles).length !== 2) {
+      throw new Error(`custody trust requires administrator and publisher role pins for ${pin.bucket}`);
+    }
+    return {
+      publication: nitroPublication(trust, pin),
+      policy: bucketPolicy(trust, pin.bucket, roles.administratorRole, roles.publisherRole),
+    };
+  });
+}
+
+async function paymentPublicationChecks(
+  trust: NitroTrust, policy: NitroPolicy, custodyTrust: string, profiles?: readonly string[],
+) {
   if (policy.action !== "activate" || policy.recoveryOnly || (trust.network !== "mainnet" && profiles === undefined)) return;
-  if (profiles?.length !== 2 || !profiles[0] || !profiles[1] || profiles[0] === profiles[1]) {
+  const [primary, mirror] = profiles ?? [];
+  if (profiles?.length !== 2 || !primary || !mirror || primary === mirror) {
     throw new Error("provide --publication-profile twice in primary and mirror order");
   }
-  return [profiles[0], profiles[1]] as const;
+  return (await pinnedPublicationPolicies(trust, custodyTrust)).map((pin, index) => ({
+    ...pin, profile: index === 0 ? primary : mirror,
+  }));
 }
 
 async function checkPublicationBuckets(
-  trust: NitroTrust, profiles: readonly [string, string] | undefined, run: Run, requireHeadVersions = false,
+  checks: Awaited<ReturnType<typeof paymentPublicationChecks>>, run: Run, requireHeadVersions = false,
 ) {
-  if (profiles === undefined) return;
-  await Promise.all(trust.publications.map(async (pin, index) => {
-    const publication = nitroPublication(trust, pin);
-    const storage = publicationStorage(publication, run, profiles[index]);
+  if (checks === undefined) return;
+  await Promise.all(checks.map(async ({ publication, policy, profile }) => {
+    const { bucket, key } = publication;
+    const storage = publicationStorage(publication, run, profile);
     async function read<T>(operation: string) {
       return parseStrictJson<T>((await storage(operation, [])).stdout);
     }
@@ -159,7 +190,7 @@ async function checkPublicationBuckets(
       read<{ OwnershipControls?: unknown }>("get-bucket-ownership-controls"),
       read<{ Policy: string }>("get-bucket-policy"),
       storage("get-bucket-lifecycle-configuration", ["--cli-error-format", "json"]).then(() => {
-        throw new Error(`publication bucket ${pin.bucket} must have no lifecycle configuration`);
+        throw new Error(`publication bucket ${bucket} must have no lifecycle configuration`);
       }, error => {
         if (error instanceof Error && "stderr" in error && typeof error.stderr === "string") {
           let reply: { Code?: string } | undefined;
@@ -173,24 +204,17 @@ async function checkPublicationBuckets(
         throw error;
       }),
     ]);
-    if (versioning.Status !== "Enabled") throw new Error(`publication bucket ${pin.bucket} requires versioning`);
+    if (versioning.Status !== "Enabled") throw new Error(`publication bucket ${bucket} requires versioning`);
     const ownerEnforced = { Rules: [{ ObjectOwnership: "BucketOwnerEnforced" }] };
     if (canonicalizeJsonValue(ownership.OwnershipControls ?? null) !== canonicalizeJsonValue(ownerEnforced)) {
-      throw new Error(`publication bucket ${pin.bucket} requires bucket-owner-enforced ownership`);
+      throw new Error(`publication bucket ${bucket} requires bucket-owner-enforced ownership`);
     }
-    const installed = parseStrictJson<{ Statement?: {
-      Sid: string; Condition?: { StringNotEquals?: Record<string, unknown> }; Principal?: { AWS?: unknown };
-    }[] }>(response.Policy);
-    const statements = Array.isArray(installed?.Statement) ? installed.Statement : [];
-    const administrator = statements.find(statement => statement?.Sid === "RestrictBucketAdministration")
-      ?.Condition?.StringNotEquals?.["aws:PrincipalArn"];
-    const publisher = statements.find(statement => statement?.Sid === "PublishPolicy")?.Principal?.AWS;
-    if (typeof administrator !== "string" || typeof publisher !== "string" ||
-        canonicalizeJsonValue(installed) !== canonicalizeJsonValue(bucketPolicy(trust, pin.bucket, administrator, publisher))) {
-      throw new Error(`publication bucket ${pin.bucket} differs from the generated bucket policy`);
+    const installed = parseStrictJson(response.Policy);
+    if (canonicalizeJsonValue(installed) !== canonicalizeJsonValue(policy)) {
+      throw new Error(`publication bucket ${bucket} differs from the custody-pinned bucket policy`);
     }
     if (requireHeadVersions) {
-      const { stdout } = await storage("head-object", ["--key", publication.key]);
+      const { stdout } = await storage("head-object", ["--key", key]);
       versionId(parseStrictJson<{ VersionId?: string }>(stdout).VersionId);
     }
   }));
@@ -217,8 +241,10 @@ export async function publish(
   const verified = verify(trust, now, primary);
   const { policy, signatures, custodySignatures } = verified;
   const activatesPrimary = !isSecond && policy.action === "activate";
-  const profiles = isSecond ? undefined : paymentPublicationProfiles(trust, policy, publicationProfiles);
   if (activatesPrimary && !custodyTrust) throw new Error("activation requires --custody-trust");
+  const bucketChecks = activatesPrimary && custodyTrust
+    ? await paymentPublicationChecks(trust, policy, custodyTrust, publicationProfiles)
+    : undefined;
   if (nextTrust && emergencyFrom) throw new Error("choose one signer transition");
   if (nextTrust) {
     validateNitroTrust(nextTrust);
@@ -244,7 +270,7 @@ export async function publish(
   async function readHead() {
     const { stdout } = await call("get-object", ["--range", `bytes=0-${MAX_BYTES}`, current]);
     const { ETag } = JSON.parse(stdout) as { ETag: string };
-    return { etag: etag(ETag), text: await readPolicy(current) };
+    return { etag: etag(ETag), text: await readDocument(current) };
   }
 
   try {
@@ -284,7 +310,7 @@ export async function publish(
       await checkMirror();
       [confirmedCutover] = await Promise.all([
         checkActivationRoster(candidate, custodyTrust, custodyPins, run, replicaProfile, policy.recoveryOnly ? undefined : probes),
-        checkPublicationBuckets(trust, profiles, run),
+        checkPublicationBuckets(bucketChecks, run),
       ]);
     }
     const latestPrimary = isSecond ? await readPeer() : undefined;
@@ -362,7 +388,7 @@ export async function restorePublication(trust: NitroTrust, name: string, retain
     ]);
     if (JSON.parse(stdout).VersionId !== version.VersionId) throw new Error("S3 returned a different policy version");
     try {
-      const text = await readPolicy(path);
+      const text = await readDocument(path);
       if (Buffer.byteLength(text) !== version.Size) throw new Error("S3 policy size differs from the retained version");
       return text;
     } catch (error) {
@@ -455,7 +481,7 @@ export async function verifyDistributionPins(
   const published = await pinnedPublication(trust);
   if (published.policy.action === "revoke") return published.checkpoint;
   if (!custodyTrust) throw new Error("activation requires --custody-trust");
-  const profiles = paymentPublicationProfiles(trust, published.policy, publicationProfiles);
+  const bucketChecks = await paymentPublicationChecks(trust, published.policy, custodyTrust, publicationProfiles);
 
   const directory = await mkdtemp(join(tmpdir(), "spr-wallet-trust-"));
   try {
@@ -465,7 +491,7 @@ export async function verifyDistributionPins(
     const probes = await Promise.all(published.policy.targets.map(target => probe(target, trust)));
     const [nextCutover] = await Promise.all([
       checkActivationRoster(candidate, custodyTrust, trust, run, replicaProfile, published.policy.recoveryOnly ? undefined : probes),
-      checkPublicationBuckets(trust, profiles, run, true),
+      checkPublicationBuckets(bucketChecks, run, true),
     ]);
     const confirmed = await pinnedPublication(trust);
     if (confirmed.text !== published.text) throw new Error("signed policy changed during wallet trust verification");
@@ -483,7 +509,7 @@ export async function verifyDistributionPins(
 async function main() {
   const [trustPath, bucket, ...args] = process.argv.slice(2);
   const activationOptions = "[--custody-trust <custody-trust.json>] [--replica-profile <aws-profile>] [--publication-profile <primary> --publication-profile <mirror>]";
-  const usage = `usage: nitro-publish.ts <wallet-trust.json> --check-wallet-trust ${activationOptions} | nitro-publish.ts <wallet-trust.json> <bucket> <signed-policy.json> ${activationOptions} [--next-trust <incoming.json> | --emergency-from <outgoing.json>] | <wallet-trust.json> <bucket> --bucket-policy <administrator-role> <publisher-role> | <wallet-trust.json> <bucket> --restore-from <version-id>`;
+  const usage = `usage: nitro-publish.ts <wallet-trust.json> --check-wallet-trust ${activationOptions} | nitro-publish.ts <wallet-trust.json> <bucket> <signed-policy.json> ${activationOptions} [--next-trust <incoming.json> | --emergency-from <outgoing.json>] | <wallet-trust.json> <bucket> --bucket-policy <custody-trust.json> | <wallet-trust.json> <bucket> --restore-from <version-id>`;
   const activationFlags = {
     "custody-trust": { type: "string" }, "replica-profile": { type: "string" },
     "publication-profile": { type: "string", multiple: true },
@@ -491,7 +517,7 @@ async function main() {
   if (!trustPath || !bucket) {
     throw new Error(usage);
   }
-  const trustText = await readPolicy(trustPath);
+  const trustText = await readDocument(trustPath);
   const trust = parseStrictJson<NitroTrust>(trustText);
   if (bucket === "--check-wallet-trust") {
     const { values: { "custody-trust": custodyTrust, "replica-profile": replicaProfile, "publication-profile": publicationProfiles } } =
@@ -508,9 +534,12 @@ async function main() {
   if (!policyPath) throw new Error(usage);
   validateNitroTrust(trust);
   if (policyPath === "--bucket-policy") {
-    const [administrator, publisher] = extra;
-    if (!administrator || !publisher || extra.length !== 2) throw new Error(usage);
-    console.log(JSON.stringify(bucketPolicy(trust, bucket, administrator, publisher), null, 2));
+    const [custodyTrust] = extra;
+    if (!custodyTrust || extra.length !== 1) throw new Error(usage);
+    const policies = await pinnedPublicationPolicies(trust, custodyTrust);
+    const pinned = policies.find(({ publication }) => publication.bucket === bucket);
+    if (!pinned) throw new Error("expected one of the pinned publication buckets");
+    console.log(JSON.stringify(pinned.policy, null, 2));
     return;
   }
   if (policyPath === "--restore-from") {
@@ -524,9 +553,9 @@ async function main() {
   } } = parseArgs({
     args: extra, options: { ...activationFlags, "next-trust": { type: "string" }, "emergency-from": { type: "string" } },
   });
-  const nextTrust = nextPath && parseStrictJson<NitroTrust>(await readPolicy(nextPath));
-  const emergencyFrom = emergencyPath && parseStrictJson<NitroTrust>(await readPolicy(emergencyPath));
-  await publish(trust, bucket, await readPolicy(policyPath), {
+  const nextTrust = nextPath && parseStrictJson<NitroTrust>(await readDocument(nextPath));
+  const emergencyFrom = emergencyPath && parseStrictJson<NitroTrust>(await readDocument(emergencyPath));
+  await publish(trust, bucket, await readDocument(policyPath), {
     ...(custodyTrust ? { custodyTrust } : {}),
     ...(replicaProfile ? { replicaProfile } : {}),
     ...(publicationProfiles ? { publicationProfiles } : {}),

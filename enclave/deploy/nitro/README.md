@@ -20,7 +20,10 @@ Pin `trust.json` outside the host and artifact distributor. It contains
 `network`, `securityDomainId` (32 random bytes in lowercase hex), `approvalKeys`,
 `recoveryRelays`, the ordered wallet policy `publications` pair, and `ledger`.
 Each bucket lists `bucket`, `region` and `account` (the 12-digit bucket owner's
-account ID). Each `approvalKeys` entry contains `fromEpoch`, `activeFrom`
+account ID). For each wallet policy bucket, pin its `administratorRole` and
+`publisherRole` as separate IAM role ARNs in `publicationRoles`, keyed by
+bucket name. Keep the file under independent custody administration.
+Each `approvalKeys` entry contains `fromEpoch`, `activeFrom`
 in Unix seconds, and three exported key objects. Start at epoch `"1"` with
 `activeFrom: 0`. Both values increase with each roster change. The ordered
 `roster.json` contains six entries with `recoveryKeyArn`, `acknowledgementKey`
@@ -761,9 +764,10 @@ Also pass `--publication-profile "$primary_read_profile" --publication-profile
 account and needs `s3:GetBucketPolicy`, `s3:GetBucketVersioning`,
 `s3:GetBucketOwnershipControls` and `s3:GetLifecycleConfiguration`.
 Wallet pin verification also needs `s3:GetObject` on the policy key to check
-the current version ID. These checks verify the installed policies and
-versioning so a damaged publication can be restored. Pass the same profiles
-on devnet to rehearse them.
+the current version ID. Both checks compare the installed bucket policy
+with the policy generated from the exact roles in the independent custody
+trust file. They also require versioning so a damaged publication can be
+restored. Pass the same profiles on devnet to rehearse these checks.
 Recovery-only activation can proceed during a key or replica inspection outage
 while the required records remain readable.
 [Cross-account KMS permissions](https://docs.aws.amazon.com/kms/latest/developerguide/key-policy-modifying-external-accounts.html) · [S3 bucket policy permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketPolicy.html)
@@ -804,11 +808,20 @@ force. [S3 version listing](https://docs.aws.amazon.com/AmazonS3/latest/API/API_
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" --restore-from "$retained_version_id"
 ```
 
+Generate the publication policy for each bucket from custody trust before
+mainnet payment activation.
+
 ```sh
-cargo xtask nitro-sign policy.json --custody --key "$custody_key_arn" --public-key "$custody_sec1_hex" --custody-trust "$custody_trust"
-cargo xtask nitro-sign policy.json --key "$signing_key_arn" --public-key "$signer_sec1_hex" --custody-trust "$custody_trust"
-pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" --bucket-policy "$bucket_admin_role" "$publisher_role"
-pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$primary_bucket" "$signed_policy" --custody-trust "$custody_trust"
+pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" --bucket-policy "$custody_trust"
+
+cargo xtask nitro-sign policy.json --custody --key "$custody_key_arn" --public-key "$custody_sec1_hex" \
+  --custody-trust "$custody_trust" --replica-profile "$replica_read_profile"
+cargo xtask nitro-sign policy.json --key "$signing_key_arn" --public-key "$signer_sec1_hex" \
+  --custody-trust "$custody_trust" --replica-profile "$replica_read_profile"
+
+pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$primary_bucket" "$signed_policy" \
+  --custody-trust "$custody_trust" --replica-profile "$replica_read_profile" \
+  --publication-profile "$primary_read_profile" --publication-profile "$mirror_read_profile"
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$mirror_bucket" "$signed_policy"
 ```
 
@@ -822,7 +835,9 @@ a ledger outage, omit `--custody-trust`. Use the reported `trustSha256` to
 identify the exact file in the wallet release.
 
 ```sh
-pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" --check-wallet-trust --custody-trust "$custody_trust"
+pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" --check-wallet-trust \
+  --custody-trust "$custody_trust" --replica-profile "$replica_read_profile" \
+  --publication-profile "$primary_read_profile" --publication-profile "$mirror_read_profile"
 ```
 
 Wrap-key replacements for a new EIF use the existing receipt and new sealed key
