@@ -257,7 +257,7 @@ and [attestation conditions](https://docs.aws.amazon.com/kms/latest/developergui
 The policy digest is SHA-256 of the UTF-8 string
 `SPR/native-nitro/release-policy/v1` followed by RFC 8785 canonical policy JSON.
 Release signers sign this digest. Every policy after sequence 1 includes the
-previous published digest. Signers and publishers independently verify that
+previous published digest. Signers and the primary publisher independently verify that
 each activation target matches an active epoch, the committed custody receipt,
 and a custody-approved serving executable, release ID and PCR0–PCR4. They
 require a pinned mainnet custody replica and compare the receipt chain,
@@ -274,7 +274,7 @@ keys also sign the entire policy. Their digest uses
 `SPR/native-nitro/custody-release-policy/v1`
 followed by the same canonical JSON. The SDK verifies both quorums before
 contacting a replica. Separate key pins prevent the release quorum from
-substituting its own recipient keys through an unapproved image. Each publisher
+substituting its own recipient keys through an unapproved image. The primary publisher
 checks the predecessor and matches the activation's wallet custody pins to
 the active operator roster. For each target it attests the boot and sends an
 encrypted `PublicKeys` request through the wallet route. The reply must carry
@@ -288,12 +288,15 @@ has no targets. Its sequence, custody floor and recovery flag can permanently
 change wallet state, so it also requires both quorums.
 Revocation can proceed while the custody ledger and replicas are offline.
 S3 applies the predecessor's ETag condition to the bucket being written.
-Each publisher writes to its own bucket. The mirror copies the primary's signed file, including
-all signatures. The primary checks that the mirror holds the same file before
-advancing again. If a primary policy expired before the mirror copied it,
-the mirror can still verify and copy the exact signed file as the predecessor
-for the next revision. Wallets require a current primary policy. The enclave
-and ingress have no publication permission.
+Each publisher writes to its own bucket. The mirror verifies both quorums
+and copies the primary's exact signed file against its own predecessor's ETag.
+This copy can proceed during custody or replica outages, including after
+the primary file expires. The primary waits for the mirror to hold the same
+file before advancing again. The mirror can repair its copy of the same
+revision if the primary's file retains every release and custody signer
+already on the mirror. Changing signatures on the primary requires a new
+revision. Wallets require a current primary policy. The
+enclave and ingress have no publication permission.
 
 Both quorums sign the ordered `publications` pair, including the bucket, region
 and AWS owner of each entry. Custody signers check the pair against their

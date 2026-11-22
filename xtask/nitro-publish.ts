@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
 import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -33,8 +34,9 @@ type PublicationOptions = {
 };
 
 async function readPolicy(path: string): Promise<string> {
-  const file = await open(path, "r");
+  const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
+    if (!(await file.stat()).isFile()) throw new Error("expected a regular policy or trust file");
     const buffer = Buffer.alloc(MAX_BYTES + 1);
     let size = 0;
     while (size < buffer.length) {
@@ -117,8 +119,8 @@ export async function publish(
     : verifyNitroMirrorPolicy(text, witness, pins, at);
   const verified = verify(trust, now, primary);
   const { policy, signatures, custodySignatures } = verified;
-  const expiredMirror = isSecond && now >= verified.expiresAt;
-  if (policy.action === "activate" && !expiredMirror && !custodyTrust) throw new Error("activation requires --custody-trust");
+  const activatesPrimary = !isSecond && policy.action === "activate";
+  if (activatesPrimary && !custodyTrust) throw new Error("activation requires --custody-trust");
   if (nextTrust && emergencyFrom) throw new Error("choose one signer transition");
   if (nextTrust) {
     validateNitroTrust(nextTrust);
@@ -152,9 +154,23 @@ export async function publish(
 
   try {
     await writeFile(candidate, text, { mode: 0o600, flag: "wx" });
-    const head = policy.sequence === "1" ? undefined : await readHead();
-    const needsWrite = nextNitroPublication(verified, head?.text, trust, emergencyFrom);
-    if (!needsWrite && head?.text !== text) throw new Error("use a new revision to change published signatures");
+    let head: Awaited<ReturnType<typeof readHead>> | undefined;
+    if (policy.sequence !== "1") head = await readHead();
+    else if (isSecond) {
+      // If the mirror has no readable genesis, S3 must still enforce creation only.
+      head = await readHead().catch(() => undefined);
+    }
+    if (head?.text === text) return;
+    if (!nextNitroPublication(verified, head?.text, trust, emergencyFrom)) {
+      if (!isSecond || !head) throw new Error("use a new revision to change published signatures");
+      const previous = parseStrictJson<Pick<typeof verified, "signatures" | "custodySignatures">>(head.text);
+      for (const scope of ["signatures", "custodySignatures"] as const) {
+        const keys = new Set(verified[scope].map(({ key }) => key));
+        if (previous[scope].some(({ key }) => !keys.has(key))) {
+          throw new Error("mirror repair must preserve the existing signers for this revision");
+        }
+      }
+    }
     async function checkMirror() {
       if (isSecond || !head) return;
       const peer = await readPeer();
@@ -162,10 +178,9 @@ export async function publish(
         throw new Error("the mirror must hold the same signed predecessor before the primary advances");
       }
     }
-    if (!needsWrite) return;
     await checkMirror();
     let confirmedCutover: bigint | undefined;
-    if (policy.action === "activate" && !expiredMirror && custodyTrust) {
+    if (activatesPrimary && custodyTrust) {
       const custodyPins = nextTrust ?? trust;
       const cutover = await checkActivationRoster(candidate, custodyTrust, custodyPins, run);
       requireCustodyWriteWindow(cutover, BigInt(Date.now()));
@@ -180,10 +195,12 @@ export async function publish(
     const precondition = head ? ["--if-match", head.etag] : ["--if-none-match", "*"];
     try {
       await call("put-object", [...precondition, "--content-type", "application/json", "--cache-control", "no-store", "--body", candidate]);
-    } catch (error) {
-      // A retry is successful only if S3 already holds this exact signed policy.
-      const observed = await readHead();
-      if (observed.text !== text) throw error;
+    } catch (writeError) {
+      const observed = await readHead().catch((readError: unknown) => {
+        throw new Error(`policy write could not be confirmed. Write failed with ${writeError}. Readback failed with ${readError}`,
+          { cause: new AggregateError([writeError, readError]) });
+      });
+      if (observed.text !== text) throw writeError;
     }
   } finally {
     await rm(directory, { recursive: true, force: true });

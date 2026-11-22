@@ -682,10 +682,10 @@ the serving registrations. They verify every epoch and rotation approval
 from genesis under its historical roster. Renewals run the same checks.
 Resolve missing or failed replication before retrying activation.
 [S3 replication status](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication-status.html)
-Both publishers require the activation's wallet custody pins to match the
-active roster in their independently distributed custody trust file. They
-leave at least 30 seconds before a scheduled roster cutover to submit the S3 write.
-Give release signers, custody signers and both publishers scoped ledger read
+The primary publisher requires the activation's wallet custody pins to match
+the active roster in its independently distributed custody trust file. It
+leaves at least 30 seconds before a scheduled roster cutover to submit the S3 write.
+Give release signers, custody signers and the primary publisher scoped ledger read
 access using `reader-policy` in the source and replica. Distribute the custody
 trust file independently.
 Collect the release quorum and two custody signatures on every policy.
@@ -707,24 +707,27 @@ epochs are canonical decimal strings. The wallet stores the
 sequence, policy digest, custody floor and recovery mode atomically once
 it verifies both signed heads, before contacting a replica. An activation
 still requires fresh replica attestation before use. A revocation has an
-empty target list. Each publisher checks the predecessor, attests each
+empty target list. The primary publisher checks the predecessor, attests each
 activation target and verifies its encrypted `PublicKeys` reply through
 `/v1/operations`. The reply must be signed by the attested boot. The probe
 uses a fixed public address and needs no wallet signature. The publisher
 rereads the peer and custody ledger after the probes, checks the active
 roster and cutover window, and writes against its original ETag.
-For mainnet payment activation, give signers, publishers, and wallet pin
+For mainnet payment activation, give signers, the primary publisher, and wallet pin
 verifiers `kms:DescribeKey` on the registered recovery and wrapping keys.
 Each target needs three slots with both keys enabled in the same account.
 A warm enclave still needs that quorum to accept new payments. Recovery-only
 policy publication can proceed during a key outage. [Cross-account KMS permissions](https://docs.aws.amazon.com/kms/latest/developerguide/key-policy-modifying-external-accounts.html)
 Publish from the first listed bucket's AWS account, then mirror the exact signed
 file from the second account. The tool checks the full signed file at both
-buckets before advancing past it. Use a new revision to change its signatures.
-If the primary policy expires before the mirror catches up, rerun the mirror
-command with the exact signed file and its trust pins. This copy needs no
-custody ledger or enclave probe. Then publish the fresh successor, including
-an emergency revocation if needed.
+buckets before advancing past it. Sign a new revision to change the primary's
+signatures. The mirror can repair its copy at the same revision if the
+primary's file retains every release and custody signer already on the mirror.
+If the mirror is behind during an outage, rerun the mirror command with the
+exact signed primary file and wallet trust pins. The mirror authenticates
+both quorums and checks continuity and the ETag in its own bucket. It can do
+this during a custody outage, a replica outage, or after primary policy
+expiry. Once both heads agree, publish the successor or emergency revocation.
 Wallets use the primary's signed policy when the mirror serves the same
 policy or its exact predecessor. A mirror ahead of the primary blocks new
 connections. Retirement requires agreement. Set alerts for mismatched heads
@@ -734,7 +737,8 @@ and approaching expiration.
 cargo xtask nitro-sign policy.json --custody --key "$custody_key_arn" --public-key "$custody_sec1_hex" --custody-trust "$custody_trust"
 cargo xtask nitro-sign policy.json --key "$signing_key_arn" --public-key "$signer_sec1_hex" --custody-trust "$custody_trust"
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" --bucket-policy "$bucket_admin_role" "$publisher_role"
-pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" "$signed_policy" --custody-trust "$custody_trust"
+pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$primary_bucket" "$signed_policy" --custody-trust "$custody_trust"
+pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$mirror_bucket" "$signed_policy"
 ```
 
 Before distributing a wallet trust file, run this read-only check. It requires
