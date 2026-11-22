@@ -2,7 +2,7 @@ import { p256 } from "@noble/curves/p256";
 import { describe, expect, it } from "vitest";
 import {
   advancesNitroPolicy, nextNitroPublication, nitroPolicySigningDigest, nitroPublication, validateNitroTrust, verifyNitroPolicy,
-  verifyRetirementPolicy,
+  requireRetirementPolicy, verifyPublishedNitroPolicy,
   type NitroPolicy, type NitroTrust,
 } from "../../src/attestation/nitro-policy.js";
 import { signP256Prehash } from "../../src/crypto/p256.js";
@@ -19,7 +19,10 @@ const trust: NitroTrust = {
   keys: keys.slice(0, 3),
   minimumSequence: "9",
   minimumCustodyEpoch: "1",
-  publication: { bucket: "release-test", region: "eu-north-1", account: "000000000001" },
+  publications: [
+    { bucket: "release-test", region: "eu-north-1", account: "000000000001" },
+    { bucket: "release-peer", region: "eu-west-1", account: "000000000002" },
+  ],
 };
 const binding: NitroPolicy = {
   version: 1,
@@ -156,11 +159,15 @@ describe("native Nitro release policy", () => {
     expect(advancesNitroPolicy(first, { ...first, sequence: "9", digest: "ab" })).toBe(false);
   });
 
-  it("resolves the canonical publication in the pinned AWS bucket", () => {
-    const publication = nitroPublication(trust);
+  it("resolves two pinned publication buckets and rejects a shared bucket or owner", () => {
+    const [first, second] = trust.publications;
+    const publication = nitroPublication(trust, first);
     expect(publication.key).toBe(`spr-release/mainnet/${trust.securityDomainId}/policy.json`);
     expect(publication.url.href).toBe(`https://release-test.s3.eu-north-1.amazonaws.com/${publication.key}`);
-    expect(() => validateNitroTrust({ ...trust, publication: { ...trust.publication, bucket: "bad.example" } })).toThrow();
+    for (const invalid of [{ ...first, bucket: "bad.example" }, { ...first, account: second.account },
+      { ...first, bucket: second.bucket }]) {
+      expect(() => validateNitroTrust({ ...trust, publications: [invalid, second] })).toThrow();
+    }
   });
 
   it("publishes one signed successor of the current digest, including after the current policy expires", () => {
@@ -188,21 +195,53 @@ describe("native Nitro release policy", () => {
     expect(nextNitroPublication(next, previous, rotated, now, trust)).toBe(true);
     expect(nextNitroPublication(next, next, rotated, now, trust)).toBe(false);
     expect(() => nextNitroPublication(next, previous, rotated, now, {
-      ...trust, publication: { ...trust.publication, account: "000000000002" },
+      ...trust, publications: [trust.publications[0], { ...trust.publications[1], account: "000000000003" }],
     })).toThrow();
   });
 
   it("requires a current activation that has already raised the floor to the retiring epoch's replacement", () => {
     const replacement = { ...binding.targets[0]!, custodyEpoch: "2", custodyDigest: "77".repeat(32) };
     const policy = { ...binding, minimumCustodyEpoch: "2", targets: [replacement] };
-    expect(verifyRetirementPolicy(manifest(policy, 0, 1), trust, "2", replacement.custodyDigest, now).policy).toEqual(policy);
+    const retire = (candidate: NitroPolicy, time = now) => {
+      const published = verifyPublishedNitroPolicy([manifest(candidate, 0, 1), manifest(candidate, 1, 2)], trust, time);
+      requireRetirementPolicy(published, "2", replacement.custodyDigest);
+    };
+    expect(() => retire(policy)).not.toThrow();
     for (const unsafe of [
       { ...policy, minimumCustodyEpoch: "1" },
       { ...policy, action: "revoke", targets: [] } as const,
       { ...policy, targets: [{ ...replacement, custodyEpoch: "3" }] },
       { ...policy, targets: [{ ...replacement, custodyDigest: "88".repeat(32) }] },
-    ]) expect(() => verifyRetirementPolicy(manifest(unsafe, 0, 1), trust, "2", replacement.custodyDigest, now)).toThrow();
-    expect(() => verifyRetirementPolicy(manifest(policy, 0, 1), trust, "2", replacement.custodyDigest, now + 100n)).toThrow();
+    ]) expect(() => retire(unsafe)).toThrow();
+    expect(() => retire(policy, now + 100n)).toThrow();
+    const successor = { ...policy, sequence: "10", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(binding)) };
+    const split = verifyPublishedNitroPolicy([manifest(binding, 0, 1), manifest(successor, 0, 1)], trust, now);
+    expect(split.policy).toEqual(successor);
+    expect(() => requireRetirementPolicy(split, "2", replacement.custodyDigest)).toThrow();
+  });
+
+  it("uses the signed successor during rollout even if its predecessor expired or is below the pins", () => {
+    const prior = { ...binding, validFromMs: String(now - 1000n), expiresAtMs: String(now - 2n) };
+    const next = { ...binding, sequence: "10", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(prior)) };
+    const currentTrust = { ...trust, minimumSequence: "10" };
+    const heads = [manifest(prior, 0, 1), manifest(next, 0, 1)] as const;
+    expect(verifyPublishedNitroPolicy(heads, currentTrust, now)).toMatchObject({ policy: next, agreed: false });
+    expect(verifyPublishedNitroPolicy([heads[1], heads[0]], currentTrust, now)).toMatchObject({ policy: next, agreed: false });
+    expect(verifyPublishedNitroPolicy([heads[1], manifest(next, 0, 2)], currentTrust, now)).toMatchObject({ policy: next, agreed: true });
+  });
+
+  it("refuses gaps, forks, unauthenticated heads and an unusable successor without falling back", () => {
+    const next = { ...binding, sequence: "10", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(binding)) };
+    const current = manifest(binding, 0, 1);
+    for (const other of [
+      manifest({ ...binding, action: "revoke", targets: [] }, 0, 1),
+      manifest({ ...next, sequence: "11" }, 0, 1),
+      manifest({ ...next, previousPolicyDigest: "66".repeat(32) }, 0, 1),
+      manifest(next, 0, 3),
+      manifest({ ...next, expiresAtMs: String(now) }, 0, 1),
+      manifest({ ...next, validFromMs: String(now + 1n) }, 0, 1),
+    ]) expect(() => verifyPublishedNitroPolicy([current, other], trust, now)).toThrow();
+    expect(() => verifyPublishedNitroPolicy([current, current], { ...trust, minimumSequence: "10" }, now)).toThrow();
   });
 
   it("rejects competing custody records for the same epoch within and across policy revisions", () => {

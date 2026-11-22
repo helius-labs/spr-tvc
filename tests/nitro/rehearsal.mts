@@ -45,7 +45,10 @@ const secrets = Array.from({ length: 3 }, () => p256.utils.randomPrivateKey());
 const trust: NitroTrust = {
   network: "devnet", securityDomainId: domain, noteSeedCommitment: seed,
   minimumSequence: "1", minimumCustodyEpoch: "1", threshold: 2,
-  publication: { bucket: "rehearsal-policy", region: "eu-north-1", account: "000000000000" },
+  publications: [
+    { bucket: "rehearsal-policy", region: "eu-north-1", account: "000000000000" },
+    { bucket: "rehearsal-peer", region: "eu-west-1", account: "000000000001" },
+  ],
   keys: secrets.map(secret => encodeLowerHex(p256.getPublicKey(secret, false))),
 };
 const start = Date.now() - 30_000;

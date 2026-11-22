@@ -172,7 +172,8 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    as `walletTrustSha256` in the custody trust file. Draft, sign twice and
    publish a retirement record. Each step verifies the canonical wallet policy
    and attests its replacement replicas against the exact committed custody
-   record. Publication closes the old epoch to
+   record. Both public buckets must agree before and after attestation.
+   Publication closes the old epoch to
    new wraps. Each slot's inventory includes its recovery key and all wrapping
    keys registered before retirement, including those from in-flight requests.
 
@@ -194,13 +195,13 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
 
 ## Publish wallet policy
 
-Use a versioned publication bucket distinct from the private custody ledger.
-Allow public reads of exactly the policy object and disable lifecycle deletion
-for its versions. Configure CORS for the wallet origins to `GET` with
-`x-amz-expected-bucket-owner`. Restrict the dedicated publisher role to the
-reviewed release workflow. The wallet reads this S3 object directly and checks
-the expected bucket owner. The publisher and bucket administrators are trusted
-for freshness. Restrict their access separately from the host and ingress.
+Use two versioned S3 publication buckets in independently administered AWS
+accounts, separate from the private custody ledger. Give each bucket a publisher
+role in its own account. Keep the publisher role, bucket administration and role
+assumption paths independent across the two accounts and separate from the host
+and ingress. Allow public reads of exactly the policy object. Disable lifecycle
+deletion and configure CORS for wallet origins to `GET` with
+`x-amz-expected-bucket-owner`. The wallet reads both buckets directly.
 Pass absolute file paths to commands run with `pnpm --dir example`.
 
 The canonical policy starts with `{"policy":...,"signatures":[]}`. Its policy
@@ -212,28 +213,33 @@ digest specified in [the Nitro security spec](../../NITRO.md#proposal-and-public
 Each target contains `endpoint`, `releaseId`, `executableSha256`,
 `custodyEpoch`, `custodyDigest` and `pcrs`. Obtain `custodyDigest` with
 `python3 "$nitro/custody_ledger.py" trust.json read "$epoch" --custody-digest`.
-All targets for that epoch must use the same digest. Pin network, domain, seed commitment, minimum sequence,
-minimum custody epoch, signer keys, threshold and `publication` with `bucket`,
-`region` and `account` in `wallet-trust.json`. Times, sequence
+All targets for that epoch must use the same digest. Pin network, domain, seed
+commitment, minimum sequence, minimum custody epoch, signer keys, threshold and
+`publications` with two `{bucket, region, account}` entries in `wallet-trust.json`.
+Times, sequence
 and epochs are canonical decimal strings. The wallet stores the sequence,
 policy digest and custody floor atomically. `activate` requires a verified
 replica before the wallet advances the checkpoint. An emergency `revoke`
 requires an empty target list and advances the checkpoint as soon as the wallet
-verifies the policy signatures. The publisher checks the predecessor, verifies
-that every activation target attests, and then writes against the observed S3
-ETag. Concurrent candidates cannot both succeed. Alert before expiration.
+verifies both signed heads. Each publisher checks the predecessor, verifies
+that every activation target attests, and writes against its observed ETag.
+Publish from the first listed bucket's AWS account, then mirror the same file
+from the second account. The tool requires the first bucket's signed revision
+before mirroring and checks the second bucket before advancing the first again.
+Retirement requires both buckets to agree. Set alerts for mismatched heads and
+approaching expiration.
 
 ```sh
 cargo xtask nitro-sign policy.json --key "$signing_key_arn" --public-key "$signer_sec1_hex"
-pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" --bucket-policy "$publisher_role"
-pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$signed_policy"
+pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" --bucket-policy "$publisher_role"
+pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" "$signed_policy"
 ```
 
 Wrap-key replacements for a new EIF use the existing receipt and new sealed key
 ARNs. Custodian replacements use a measured rotation. For wallet signing-key
 rotation, distribute the updated trust bundle independently. Keep a common
-signing quorum during rollout where possible. Use `--previous-trust` on the
-first publication that follows a policy signed under the old pins. The domain,
-bucket, sequence and custody floor carry through the transition.
+signing quorum during rollout so both wallet versions can verify both signed
+heads. Use `--previous-trust` when validating a predecessor signed under old
+pins. The domain, buckets, sequence and custody floor carry through the transition.
 
 [Security model](../../NITRO.md) · [Test invariants](../../../tests/INVARIANTS.md) · [Audit handoff](../../../tests/AUDIT.md)

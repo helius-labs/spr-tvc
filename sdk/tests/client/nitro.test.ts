@@ -15,7 +15,10 @@ const secrets = [1, 2].map(value => new Uint8Array(32).fill(value));
 const trust: NitroTrust = {
   network: "mainnet", securityDomainId: "55".repeat(32), noteSeedCommitment: "66".repeat(32),
   minimumSequence: "1", minimumCustodyEpoch: "1", threshold: 2,
-  publication: { bucket: "release-test", region: "eu-north-1", account: "000000000001" },
+  publications: [
+    { bucket: "release-test", region: "eu-north-1", account: "000000000001" },
+    { bucket: "release-peer", region: "eu-west-1", account: "000000000002" },
+  ],
   keys: secrets.map(secret => encodeLowerHex(p256.getPublicKey(secret, false))),
 };
 
@@ -39,6 +42,10 @@ function signedPolicy(overrides: Partial<NitroPolicy> = {}) {
     key: trust.keys[index],
     signature: encodeLowerHex(signP256Prehash(secret, nitroPolicySigningDigest(policy))),
   })) });
+}
+
+function policyHeads(fetch = vi.fn(), first = signedPolicy(), second = first) {
+  return fetch.mockResolvedValueOnce(new Response(first)).mockResolvedValueOnce(new Response(second));
 }
 
 function attestedDiscovery(custodyDigest = "99".repeat(32)) {
@@ -71,18 +78,19 @@ afterEach(() => {
 
 describe("native client trust gate", () => {
   it("refuses to send an operation or request approval if the qualified checkpoint cannot persist", async () => {
-    const fetch = vi.fn()
-      .mockResolvedValueOnce(new Response(signedPolicy()))
-      .mockResolvedValueOnce(attestedDiscovery());
+    const fetch = policyHeads().mockResolvedValueOnce(attestedDiscovery());
     vi.stubGlobal("fetch", fetch);
     const stored = vi.fn(async () => false);
     const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept: stored } });
     await expect(client.open(signer, proofs)).rejects.toThrow("policy rollback or checkpoint");
     expect(stored).toHaveBeenCalledOnce();
     expect(verifyNativeNitroEvidence).toHaveBeenCalledBefore(stored);
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(3);
     expect(fetch.mock.calls[0]?.[0].href).toBe(`https://release-test.s3.eu-north-1.amazonaws.com/spr-release/mainnet/${trust.securityDomainId}/policy.json`);
-    expect(new Headers(fetch.mock.calls[0]?.[1].headers).get("x-amz-expected-bucket-owner")).toBe(trust.publication.account);
+    expect(fetch.mock.calls[1]?.[0].href).toBe(`https://release-peer.s3.eu-west-1.amazonaws.com/spr-release/mainnet/${trust.securityDomainId}/policy.json`);
+    for (const [index, publication] of trust.publications.entries()) {
+      expect(new Headers(fetch.mock.calls[index]?.[1].headers).get("x-amz-expected-bucket-owner")).toBe(publication.account);
+    }
     expect(signMessages).not.toHaveBeenCalled();
   });
 
@@ -93,25 +101,24 @@ describe("native client trust gate", () => {
     const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept: stored } });
     await expect(client.open(signer, proofs)).rejects.toThrow("ResponseTooLarge");
     expect(stored).not.toHaveBeenCalled();
-    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledTimes(2);
     expect(signMessages).not.toHaveBeenCalled();
   });
 
   it("rejects unattested discovery before requesting a wallet signature", async () => {
-    const fetch = vi.fn()
-      .mockResolvedValueOnce(new Response(signedPolicy()))
+    const fetch = policyHeads()
       .mockResolvedValueOnce(new Response('{"info":{},"evidence":"00"}'));
     vi.stubGlobal("fetch", fetch);
     const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, async accept() { return true; } } });
     await expect(client.open(signer, proofs)).rejects.toThrow("no authorized Nitro replica");
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(fetch.mock.calls[1]?.[0].href).toBe("https://replica.example.com/v1/nitro/attestation");
-    expect(fetch.mock.calls[1]?.[1]).toMatchObject({ redirect: "error", method: "POST" });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch.mock.calls[2]?.[0].href).toBe("https://replica.example.com/v1/nitro/attestation");
+    expect(fetch.mock.calls[2]?.[1]).toMatchObject({ redirect: "error", method: "POST" });
     expect(signMessages).not.toHaveBeenCalled();
   });
 
   it("rejects discovery for a different custody record at the expected epoch", async () => {
-    const fetch = vi.fn().mockResolvedValueOnce(new Response(signedPolicy())).mockResolvedValueOnce(attestedDiscovery("ab".repeat(32)));
+    const fetch = policyHeads().mockResolvedValueOnce(attestedDiscovery("ab".repeat(32)));
     vi.stubGlobal("fetch", fetch);
     const accept = vi.fn(async () => true);
     const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept } });
@@ -123,11 +130,9 @@ describe("native client trust gate", () => {
   it("preserves the previous floor and sequence when a signed activation cannot attest", async () => {
     const old = signedPolicy();
     const targets = JSON.parse(old).policy.targets.map((target: NitroPolicy["targets"][number]) => ({ ...target, custodyEpoch: "2" }));
-    const fetch = vi.fn()
-      .mockResolvedValueOnce(new Response(signedPolicy({ sequence: "3", minimumCustodyEpoch: "2", targets })))
-      .mockResolvedValueOnce(new Response(null, { status: 503 }))
-      .mockResolvedValueOnce(new Response(old))
-      .mockResolvedValueOnce(attestedDiscovery());
+    const fetch = policyHeads(vi.fn(), signedPolicy({ sequence: "3", minimumCustodyEpoch: "2", targets }))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    policyHeads(fetch, old).mockResolvedValueOnce(attestedDiscovery());
     vi.stubGlobal("fetch", fetch);
     const stored = vi.fn(async () => false);
     const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept: stored } });
@@ -139,8 +144,11 @@ describe("native client trust gate", () => {
   });
 
   it("persists explicit revocation without replicas and rejects the previous policy", async () => {
-    const revoked = signedPolicy({ action: "revoke", sequence: "3", minimumCustodyEpoch: "2", targets: [] });
-    const fetch = vi.fn().mockResolvedValueOnce(new Response(revoked)).mockResolvedValueOnce(new Response(signedPolicy()));
+    const old = signedPolicy();
+    const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(old).policy));
+    const revoked = signedPolicy({ action: "revoke", sequence: "3", previousPolicyDigest, minimumCustodyEpoch: "2", targets: [] });
+    const fetch = policyHeads(vi.fn(), old, revoked);
+    policyHeads(fetch, old);
     vi.stubGlobal("fetch", fetch);
     const stored = vi.fn(async () => true);
     const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept: stored } });
@@ -148,12 +156,12 @@ describe("native client trust gate", () => {
     expect(stored).toHaveBeenCalledWith(expect.objectContaining({ sequence: "3", minimumCustodyEpoch: "2" }));
     await expect(client.open(signer, proofs)).rejects.toThrow("policy rollback");
     expect(stored).toHaveBeenCalledOnce();
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(4);
     expect(signMessages).not.toHaveBeenCalled();
   });
 
   it("refuses to use a connection superseded in another SDK instance", async () => {
-    const fetch = vi.fn().mockResolvedValueOnce(new Response(signedPolicy())).mockResolvedValueOnce(attestedDiscovery());
+    const fetch = policyHeads().mockResolvedValueOnce(attestedDiscovery());
     vi.stubGlobal("fetch", fetch);
     const store = {
       async accept() { return true; },
@@ -161,7 +169,19 @@ describe("native client trust gate", () => {
     };
     const client = createNitroDecryptionService({ trust, policyStore: store });
     await expect(client.open(signer, proofs)).rejects.toThrow("ReleasePolicySuperseded");
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(signMessages).not.toHaveBeenCalled();
+  });
+
+  it("requires the second publication even if the first returned a usable signed policy", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(new Response(signedPolicy()))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    vi.stubGlobal("fetch", fetch);
+    const accept = vi.fn(async () => true);
+    const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept } });
+    await expect(client.open(signer, proofs)).rejects.toMatchObject({ code: "ReleasePolicyInvalid", status: 503 });
     expect(fetch).toHaveBeenCalledTimes(2);
+    expect(accept).not.toHaveBeenCalled();
     expect(signMessages).not.toHaveBeenCalled();
   });
 

@@ -8,6 +8,7 @@ import { connectNitroTarget } from "../sdk/src/attestation/nitro-connection.js";
 import {
   nextNitroPublication, nitroPublication, validateNitroTrust, verifyNitroPolicy, type NitroTrust,
 } from "../sdk/src/attestation/nitro-policy.js";
+import { readNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
 
 const execute = promisify(execFile);
@@ -32,9 +33,14 @@ async function readPolicy(path: string): Promise<string> {
   }
 }
 
-function bucketPolicy(trust: NitroTrust, publisher: string) {
-  const { bucket, account } = trust.publication;
-  const { key } = nitroPublication(trust);
+function publicationFor(trust: NitroTrust, bucket: string) {
+  const publication = trust.publications.find(candidate => candidate.bucket === bucket);
+  if (!publication) throw new Error("expected one of the pinned publication buckets");
+  return nitroPublication(trust, publication);
+}
+
+function bucketPolicy(trust: NitroTrust, name: string, publisher: string) {
+  const { bucket, account, key } = publicationFor(trust, name);
   if (!new RegExp(`^arn:aws:iam::${account}:role/[A-Za-z0-9+=,.@_/-]+$`).test(publisher)) {
     throw new Error("use a dedicated publisher role in the publication account");
   }
@@ -51,11 +57,12 @@ function bucketPolicy(trust: NitroTrust, publisher: string) {
   ] };
 }
 
-export async function publish(trust: NitroTrust, text: string, runAws: RunAws = aws, previousTrust = trust): Promise<void> {
+export async function publish(
+  trust: NitroTrust, name: string, text: string, runAws: RunAws = aws, previousTrust = trust,
+): Promise<void> {
   const now = BigInt(Date.now());
   const { policy } = verifyNitroPolicy(text, trust, now);
-  const { bucket, region, account } = trust.publication;
-  const { key } = nitroPublication(trust);
+  const { bucket, region, account, key } = publicationFor(trust, name);
   const directory = await mkdtemp(join(tmpdir(), "spr-release-"));
   const candidate = join(directory, "candidate.json");
   const current = join(directory, "current.json");
@@ -76,6 +83,15 @@ export async function publish(trust: NitroTrust, text: string, runAws: RunAws = 
     await writeFile(candidate, text, { mode: 0o600, flag: "wx" });
     const head = policy.sequence === "1" ? undefined : await readHead();
     if (!nextNitroPublication(text, head?.text, trust, now, previousTrust)) return;
+    const [first, second] = trust.publications;
+    const isSecond = bucket === second.bucket;
+    if (isSecond || head) {
+      const { url, account } = nitroPublication(trust, isSecond ? first : second);
+      const peer = await readNitroPolicy(url, AbortSignal.timeout(5_000), account);
+      if (nextNitroPublication(text, peer, trust, now, previousTrust) && isSecond) {
+        throw new Error("publish the exact policy to the first bucket before mirroring it");
+      }
+    }
     await Promise.all(policy.targets.map(target => connectNitroTarget(target, trust)));
     verifyNitroPolicy(text, trust, BigInt(Date.now()));
     const precondition = head ? ["--if-match", head.etag] : ["--if-none-match", "*"];
@@ -92,21 +108,21 @@ export async function publish(trust: NitroTrust, text: string, runAws: RunAws = 
 }
 
 async function main() {
-  const [trustPath, policyPath, option, previousTrustPath, ...extra] = process.argv.slice(2);
+  const [trustPath, bucket, policyPath, option, previousTrustPath, ...extra] = process.argv.slice(2);
   const renderPolicy = policyPath === "--bucket-policy";
-  if (!trustPath || !policyPath || extra.length || (renderPolicy ? !option || previousTrustPath :
+  if (!trustPath || !bucket || !policyPath || extra.length || (renderPolicy ? !option || previousTrustPath :
       option !== undefined && (option !== "--previous-trust" || !previousTrustPath))) {
-    throw new Error("usage: nitro-publish.ts <wallet-trust.json> <signed-policy.json> [--previous-trust <old-trust.json>] | <wallet-trust.json> --bucket-policy <publisher-role>");
+    throw new Error("usage: nitro-publish.ts <wallet-trust.json> <bucket> <signed-policy.json> [--previous-trust <old-trust.json>] | <wallet-trust.json> <bucket> --bucket-policy <publisher-role>");
   }
   const trust = parseStrictJson<NitroTrust>(await readFile(trustPath, "utf8"));
   validateNitroTrust(trust);
   if (renderPolicy && option) {
-    console.log(JSON.stringify(bucketPolicy(trust, option), null, 2));
+    console.log(JSON.stringify(bucketPolicy(trust, bucket, option), null, 2));
     return;
   }
   const previousTrust = previousTrustPath ? parseStrictJson<NitroTrust>(await readFile(previousTrustPath, "utf8")) : trust;
   validateNitroTrust(previousTrust);
-  await publish(trust, await readPolicy(policyPath), aws, previousTrust);
+  await publish(trust, bucket, await readPolicy(policyPath), aws, previousTrust);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

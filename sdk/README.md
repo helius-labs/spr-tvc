@@ -35,16 +35,16 @@ and system clock, including when a caller supplies a fresh signed policy.
 ## Native Nitro
 
 Import `createNitroDecryptionService` from
-`@heliuslabs/spr-decryption-service/nitro`. Pin the policy publication bucket,
-region and AWS owner account, network, security domain, note seed commitment,
-minimum sequence and custody epoch, and signer quorum out-of-band. The SDK
-reads the policy directly from that bucket. In browsers, the SDK stores the
+`@heliuslabs/spr-decryption-service/nitro`. Pin two policy publication buckets
+with independent AWS owners, plus their regions, the network, security domain,
+note seed commitment, minimum sequence and custody epoch, and signer quorum.
+The SDK reads both policies and uses the current signed revision. In browsers, the SDK stores the
 checkpoint in IndexedDB. Other runtimes supply an atomic durable `policyStore`
 scoped to the network and domain. Its `accept` method persists the next
 checkpoint before succeeding. Apply `advancesNitroPolicy` against the stored
 checkpoint inside the transaction. `current` reads the last committed
-checkpoint. The SDK checks it before sending an operation, including after a
-wallet approval returns.
+checkpoint. The SDK checks it before sending an operation, after a wallet
+approval returns, and before opening the reply.
 A signed activation advances the checkpoint after a replica attests. A signed
 revocation advances it immediately and returns `ReleasePolicyRevoked`.
 

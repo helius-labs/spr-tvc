@@ -32,13 +32,15 @@ export type NitroPolicy = {
   readonly targets: readonly NitroTarget[];
 };
 
+type Publication = Readonly<{ bucket: string; region: string; account: string }>;
+
 export type NitroTrust = {
   readonly network: Network;
   readonly securityDomainId: string;
   readonly noteSeedCommitment: string;
   readonly minimumCustodyEpoch: string;
   readonly minimumSequence: string;
-  readonly publication: Readonly<{ bucket: string; region: string; account: string }>;
+  readonly publications: readonly [Publication, Publication];
   readonly threshold: number;
   /** Uncompressed SEC1 P-256 public keys pinned by the wallet integrator. */
   readonly keys: readonly string[];
@@ -93,13 +95,14 @@ export function nitroEndpoint(text: string, network: Network): URL {
   return url;
 }
 
-export function nitroPublication(trust: NitroTrust): { url: URL; key: string } {
-  const { bucket, region, account } = trust.publication;
+export function nitroPublication(trust: NitroTrust, publication: Publication) {
+  assertExactObjectKeys(publication, ["bucket", "region", "account"], "ReleasePolicyInvalid");
+  const { bucket, region, account } = publication;
   if (typeof bucket !== "string" || !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(bucket) ||
       typeof region !== "string" || !/^[a-z]{2}-[a-z]+-[1-9][0-9]*$/.test(region) ||
       typeof account !== "string" || !/^[0-9]{12}$/.test(account)) invalid();
   const key = `spr-release/${trust.network}/${trust.securityDomainId}/policy.json`;
-  return { key, url: new URL(`https://${bucket}.s3.${region}.amazonaws.com/${key}`) };
+  return { bucket, region, account, key, url: new URL(`https://${bucket}.s3.${region}.amazonaws.com/${key}`) };
 }
 
 export function nitroPolicySigningDigest(policy: NitroPolicy): Uint8Array {
@@ -110,8 +113,10 @@ export function validateNitroTrust(trust: NitroTrust): void {
   if (trust.network !== "devnet" && trust.network !== "mainnet") invalid();
   checkDigest(trust.securityDomainId, 32);
   checkDigest(trust.noteSeedCommitment, 32);
-  assertExactObjectKeys(trust.publication, ["bucket", "region", "account"], "ReleasePolicyInvalid");
-  nitroPublication(trust);
+  if (!Array.isArray(trust.publications) || trust.publications.length !== 2) invalid();
+  const first = nitroPublication(trust, trust.publications[0]);
+  const second = nitroPublication(trust, trust.publications[1]);
+  if (first.bucket === second.bucket || first.account === second.account) invalid();
   if (decodeDecimalU64(trust.minimumSequence) < 1n || decodeDecimalU64(trust.minimumCustodyEpoch) < 1n ||
       !Array.isArray(trust.keys) || trust.keys.length > MAX_AUTHORITIES ||
       !Number.isSafeInteger(trust.threshold) || trust.threshold < 2 ||
@@ -119,9 +124,7 @@ export function validateNitroTrust(trust: NitroTrust): void {
   for (const key of trust.keys) parseUncompressedSec1(requireHex(key, 65));
 }
 
-export function verifyNitroPolicy(
-  text: string, trust: NitroTrust, now: bigint,
-): { policy: NitroPolicy; checkpoint: NitroPolicyCheckpoint; validFrom: bigint; expiresAt: bigint } {
+function verifySignedPolicy(text: string, trust: NitroTrust) {
   const { policy, signatures } = parseStrictJson<{
     policy: NitroPolicy;
     signatures: readonly { key: string; signature: string }[];
@@ -134,8 +137,7 @@ export function verifyNitroPolicy(
   const floor = decodeDecimalU64(policy.minimumCustodyEpoch);
   const validFrom = decodeDecimalU64(policy.validFromMs);
   const expiresAt = decodeDecimalU64(policy.expiresAtMs);
-  if (sequence < decodeDecimalU64(trust.minimumSequence) || floor < decodeDecimalU64(trust.minimumCustodyEpoch) || now < validFrom ||
-      now >= expiresAt || expiresAt - validFrom > MAX_LIFETIME_MS) invalid();
+  if (sequence === 0n || floor === 0n || expiresAt <= validFrom || expiresAt - validFrom > MAX_LIFETIME_MS) invalid();
   if (sequence === 1n) {
     if (policy.previousPolicyDigest !== null) invalid();
   } else {
@@ -177,6 +179,41 @@ export function verifyNitroPolicy(
   };
 }
 
+type VerifiedPolicy = ReturnType<typeof verifySignedPolicy>;
+
+function requireCurrent({ policy, validFrom, expiresAt }: VerifiedPolicy, trust: NitroTrust, now: bigint): void {
+  if (decodeDecimalU64(policy.sequence) < decodeDecimalU64(trust.minimumSequence) ||
+      decodeDecimalU64(policy.minimumCustodyEpoch) < decodeDecimalU64(trust.minimumCustodyEpoch) ||
+      now < validFrom || now >= expiresAt) invalid();
+}
+
+export function verifyNitroPolicy(text: string, trust: NitroTrust, now: bigint): VerifiedPolicy {
+  const verified = verifySignedPolicy(text, trust);
+  requireCurrent(verified, trust, now);
+  return verified;
+}
+
+function requireSuccessor(prior: VerifiedPolicy, next: VerifiedPolicy): void {
+  if (decodeDecimalU64(next.policy.sequence) !== decodeDecimalU64(prior.policy.sequence) + 1n ||
+      next.policy.previousPolicyDigest !== prior.checkpoint.digest ||
+      !advancesNitroPolicy(prior.checkpoint, next.checkpoint)) invalid();
+  const priorRecords = new Map(prior.policy.targets.map(target => [target.custodyEpoch, target.custodyDigest]));
+  if (next.policy.targets.some(target => priorRecords.has(target.custodyEpoch) &&
+      priorRecords.get(target.custodyEpoch) !== target.custodyDigest)) invalid();
+}
+
+/** Both owners must return signed heads. Only the newest can authorize operations. */
+export function verifyPublishedNitroPolicy(texts: readonly [string, string], trust: NitroTrust, now: bigint) {
+  const first = verifySignedPolicy(texts[0], trust);
+  const second = verifySignedPolicy(texts[1], trust);
+  const agreed = first.checkpoint.digest === second.checkpoint.digest;
+  const firstIsOlder = decodeDecimalU64(first.policy.sequence) < decodeDecimalU64(second.policy.sequence);
+  const [prior, next] = firstIsOlder ? [first, second] : [second, first];
+  if (!agreed) requireSuccessor(prior, next);
+  requireCurrent(next, trust, now);
+  return { ...next, agreed };
+}
+
 /** Validate a publication before writing it against the exact observed S3 ETag. */
 export function nextNitroPublication(
   text: string, previous: string | undefined, trust: NitroTrust, now: bigint, previousTrust = trust,
@@ -189,28 +226,19 @@ export function nextNitroPublication(
   const { policy } = parseStrictJson<{ policy: NitroPolicy }>(previous, ["policy", "signatures"]);
   if (previousTrust.network !== trust.network || previousTrust.securityDomainId !== trust.securityDomainId ||
       previousTrust.noteSeedCommitment !== trust.noteSeedCommitment ||
-      nitroPublication(previousTrust).url.href !== nitroPublication(trust).url.href ||
-      previousTrust.publication.account !== trust.publication.account) invalid();
+      canonicalizeJsonValue(previousTrust.publications) !== canonicalizeJsonValue(trust.publications)) invalid();
   const priorTrust = encodeLowerHex(nitroPolicySigningDigest(policy)) === next.checkpoint.digest ? trust : previousTrust;
-  const prior = verifyNitroPolicy(previous, { ...priorTrust, minimumSequence: "1", minimumCustodyEpoch: "1" },
-    decodeDecimalU64(policy.validFromMs));
+  const prior = verifySignedPolicy(previous, priorTrust);
   if (prior.checkpoint.digest === next.checkpoint.digest) return false;
-  if (decodeDecimalU64(next.policy.sequence) !== decodeDecimalU64(prior.policy.sequence) + 1n ||
-      next.policy.previousPolicyDigest !== prior.checkpoint.digest ||
-      !advancesNitroPolicy(prior.checkpoint, next.checkpoint)) invalid();
-  const priorRecords = new Map(prior.policy.targets.map(target => [target.custodyEpoch, target.custodyDigest]));
-  if (next.policy.targets.some(target => priorRecords.has(target.custodyEpoch) &&
-      priorRecords.get(target.custodyEpoch) !== target.custodyDigest)) invalid();
+  requireSuccessor(prior, next);
   return true;
 }
 
-export function verifyRetirementPolicy(
-  text: string, trust: NitroTrust, replacementEpoch: string, custodyDigest: string, now: bigint,
+export function requireRetirementPolicy(
+  { policy, agreed }: ReturnType<typeof verifyPublishedNitroPolicy>, replacementEpoch: string, custodyDigest: string,
 ) {
-  const { policy, checkpoint } = verifyNitroPolicy(text, trust, now);
-  if (policy.action !== "activate" || decodeDecimalU64(policy.minimumCustodyEpoch) < decodeDecimalU64(replacementEpoch) ||
+  if (!agreed || policy.action !== "activate" || decodeDecimalU64(policy.minimumCustodyEpoch) < decodeDecimalU64(replacementEpoch) ||
       !policy.targets.some(target => target.custodyEpoch === replacementEpoch && target.custodyDigest === custodyDigest)) invalid();
-  return { policy, checkpoint };
 }
 
 /** Returns true for a new policy or a repeat of the exact same policy. */
