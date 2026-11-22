@@ -253,6 +253,7 @@ Each target contains `endpoint`, `releaseId`, `executableSha256`,
 All targets for that epoch must use the same digest. Pin network, domain, seed
 commitment, minimum sequence, minimum custody epoch, signer keys, threshold and
 `publications` with two `{bucket, region, account}` entries in `wallet-trust.json`.
+List the primary first and the mirror second.
 Times, sequence
 and epochs are canonical decimal strings. The wallet stores the sequence,
 policy digest and custody floor atomically. `activate` requires a verified
@@ -263,8 +264,10 @@ that every activation target attests, and writes against its observed ETag.
 Publish from the first listed bucket's AWS account, then mirror the same file
 from the second account. The tool requires the first bucket's signed revision
 before mirroring and checks the second bucket before advancing the first again.
-Retirement requires both buckets to agree. Set alerts for mismatched heads and
-approaching expiration.
+Wallets use the primary's signed policy when the mirror serves the same
+policy or its exact predecessor. A mirror ahead of the primary blocks new
+connections. Retirement requires agreement. Set alerts for mismatched heads
+and approaching expiration.
 
 ```sh
 cargo xtask nitro-sign policy.json --key "$signing_key_arn" --public-key "$signer_sec1_hex"

@@ -112,19 +112,18 @@ The encrypted note service and ingress have no publication permission.
 
 Wallets pin both buckets, regions and AWS owners. They read directly from both
 without caching or redirects and authenticate both policies. Equal digests
-agree. During rollout two different heads must be an exact signed predecessor
-and successor with a nondecreasing custody floor. Only the successor can
-authorize a connection, even if its predecessor is still within its validity
-window. A missing or invalid head, fork, gap, or expired newest policy blocks
-new connections. A policy is fully published when both buckets agree. Custody
-retirement requires agreement and rechecks both heads after attesting the
-replacement. AWS and at least one independent publisher must serve current
-state. If both publishers replay the same old policy, the independent wallet
-pins, policy lifetime and local checkpoint bound acceptance.
+agree. During rollout the primary can advance by one signed revision with a
+nondecreasing custody floor while the mirror serves its exact predecessor.
+The primary's policy authorizes the connection. A mirror that is ahead, a
+missing or invalid head, a fork, a gap or an expired primary blocks new
+connections. A policy is fully published when both buckets agree. Custody
+retirement rechecks agreement after attesting the replacement. If both
+publishers replay the same old policy, the independent wallet pins, policy
+lifetime and local checkpoint bound acceptance.
 
 ## Wallet connection and operations
 
-1. Fetch both policies with a five-second deadline and a 32 KiB limit per response. Require the configured threshold of distinct low-S P-256 signatures over each digest. Check the network, domain, seed commitment and allowed lifetime. An `activate` policy lists eligible replicas. A `revoke` policy has an empty target list and commits its sequence, digest and custody floor immediately, returning `ReleasePolicyRevoked`.
+1. Fetch both policies with a five-second deadline and a 32 KiB limit per response. Require the configured threshold of distinct low-S P-256 signatures over each digest. Check the network, domain, seed commitment and allowed lifetime. Compare the primary's checkpoint with the wallet's durable checkpoint before contacting any replica. An `activate` policy lists eligible replicas. A `revoke` policy has an empty target list and commits its sequence, digest and custody floor immediately, returning `ReleasePolicyRevoked`.
 2. POST a random 32-byte nonce to one authorized target's `/v1/nitro/attestation`. The reply includes discovery and the AWS-signed COSE evidence for that same boot. The document signs the nonce, the SHA-256 of `SPR/native-nitro/discovery/v1` followed by canonical discovery, and the replica's response-signing public pair.
 3. Verify the exact pinned AWS root, the current certificate path and usages, the ES384 COSE signature, the signed timestamp and nonce, PCR0–PCR3 and the discovery bindings. Verify both public pairs before use. Compute the discovery release digest as SHA-256 of `SPR/native-nitro/release/v1` followed by the 32-byte executable hash, seed commitment and custody digest. The custody digest is SHA-256 of the RFC 8785 canonical `custody` object from the committed receipt. The signed target binds both that record and its epoch. After a replica passes verification, atomically persist the new sequence, digest and floor before using it. Raising the floor retires earlier epochs for that wallet. A later policy can authorize a previous build at or above that floor. New installs use independently pinned minimum values. The SDK uses one verified target for at most 60 seconds and never past the policy's expiration.
 4. Encrypt the request to that boot's P-256 transport key. A decrypt approval binds the signer, network, release, boot transport key ID, ordered outputs, request ID and the ephemeral client response key. The enclave verifies the approval before deriving or opening note keys. Its signed response binds the operation, request digest and encrypted result. Before opening the reply, the SDK verifies the replica signature and rechecks the persisted checkpoint and session deadline. It checks recovered notes against their indexed commitments.

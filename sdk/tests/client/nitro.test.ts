@@ -2,8 +2,10 @@ import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha256";
 import { address, type MessagePartialSigner } from "@solana/kit";
 import type { ProofService } from "@heliuslabs/spr";
+import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { verifyNativeNitroEvidence } from "../../src/attestation/boot-proof.js";
+import { indexedDbNitroPolicyStore } from "../../src/attestation/nitro-checkpoint.js";
 import { nitroPolicySigningDigest, type NitroPolicy, type NitroTrust } from "../../src/attestation/nitro-policy.js";
 import { createNitroDecryptionService } from "../../src/client/nitro.js";
 import { signP256Prehash } from "../../src/crypto/p256.js";
@@ -143,20 +145,30 @@ describe("native client trust gate", () => {
     expect(signMessages).not.toHaveBeenCalled();
   });
 
-  it("persists explicit revocation without replicas and rejects the previous policy", async () => {
+  it("persists only a primary revocation and refuses rollback before attestation after reopening the client", async () => {
     const old = signedPolicy();
     const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(old).policy));
     const revoked = signedPolicy({ action: "revoke", sequence: "3", previousPolicyDigest, minimumCustodyEpoch: "2", targets: [] });
     const fetch = policyHeads(vi.fn(), old, revoked);
+    policyHeads(fetch, revoked, old);
     policyHeads(fetch, old);
+    policyHeads(fetch, signedPolicy({ sequence: "4" }));
     vi.stubGlobal("fetch", fetch);
-    const stored = vi.fn(async () => true);
-    const client = createNitroDecryptionService({ trust, policyStore: { ...emptyStore, accept: stored } });
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const client = createNitroDecryptionService({ trust });
+    const stored = indexedDbNitroPolicyStore(trust);
+    await expect(client.open(signer, proofs)).rejects.toThrow("ReleasePolicyInvalid");
+    expect(await stored.current()).toBeUndefined();
     await expect(client.open(signer, proofs)).rejects.toThrow("ReleasePolicyRevoked");
-    expect(stored).toHaveBeenCalledWith(expect.objectContaining({ sequence: "3", minimumCustodyEpoch: "2" }));
-    await expect(client.open(signer, proofs)).rejects.toThrow("policy rollback");
-    expect(stored).toHaveBeenCalledOnce();
-    expect(fetch).toHaveBeenCalledTimes(4);
+    const checkpoint = await stored.current();
+    expect(checkpoint).toMatchObject({ sequence: "3", minimumCustodyEpoch: "2" });
+
+    const reopened = createNitroDecryptionService({ trust });
+    await expect(reopened.open(signer, proofs)).rejects.toThrow("policy rollback");
+    await expect(reopened.open(signer, proofs)).rejects.toThrow("policy rollback");
+    expect(await stored.current()).toEqual(checkpoint);
+    expect(fetch).toHaveBeenCalledTimes(8);
+    expect(verifyNativeNitroEvidence).not.toHaveBeenCalled();
     expect(signMessages).not.toHaveBeenCalled();
   });
 
@@ -165,7 +177,8 @@ describe("native client trust gate", () => {
     vi.stubGlobal("fetch", fetch);
     const store = {
       async accept() { return true; },
-      async current() { return { sequence: "3", minimumCustodyEpoch: "2", digest: "aa".repeat(32) }; },
+      current: vi.fn().mockResolvedValueOnce(undefined)
+        .mockResolvedValue({ sequence: "3", minimumCustodyEpoch: "2", digest: "aa".repeat(32) }),
     };
     const client = createNitroDecryptionService({ trust, policyStore: store });
     await expect(client.open(signer, proofs)).rejects.toThrow("ReleasePolicySuperseded");

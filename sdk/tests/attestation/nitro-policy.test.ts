@@ -215,19 +215,24 @@ describe("native Nitro release policy", () => {
     ]) expect(() => retire(unsafe)).toThrow();
     expect(() => retire(policy, now + 100n)).toThrow();
     const successor = { ...policy, sequence: "10", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(binding)) };
-    const split = verifyPublishedNitroPolicy([manifest(binding, 0, 1), manifest(successor, 0, 1)], trust, now);
+    const split = verifyPublishedNitroPolicy([manifest(successor, 0, 1), manifest(binding, 0, 1)], trust, now);
     expect(split.policy).toEqual(successor);
     expect(() => requireRetirementPolicy(split, "2", replacement.custodyDigest)).toThrow();
   });
 
-  it("uses the signed successor during rollout even if its predecessor expired or is below the pins", () => {
+  it("allows the primary to advance if the mirror serves its predecessor, even when that predecessor expired", () => {
     const prior = { ...binding, validFromMs: String(now - 1000n), expiresAtMs: String(now - 2n) };
     const next = { ...binding, sequence: "10", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(prior)) };
     const currentTrust = { ...trust, minimumSequence: "10" };
-    const heads = [manifest(prior, 0, 1), manifest(next, 0, 1)] as const;
+    const heads = [manifest(next, 0, 1), manifest(prior, 0, 1)] as const;
     expect(verifyPublishedNitroPolicy(heads, currentTrust, now)).toMatchObject({ policy: next, agreed: false });
-    expect(verifyPublishedNitroPolicy([heads[1], heads[0]], currentTrust, now)).toMatchObject({ policy: next, agreed: false });
-    expect(verifyPublishedNitroPolicy([heads[1], manifest(next, 0, 2)], currentTrust, now)).toMatchObject({ policy: next, agreed: true });
+    expect(verifyPublishedNitroPolicy([heads[0], manifest(next, 0, 2)], currentTrust, now)).toMatchObject({ policy: next, agreed: true });
+  });
+
+  it("fails closed when the mirror is ahead even if both policies are valid", () => {
+    const next = { ...binding, sequence: "10", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(binding)) };
+    expect(() => verifyPublishedNitroPolicy([manifest(binding, 0, 1), manifest(next, 0, 1)], trust, now))
+      .toThrow("ReleasePolicyInvalid");
   });
 
   it("refuses gaps, forks, unauthenticated heads and an unusable successor without falling back", () => {
@@ -240,7 +245,7 @@ describe("native Nitro release policy", () => {
       manifest(next, 0, 3),
       manifest({ ...next, expiresAtMs: String(now) }, 0, 1),
       manifest({ ...next, validFromMs: String(now + 1n) }, 0, 1),
-    ]) expect(() => verifyPublishedNitroPolicy([current, other], trust, now)).toThrow();
+    ]) expect(() => verifyPublishedNitroPolicy([other, current], trust, now)).toThrow();
     expect(() => verifyPublishedNitroPolicy([current, current], { ...trust, minimumSequence: "10" }, now)).toThrow();
   });
 

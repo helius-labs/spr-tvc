@@ -12,11 +12,11 @@ export async function readNitroPolicy(url: URL, signal: AbortSignal, account: st
 
 export async function readPublishedNitroPolicy(trust: NitroTrust, signal: AbortSignal) {
   const deadline = AbortSignal.any([signal, AbortSignal.timeout(5_000)]);
-  const [first, second] = trust.publications;
+  const [primary, mirror] = trust.publications;
   const read = (publication: NitroTrust["publications"][number]) => {
     const { url, account } = nitroPublication(trust, publication);
     return readNitroPolicy(url, deadline, account);
   };
-  const texts = await Promise.all([read(first), read(second)]);
+  const texts = await Promise.all([read(primary), read(mirror)]);
   return verifyPublishedNitroPolicy(texts, trust, BigInt(Date.now()));
 }

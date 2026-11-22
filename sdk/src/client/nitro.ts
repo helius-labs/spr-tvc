@@ -44,7 +44,16 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
 
   const session = sessionFromConnector(async (signal): Promise<ConnectedTvcRuntime> => {
     const { policy, checkpoint, validFrom, expiresAt } = await readPublishedNitroPolicy(trust, signal);
-    if (!advancesNitroPolicy(latest, checkpoint)) throw new DecryptionServiceError("ReleasePolicyInvalid", "policy rollback");
+    function currentTime(): bigint {
+      const now = clock();
+      if (now < validFrom || now >= expiresAt) throw new DecryptionServiceError("ReleasePolicyInvalid");
+      return now;
+    }
+    if (!advancesNitroPolicy(latest, checkpoint) ||
+        !advancesNitroPolicy(await awaitWithSignal(store.current(), signal), checkpoint)) {
+      throw new DecryptionServiceError("ReleasePolicyInvalid", "policy rollback");
+    }
+    currentTime();
     if (policy.action === "revoke") {
       await accept(checkpoint, signal);
       throw new DecryptionServiceError("ReleasePolicyRevoked");
@@ -62,15 +71,9 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
         continue;
       }
       const { endpoint, info, proofKey } = connected;
-      const qualifiedAt = clock();
-      if (qualifiedAt < validFrom || qualifiedAt >= expiresAt) {
-        throw new DecryptionServiceError("ReleasePolicyInvalid");
-      }
+      currentTime();
       await accept(checkpoint, signal);
-      const now = clock();
-      if (now < validFrom || now >= expiresAt) {
-        throw new DecryptionServiceError("ReleasePolicyInvalid");
-      }
+      const now = currentTime();
       next = index + 1;
       const sessionExpiry = now + CONNECTION_TTL_MS;
       return {

@@ -40,7 +40,7 @@ export type NitroTrust = {
   readonly noteSeedCommitment: string;
   readonly minimumCustodyEpoch: string;
   readonly minimumSequence: string;
-  readonly publications: readonly [Publication, Publication];
+  readonly publications: readonly [primary: Publication, mirror: Publication];
   readonly threshold: number;
   /** Uncompressed SEC1 P-256 public keys pinned by the wallet integrator. */
   readonly keys: readonly string[];
@@ -202,16 +202,14 @@ function requireSuccessor(prior: VerifiedPolicy, next: VerifiedPolicy): void {
       priorRecords.get(target.custodyEpoch) !== target.custodyDigest)) invalid();
 }
 
-/** Both owners must return signed heads. Only the newest can authorize operations. */
-export function verifyPublishedNitroPolicy(texts: readonly [string, string], trust: NitroTrust, now: bigint) {
-  const first = verifySignedPolicy(texts[0], trust);
-  const second = verifySignedPolicy(texts[1], trust);
-  const agreed = first.checkpoint.digest === second.checkpoint.digest;
-  const firstIsOlder = decodeDecimalU64(first.policy.sequence) < decodeDecimalU64(second.policy.sequence);
-  const [prior, next] = firstIsOlder ? [first, second] : [second, first];
-  if (!agreed) requireSuccessor(prior, next);
-  requireCurrent(next, trust, now);
-  return { ...next, agreed };
+/** The mirror must serve the primary's revision or its exact predecessor. */
+export function verifyPublishedNitroPolicy([primaryText, mirrorText]: readonly [string, string], trust: NitroTrust, now: bigint) {
+  const primary = verifySignedPolicy(primaryText, trust);
+  const mirror = verifySignedPolicy(mirrorText, trust);
+  const agreed = primary.checkpoint.digest === mirror.checkpoint.digest;
+  if (!agreed) requireSuccessor(mirror, primary);
+  requireCurrent(primary, trust, now);
+  return { ...primary, agreed };
 }
 
 /** Validate a publication before writing it against the exact observed S3 ETag. */
