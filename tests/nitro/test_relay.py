@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import canonical, signing_sec1
-from kms_policy import RSA_OAEP
 from provenance import describe
 from relay import prove_share, recover_to_relay, verify_relay_build
 from relay_wrap import LABEL, prepare, release
@@ -82,7 +81,7 @@ class RelayTests(unittest.TestCase):
         trust = {**TRUST, "approvalKeys": schedule}
         verify.return_value = {
             "network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "2", "approvalFromEpoch": "1",
-            "wrappingKeys": [key(1)], "wrappingAlgorithm": RSA_OAEP, "expiresAt": 30,
+            "wrappingKeys": [key(1)], "expiresAt": 30,
         }
         source = (trust, {}, pathlib.Path("build"), 1, 7443)
         statement, release_keys, *_ = prepare(*source)

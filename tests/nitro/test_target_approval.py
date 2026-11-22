@@ -16,18 +16,22 @@ from deployment import file_digest, main, target
 from kms_policy import recovery_policy
 from nitro_fixtures import DOMAIN, HOST, key, pin, schedule, sign
 from provenance import describe
-from wrap_share import wrap
+from relay_wrap import LABEL, release
 
 PINS = {f"PCR{index}": byte * 48 for index, byte in enumerate(("12", "23", "34"))}
+RELAY_HOST = "arn:aws:iam::000000000009:role/relay"
+SOURCE = b"r" * 294
+DESTINATION = b"t" * 294
+BOOT = "ab" * 32
 
 
 class TargetApprovalTests(unittest.TestCase):
     def setUp(self):
         self.build = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
-        self.trust = {"network": "devnet", "securityDomainId": DOMAIN, "approvalKeys": [schedule()]}
-        self.share = (5).to_bytes(8, "big") + b"\x01" + bytes([0x44]) * 32
-        commitment = hashlib.sha256(b"SPR/native-nitro/custody-share/v1" + bytes.fromhex(DOMAIN) + self.share).hexdigest()
-        spki = hashlib.sha256(b"public").hexdigest()
+        self.trust = {"network": "devnet", "securityDomainId": DOMAIN, "approvalKeys": [schedule()],
+                      "recoveryRelays": {str(epoch): {"hostRole": RELAY_HOST, "pcrs": PINS} for epoch in (5, 6)}}
+        commitment = "44" * 32
+        spki = hashlib.sha256(SOURCE).hexdigest()
         custody = {"epoch": "5", "shareCommitments": [commitment]}
         self.receipt = {
             "network": "devnet", "securityDomainId": DOMAIN, "custody": custody,
@@ -51,58 +55,66 @@ class TargetApprovalTests(unittest.TestCase):
             "eifSha256": file_digest(self.build / "enclave.eif"),
             "executableSha256": file_digest(self.build / "tvc_app"),
             "configurationSha256": file_digest(self.build / "configuration.json"),
-            "pcrs": PINS, "hostRole": HOST, "wrappingAlgorithm": "SYMMETRIC_DEFAULT", "wrappingKeys": [key(i, 2) for i in range(1, 7)], "nextCustodians": None,
+            "pcrs": PINS, "hostRole": HOST, "wrappingKeys": [key(i, 2) for i in range(1, 7)],
+            "nextCustodians": None, "nextRelay": None,
         }
         self.approval = {"manifest": self.manifest, "signatures": [
             sign(TARGET_APPROVAL, self.manifest, signer["keyArn"]) for signer in self.trust["approvalKeys"][0]["keys"][:2]
         ]}
         _, policies, _ = target(self.trust, self.approval, self.receipt, self.custodians, self.build)
         self.policy = policies[0]
-        self.recovery_policy = recovery_policy(self.custodians[0]["custodianRole"], self.custodians[0]["retirementRole"], "5")
+        self.recovery_policy = recovery_policy(self.custodians[0]["custodianRole"], self.custodians[0]["retirementRole"],
+                                               RELAY_HOST, PINS, "5")
         self.calls = []
         self.policy_key = key(1, 2)
-        self.key_metadata = {"Arn": self.policy_key, "KeySpec": "SYMMETRIC_DEFAULT", "KeyUsage": "ENCRYPT_DECRYPT",
+        self.key_metadata = {"Arn": self.policy_key, "KeySpec": "RSA_2048", "KeyUsage": "ENCRYPT_DECRYPT",
                              "Origin": "AWS_KMS", "MultiRegion": False, "KeyState": "Enabled"}
         self.recovery_metadata = {**self.key_metadata, "Arn": key(1), "KeySpec": "RSA_2048"}
         self.enterContext(patch("approval.kms", side_effect=self.kms))
-        self.enterContext(patch("custody_ledger.kms", side_effect=self.kms))
-        self.enterContext(patch("wrap_share.kms", side_effect=self.kms))
-        self.ledger = self.enterContext(patch("wrap_share.load_epoch", side_effect=self.load_epoch))
-        self.registry = self.enterContext(patch("wrap_share.require_registered_target"))
-        self.active = self.enterContext(patch("wrap_share.require_active_epoch"))
+        self.enterContext(patch("relay.kms", side_effect=self.kms))
+        self.ledger = self.enterContext(patch("relay_wrap.load_epoch", side_effect=self.load_epoch))
+        self.registry = self.enterContext(patch("relay_wrap.require_registered_target"))
+        self.active = self.enterContext(patch("relay_wrap.require_active_epoch"))
+        self.enterContext(patch("relay_wrap.live_recipient", return_value=(BOOT, b"evidence")))
+        self.relay = self.enterContext(patch("relay_wrap.relay_request", return_value=b"c" * 256))
+        self.decrypt_reply = {"KeyId": key(1), "CiphertextForRecipient": "ZW52ZWxvcGU="}
+        statement = {
+            "network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "5", "slot": 1,
+            "shareCommitment": commitment, "relayKeyId": BOOT, "targetDigest": sha256(self.manifest),
+            "destinationPublicKey": DESTINATION.hex(), "expiresAt": self.manifest["expiresAt"],
+        }
+        self.authorization = {"manifest": statement, "signatures": [
+            sign(LABEL, statement, member["keyArn"]) for member in self.trust["approvalKeys"][0]["keys"][:2]
+        ]}
 
     def load_epoch(self, trust, epoch):
         self.assertEqual(trust, self.trust)
         self.assertEqual(epoch, "5")
         return {}, self.receipt, self.custodians
 
-    def kms(self, arn, operation, args=(), body=None):
+    def kms(self, arn, operation, args=(), _body=None, **_options):
         self.calls.append(operation)
         if operation == "describe-key":
             return {"KeyMetadata": self.key_metadata if arn == self.policy_key else self.recovery_metadata}
         if operation == "get-key-policy":
             return {"Policy": json.dumps(self.policy if arn == self.policy_key else self.recovery_policy)}
         if operation == "get-public-key":
-            return {"KeyId": arn, "PublicKey": base64.b64encode(b"public").decode(), "KeyUsage": "ENCRYPT_DECRYPT",
+            return {"KeyId": arn, "PublicKey": base64.b64encode(DESTINATION if arn == self.policy_key else SOURCE).decode(), "KeyUsage": "ENCRYPT_DECRYPT",
                     "KeySpec": "RSA_2048", "EncryptionAlgorithms": ["RSAES_OAEP_SHA_256"]}
         if operation == "decrypt":
-            return {"KeyId": arn, "Plaintext": base64.b64encode(self.share).decode()}
-        if operation == "encrypt":
-            self.assertEqual(arn, self.policy_key)
-            self.assertEqual(body, self.share)
-            self.assertEqual(json.loads(args[-1])["custody-epoch"], "5")
-            return {"KeyId": arn, "CiphertextBlob": "d3JhcHBlZA=="}
+            self.assertEqual(json.loads(args[-1])["AttestationDocument"], "ZXZpZGVuY2U=")
+            return self.decrypt_reply
         self.fail(operation)
 
     def wrap(self):
-        return wrap(self.trust, self.approval, self.build, 1)
+        return release(self.trust, self.approval, self.build, 1, 7443, self.authorization)
 
     def test_quorum_and_installed_policy_checked_before_opening_one_share(self):
-        self.assertEqual(self.wrap(), b"wrapped")
+        self.assertEqual(self.wrap(), b"c" * 256)
         self.registry.assert_called_once_with(self.trust, self.manifest)
         self.assertEqual(self.active.call_count, 3)
-        self.assertEqual(self.calls, ["describe-key", "get-key-policy", "get-key-policy", "describe-key",
-                                      "get-public-key", "decrypt", "encrypt"])
+        self.assertEqual(self.calls, ["describe-key", "get-key-policy", "get-public-key",
+                                      "describe-key", "get-key-policy", "get-public-key", "decrypt"])
 
     def test_no_decrypt_without_quorum_or_with_duplicate_signer(self):
         signers = self.approval["signatures"]
@@ -166,8 +178,7 @@ class TargetApprovalTests(unittest.TestCase):
             self.assertEqual(output.getvalue(), "")
             registered.side_effect = None
             main()
-            self.assertEqual([rule["Resource"] for rule in json.loads(output.getvalue())["Statement"]],
-                             self.manifest["wrappingKeys"])
+            self.assertEqual(json.loads(output.getvalue())["Statement"][0]["Resource"], self.manifest["wrappingKeys"])
 
     def test_rejects_receipt_and_eif_substitution(self):
         self.receipt["packages"][0]["ciphertext"] = "00" * 256
@@ -181,19 +192,19 @@ class TargetApprovalTests(unittest.TestCase):
 
     def test_rejects_permissive_policy_before_invoking_recovery_key(self):
         self.policy["Statement"].pop(0)
-        with self.assertRaisesRegex(ValueError, "installed wrapping key policy"):
+        with self.assertRaisesRegex(ValueError, "installed RSA key policy"):
             self.wrap()
         self.assertEqual(self.calls, ["describe-key", "get-key-policy"])
 
     def test_rejects_permissive_recovery_key_policy_before_decrypting(self):
         self.recovery_policy["Statement"].pop(1)
-        with self.assertRaisesRegex(ValueError, "installed recovery key policy"):
+        with self.assertRaisesRegex(ValueError, "installed RSA key policy"):
             self.wrap()
-        self.assertEqual(self.calls, ["describe-key", "get-key-policy", "get-key-policy"])
+        self.assertEqual(self.calls, ["describe-key", "get-key-policy", "get-public-key", "describe-key", "get-key-policy"])
 
     def test_rejects_a_recovery_key_sealed_for_another_epoch(self):
-        self.recovery_policy = recovery_policy(self.custodians[0]["custodianRole"], self.custodians[0]["retirementRole"], "4")
-        with self.assertRaisesRegex(ValueError, "installed recovery key policy"):
+        self.recovery_policy = recovery_policy(self.custodians[0]["custodianRole"], self.custodians[0]["retirementRole"], RELAY_HOST, PINS, "4")
+        with self.assertRaisesRegex(ValueError, "installed RSA key policy"):
             self.wrap()
         self.assertNotIn("decrypt", self.calls)
 
@@ -208,22 +219,25 @@ class TargetApprovalTests(unittest.TestCase):
 
     def test_rechecks_expiration_across_kms_calls(self):
         deadline = self.manifest["expiresAt"]
-        for times, last_call in (
-            ([deadline], "get-public-key"),
-            ([deadline - 1, deadline], "decrypt"),
-            ([deadline - 1, deadline - 1, deadline], "encrypt"),
+        before = deadline - 1
+        for times, decrypts, wraps in (
+            ([before, deadline], 0, 0),
+            ([before, before, deadline], 1, 0),
+            ([before, before, before, deadline], 1, 1),
         ):
-            with self.subTest(stage=last_call), patch("wrap_share.time", side_effect=times):
+            with self.subTest(times=times), patch("relay_wrap.time", side_effect=times):
                 self.calls.clear()
-                with self.assertRaisesRegex(ValueError, "target approval has expired"):
+                self.relay.reset_mock()
+                with self.assertRaisesRegex(ValueError, "relay authorization has expired"):
                     self.wrap()
-                self.assertEqual(self.calls[-1], last_call)
+                self.assertEqual(self.calls.count("decrypt"), decrypts)
+                self.assertEqual(self.relay.call_count, wraps)
 
     def test_checks_roster_cutover_before_recovery_key_use(self):
         cutover = int(time.time()) + 100
         self.trust["approvalKeys"].append(schedule("6", 9, cutover))
-        with patch("wrap_share.time", return_value=cutover):
-            with self.assertRaisesRegex(ValueError, "current approval roster"):
+        with patch("relay_wrap.time", return_value=cutover):
+            with self.assertRaisesRegex(ValueError, "target approval roster"):
                 self.wrap()
         self.assertNotIn("decrypt", self.calls)
 
@@ -233,14 +247,13 @@ class TargetApprovalTests(unittest.TestCase):
             self.wrap()
         self.assertEqual(self.calls[-1], "decrypt")
 
-    def test_rejects_corrupt_share_before_wrapping(self):
-        original = self.share
-        for corrupt in [bytes(41), original[:-1], original[:-1] + b"\x12"]:
-            self.share = corrupt
-            self.calls.clear()
+    def test_rejects_plaintext_or_a_reply_for_another_kms_key_before_rewrapping(self):
+        original = self.decrypt_reply
+        for invalid in ({"Plaintext": "YQ=="}, {"KeyId": key(2)}, {"CiphertextForRecipient": ""}):
+            self.decrypt_reply = {**original, **invalid}
             with self.assertRaises(ValueError):
                 self.wrap()
-            self.assertEqual(self.calls[-1], "decrypt")
+            self.relay.assert_not_called()
 
     def test_rejects_uncommitted_epoch_before_kms_operations(self):
         self.ledger.side_effect = ValueError("uncommitted epoch")
@@ -260,6 +273,7 @@ class TargetApprovalTests(unittest.TestCase):
         self.manifest["mode"] = "rotate"
         roster = [{**member, "recoveryKeyArn": key(index, 4)} for index, member in enumerate(self.custodians, start=1)]
         self.manifest["nextCustodians"] = roster
+        self.manifest["nextRelay"] = self.trust["recoveryRelays"]["6"]
         recipients = [f"{i:02x}" * 294 for i in range(1, 7)]
         path = self.build / "configuration.json"
         path.write_text(json.dumps({
@@ -270,13 +284,13 @@ class TargetApprovalTests(unittest.TestCase):
         self.manifest["configurationSha256"] = file_digest(path)
         _, _, keys = target(self.trust, self.approval, self.receipt, self.custodians, self.build)
         self.assertEqual(keys[0], hashlib.sha256(bytes.fromhex(recipients[0])).hexdigest())
-        self.manifest["wrappingAlgorithm"] = "RSAES_OAEP_SHA_256"
-        with self.assertRaisesRegex(ValueError, "does not match the epoch's pinned recovery path"):
+        scope = self.trust["recoveryRelays"].pop("6")
+        with self.assertRaisesRegex(ValueError, "requires a pinned recovery relay"):
             target(self.trust, self.approval, self.receipt, self.custodians, self.build)
-        self.trust["recoveryRelays"] = {"5": {}}
-        with self.assertRaisesRegex(ValueError, "cannot rotate a relay epoch to plaintext"):
+        self.trust["recoveryRelays"]["6"] = {**scope, "hostRole": HOST}
+        with self.assertRaisesRegex(ValueError, "successor's pinned recovery relay"):
             target(self.trust, self.approval, self.receipt, self.custodians, self.build)
-        self.trust["recoveryRelays"]["6"] = {}
+        self.trust["recoveryRelays"]["6"] = scope
         roster[0]["recoveryKeyArn"] = key(1)
         with self.assertRaisesRegex(ValueError, "rotate recovery keys"):
             target(self.trust, self.approval, self.receipt, self.custodians, self.build)

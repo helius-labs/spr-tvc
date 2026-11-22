@@ -26,7 +26,7 @@ jobs:
         run: python3 -B -m unittest discover -s tests/nitro
       - name: Build native Nitro service
         env:
-          SPR_NETWORK: devnet
+          SPR_NETWORK: mainnet
           RUSTFLAGS: -C target-feature=+crt-static
         run: |
           rustup target add x86_64-unknown-linux-musl

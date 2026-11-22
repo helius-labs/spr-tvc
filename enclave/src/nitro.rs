@@ -306,9 +306,6 @@ async fn provision(domain: [u8; 32], custody: Custody) -> io::Result<RestoredSee
 }
 
 async fn run_relay(domain: [u8; 32], epoch: u64, pins: [[u8; 65]; 3]) -> io::Result<()> {
-    if NETWORK != Network::Devnet {
-        return Err(io::Error::other("the recovery relay trial requires devnet"));
-    }
     let recipient =
         PKey::from_rsa(Rsa::generate(2048).map_err(io::Error::other)?).map_err(io::Error::other)?;
     let relay = Arc::new(Relay::new(recipient, NETWORK, domain, epoch, pins)?);
@@ -449,7 +446,7 @@ fn open_shares(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CustodyResult {
-    network: spr_tvc_protocol::types::Network,
+    network: Network,
     #[serde(with = "hex")]
     security_domain_id: [u8; 32],
     release_id: String,

@@ -17,9 +17,9 @@ accounts. Sign with KMS and verify the signatures locally with OpenSSL.
 Export public keys as `{keyArn, publicKey}` with `python3 enclave/deploy/nitro/approval.py "$key_arn"`.
 
 Pin `trust.json` outside the host and artifact distributor. It contains
-`network`, `securityDomainId` (32 random bytes in lowercase hex), `approvalKeys`
-and `ledger` with `bucket`, `region` and `account` (the 12-digit bucket owner's
-account ID). Each `approvalKeys` entry contains `fromEpoch`, `activeFrom`
+`network`, `securityDomainId` (32 random bytes in lowercase hex), `approvalKeys`,
+`recoveryRelays`, and `ledger` with `bucket`, `region` and `account` (the
+12-digit bucket owner's account ID). Each `approvalKeys` entry contains `fromEpoch`, `activeFrom`
 in Unix seconds, and three exported key objects. Start at epoch `"1"` with
 `activeFrom: 0`. Both values increase with each roster change. The ordered
 `roster.json` contains six entries with `recoveryKeyArn`, `acknowledgementKey`
@@ -52,12 +52,20 @@ epoch. Custody listings must name the pinned bucket and prefix and account for
 every result page. The tools use AWS service endpoints and ignore CLI endpoint
 overrides. [AWS CLI endpoint settings](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html)
 
-Install each custodian's two policies at key creation
-with `--bypass-policy-lockout-safety-check`. Only the custodian role can decrypt
-with the recovery key or sign with the acknowledgement key. The recovery
-policy is sealed under its assigned epoch. Operators use six fresh recovery
-keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
-`kms:GetPublicKey` for the proposed recovery and acknowledgement keys.
+Before creating the recovery keys, build the epoch's relay EIF with
+`deployment: {"mode":"relay","custodyEpoch":"1","approvalKeys":[...]}`.
+Supply the three uncompressed SEC1 public keys in epoch roster order. Use
+the same build and review procedure as the custody EIF below. In
+`recoveryRelays`, pin the relay's `hostRole` and `pcrs` (PCR0–PCR2) under its
+epoch string. The tools derive PCR3 from the relay host role. Add new epoch
+entries as custody rotates and preserve the historical pins.
+
+Render the recovery policies after pinning the relay. Install each custodian's
+two policies at key creation with `--bypass-policy-lockout-safety-check`.
+The recovery key permits only the custodian role and requires attestation from
+the measured relay. The acknowledgement key permits only the custodian role
+to sign. Give the approvers read-only inspection profiles in all six slot
+accounts. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
 
 ## Commit a custody epoch
 
@@ -95,23 +103,29 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
 
 3. Two approval signers each run `sign` with the measured build, Git ref and
    full commit SHA from review. The command verifies the GitHub build
-   attestation, archived AWS evidence and six KMS public keys. Pass each
-   updated document to the next signer. Each custodian then acknowledges in its
-   own account, after decrypting and checking its committed share. Publish the
-   fully acknowledged document with the dedicated publisher role.
+   attestation, archived AWS evidence, and the attested relay's build, PCRs
+   and ordered signer keys. Each approver inspects the six installed recovery
+   key policies and public keys. Pass each updated document to the next
+   signer. Each custodian acknowledges in its own account after the measured
+   relay proves possession of its committed share. Forward the relay's vsock
+   port 44031 through SSM to a loopback port. It serves for ten minutes.
+   Publish the fully acknowledged document with the dedicated publisher role.
 
    ```sh
    python3 "$nitro/custody_ledger.py" trust.json sign epoch-draft.json "$build_dir" "$approval_key" \
-     epoch-signed.json --source-commit "$reviewed_commit" --source-ref "$source_ref"
-   python3 "$nitro/custody_ledger.py" trust.json acknowledge epoch-signed.json "$share_index" epoch-ack.json
+     epoch-signed.json --source-commit "$reviewed_commit" --source-ref "$source_ref" \
+     --relay-build "$relay_build" "$relay_commit" "$relay_ref" \
+     --inspection-profiles "${inspection_profiles[@]}"
+   python3 "$nitro/custody_ledger.py" trust.json acknowledge epoch-signed.json "$share_index" epoch-ack.json \
+     --relay-port "$port"
    python3 "$nitro/custody_ledger.py" trust.json publish epoch-ack.json
    python3 "$nitro/custody_ledger.py" trust.json read 1 > receipt.json
    ```
 
    `publish` requires two approvals and all six acknowledgements on the same
    candidate. The first successful conditional write fixes the receipt for that
-   epoch. A rotated receipt pins the previous receipt and the registered
-   rotation approval. Drafting and signing check the measured configuration.
+   epoch and its recovery relay. A rotated receipt pins the previous receipt
+   and the registered rotation approval. Drafting and signing check the measured configuration.
    Acknowledgement, publication and online reads verify the same image, host
    role and successor roster. The seed commitment stays stable.
 
@@ -134,13 +148,17 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
 
 1. For serving, copy the canonical receipt's `custody` object into
    `{"mode":"serve","custody":{...}}`. Build and review the EIF. In the six
-   custody accounts, install the final wrapping policy at key creation using
-   `kms_policy.py` with the build measurements and exact host, custodian and
+   custody accounts, install the final wrapping policy on a fresh
+   KMS-generated RSA `ENCRYPT_DECRYPT` key per slot. Render the policy with
+   `kms_policy.py` using the build measurements and exact host, custodian and
    retirement roles. Keep the returned immutable ARNs in `wrapping-keys.json`,
    an array in roster order. Choose an approval deadline in Unix seconds.
 2. Two approval signers independently check and sign the target manifest. It
    binds the canonical receipt, mode, EIF, configuration, measurements and
-   six wrapping keys. A rotation draft also takes `--next-roster roster-next.json`.
+   six wrapping keys. A rotation draft also takes `--next-roster roster-next.json`
+   and binds the successor relay from custody trust. Before authorizing a
+   rotation, both signers verify the successor's build and keys with
+   `--next-relay-build BUILD COMMIT REF` and `--next-inspection-profiles`.
 
    ```sh
    python3 "$nitro/deployment.py" trust.json "$build_dir" draft "$host_role" wrapping-keys.json \
@@ -149,7 +167,6 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
      target-signed.json --source-commit "$reviewed_commit" --source-ref "$source_ref"
    python3 "$nitro/deployment.py" trust.json "$build_dir" register target-signed.json
    python3 "$nitro/deployment.py" trust.json "$build_dir" host-policy target-signed.json > host-kms-policy.json
-   python3 "$nitro/wrap_share.py" trust.json target-signed.json "$build_dir" "$share_index" "$share_index.kms"
    ```
 
    Register with the dedicated ledger publisher more than 30 seconds before
@@ -158,13 +175,9 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    wrapping-key ARNs. Within an epoch, a release ID
    and PCR0–PCR3 identify one wrapping-key set. Use a fresh release identity
    for a different key set. A fresh approval can renew the wrapping deadline
-   without replacing the registered target. `wrap_share.py` checks registration
-   and both installed key policies. It checks the epoch, roster, and deadline
-   immediately before decrypting, before wrapping, and before returning the
-   ciphertext. Recovery acknowledgements also require an open epoch. A
-   trusted custodian workstation sees one plaintext share during acknowledgement
-   and wrapping. The tool writes only the wrapped ciphertext.
-   Obtain more than three ciphertexts so a boot can tolerate unavailable keys.
+   without replacing the registered target. Use [Share release](#share-release)
+   to produce more than three wraps so a new boot can tolerate unavailable
+   keys.
 3. Use a host role dedicated to the measured target. Install
    `host-kms-policy.json` as an inline IAM policy on that role. Cross-account
    KMS requires it in addition to the policies on the keys.
@@ -236,9 +249,9 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
 
    ```sh
    python3 "$nitro/retirement.py" trust.json draft wallet-trust.json 1 2 > retire-draft.json
-   python3 "$nitro/retirement.py" trust.json prove-recovery retire-draft.json 2 > retire-proof-1.json
-   python3 "$nitro/retirement.py" trust.json prove-recovery retire-proof-1.json 4 > retire-proof-2.json
-   python3 "$nitro/retirement.py" trust.json prove-recovery retire-proof-2.json 6 > retire-proof-3.json
+   python3 "$nitro/retirement.py" trust.json prove-recovery retire-draft.json 2 --relay-port "$port" > retire-proof-1.json
+   python3 "$nitro/retirement.py" trust.json prove-recovery retire-proof-1.json 4 --relay-port "$port" > retire-proof-2.json
+   python3 "$nitro/retirement.py" trust.json prove-recovery retire-proof-2.json 6 --relay-port "$port" > retire-proof-3.json
    python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-proof-3.json "$first_approval_key" > retire-signed-1.json
    python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-signed-1.json "$second_approval_key" > retire-signed-2.json
    python3 "$nitro/retirement.py" trust.json publish wallet-trust.json retire-signed-2.json
@@ -256,85 +269,42 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
    fleet and the on-chain canary separately. Retain the old signed receipt
    and public trust pins. [AWS key deletion](https://docs.aws.amazon.com/kms/latest/APIReference/API_ScheduleKeyDeletion.html) · [AWS cancellation behavior](https://docs.aws.amazon.com/kms/latest/APIReference/API_CancelKeyDeletion.html)
 
-## Attested recovery relay trial
+## Share release
 
-Use fresh devnet keys and a disposable seed domain. Set the relay EIF's
-`deployment` to `{"mode":"relay","custodyEpoch":"1","approvalKeys":[...]}`.
-Supply the three epoch approval public keys in roster order as uncompressed
-SEC1 hex. Add `recoveryRelays` to pinned custody trust, keyed by epoch. Each
-entry contains the relay `hostRole` and reviewed `pcrs` from `measurements.json`
-(PCR0–PCR2). The tools derive PCR3 from the exact host role.
+For each slot, two epoch approval signers authorize the exact relay boot and
+sealed destination public key. Both use a read-only inspection profile in the
+slot account. Each command reattests the relay and checks the installed target
+policy. Collect both signatures against the same boot. The custodian then
+checks the installed recovery policy, sends the recovery package and relay
+attestation to KMS, and passes the encrypted response to the relay. The relay
+checks the signatures, share commitment and authorization deadline, then
+returns an RSA-OAEP-SHA-256 ciphertext for the registered destination.
 
-1. Render the six source policies with `custody_ledger.py relay-recovery-policy`
-   after pinning the relay. Pass the custodian role, retirement role and
-   custody epoch. Create RSA KMS recovery keys with those policies.
-   Give the custody approvers separate read-only inspection profiles in the
-   six slot accounts. Each approver runs `custody_ledger.py sign` with
-   `--inspection-profiles` in slot order and `--relay-build BUILD COMMIT REF`.
-   Use the downloaded relay build, independently reviewed commit SHA and full
-   branch ref. The signer verifies GitHub provenance, the pinned PCRs and the
-   relay configuration's domain, epoch and ordered approval keys. It checks
-   every installed policy and the public key in each measured recovery
-   package. KMS `GetKeyPolicy` requires a session in the key's own account.
-   Before releasing shares to the rotation EIF, qualify the successor's
-   relay and keys using `deployment.py sign --next-relay-build BUILD COMMIT REF`
-   and `--next-inspection-profiles`.
-2. Forward the measured relay's vsock port 44031 through SSM to a loopback
-   port. It serves for ten minutes. Each custodian runs `acknowledge` with
-   `--relay-port`. KMS returns a recipient ciphertext. The relay opens it and
-   signs fresh evidence that the actual slot and commitment match. The same
-   path supplies `retirement.py prove-recovery --relay-port`.
-3. Create six fresh RSA target keys using `kms_policy.py` with
-   `--wrapping-algorithm RSAES_OAEP_SHA_256`. Draft the target with the same
-   algorithm, then sign and register it. Each target key is sealed to the
-   measured target and its host role. The signed registry fixes their ARNs in
-   slot order. The enclave still verifies every share’s epoch, slot and
-   commitment at bootstrap.
-4. Draft a release for each participating slot. Two approval signers run
-   `sign` independently, each with a read-only profile in that slot account.
-   Each command reattests the same relay boot and checks the actual
-   destination KMS public key and policy. The signed authorization cannot be
-   reused after the relay restarts.
+```sh
+python3 "$nitro/relay_wrap.py" trust.json target-signed.json "$build_dir" "$slot" --relay-port "$port" \
+  draft --inspection-profile "$slot_read_profile" > relay-draft.json
+python3 "$nitro/relay_wrap.py" trust.json target-signed.json "$build_dir" "$slot" --relay-port "$port" \
+  sign relay-draft.json "$first_approval_key" --inspection-profile "$slot_read_profile" > relay-signed-1.json
+python3 "$nitro/relay_wrap.py" trust.json target-signed.json "$build_dir" "$slot" --relay-port "$port" \
+  sign relay-signed-1.json "$second_approval_key" --inspection-profile "$slot_read_profile" > relay-signed-2.json
+python3 "$nitro/relay_wrap.py" trust.json target-signed.json "$build_dir" "$slot" --relay-port "$port" \
+  wrap relay-signed-2.json "shares/$slot.kms"
+```
 
-   ```sh
-   python3 "$nitro/relay_wrap.py" trust.json target.json "$build_dir" "$slot" --relay-port "$port" \
-     draft --inspection-profile "$slot_read_profile" > relay-draft.json
-   python3 "$nitro/relay_wrap.py" trust.json target.json "$build_dir" "$slot" --relay-port "$port" \
-     sign relay-draft.json "$first_approval_key" --inspection-profile "$slot_read_profile" > relay-signed-1.json
-   python3 "$nitro/relay_wrap.py" trust.json target.json "$build_dir" "$slot" --relay-port "$port" \
-     sign relay-signed-1.json "$second_approval_key" --inspection-profile "$slot_read_profile" > relay-signed-2.json
-   python3 "$nitro/relay_wrap.py" trust.json target.json "$build_dir" "$slot" --relay-port "$port" \
-     wrap relay-signed-2.json "shares/$slot.kms"
-   ```
+During an approval roster change, the active quorum registers the successor
+target and the successor's measured quorum approves its relay wraps. Commission
+the successor and retire the old source keys before the cutover. The wrapping
+tool refuses a retired roster. Stop the source relay and revoke its KMS access
+if the epoch closes early. A running source relay trusts its measured roster
+until the boot ends.
 
-   A custodian runs `wrap` in their slot role. The operation supplies only the
-   relay's fresh attestation and the committed ciphertext to its recovery KMS
-   key. The relay returns an RSA-OAEP-SHA-256 ciphertext for the approved target
-   key. Provision the target with the usual command. Its KMS call uses the
-   manifest's algorithm. Asymmetric KMS calls carry no encryption context.
-   The immutable per-slot key ARN and the enclave's share commitment identify
-   the slot. [KMS GetKeyPolicy](https://docs.aws.amazon.com/kms/latest/APIReference/API_GetKeyPolicy.html) · [KMS Decrypt](https://docs.aws.amazon.com/kms/latest/APIReference/API_Decrypt.html)
-
-A relay-pinned epoch requires RSA destinations and another relay-pinned epoch
-when rotating. Its source keys stay bound to the measured epoch relay and its
-approval roster. During a roster change, the active quorum registers the
-successor target and the successor's measured quorum approves each relay wrap.
-Commission the successor and retire the old source keys before the roster
-cutover. The wrapping tool refuses a source relay whose measured quorum has
-retired. A running source relay trusts its measured roster until its boot ends.
-The wire authorization signs the SHA-256 of
-`SPR/native-nitro/relay-release/v1` followed by a null byte and canonical
-statement JSON. KMS signatures retain DER encoding. Live six-account
-qualification and the approval-roster cutover drill are pending.
-
-The signed statement sets `expiresAt` to the earlier of the target's approval
-deadline and the next scheduled approval-roster activation, in Unix seconds.
-The relay reads the timestamp directly from its Nitro Secure Module before
-opening the share and again before returning ciphertext. Either failed clock
-read rejects the request. Stop the source relay and revoke its KMS access if
-the epoch closes ahead of schedule. Ciphertext already delivered to an approved
-target remains subject to that target's KMS policy.
-[Nitro attestation document fields](https://docs.aws.amazon.com/enclaves/latest/user/verify-root.html#term-attestation-document)
+The wire authorization signs the SHA-256 of `SPR/native-nitro/relay-release/v1`
+followed by a null byte and canonical statement JSON. KMS signatures retain DER
+encoding. The signed `expiresAt` is the earlier of the target deadline and next
+scheduled roster activation in Unix seconds. The relay reads Nitro time before
+opening a share and again before releasing ciphertext. A failed clock read
+rejects the request. Ciphertext already delivered to the target remains subject
+to its KMS policy. [Nitro attestation](https://docs.aws.amazon.com/enclaves/latest/user/verify-root.html) · [KMS Decrypt](https://docs.aws.amazon.com/kms/latest/APIReference/API_Decrypt.html)
 
 ## Replace a compromised seed
 

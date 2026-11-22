@@ -93,7 +93,7 @@ def kms(key, operation, arguments=(), body=None, **options):
 
 def key_result(key, operation, arguments=(), body=None, **options):
     result = kms(key, operation, arguments, body, **options)
-    if result.get("KeyId") != key:
+    if not isinstance(result, dict) or result.get("KeyId") != key:
         raise ValueError(f"unexpected KMS key for {operation}")
     return result
 

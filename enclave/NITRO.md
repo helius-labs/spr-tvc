@@ -17,24 +17,18 @@ SPR senders can encrypt an output for a wallet that has no registry entry. The s
 
 Commissioning requires two approvals of the exact target and three custodian shares. Wallets separately require a signed release policy and fresh attestation. A malicious enclave with three shares can disclose the seed even if wallets refuse to connect. Review the source and the measured artifact before approving share release. Account administration and role assumption must preserve the independence of custodians and approval signers.
 
-Any three recovery custodians can reconstruct the seed outside Nitro.
-Each recovery KMS key authorizes its custodian to open one share in plaintext.
-The separate custody approval quorum governs provisioning to a measured
-target. Treat three exposed shares from one epoch as seed exposure.
+Each custodian can ask KMS to release one share to the epoch's measured relay.
+The signed custody receipt pins the relay and its host role. Custody approvers
+verify its build, the ordered signer roster and all six installed KMS policies.
+The relay checks the share commitment and requires two approvals of the exact
+target key, relay boot and deadline. It reads Nitro time before opening the
+share and again before returning ciphertext. The approved target obtains its
+share through a second attested KMS decrypt. Fresh relay evidence confirms
+recovery before a custodian signs an acknowledgement or retirement proof.
 
-The [devnet relay trial](deploy/nitro/README.md#attested-recovery-relay-trial)
-uses separate sealed recovery keys. For a relay-pinned epoch, those keys release
-shares only to the measured relay. Custody approval checks the reviewed relay
-build, its configured signer roster and all six installed KMS policies. The
-relay checks the share commitment and requires two approvals of the exact RSA
-destination, relay boot and deadline.
-The relay reads Nitro time before opening the share and again before returning
-ciphertext. The approved target opens the ciphertext through attested KMS. Fresh
-relay evidence confirms share recovery before an acknowledgement or retirement
-proof is signed. During roster rotation, the active quorum signs target
-registration and the epoch's measured quorum signs share releases. The old
-source keys must be retired before their quorum changes. Production
-qualification and roster cutover are pending.
+During roster rotation, the active quorum signs target registration and the
+epoch's measured quorum signs share releases. Retire the old source keys and
+stop their relay before switching rosters. See the [share-release procedure](deploy/nitro/README.md#share-release).
 
 Custody and target signers require GitHub build provenance from the designated
 native EIF workflow at the exact ref and commit approved in review. Devnet can
@@ -68,9 +62,9 @@ The ceremony serves only the custody port. Its measured recipient list controls
 where shares can be sent. A reboot can issue a different record for the same
 epoch. The capture retains the original evidence, challenge and verification
 time. Two approval signers reverify the proof and bind the record to the six
-recovery keys and its exact predecessor. A rotated receipt pins the registered
-rotation approval and must match its measured image, host role and successor
-roster. All six custodians attest that their sealed key can open its share.
+recovery keys, measured relay and exact predecessor. A rotated receipt pins
+the registered rotation approval. It must match the approved rotation image,
+host role, successor roster and successor relay. All six custodians attest that their sealed key can open its share.
 A conditional S3 write commits one record for
 the epoch. Historical receipts verify with the public keys pinned for their
 epoch. Target approvals and retirement records verify under the roster
@@ -78,14 +72,13 @@ active at the original S3 write. Publishing after a cutover requires
 approval from the incoming roster. Retiring an approval or acknowledgement
 signing key leaves custody receipts verifiable offline.
 
-Custodians verify the quorum-approved build and registered destination and
-compare its KMS policies to the approved role, context and measurements before
-opening a share. The ledger accepts one wrapping-key set per epoch, release ID
-and PCR0–PCR3. The first registration must occur before the approval deadline.
-A new quorum approval may renew the wrapping deadline for the same set. The
-tool checks the open epoch, active quorum and deadline at the KMS operation
-boundaries. A custodian workstation temporarily sees one share. KMS rewraps
-it for the target. The host sees ciphertext during this flow.
+The custody ledger registers one wrapping-key set per epoch, release ID and
+PCR0–PCR3. It checks the domain and committed receipt before first
+registration. S3 must record the write within the approval window. A new
+quorum approval may renew the deadline for the same set. Each share release
+checks the registered target and both installed KMS key policies. The operator
+checks the epoch, roster and deadline around KMS and relay calls. The relay
+opens the share and wraps it to the approved RSA key inside Nitro.
 
 The wallet publishers raise the custody floor after the replacement attests.
 The replacement enclave attests the three distinct slots used to restore the
@@ -108,9 +101,9 @@ custody record. Both serving and rotation use the same bootstrap:
 1. The enclave creates a temporary RSA-2048 recipient and attests its public
    key on vsock port 44031. The parent calls KMS with that evidence and each
    wrapped share. The host's inline IAM policy and each sealed key require
-   PCR0–PCR3 and exact context for network, security domain, release, custody
-   epoch and share index. The host gets the key ARNs and context from the
-   approved target whose file hash is pinned in its deployment configuration.
+   RSA-OAEP-SHA-256 and PCR0–PCR3. The host gets the six ordered key ARNs
+   from the approved target pinned by file hash. The enclave checks the
+   domain, epoch and slot against the measured share commitments.
 2. KMS encrypts its response for that temporary recipient. The parent sends up
    to six CMS records. Each starts with a one-byte slot and a two-byte
    big-endian length, followed by up to 6,144 bytes of ciphertext. A share

@@ -1,4 +1,4 @@
-"""Authorize or release one registered devnet share through the attested relay."""
+"""Authorize or release one registered share through the attested relay."""
 
 import argparse
 import base64
@@ -10,7 +10,6 @@ from time import time
 from approval import add_approval, approval_roster, canonical, check_approvals, epoch_number, read_json, sha256
 from custody_ledger import load_epoch, require_active_epoch, verify_target_approval
 from deployment import require_registered_target, target
-from kms_policy import RSA_OAEP, target_algorithm
 from relay import live_recipient, recover_to_relay, relay_pins, relay_request, sealed_rsa_key
 
 LABEL = "relay-release"
@@ -21,8 +20,6 @@ def prepare(trust, approval, build, index, port, inspection_profile=None):
         raise ValueError("invalid custody slot")
     at = time()
     manifest = verify_target_approval(trust, approval, at=at)
-    if target_algorithm(manifest) != RSA_OAEP:
-        raise ValueError("the relay requires an RSA target")
     epoch = manifest["custodyEpoch"]
     relay = relay_pins(trust, epoch)
     _, receipt, custodians = load_epoch(trust, epoch)

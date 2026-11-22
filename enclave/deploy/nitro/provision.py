@@ -1,11 +1,9 @@
 """Forward KMS recipient ciphertexts from a 3-of-6 custody set into a measured SPR Nitro enclave."""
 
 import argparse
-import base64
 import errno
 import hashlib
 import http.client
-import json
 import socket
 import struct
 import subprocess
@@ -13,11 +11,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import monotonic, sleep
 
-from approval import KEY_ARN, MAX_DOCUMENT_BYTES, ROLE_ARN, arn, aws_environment, fields, hex_digest, parse_json
-from kms_policy import RSA_OAEP, target_context
+from approval import KEY_ARN, MAX_DOCUMENT_BYTES, ROLE_ARN, arn, fields, hex_digest, parse_json
+from custody_ledger import target_fields
+from relay import MAX_EVIDENCE, decrypt_recipient
 
-MAX_ENVELOPE = 6144
-MAX_EVIDENCE = 16384
 THRESHOLD = 3
 SHARE_COUNT = 6
 RECIPIENT_WAIT_SECONDS = 20
@@ -54,41 +51,13 @@ def recipient_for(cid):
                 raise
         else:
             if status == 200 and 1 <= len(evidence) <= MAX_EVIDENCE:
-                return json.dumps({
-                    "KeyEncryptionAlgorithm": "RSAES_OAEP_SHA_256",
-                    "AttestationDocument": base64.b64encode(evidence).decode("ascii"),
-                })
+                return evidence
             if status not in {429, 503}:
                 raise ValueError(f"invalid recipient evidence from HTTP {status}")
         remaining = deadline - monotonic()
         if remaining <= 0:
             raise ValueError("enclave recipient did not become ready")
         sleep(min(0.25, remaining))
-
-
-def decrypt_share(arn, wrapped_share, recipient, ctx):
-    key = KEY_ARN.fullmatch(arn)
-    if key is None:
-        raise ValueError("expected immutable KMS key ARN")
-    algorithm_args = (["--encryption-algorithm", RSA_OAEP] if ctx is None
-                      else ["--encryption-context", json.dumps(ctx)])
-    result = subprocess.run([
-        "aws", "--region", key[1], "kms", "decrypt", "--key-id", arn,
-        "--ciphertext-blob", f"fileb://{wrapped_share}",
-        *algorithm_args, "--recipient", recipient,
-        "--cli-binary-format", "base64", "--output", "json", "--no-cli-pager",
-    ], capture_output=True, text=True, timeout=25, env=aws_environment())
-    if result.returncode:
-        if "AccessDeniedException" in result.stderr:
-            raise ValueError("KMS denied the attested recipient")
-        raise ValueError("attested KMS decrypt failed")
-    envelope = parse_json(result.stdout)
-    if not isinstance(envelope, dict) or envelope.get("Plaintext") not in (None, "") or envelope.get("KeyId") != arn:
-        raise ValueError("unexpected KMS decrypt response")
-    ciphertext = base64.b64decode(envelope["CiphertextForRecipient"], validate=True)
-    if not 1 <= len(ciphertext) <= MAX_ENVELOPE:
-        raise ValueError("invalid KMS recipient envelope length")
-    return ciphertext
 
 
 def read_target(path, expected_digest):
@@ -98,6 +67,7 @@ def read_target(path, expected_digest):
         raise ValueError("target file does not match the independently pinned digest")
     document = parse_json(payload)
     fields(document, "manifest", "signatures")
+    target_fields(document["manifest"])
     return document["manifest"]
 
 
@@ -112,14 +82,14 @@ def provision(cid, manifest, directory, slots=None):
     if slots is not None and (len(slots) != THRESHOLD or len(set(slots)) != THRESHOLD or
                               any(slot not in available_slots for slot in slots)):
         raise ValueError("select exactly three distinct custody slots")
-    selected = [(slot, keys[slot - 1], directory / f"{slot}.kms", target_context(manifest, slot))
+    selected = [(slot, keys[slot - 1], directory / f"{slot}.kms")
                 for slot in (available_slots if slots is None else sorted(slots))]
     recipient = recipient_for(cid)
 
     def unwrap(entry):
-        _, key, blob, ctx = entry
+        _, key, blob = entry
         try:
-            return decrypt_share(key, blob, recipient, ctx)
+            return decrypt_recipient(key, f"fileb://{blob}", recipient)
         except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
             return None
 

@@ -46,6 +46,7 @@ class CustodyLedgerTests(unittest.TestCase):
         self.trust = {
             "network": "devnet", "securityDomainId": DOMAIN, "approvalKeys": [schedule()],
             "ledger": {"bucket": "custody-journal", "account": "000000000008", "region": "eu-north-1"},
+            "recoveryRelays": {str(epoch): {"hostRole": HOST, "pcrs": PINS} for epoch in range(1, 4)},
         }
         self.objects = {}
         self.timestamps = {}
@@ -79,7 +80,7 @@ class CustodyLedgerTests(unittest.TestCase):
                         "configuration": configuration, "pcrs": {key.removeprefix("PCR"): value
                                                                     for key, value in boot_pins(HOST, PINS).items()}},
             "ceremonyEifSha256": hashlib.sha256(b"rotation EIF fixture").hexdigest(), "ceremonyHostRole": HOST,
-            "custodians": roster, "previousReceiptSha256": sha256(predecessor) if predecessor else None,
+            "custodians": roster, "relay": copy.deepcopy(self.trust["recoveryRelays"][str(epoch)]), "previousReceiptSha256": sha256(predecessor) if predecessor else None,
             "rotationTargetSha256": None,
         }
         return {"authorization": {"manifest": manifest, "signatures": []}, "acknowledgements": []}
@@ -93,7 +94,7 @@ class CustodyLedgerTests(unittest.TestCase):
                   "pcrs": PINS, "eifSha256": manifest["ceremonyEifSha256"],
                   "executableSha256": hashlib.sha256(b"rotation executable fixture").hexdigest(),
                   "configurationSha256": sha256(manifest["capture"]["configuration"]),
-                  "nextCustodians": copy.deepcopy(manifest["custodians"]), "wrappingAlgorithm": "SYMMETRIC_DEFAULT",
+                  "nextCustodians": copy.deepcopy(manifest["custodians"]), "nextRelay": copy.deepcopy(manifest["relay"]),
                   "wrappingKeys": [key(i, 21) for i in range(1, 7)]}
         manifest["rotationTargetSha256"] = sha256(target)
         approval = self.signed_subject(TARGET_APPROVAL, target)
@@ -151,6 +152,29 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertIn(winner, (left, right))
         self.assertEqual(receipt, record(self.trust, winner)[0])
         publish(self.trust, winner)
+
+    def test_mainnet_admits_only_the_signed_relay_and_preserves_it_in_archives(self):
+        self.trust["network"] = "mainnet"
+        document = self.document(1)
+        manifest = document["authorization"]["manifest"]
+        manifest["capture"]["receipt"]["network"] = "mainnet"
+        self.sign(document)
+        custody = verify_archive(self.trust, document, sha256(document))["custody"]
+        self.assertEqual(custody["epoch"], "1")
+        legacy = copy.deepcopy(document)
+        del legacy["authorization"]["manifest"]["relay"]
+        with self.assertRaisesRegex(ValueError, "expected document fields"):
+            verify_archive(self.trust, self.sign(legacy), sha256(legacy))
+        missing = {**self.trust, "recoveryRelays": {}}
+        with self.assertRaisesRegex(ValueError, "requires a pinned recovery relay"):
+            verify_archive(missing, document, sha256(document))
+        relay = manifest["relay"]
+        for substituted in (
+            {**relay, "hostRole": "arn:aws:iam::000000000009:role/relay"},
+            {**relay, "pcrs": {**relay["pcrs"], "PCR0": "ef" * 48}},
+        ):
+            with self.subTest(substituted=substituted), self.assertRaisesRegex(ValueError, "pinned recovery relay"):
+                verify_archive({**self.trust, "recoveryRelays": {"1": substituted}}, document, sha256(document))
 
     def test_reports_both_failures_when_a_ledger_write_cannot_be_confirmed(self):
         with patch("custody_ledger.storage", side_effect=[ValueError("write timed out"), ValueError("read denied")]):
@@ -221,7 +245,7 @@ class CustodyLedgerTests(unittest.TestCase):
         commit = "ab" * 20
         reviewed = describe(build, "devnet", commit)
         with (patch("custody_ledger.verify_build") as verify_build, patch("custody_ledger.subprocess") as capture_verifier,
-              patch("custody_ledger.check_recovery_key"), patch("custody_ledger.check_acknowledgement_key"),
+              patch("custody_ledger.check_recovery_roster"), patch("custody_ledger.check_acknowledgement_key"),
               patch("custody_ledger.add_approval", return_value=document["authorization"]) as sign_record):
             for field in ("configurationSha256", "eifSha256", "executableSha256", "pcrs"):
                 value = {**PINS, "PCR0": "aa" * 48} if field == "pcrs" else "aa" * 32
@@ -272,11 +296,11 @@ class CustodyLedgerTests(unittest.TestCase):
                 bad = copy.deepcopy(document)
                 bad["authorization"]["manifest"].update(copy.deepcopy(change))
                 self.sign(bad)
-                with (patch("custody_ledger.verify_build") as provenance, patch("custody_ledger.open_share") as share):
+                with (patch("custody_ledger.verify_build") as provenance, patch("custody_ledger.prove_share") as share):
                     with self.assertRaisesRegex(ValueError, message):
                         sign_epoch(self.trust, bad, key(8, 7), build, "", "")
                     with self.assertRaisesRegex(ValueError, message):
-                        acknowledge(self.trust, bad, 1)
+                        acknowledge(self.trust, bad, 1, 7443)
                     with self.assertRaisesRegex(ValueError, message):
                         publish(self.trust, bad)
                     provenance.assert_not_called()
@@ -328,35 +352,18 @@ class CustodyLedgerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "invalid custody approval signature"):
                 verify_archive(self.trust, document, sha256(document))
 
+    @patch("custody_ledger.prove_share")
     @patch("custody_ledger.add_approval")
-    @patch("custody_ledger.open_share", side_effect=ValueError("recovery package failed"))
     @patch("custody_ledger.kms")
-    def test_custodian_acknowledges_only_a_recovered_share(self, kms, open_share, approval):
+    def test_acknowledgement_requires_a_sealed_key_and_attested_share_proof(self, kms, approve, prove):
         document = self.sign(self.document(1))
         document["acknowledgements"] = []
         member = document["authorization"]["manifest"]["custodians"][0]
         kms.return_value = {"Policy": "{}"}
         with self.assertRaisesRegex(ValueError, "installed acknowledgement policy"):
-            acknowledge(self.trust, document, 1)
-        open_share.assert_not_called()
+            acknowledge(self.trust, document, 1, 7443)
+        prove.assert_not_called()
         kms.return_value = {"Policy": json.dumps(acknowledgement_policy(member["custodianRole"], member["retirementRole"]))}
-        with self.assertRaisesRegex(ValueError, "recovery package failed"):
-            acknowledge(self.trust, document, 1)
-        open_share.assert_called_once()
-        approval.assert_not_called()
-
-    @patch("custody_ledger.open_share", side_effect=AssertionError("relay epoch must never expose a plaintext share"))
-    @patch("custody_ledger.prove_share")
-    @patch("custody_ledger.add_approval")
-    @patch("custody_ledger.kms")
-    def test_relay_epoch_requires_attested_acknowledgement_without_falling_back(self, kms, approve, prove, plaintext):
-        document = self.sign(self.document(1))
-        document["acknowledgements"] = []
-        member = document["authorization"]["manifest"]["custodians"][0]
-        kms.return_value = {"Policy": json.dumps(acknowledgement_policy(member["custodianRole"], member["retirementRole"]))}
-        self.trust["recoveryRelays"] = {"1": {"hostRole": HOST, "pcrs": PINS}}
-        with self.assertRaisesRegex(ValueError, "requires an attested recovery relay"):
-            acknowledge(self.trust, document, 1)
         prove.side_effect = ValueError("unverified relay proof")
         with self.assertRaisesRegex(ValueError, "unverified relay proof"):
             acknowledge(self.trust, document, 1, 7443)
@@ -369,14 +376,11 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertEqual(args_receipt["custody"]["epoch"], "1")
         self.assertEqual((args_member, slot, port), (member, 1, 7443))
         check()
-        plaintext.assert_not_called()
 
     @patch("custody_ledger.sealed_rsa_key")
-    @patch("custody_ledger.check_recovery_key", side_effect=AssertionError("relay policy inspection cannot be skipped"))
     @patch("custody_ledger.verify_relay_build")
-    def test_relay_receipt_requires_build_provenance_and_independent_slot_inspection(self, provenance, _plaintext, inspect):
+    def test_relay_receipt_requires_build_provenance_and_independent_slot_inspection(self, provenance, inspect):
         roster = self.document(1)["authorization"]["manifest"]["custodians"]
-        self.trust["recoveryRelays"] = {"1": {"hostRole": HOST, "pcrs": PINS}}
         keys = [bytes([i]) * 264 for i in range(1, 7)]
         fingerprints = [hashlib.sha256(key).hexdigest() for key in keys]
         with self.assertRaisesRegex(ValueError, "six distinct read-only inspection profiles"):
@@ -449,8 +453,9 @@ class CustodyLedgerTests(unittest.TestCase):
         _, receipt, _ = load_epoch(self.trust, "2")
         return {"network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "2",
                 "receiptSha256": sha256(receipt), "approvalFromEpoch": approval_roster(self.trust)["fromEpoch"],
-                "releaseId": "new-slot", "mode": "serve", "hostRole": HOST, "wrappingAlgorithm": "SYMMETRIC_DEFAULT", "expiresAt": self.now + 3600,
-                "executableSha256": "ab" * 32,
+                "releaseId": "new-slot", "mode": "serve", "hostRole": HOST, "expiresAt": self.now + 3600,
+                "executableSha256": "ab" * 32, "configurationSha256": "bc" * 32, "eifSha256": "cd" * 32,
+                "nextCustodians": None, "nextRelay": None, "wrappingKeys": [key(i, 22) for i in range(1, 7)],
                 "pcrs": {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)}, **overrides}
 
     def test_wallet_activation_requires_each_target_registered_for_the_current_receipt(self):
@@ -473,7 +478,9 @@ class CustodyLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "object missing"):
             check()
         name = f"spr-custody/devnet/{DOMAIN}/{target_object_name(registered)}"
-        for subject, message in (({**registered, "mode": "rotate"}, "custody-approved target"),
+        roster = rotated["authorization"]["manifest"]["custodians"]
+        rotation = {**registered, "mode": "rotate", "nextCustodians": roster, "nextRelay": self.trust["recoveryRelays"]["3"]}
+        for subject, message in ((rotation, "custody-approved target"),
                                  ({**registered, "receiptSha256": "aa" * 32}, "committed custody receipt")):
             self.objects[name] = canonical(self.signed_subject(TARGET_APPROVAL, subject))
             with self.assertRaisesRegex(ValueError, message):
@@ -531,7 +538,9 @@ class CustodyLedgerTests(unittest.TestCase):
         target = {
             "network": "devnet", "securityDomainId": DOMAIN, "custodyEpoch": "1", "receiptSha256": sha256(old),
             "approvalFromEpoch": "1", "releaseId": "old-slot", "hostRole": HOST, "expiresAt": self.now + 3600,
-            "wrappingAlgorithm": "SYMMETRIC_DEFAULT", "wrappingKeys": [key(account, 11) for account in range(1, 7)],
+            "mode": "serve", "nextCustodians": None, "nextRelay": None,
+            "executableSha256": "ab" * 32, "configurationSha256": "bc" * 32, "eifSha256": "cd" * 32,
+            "wrappingKeys": [key(account, 11) for account in range(1, 7)],
             "pcrs": {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)},
         }
         target_doc = self.signed_subject(TARGET_APPROVAL, target)
@@ -565,7 +574,7 @@ class CustodyLedgerTests(unittest.TestCase):
             register_target(self.trust, target_doc)
         with patch("custody_ledger.kms") as kms:
             with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
-                acknowledge(self.trust, first, 1)
+                acknowledge(self.trust, first, 1, 7443)
             kms.assert_not_called()
 
         self.rotate_approvals("3")
@@ -648,7 +657,9 @@ class CustodyLedgerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "no registered serving target"):
                     qualified_policy(self.trust, wallet_trust, scope, seed)
 
-                rotation = {**registered, "mode": "rotate", "pcrs": {**registered["pcrs"], "PCR2": "ef" * 48}}
+                rotation = {**registered, "mode": "rotate", "pcrs": {**registered["pcrs"], "PCR2": "ef" * 48},
+                            "nextCustodians": rotated["authorization"]["manifest"]["custodians"],
+                            "nextRelay": self.trust["recoveryRelays"]["3"]}
                 register_target(self.trust, self.signed_subject(TARGET_APPROVAL, rotation))
                 with self.assertRaisesRegex(ValueError, "no registered serving target"):
                     qualified_policy(self.trust, wallet_trust, scope, seed)
@@ -709,6 +720,24 @@ class CustodyLedgerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "target approval deadline is too close"):
                 register_target(self.trust, approval)
             write.assert_not_called()
+
+    def test_target_registration_checks_domain_and_committed_receipt_before_writing(self):
+        publish(self.trust, self.sign(self.document(1)))
+        draft, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
+        publish(self.trust, self.sign(draft))
+        target = self.replacement_target()
+        for change, problem in (
+            ({"securityDomainId": "98" * 32}, "pinned custody domain"),
+            ({"network": "mainnet"}, "pinned custody domain"),
+            ({"receiptSha256": "98" * 32}, "committed custody receipt"),
+        ):
+            approval = self.signed_subject(TARGET_APPROVAL, {**target, **change})
+            with self.subTest(change=change), patch("deployment.write_once") as write:
+                with self.assertRaisesRegex(ValueError, problem):
+                    register_target(self.trust, approval)
+                write.assert_not_called()
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, target))
+        require_registered_target(self.trust, target)
 
     def test_target_registration_uses_the_roster_active_at_s3_publication(self):
         publish(self.trust, self.sign(self.document(1)))
@@ -876,20 +905,20 @@ class CustodyLedgerTests(unittest.TestCase):
         key_arn = member["acknowledgementKey"]["keyArn"]
         policy = acknowledgement_policy(member["custodianRole"], member["retirementRole"])
         with (patch("custody_ledger.kms", return_value={"Policy": json.dumps(policy)}) as kms,
-              patch("custody_ledger.open_share", side_effect=ValueError("recovery failed")) as open_share,
+              patch("custody_ledger.prove_share", side_effect=ValueError("recovery failed")) as prove_share,
               patch("custody_ledger.add_approval") as approval):
             with self.assertRaisesRegex(ValueError, "committed receipts"):
-                prove_recovery(self.trust, {**candidate, "manifest": {**marker, "replacementReceiptSha256": "ab" * 32}}, 2)
+                prove_recovery(self.trust, {**candidate, "manifest": {**marker, "replacementReceiptSha256": "ab" * 32}}, 2, 7443)
             with self.assertRaisesRegex(ValueError, "did not supply an attested bootstrap slot"):
-                prove_recovery(self.trust, candidate, 4)
+                prove_recovery(self.trust, candidate, 4, 7443)
             kms.assert_not_called()
             with self.assertRaisesRegex(ValueError, "recovery failed"):
-                prove_recovery(self.trust, candidate, 2)
-            open_share.assert_called_once_with(member, receipt, 2, before_decrypt=ANY)
+                prove_recovery(self.trust, candidate, 2, 7443)
+            prove_share.assert_called_once_with(self.trust, receipt, member, 2, 7443, ANY)
             approval.assert_not_called()
-            open_share.side_effect = None
+            prove_share.side_effect = None
             approval.return_value = {"signatures": [sign(RETIREMENT_RECOVERY, marker, key_arn)]}
-            proven = prove_recovery(self.trust, candidate, 2)
+            proven = prove_recovery(self.trust, candidate, 2, 7443)
             self.assertEqual(len(proven["recoveryProofs"]), 1)
             approval.assert_called_once_with([item["acknowledgementKey"] for item in roster], RETIREMENT_RECOVERY,
                                              {"manifest": marker, "signatures": []}, key_arn)

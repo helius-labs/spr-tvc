@@ -12,9 +12,11 @@ the connection keys while the owner keeps access to existing notes.
 
 **Separate custody, release approval and owner authorization.** Two of three
 custody approval signers approve the exact enclave that may receive shares.
-Any three of the six custodians can then provision it. Rotation keeps the seed
-and issues fresh shares to six fresh recovery keys. Custodian accounts may
-stay the same. A separate release quorum approves the enclaves wallets can
+Any three of the six custodians can then provision it. Both KMS decrypt
+responses are sealed to attested enclaves. The epoch relay verifies the
+share commitment and the pinned quorum's approval of the exact destination.
+Rotation keeps the seed and issues fresh shares to six fresh recovery keys.
+Custodian accounts may stay the same. A separate release quorum approves the enclaves wallets can
 use. The owner signs each decrypt batch and its response key. The host relays
 wrapped shares and encrypted operations.
 
@@ -33,7 +35,7 @@ policies cover the controls we need. The tradeoff is that we own the custody
 ceremony, rollout and recovery drills, and rely on AWS for attestation.
 
 The two-host AWS rehearsal reopened a synthetic note after stopping the old
-enclave. The 3-of-6 rotation rehearsal used one AWS account. Recovery across
+enclave. The 3-of-6 rotation rehearsal used one AWS account. The sealed relay flow across
 six independent accounts and a devnet send, claim and sweep across an upgrade
 remain to be verified.
 

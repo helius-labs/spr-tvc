@@ -12,12 +12,12 @@ from approval import (
     parse_json, read_json, require_kms_key, sha256,
 )
 from custody_ledger import (
-    LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_SPECS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
+    LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
     find_retirement, list_objects, load_epoch,
     load_retirement, read_registered_target, recovery_deadline, require_active_epoch, retirement_approval, retirement_object_name,
     require_publication_roster, retirement_bootstrap, retirement_recovery, sign_share_recovery, target_attestation, write_once,
 )
-from kms_policy import key_policy, target_context
+from kms_policy import RSA_KEYS, key_policy
 from relay import custody_recovery_policy
 
 
@@ -41,7 +41,7 @@ def require_recovery_quorum(custodians):
         key = member["recoveryKeyArn"]
         try:
             metadata = kms(key, "describe-key")["KeyMetadata"]
-            require_kms_key(metadata, key, RECOVERY_SPECS, "ENCRYPT_DECRYPT")
+            require_kms_key(metadata, key, RSA_KEYS, "ENCRYPT_DECRYPT")
             return True
         except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired):
             return False
@@ -110,7 +110,7 @@ def checked_scope(trust, manifest):
     return scope, receipt, custodians
 
 
-def prove_recovery(trust, document, index, relay_port=None):
+def prove_recovery(trust, document, index, relay_port):
     manifest = retirement_approval(document)["manifest"]
     _, receipt, custodians = checked_scope(trust, manifest)
     if index not in retirement_bootstrap(manifest["replacementBootstrap"]):
@@ -168,7 +168,7 @@ def key_inventory(trust, epoch, index):
     keys = {member["recoveryKeyArn"]: custody_recovery_policy(trust, member, epoch)}
     for target in registered_targets(trust, epoch, marker["receiptSha256"]):
         key = target["wrappingKeys"][index - 1]
-        expected = key_policy(target["hostRole"], custodian, admin, target["pcrs"], target_context(target, index))
+        expected = key_policy(target["hostRole"], custodian, admin, target["pcrs"])
         if keys.setdefault(key, expected) != expected:
             raise ValueError("one key appears with different retirement policies")
     return admin, keys
@@ -200,7 +200,7 @@ def main():
     prove = commands.add_parser("prove-recovery")
     prove.add_argument("candidate", type=Path)
     prove.add_argument("share", type=int, choices=range(1, 7))
-    prove.add_argument("--relay-port", type=int)
+    prove.add_argument("--relay-port", type=int, required=True)
     sign = commands.add_parser("sign")
     sign.add_argument("wallet_trust", type=Path)
     sign.add_argument("candidate", type=Path)

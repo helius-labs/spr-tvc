@@ -1,4 +1,4 @@
-"""Exchange ciphertext and Nitro evidence with the pinned devnet custody relay."""
+"""Exchange ciphertext and Nitro evidence with the pinned custody relay."""
 
 import base64
 import hashlib
@@ -9,21 +9,26 @@ import subprocess
 from pathlib import Path
 
 from approval import (
-    approval_keys, canonical, fields, hex_digest, key_result, kms, parse_json, read_document, require_kms_key, signing_sec1,
+    ROLE_ARN, approval_keys, arn, canonical, epoch_number, fields, hex_digest, key_result, kms, parse_json, read_document,
+    require_kms_key, signing_sec1,
 )
-from kms_policy import RSA_OAEP, boot_pins, recovery_policy, relay_recovery_policy
+from kms_policy import RSA_KEYS, RSA_OAEP, boot_pins, recovery_policy
 from provenance import verify as verify_build
 
 MAX_EVIDENCE = 16_384
 MAX_CMS = 6_144
-RSA_KEYS = {"RSA_2048", "RSA_3072", "RSA_4096"}
 
 
 def relay_pins(trust, epoch):
-    if trust["network"] != "devnet":
-        raise ValueError("the recovery relay trial requires devnet")
-    scope = trust["recoveryRelays"][epoch]
+    epoch_number(epoch)
+    scope = trust.get("recoveryRelays", {}).get(epoch)
+    if scope is None:
+        raise ValueError("custody epoch requires a pinned recovery relay")
     fields(scope, "hostRole", "pcrs")
+    arn(ROLE_ARN, scope["hostRole"])
+    fields(scope["pcrs"], "PCR0", "PCR1", "PCR2")
+    for pin in scope["pcrs"].values():
+        hex_digest(pin, 48)
     return scope
 
 
@@ -98,16 +103,26 @@ def sealed_rsa_key(arn, expected, **options):
 
 
 def custody_recovery_policy(trust, custodian, epoch):
-    role, admin = custodian["custodianRole"], custodian["retirementRole"]
-    if epoch not in trust.get("recoveryRelays", {}):
-        return recovery_policy(role, admin, epoch)
     scope = relay_pins(trust, epoch)
-    return relay_recovery_policy(role, admin, scope["hostRole"], scope["pcrs"], epoch)
+    return recovery_policy(custodian["custodianRole"], custodian["retirementRole"], scope["hostRole"], scope["pcrs"], epoch)
+
+
+def decrypt_recipient(key, ciphertext, evidence):
+    result = key_result(key, "decrypt", [
+        "--encryption-algorithm", RSA_OAEP, "--ciphertext-blob", ciphertext,
+        "--recipient", json.dumps({"KeyEncryptionAlgorithm": RSA_OAEP,
+                                   "AttestationDocument": base64.b64encode(evidence).decode()}),
+    ])
+    if result.get("Plaintext") not in (None, ""):
+        raise ValueError("unexpected plaintext in attested KMS response")
+    envelope = base64.b64decode(result["CiphertextForRecipient"], validate=True)
+    if not 1 <= len(envelope) <= MAX_CMS:
+        raise ValueError("invalid KMS recipient envelope length")
+    return envelope
 
 
 def recover_to_relay(trust, receipt, custodian, index, evidence, before_decrypt):
     epoch = receipt["custody"]["epoch"]
-    relay_pins(trust, epoch)  # Require a pinned relay. This path has no plaintext fallback.
     expected = custody_recovery_policy(trust, custodian, epoch)
     key = custodian["recoveryKeyArn"]
     spki = sealed_rsa_key(key, expected)
@@ -115,18 +130,7 @@ def recover_to_relay(trust, receipt, custodian, index, evidence, before_decrypt)
     if hashlib.sha256(spki).hexdigest() != package["recipientSha256"]:
         raise ValueError("recovery package does not match its RSA KMS key")
     before_decrypt()
-    result = key_result(key, "decrypt", [
-        "--encryption-algorithm", RSA_OAEP,
-        "--ciphertext-blob", base64.b64encode(bytes.fromhex(package["ciphertext"])).decode(),
-        "--recipient", json.dumps({"KeyEncryptionAlgorithm": RSA_OAEP,
-                                   "AttestationDocument": base64.b64encode(evidence).decode()}),
-    ])
-    if result.get("Plaintext") not in (None, ""):
-        raise ValueError("unexpected plaintext in attested KMS response")
-    ciphertext = base64.b64decode(result["CiphertextForRecipient"], validate=True)
-    if not 1 <= len(ciphertext) <= MAX_CMS:
-        raise ValueError("invalid KMS recipient envelope length")
-    return ciphertext
+    return decrypt_recipient(key, base64.b64encode(bytes.fromhex(package["ciphertext"])).decode(), evidence)
 
 
 def prove_share(trust, receipt, custodian, index, port, before_decrypt):

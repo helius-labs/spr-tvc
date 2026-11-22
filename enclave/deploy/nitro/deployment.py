@@ -14,17 +14,17 @@ from approval import (
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_acknowledgement_key, check_recovery_roster, load_epoch,
     read_registered_target, require_active_epoch, require_publication_roster, require_target_approval_window,
-    target_object_name, validate_roster, verify_target_approval, write_once,
+    target_object_name, validate_target, verify_target_approval, write_once,
 )
-from kms_policy import RSA_OAEP, SYMMETRIC, WRAPPING_ALGORITHMS, boot_pins, decrypt_conditions, key_policy, target_algorithm, target_context
+from kms_policy import boot_pins, decrypt_conditions, key_policy
 from provenance import MAIN_REF, verify as verify_build
+from relay import relay_pins
 
 def host_policy(manifest):
     pins = boot_pins(manifest["hostRole"], manifest["pcrs"])
     return {"Version": "2012-10-17", "Statement": [
-        {"Effect": "Allow", "Action": "kms:Decrypt", "Resource": key,
-         "Condition": decrypt_conditions(pins, target_context(manifest, index))}
-        for index, key in enumerate(manifest["wrappingKeys"], start=1)
+        {"Effect": "Allow", "Action": "kms:Decrypt", "Resource": manifest["wrappingKeys"],
+         "Condition": decrypt_conditions(pins)}
     ]}
 
 
@@ -36,6 +36,9 @@ def target_binding(manifest):
 def register_target(trust, document):
     manifest = verify_target_approval(trust, document)
     epoch = manifest["custodyEpoch"]
+    _, receipt, _ = load_epoch(trust, epoch)
+    if manifest["receiptSha256"] != sha256(receipt):
+        raise ValueError("target does not match the committed custody receipt")
     require_active_epoch(trust, epoch)
     require_target_approval_window(manifest, time.time(), remaining=LEDGER_WRITE_MARGIN_SECONDS)
     require_publication_roster(trust, manifest["approvalFromEpoch"])
@@ -58,12 +61,7 @@ def target(trust, document, receipt, custodians, build):
     roster = approval_roster(trust, at=now)
     fields(document, "manifest", "signatures")
     manifest = document["manifest"]
-    fields(manifest, "network", "securityDomainId", "custodyEpoch", "receiptSha256", "releaseId", "mode", "expiresAt",
-           "eifSha256", "configurationSha256", "executableSha256", "pcrs", "hostRole", "wrappingKeys",
-           "nextCustodians", "approvalFromEpoch", "wrappingAlgorithm")
-    rsa_target = target_algorithm(manifest) == RSA_OAEP
-    if rsa_target != (manifest["custodyEpoch"] in trust.get("recoveryRelays", {})):
-        raise ValueError("target wrapping algorithm does not match the epoch's pinned recovery path")
+    validate_target(trust, manifest)
     if manifest["approvalFromEpoch"] != roster["fromEpoch"]:
         raise ValueError("target requires the current approval roster")
     network, domain, release = manifest["network"], manifest["securityDomainId"], manifest["releaseId"]
@@ -93,12 +91,8 @@ def target(trust, document, receipt, custodians, build):
         fields(deployment, "mode", "custody")
         source = deployment["custody"]
     elif mode == "rotate":
-        next_epoch = str(int(manifest["custodyEpoch"]) + 1)
-        if rsa_target and next_epoch not in trust.get("recoveryRelays", {}):
-            raise ValueError("cannot rotate a relay epoch to plaintext recovery")
         fields(deployment, "mode", "previous", "recipientPublicKeys")
         source = deployment["previous"]
-        validate_roster(next_custodians, host)
         recipients = deployment["recipientPublicKeys"]
         if not isinstance(recipients, list) or len(recipients) != 6 or any(
             not isinstance(spki, str) or not re.fullmatch(r"(?:[0-9a-f]{2}){1,600}", spki) for spki in recipients
@@ -126,7 +120,7 @@ def target(trust, document, receipt, custodians, build):
     if not isinstance(wrapping_keys, list) or len(wrapping_keys) != 6:
         raise ValueError("target requires six custody slots")
     accounts, policies = {host_account}, []
-    for index, (member, wrapper) in enumerate(zip(custodians, wrapping_keys, strict=True), start=1):
+    for member, wrapper in zip(custodians, wrapping_keys, strict=True):
         recovery = member["recoveryKeyArn"]
         custodian, retirement = member["custodianRole"], member["retirementRole"]
         account = arn(KEY_ARN, recovery)[2]
@@ -134,7 +128,7 @@ def target(trust, document, receipt, custodians, build):
                 arn(ROLE_ARN, custodian)[1] != account or arn(ROLE_ARN, retirement)[1] != account):
             raise ValueError("each custody slot requires separate keys and roles in its own account")
         accounts.add(account)
-        policies.append(key_policy(host, custodian, retirement, pins, target_context(manifest, index)))
+        policies.append(key_policy(host, custodian, retirement, pins))
     return roster["keys"], policies, next_keys
 
 
@@ -148,7 +142,6 @@ def main():
     prepare.add_argument("wrapping_keys", type=Path)
     prepare.add_argument("expires_at", type=int)
     prepare.add_argument("--next-roster", type=Path)
-    prepare.add_argument("--wrapping-algorithm", choices=WRAPPING_ALGORITHMS, default=SYMMETRIC)
     sign = commands.add_parser("sign")
     sign.add_argument("target", type=Path)
     sign.add_argument("key")
@@ -179,8 +172,8 @@ def main():
                 "executableSha256": file_digest(args.build / "tvc_app"),
                 "configurationSha256": file_digest(config_path), "pcrs": {pcr: measured[pcr] for pcr in ("PCR0", "PCR1", "PCR2")},
                 "hostRole": args.host_role, "wrappingKeys": read_json(args.wrapping_keys),
-                "wrappingAlgorithm": args.wrapping_algorithm,
                 "nextCustodians": read_json(args.next_roster) if args.next_roster else None,
+                "nextRelay": relay_pins(trust, str(int(epoch) + 1)) if mode == "rotate" else None,
                 "approvalFromEpoch": approval_roster(trust)["fromEpoch"],
             }, "signatures": []}
             target(trust, document, receipt, custodians, args.build)
