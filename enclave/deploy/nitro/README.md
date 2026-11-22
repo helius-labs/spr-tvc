@@ -816,9 +816,14 @@ an emergency revocation can advance once both quorums authenticate each
 predecessor file. Mirror the new revocation to restore exact agreement.
 If one publisher is temporarily unreachable, publish the target-free
 revocation to the available bucket as the immediate successor to its
-authenticated head. When both return, publish that exact file to
-the remaining bucket. A lagging mirror can catch up directly to the primary's
-revocation while preserving its custody floor and recovery-only flag.
+authenticated head. When both return, publish that exact file to the
+remaining bucket if the predecessor matches. A lagging mirror can catch up
+directly to the primary's revocation while preserving its custody floor and
+recovery-only flag. If the mirror's revocation conflicts with the primary
+head, have both quorums sign a target-free policy at one above the higher
+revision. Use the primary's digest as the predecessor and retain the stricter
+custody floor and recovery-only flag. Publish it to the primary, then copy
+the exact file to the mirror.
 Wallets use the primary's signed policy when the mirror serves the same
 policy or its exact predecessor. A mirror ahead of the primary blocks new
 connections. Retirement requires agreement. Set alerts for mismatched heads

@@ -345,10 +345,13 @@ when both quorums authenticate the same predecessor policy in each bucket.
 If the peer is temporarily unreachable, either publisher can record a
 current, target-free revocation signed by both quorums against its immediate
 authenticated predecessor. When the primary returns after a mirror-first
-revocation, publish the exact same signed file to the primary. When the
-mirror returns behind a primary revocation, it can copy that exact file from
-an older authenticated head if the custody floor and recovery-only flag
-remain monotonic. Only this witnessed revocation can skip a mirror revision.
+revocation, publish the same signed file if the primary still has its
+predecessor. If the mirror's revocation conflicts with the primary head,
+both quorums sign a new target-free policy. Its sequence is one above the
+higher head and its predecessor digest matches the primary. It preserves the
+custody floor and recovery-only flag of both heads. Publish it to the primary
+and mirror the exact file. A lagging mirror can also skip a revision to copy
+a witnessed primary revocation while preserving those bounds.
 The mirror can repair its copy of the same revision if the primary's file
 retains every release and custody signer already on the mirror. Changing
 signatures on the primary requires a new revision. Wallets require a current

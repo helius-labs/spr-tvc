@@ -328,10 +328,10 @@ export function requireNitroTrustTransition(from: NitroTrust, to: NitroTrust, se
       (from.recoveryOnly && !to.recoveryOnly)) invalid();
 }
 
-/** Check the predecessor before the conditional S3 write. Revocation catch-up requires a witnessed primary. */
+/** Check the local predecessor before writing. A primary witness must already match the exact candidate file. */
 export function nextNitroPublication(
   next: VerifiedPolicy, previous: string | undefined, trust: NitroTrust, previousTrust = trust,
-  mode: "contiguous" | "revocation-catchup" = "contiguous",
+  revocationWitness?: "primary" | { readonly mirror: string },
 ): boolean {
   if (previous === undefined) {
     if (next.policy.sequence !== "1") invalid();
@@ -342,9 +342,28 @@ export function nextNitroPublication(
   const priorTrust = encodeLowerHex(nitroPolicySigningDigest(policy)) === next.checkpoint.digest ? trust : previousTrust;
   const prior = verifySignedPolicy(previous, priorTrust);
   if (prior.checkpoint.digest === next.checkpoint.digest) return false;
-  if (mode === "revocation-catchup" && next.policy.action === "revoke" &&
-      decodeDecimalU64(next.policy.sequence) > decodeDecimalU64(prior.policy.sequence) + 1n &&
-      followsCheckpoint(prior.checkpoint, revision(next))) return true;
+  if (revocationWitness !== undefined && next.policy.action === "revoke") {
+    const nextSequence = decodeDecimalU64(next.policy.sequence);
+    const priorSequence = decodeDecimalU64(prior.policy.sequence);
+    if (revocationWitness === "primary") {
+      const gap = nextSequence - priorSequence;
+      if ((gap > 1n || (gap === 1n && prior.policy.action === "revoke")) &&
+          preservesPolicyFloor(prior.checkpoint, next.checkpoint)) return true;
+    } else {
+      const mirror = verifySignedPolicy(revocationWitness.mirror, previousTrust);
+      if (mirror.checkpoint.digest !== prior.checkpoint.digest) {
+        const mirrorSequence = decodeDecimalU64(mirror.policy.sequence);
+        const latestSequence = mirrorSequence > priorSequence ? mirrorSequence : priorSequence;
+        const onlyLagging = mirrorSequence < priorSequence &&
+          (prior.policy.action !== "revoke" || prior.policy.previousPolicyDigest === mirror.checkpoint.digest);
+        if (mirror.policy.action !== "revoke" || onlyLagging ||
+            nextSequence !== latestSequence + 1n || next.policy.previousPolicyDigest !== prior.checkpoint.digest ||
+            !preservesPolicyFloor(prior.checkpoint, next.checkpoint) ||
+            !preservesPolicyFloor(mirror.checkpoint, next.checkpoint)) invalid();
+        return true;
+      }
+    }
+  }
   requireSuccessor(prior, next);
   return true;
 }
@@ -357,15 +376,19 @@ export function requireRetirementPolicy(
       !policy.targets.some(target => target.custodyEpoch === replacementEpoch && target.custodyDigest === custodyDigest)) invalid();
 }
 
+function preservesPolicyFloor(current: NitroPolicyCheckpoint, next: NitroPolicyCheckpoint): boolean {
+  return (!current.recoveryOnly || next.recoveryOnly) &&
+    decodeDecimalU64(next.minimumCustodyEpoch) >= decodeDecimalU64(current.minimumCustodyEpoch);
+}
+
 function followsCheckpoint(
   current: NitroPolicyCheckpoint | undefined, { checkpoint: next, previousPolicyDigest }: NitroPolicyRevision,
 ): boolean {
   if (typeof next.recoveryOnly !== "boolean") return false;
   if (!current) return true;
-  if (typeof current.recoveryOnly !== "boolean" || (current.recoveryOnly && !next.recoveryOnly)) return false;
+  if (typeof current.recoveryOnly !== "boolean" || !preservesPolicyFloor(current, next)) return false;
   const nextSequence = decodeDecimalU64(next.sequence);
   const currentSequence = decodeDecimalU64(current.sequence);
-  if (decodeDecimalU64(next.minimumCustodyEpoch) < decodeDecimalU64(current.minimumCustodyEpoch)) return false;
   if (nextSequence === currentSequence) {
     return next.digest === current.digest && next.minimumCustodyEpoch === current.minimumCustodyEpoch &&
       next.recoveryOnly === current.recoveryOnly;

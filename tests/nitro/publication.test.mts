@@ -716,6 +716,90 @@ test("the mirror rechecks the primary before writing", async context => {
   assert.equal(calls, 2);
 });
 
+for (const [primarySequence, mirrorSequence] of [[2, 2], [2, 4], [4, 2]] as const) test(
+  `reconciles conflicting publication heads at primary ${primarySequence} and mirror ${mirrorSequence}`, async context => {
+  const [primary, mirror] = trust.publications;
+  const prior = { ...first, sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest };
+  const active: NitroPolicy = { ...prior, action: "activate", targets: [target] };
+  let fork = { ...prior, recoveryOnly: true, minimumCustodyEpoch: "2" };
+  const heads = new Map([[primary.bucket, signed(active)], [mirror.bucket, signed(first)]]);
+  let partitioned = true;
+  context.mock.method(globalThis, "fetch", async (url: URL) => {
+    const bucket = url.hostname.split(".")[0]!;
+    if (partitioned) return new Response(null, { status: 503 });
+    return new Response(heads.get(bucket));
+  });
+  const writes: string[] = [];
+  const options = awsOnly(async args => {
+    const bucket = args[args.indexOf("--bucket") + 1]!;
+    if (args.includes("get-object")) {
+      await writeFile(args.at(-1)!, heads.get(bucket)!);
+      return { stdout: JSON.stringify({ ETag: '"head"' }) };
+    }
+    assert.ok(args.includes("put-object"));
+    assert.equal(args[args.indexOf("--if-match") + 1], '"head"');
+    writes.push(bucket);
+    heads.set(bucket, await readFile(args.at(-1)!, "utf8"));
+    return { stdout: "{}" };
+  });
+
+  await publish(trust, mirror.bucket, signed(fork), options);
+  for (let sequence = 3; sequence <= mirrorSequence; sequence++) {
+    fork = { ...fork, sequence: String(sequence), previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(fork)) };
+    await publish(trust, mirror.bucket, signed(fork), options);
+  }
+  const split = signed(fork);
+  let primaryHead = active;
+  for (let sequence = 3; sequence <= primarySequence; sequence++) {
+    primaryHead = {
+      ...prior, sequence: String(sequence), previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(primaryHead)),
+    };
+    await publish(trust, primary.bucket, signed(primaryHead), options);
+  }
+  const outageWrites = [
+    ...Array<string>(mirrorSequence - 1).fill(mirror.bucket), ...Array<string>(primarySequence - 2).fill(primary.bucket),
+  ];
+  const nextSequence = Math.max(primarySequence, mirrorSequence) + 1;
+  const revocation: NitroPolicy = {
+    ...fork, sequence: String(nextSequence), previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(primaryHead)),
+  };
+  const reconciled = signed(revocation);
+  if (nextSequence > primarySequence + 1) {
+    await assert.rejects(publish(trust, primary.bucket, reconciled, options), /ReleasePolicyInvalid/);
+  }
+  partitioned = false;
+  const readBoth = () => verifyPublishedNitroPolicy([heads.get(primary.bucket)!, heads.get(mirror.bucket)!], trust, BigInt(now));
+  assert.throws(readBoth, /ReleasePolicyInvalid/);
+  await assert.rejects(publish(trust, mirror.bucket, reconciled, options), /exact signed policy/);
+  const reactivation = signed({
+    ...revocation, sequence: String(primarySequence + 1), action: "activate", targets: [{ ...target, custodyEpoch: "2" }],
+  });
+  await assert.rejects(publish(trust, primary.bucket, reactivation, { ...options, custodyTrust: "custody.json" }),
+    /same signed predecessor/);
+  for (const invalid of [
+    signed({ ...revocation, minimumCustodyEpoch: "1" }),
+    signed({ ...revocation, recoveryOnly: false }),
+    signed({ ...revocation, sequence: String(nextSequence + 1) }),
+    signed({ ...revocation, previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(fork)) }),
+    signed(revocation, [0], [0, 1]),
+    signed(revocation, [0, 1], [0]),
+  ]) {
+    await assert.rejects(publish(trust, primary.bucket, invalid, options), /ReleasePolicyInvalid/);
+  }
+  assert.deepEqual(writes, outageWrites);
+  assert.equal(heads.get(primary.bucket), signed(primaryHead));
+  assert.equal(heads.get(mirror.bucket), split);
+  heads.set(mirror.bucket, signed(fork, [0], [0, 1]));
+  await assert.rejects(publish(trust, primary.bucket, reconciled, options), /ReleasePolicyInvalid/);
+  assert.deepEqual(writes, outageWrites);
+  heads.set(mirror.bucket, split);
+  await publish(trust, primary.bucket, reconciled, options);
+  assert.throws(readBoth, /ReleasePolicyInvalid/);
+  await publish(trust, mirror.bucket, reconciled, options);
+  assert.deepEqual(writes, [...outageWrites, primary.bucket, mirror.bucket]);
+  assert.deepEqual(readBoth().policy, revocation);
+});
+
 test("publishes a rollover revision with both quorums and mirrors its exact signatures", async context => {
   const [primary, mirror] = trust.publications;
   const heads = new Map([[primary.bucket, signed(first)], [mirror.bucket, signed(first)]]);

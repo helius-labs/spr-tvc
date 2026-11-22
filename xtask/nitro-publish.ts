@@ -324,8 +324,9 @@ export async function publish(
       head = await readHead().catch(() => undefined);
     }
     if (head?.text === text) return;
-    const publicationMode = primary === undefined ? "contiguous" : "revocation-catchup";
-    if (!nextNitroPublication(verified, head?.text, trust, emergencyFrom, publicationMode)) {
+    const mirror = !isSecond && head && policy.action === "revoke" ? await readPeer(true) : undefined;
+    const revocationWitness = primary !== undefined ? "primary" : mirror !== undefined && mirror !== text ? { mirror } : undefined;
+    if (!nextNitroPublication(verified, head?.text, trust, emergencyFrom, revocationWitness)) {
       if (!isSecond || !head) throw new Error("use a new revision to change published signatures");
       const previous = parseStrictJson<Pick<typeof verified, "signatures" | "custodySignatures">>(head.text);
       for (const scope of ["signatures", "custodySignatures"] as const) {
@@ -336,11 +337,9 @@ export async function publish(
       }
     }
     async function checkMirror() {
-      if (isSecond || !head) return;
-      const peer = await readPeer(policy.action === "revoke");
-      if (peer === undefined) return;
+      if (!activatesPrimary || !head) return;
+      const peer = await readPeer();
       if (peer === head.text || peer === text) return;
-      if (policy.action === "revoke" && nextNitroPublication(verified, peer, trust, emergencyFrom)) return;
       throw new Error("the mirror must hold the same signed predecessor before the primary advances");
     }
     await checkMirror();
