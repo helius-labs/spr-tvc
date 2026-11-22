@@ -163,12 +163,13 @@ export function expectBalance(stage: string, balance: AssetBalance, amount: bigi
 export function sendAndConfirmFactory(
   client: Client,
   ...signers: TransactionPartialSigner[]
-): (transaction: Transaction) => Promise<ConfirmedTransaction> {
+): (transaction: Transaction, beforeBroadcast?: () => Promise<void>) => Promise<ConfirmedTransaction> {
   const send = sendTransactionWithoutConfirmingFactory({ rpc: client.solanaRpc });
-  return async (transaction) => {
+  return async (transaction, beforeBroadcast) => {
     const signed = await signTransactionWithSigners(signers, transaction);
     assertIsFullySignedTransaction(signed);
     assertIsTransactionWithinSizeLimit(signed);
+    await beforeBroadcast?.();
     await send(signed, { commitment: client.commitment });
     const signature = getSignatureFromTransaction(signed);
     return { signature, slot: await client.confirmTransaction(signature) };

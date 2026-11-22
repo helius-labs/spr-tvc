@@ -1,11 +1,45 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 
-import { setup } from "../setup.js";
+import {
+  blockhash, compileTransaction, createTransactionMessage, generateKeyPairSigner,
+  setTransactionMessageFeePayer, setTransactionMessageLifetimeUsingBlockhash,
+} from "@solana/kit";
+import { createSprClient } from "@heliuslabs/spr";
+import { sendAndConfirmFactory, setup } from "../setup.js";
 
 const MAINNET = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 const DEVNET = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 const LOCALNET = "11111111111111111111111111111111";
+
+test("a policy change while the wallet signs prevents RPC broadcast", async (t) => {
+  const client = await createSprClient({
+    solanaRpcUrl: "http://127.0.0.1:8899/",
+    indexerUrl: "http://127.0.0.1:8080/",
+    proverUrl: "http://127.0.0.1:8081/",
+  });
+  const payer = await generateKeyPairSigner();
+  const message = setTransactionMessageFeePayer(payer.address, createTransactionMessage({ version: 0 }));
+  const transaction = compileTransaction(setTransactionMessageLifetimeUsingBlockhash({
+    blockhash: blockhash(LOCALNET), lastValidBlockHeight: 1n,
+  }, message));
+  const fetch = t.mock.method(globalThis, "fetch", () => assert.fail("unexpected RPC broadcast"));
+  let signed = false;
+  const send = sendAndConfirmFactory(client, {
+    address: payer.address,
+    async signTransactions(transactions) {
+      const signatures = await payer.signTransactions(transactions);
+      signed = true;
+      return signatures;
+    },
+  });
+
+  await assert.rejects(send(transaction, async () => {
+    assert.equal(signed, true);
+    throw new Error("payment policy changed");
+  }), /payment policy changed/);
+  assert.equal(fetch.mock.callCount(), 0);
+});
 
 function setEnv(t: TestContext, values: Record<string, string | undefined>): void {
   for (const [name, value] of Object.entries(values)) {

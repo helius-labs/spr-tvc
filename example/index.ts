@@ -45,7 +45,8 @@ async function main(): Promise<void> {
     const depositTx = await send(deposit);
     await syncWallet({ client: zolana, wallet, keys, config: { requireSlot: depositTx.slot } });
 
-    const recipientAddress = await resolvePaymentAddress({ rpc: zolana, owner: recipient.address, service });
+    const payment = { rpc: zolana, owner: recipient.address, service };
+    const recipientAddress = await resolvePaymentAddress(payment);
     const requireOriginalPaymentPolicy = await nitro?.prepareTransfer();
     const transfer = await buildTransferTransaction({
       client: zolana,
@@ -55,8 +56,13 @@ async function main(): Promise<void> {
       recipient: recipientAddress,
       amount: AMOUNT,
     });
-    await requireOriginalPaymentPolicy?.();
-    const transferTx = await send(transfer);
+    const transferTx = await send(transfer, async () => {
+      const current = await resolvePaymentAddress(payment);
+      if (!Buffer.from(current.toBytes()).equals(recipientAddress.toBytes())) {
+        throw new Error("the recipient payment keys changed before broadcast");
+      }
+      await requireOriginalPaymentPolicy?.();
+    });
     const confirmedAt = BigInt(Date.now());
     if (nitro) console.log(`transfer recipient=${recipient.address} tx=${transferTx.signature} awaiting ${nitro.seedChanged ? "the seed cutover" : "the replacement custody epoch"}`);
     const replacement = await nitro?.afterTransfer(recipientAddress, confirmedAt);
@@ -101,8 +107,7 @@ async function main(): Promise<void> {
       recipient: localnet ? recipient.address : ownKeys.address(),
       amount: AMOUNT,
     });
-    await replacement?.requireSamePolicy();
-    const sweepTx = await sweepSend(sweep);
+    const sweepTx = await sweepSend(sweep, replacement?.requireSamePolicy);
     const own = new Wallet({ identity: ownKeys.address() });
     await syncWallet({
       client: zolana,

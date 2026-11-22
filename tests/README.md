@@ -32,16 +32,17 @@ pnpm --filter spr-tvc-typescript-client-example example
 
 Use absolute file paths and a new checkpoint file for each rehearsal. The
 example checks that both buckets serve the policy it accepted for the original
-epoch after resolving the address and again before sending. Wait for the
+epoch after resolving the address. It rechecks the recipient and signed policy
+after signing, before sending. Wait for the
 confirmed transfer, stop the old replica, then publish the replacement custody
 floor to both buckets. The example waits up to five minutes for both buckets
 to serve the accepted policy with targets only at the requested replacement
 epoch. It checks that the
 recipient's viewing and nullifier public keys match their pre-rotation
-values and recovers the transferred amount. Before proving and sending the
-sweep, it checks that both published heads and its local checkpoint still
-match the policy used to qualify the replacement. The recipient remains
-unregistered and holds no public SOL.
+values and recovers the transferred amount. Before proving the sweep and again
+after signing it, the example checks that both published heads and its local
+checkpoint still match the policy used to qualify the replacement. The
+recipient remains unregistered and holds no public SOL.
 
 To tie the claim to the post-retirement cold boot, set
 `NITRO_RETIREMENT_REPORT` to a new absolute path. Run the canary and
