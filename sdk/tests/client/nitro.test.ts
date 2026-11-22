@@ -10,11 +10,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { verifyNativeNitroEvidence } from "../../src/attestation/boot-proof.js";
 import { indexedDbNitroPolicyStore } from "../../src/attestation/nitro-checkpoint.js";
 import { nitroCustodySigningDigest, nitroPolicySigningDigest, type NitroPolicy, type NitroPolicyCheckpoint, type NitroPolicyUpdate, type NitroTrust } from "../../src/attestation/nitro-policy.js";
-import { probeNitroTarget } from "../../src/client/nitro-probe.js";
+import { createDecryptionCanary, probeNitroTarget } from "../../src/client/nitro-probe.js";
 import { createNitroDecryptionService } from "../../src/client/nitro.js";
 import { signP256Message, signP256Prehash } from "../../src/crypto/p256.js";
 import { qosDecrypt, qosEncrypt } from "../../src/crypto/qos.js";
 import { TVC_APP_PROOF_SCHEME } from "../../src/protocol/constants.js";
+import type { DecryptItem } from "../../src/protocol/types.js";
 import { decryptMessage, SERVICE_PROOF_TYPE, serviceRequestDigest, type ServiceRequest, type ServiceResult } from "../../src/protocol/decryption.js";
 import { resultDigest } from "../../src/protocol/digest.js";
 import { encodeLowerHex, requireHex } from "../../src/protocol/hex.js";
@@ -138,6 +139,12 @@ function signedReply(request: ServiceRequest, boot: readonly Uint8Array[], resul
   } });
 }
 
+function openCanaryItem(viewing: ViewingKey, item: DecryptItem) {
+  return viewing.decryptUtxo(requireHex(item.ciphertext),
+    X25519PublicKey.fromBytes(requireHex(item.ephemeral_viewing_public_key, 33)),
+    requireHex(item.salt, 16) as Bytes16, Number(item.slot_index));
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.mocked(verifyNativeNitroEvidence).mockReset();
@@ -207,9 +214,7 @@ describe("operator replica probe", () => {
       expect(operation.items).toHaveLength(1);
       const item = operation.items[0]!;
       expect(item.label).toBe("Transfer");
-      const plaintext = viewing.decryptUtxo(requireHex(item.ciphertext),
-        X25519PublicKey.fromBytes(requireHex(item.ephemeral_viewing_public_key, 33)),
-        requireHex(item.salt, 16) as Bytes16, Number(item.slot_index));
+      const plaintext = openCanaryItem(viewing, item);
       if (fault === "unavailable decrypt") return new Response(null, { status: 503 });
       if (fault === "wrong plaintext") plaintext[0] = plaintext[0]! ^ 1;
       return signedReply(request, fault === "different boot" ? replacementBoot : secrets, {
@@ -232,6 +237,81 @@ describe("operator replica probe", () => {
     }
   });
 
+  it.each(["agree", "viewing key", "nullifier key", "offline"])(
+    "checks one note across independently attested replicas when they %s", async outcome => {
+      await initializePoseidon();
+      const { policy } = JSON.parse(twoReplicas()) as { policy: NitroPolicy };
+      const [first, second] = policy.targets;
+      const viewing = ViewingKey.generate();
+      const differentViewing = ViewingKey.generate();
+      const secret = new Uint8Array(31).fill(9) as Bytes31;
+      const otherSecret = new Uint8Array(31).fill(10) as Bytes31;
+      const nullifier = NullifierKey.fromSecret(secret);
+      const differentNullifier = NullifierKey.fromSecret(otherSecret);
+      const owners: string[] = [];
+      const requests: { items: readonly DecryptItem[]; id: string; responseKey: string }[] = [];
+      const fetch = vi.fn(async (url: URL, init: RequestInit) => {
+        const isSecond = url.origin === new URL(second!.endpoint).origin;
+        const boot = isSecond ? replacementBoot : secrets;
+        if (url.pathname === "/v1/nitro/attestation") {
+          return isSecond && outcome === "offline" ? new Response(null, { status: 503 })
+            : attestedDiscovery(undefined, boot);
+        }
+        const request = openRequest(init, boot);
+        if (request.operation.type === "PublicKeys") {
+          owners.push(request.operation.address);
+          const view = isSecond && outcome === "viewing key" ? differentViewing : viewing;
+          const nf = isSecond && outcome === "nullifier key" ? differentNullifier : nullifier;
+          return signedReply(request, boot, {
+            type: "PublicKeys", viewing_public_key: encodeLowerHex(view.publicKey().toBytes()),
+            nullifier_public_key: encodeLowerHex(nf.publicKey()),
+          });
+        }
+        requests.push({
+          items: request.operation.items, id: request.request_id, responseKey: request.client_response_public_key,
+        });
+        expect(request.operation.signer).toBe(owners[0]);
+        return signedReply(request, boot, {
+          type: "Decrypt", nullifier_secret: encodeLowerHex(secret),
+          plaintexts: request.operation.items.map(item => encodeLowerHex(openCanaryItem(viewing, item))),
+        });
+      });
+      vi.stubGlobal("fetch", fetch);
+      const canary = createDecryptionCanary();
+      try {
+        await probeNitroTarget(first!, trust, { canary });
+        const replacementProbe = probeNitroTarget(second!, trust, { canary });
+        if (outcome === "offline") {
+          await expect(replacementProbe).rejects.toThrow("BootProofUnverified");
+          expect(() => canary.requireAgreement()).not.toThrow();
+          expect(requests).toHaveLength(1);
+          return;
+        }
+        if (outcome === "agree") {
+          await replacementProbe;
+          expect(() => canary.requireAgreement()).not.toThrow();
+          expect(requests).toHaveLength(2);
+          const [original, duplicate] = requests;
+          expect(duplicate!.items).toEqual(original!.items);
+          expect(duplicate!.id).not.toBe(original!.id);
+          expect(duplicate!.responseKey).not.toBe(original!.responseKey);
+        } else {
+          await expect(replacementProbe).rejects.toThrow("canary recipient keys differ");
+          expect(() => canary.requireAgreement()).toThrow("canary recipient keys differ");
+          expect(requests).toHaveLength(1);
+        }
+        expect(owners).toEqual([owners[0], owners[0]]);
+      } finally {
+        viewing.destroy();
+        differentViewing.destroy();
+        nullifier.destroy();
+        differentNullifier.destroy();
+        secret.fill(0);
+        otherSecret.fill(0);
+      }
+    },
+  );
+
   it.each(["PublicKeys", "Decrypt"])("honors the operator deadline during %s", async stalled => {
     const { policy } = JSON.parse(signedPolicy()) as { policy: NitroPolicy };
     const controller = new AbortController();
@@ -246,7 +326,7 @@ describe("operator replica probe", () => {
         return new Promise<Response>(() => {});
       });
     vi.stubGlobal("fetch", fetch);
-    await expect(probeNitroTarget(policy.targets[0]!, trust, controller.signal)).rejects.toThrow("operator deadline expired");
+    await expect(probeNitroTarget(policy.targets[0]!, trust, { signal: controller.signal })).rejects.toThrow("operator deadline expired");
     expect(fetch).toHaveBeenCalledTimes(stalled === "PublicKeys" ? 2 : 3);
   });
 

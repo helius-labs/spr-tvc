@@ -9,6 +9,7 @@ import {
   type NitroPolicy, type NitroTrust,
 } from "../../sdk/src/attestation/nitro-policy.js";
 import { signP256Prehash } from "../../sdk/src/crypto/p256.js";
+import type { DecryptionCanary } from "../../sdk/src/client/nitro-probe.js";
 import { encodeLowerHex } from "../../sdk/src/protocol/hex.js";
 import { bucketPolicy, publish, restorePublication, verifyDistributionPins } from "../../xtask/nitro-publish.js";
 
@@ -315,11 +316,13 @@ test("requires a successful operation probe on every target before writing an ac
   const text = signed(activate);
   const pinned = pins(activate);
   const checked: string[] = [];
+  const canaries: DecryptionCanary[] = [];
   let failing = true;
   let writes = 0;
-  const probe = async (replica: typeof target, supplied: NitroTrust) => {
+  const probe = async (replica: typeof target, supplied: NitroTrust, { canary }: { canary: DecryptionCanary }) => {
     assert.equal(supplied, pinned);
     checked.push(replica.endpoint);
+    canaries.push(canary);
     if (replica.endpoint === other.endpoint && failing) throw new Error("operation probe failed");
     return freshProbe();
   };
@@ -338,6 +341,9 @@ test("requires a successful operation probe on every target before writing an ac
   await publish(pinned, trust.publications[0].bucket, text, options);
   assert.equal(writes, 1);
   assert.deepEqual(checked, [target.endpoint, other.endpoint, target.endpoint, other.endpoint]);
+  assert.equal(canaries[0], canaries[1]);
+  assert.equal(canaries[2], canaries[3]);
+  assert.notEqual(canaries[0], canaries[2]);
 });
 
 test("activation rejects an incompatible peer or invalid custody state observed after the probe", async context => {

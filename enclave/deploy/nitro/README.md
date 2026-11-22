@@ -764,10 +764,11 @@ sequence, policy digest, custody floor and recovery mode atomically once
 it verifies both signed heads, before contacting a replica. An activation
 still requires fresh replica attestation before use. A revocation has an
 empty target list. The primary publisher checks the predecessor and attests
-each activation target. It uses `/v1/operations` to look up a fresh synthetic
-owner and sends an owner-signed `Decrypt` request for one encrypted note.
-Both replies must come from the attested boot. The probe checks the recovered
-plaintext and nullifier key without using a funded wallet. The publisher
+each activation target. It uses `/v1/operations` to look up the same fresh
+synthetic owner on each target and sends an owner-signed `Decrypt` request
+for the same encrypted note. Each boot must return the same recipient keys
+and open that note. The probe checks the recovered plaintext and nullifier key
+without using a funded wallet. The publisher
 rereads the peer and custody ledger after the probes, checks the active
 roster and cutover window, and writes against its original ETag. New primary
 policies need more than 30 seconds before expiry to submit the write.

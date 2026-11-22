@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 
 import localTestkit from "../../../tests/fixtures/local-testkit.json";
-import { checkDecryptionCanary } from "../../src/client/nitro-probe.js";
+import { createDecryptionCanary } from "../../src/client/nitro-probe.js";
 import { fetchLiveServiceInfo } from "../../src/connection/connect.js";
 import { createDefaultTransport } from "../../src/connection/http.js";
 
@@ -12,7 +12,7 @@ it.skipIf(!localEndpoint)("opens the operator canary against the Rust service", 
   const signal = AbortSignal.timeout(7_000);
   const nowMs = () => BigInt(Date.now());
   const info = await fetchLiveServiceInfo(endpoint, signal);
-  await checkDecryptionCanary({
+  await createDecryptionCanary().check({
     backend: { endpoint },
     info,
     transport: createDefaultTransport(),

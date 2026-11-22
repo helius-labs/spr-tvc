@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { requireRetirementPolicy, validateNitroTrust, type NitroTrust } from "../sdk/src/attestation/nitro-policy.js";
 import { readPublishedNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
-import { probeNitroTarget } from "../sdk/src/client/nitro-probe.js";
+import { createDecryptionCanary, probeNitroTarget } from "../sdk/src/client/nitro-probe.js";
 import { remainingReleasePolicyMs } from "../sdk/src/connection/operations.js";
 import { MAX_CLOCK_SKEW_MS } from "../sdk/src/protocol/constants.js";
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
@@ -21,14 +21,16 @@ async function main() {
   const before = await readPublishedNitroPolicy(trust, signal);
   requireRetirementPolicy(before, epoch, custodyDigest);
   const candidates = before.policy.targets.filter(target => target.custodyEpoch === epoch && target.custodyDigest === custodyDigest);
+  const canary = createDecryptionCanary();
   const targets = await Promise.allSettled(candidates.map(async target => {
-    const { info, bootstrapSlots, bootedAtMs, window } = await probeNitroTarget(target, trust, signal);
+    const { info, bootstrapSlots, bootedAtMs, window } = await probeNitroTarget(target, trust, { signal, canary });
     return {
       target, window,
       bootstrap: { bootKeyId: info.quorum_key_id, bootedAtMs, slots: [...bootstrapSlots].sort((a, b) => a - b) },
     };
   }));
   signal.throwIfAborted();
+  canary.requireAgreement();
   const after = await readPublishedNitroPolicy(trust, signal);
   requireRetirementPolicy(after, epoch, custodyDigest);
   if (before.text !== after.text) throw new Error("signed wallet policy changed during qualification");

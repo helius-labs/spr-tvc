@@ -12,7 +12,7 @@ import {
   type NitroPolicy, type NitroPolicyCheckpoint, type NitroTarget, type NitroTrust,
 } from "../sdk/src/attestation/nitro-policy.js";
 import { readNitroPolicy, readPublishedNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
-import { probeNitroTarget } from "../sdk/src/client/nitro-probe.js";
+import { createDecryptionCanary, probeNitroTarget, type DecryptionCanary } from "../sdk/src/client/nitro-probe.js";
 import { remainingReleasePolicyMs } from "../sdk/src/connection/operations.js";
 import { decodeDecimalU64 } from "../sdk/src/protocol/decimal.js";
 import { DecryptionServiceError } from "../sdk/src/protocol/error.js";
@@ -38,13 +38,20 @@ type PublicationOptions = {
   nextTrust?: NitroTrust;
   emergencyFrom?: NitroTrust;
   run?: Run;
-  probe?: (target: NitroTarget, trust: NitroTrust) => Promise<ReplicaProbe>;
+  probe?: (target: NitroTarget, trust: NitroTrust, options: { canary: DecryptionCanary }) => Promise<ReplicaProbe>;
 };
 
 type ReplicaProbe = {
   readonly bootstrapSlots: readonly [number, number, number];
   readonly window: Awaited<ReturnType<typeof probeNitroTarget>>["window"];
 };
+
+function probeActivationTargets(
+  targets: readonly NitroTarget[], trust: NitroTrust, probe: NonNullable<PublicationOptions["probe"]>,
+): Promise<ReplicaProbe[]> {
+  const canary = createDecryptionCanary();
+  return Promise.all(targets.map(target => probe(target, trust, { canary })));
+}
 
 function requireFreshProbes(probes: readonly ReplicaProbe[], now: bigint, margin = 0): void {
   if (probes.some(({ window }) => !(remainingReleasePolicyMs(window, now) > margin))) {
@@ -308,7 +315,7 @@ export async function publish(
       const inspection = { sourceProfile, replicaProfile };
       const cutover = await checkActivationRoster(candidate, custodyTrust, custodyPins, run, inspection);
       requireCustodyWriteWindow(cutover, BigInt(Date.now()));
-      probes = await Promise.all(policy.targets.map(target => probe(target, trust)));
+      probes = await probeActivationTargets(policy.targets, trust, probe);
       await checkMirror();
       [confirmedCutover] = await Promise.all([
         checkActivationRoster(candidate, custodyTrust, custodyPins, run, inspection, policy.recoveryOnly ? undefined : probes),
@@ -494,7 +501,7 @@ export async function verifyDistributionPins(
     await writeFile(candidate, published.text, { mode: 0o600, flag: "wx" });
     const inspection = { sourceProfile, replicaProfile };
     await checkActivationRoster(candidate, custodyTrust, trust, run, inspection);
-    const probes = await Promise.all(published.policy.targets.map(target => probe(target, trust)));
+    const probes = await probeActivationTargets(published.policy.targets, trust, probe);
     const [nextCutover] = await Promise.all([
       checkActivationRoster(candidate, custodyTrust, trust, run, inspection, published.policy.recoveryOnly ? undefined : probes),
       checkPublicationBuckets(bucketChecks, run),
