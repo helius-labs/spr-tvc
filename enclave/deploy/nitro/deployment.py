@@ -12,7 +12,8 @@ from approval import (
     fields, file_digest, hex_digest, read_json, sha256,
 )
 from custody_ledger import (
-    check_acknowledgement_key, check_recovery_key, list_objects, load_epoch, read_object, validate_roster, write_once,
+    check_acknowledgement_key, check_recovery_key, list_objects, load_epoch, load_retirement, read_object,
+    retirement_object_name, validate_roster, write_once,
 )
 from kms_policy import context, key_policy
 from provenance import MAIN_REF, verify as verify_build
@@ -41,14 +42,13 @@ def target_object_name(manifest):
     return f"targets/{manifest['custodyEpoch']}/{sha256(manifest)}.json"
 
 
-def retirement_object_name(epoch):
-    epoch_number(epoch)
-    return f"retired/{epoch}.json"
-
-
 def require_active_epoch(trust, epoch):
     name = retirement_object_name(epoch)
     if name in list_objects(trust, name):
+        try:
+            load_retirement(trust, epoch)
+        except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError) as error:
+            raise ValueError(f"cannot verify retirement record for epoch {epoch}: {error}") from error
         raise ValueError("custody epoch is retired")
 
 

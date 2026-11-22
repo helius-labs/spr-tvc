@@ -27,18 +27,25 @@ owns share 1.
 
 ```sh
 nitro=enclave/deploy/nitro
-python3 "$nitro/custody_ledger.py" trust.json policy "$publisher_role" "$reader_role" > ledger-policy.json
+python3 "$nitro/custody_ledger.py" trust.json policy "$ledger_admin_role" "$publisher_role" "$reader_role" > ledger-policy.json
+python3 "$nitro/custody_ledger.py" trust.json reader-policy > ledger-reader-policy.json
 python3 "$nitro/custody_ledger.py" trust.json recovery-policy "$custodian_role" "$retirement_role" 1 > recovery-policy.json
 python3 "$nitro/custody_ledger.py" trust.json acknowledgement-policy "$custodian_role" "$retirement_role" > ack-policy.json
 ```
 
-Supply every ledger reader role to `policy`. Install it on a private,
-versioned bucket without expiration, replication or alternate writers. Restrict
-bucket administration independently of the enclave host and publisher. The
-policy requires conditional creation and denies object deletion. The publisher
-can make progress unavailable, for example by failing to publish. Readers
-verify two pinned approvals and six custodian acknowledgements even when
-reading directly from S3. Install each custodian's two policies at key creation
+Supply every ledger reader role to `policy`, and attach the generated read
+policy to each cross-account reader role in its own account. Install the bucket
+policy on a private versioned bucket with bucket-owner-enforced ownership,
+public access blocked, and lifecycle expiration and replication off. The bucket
+policy restricts administration to a separate role and permits the publisher
+to create objects conditionally. Protect account root and keep the publisher
+and host unable to assume the administrator role. Readers verify two pinned
+approvals and six custodian acknowledgements even when reading directly from
+S3. If a canonical record fails verification, halt the affected operation and
+compare the record with the current trust schedule and signed archives. The
+independent bucket administrator investigates and preserves the versions and
+audit logs before any repair. A valid retirement record permanently closes its
+epoch. Install each custodian's two policies at key creation
 with `--bypass-policy-lockout-safety-check`. Only the custodian role can decrypt
 with the recovery key or sign with the acknowledgement key. The recovery
 policy is sealed under its assigned epoch. Operators use six fresh recovery
@@ -197,9 +204,10 @@ keys for the next epoch. Governance reviewers need `kms:DescribeKey` and
 
 Use two versioned S3 publication buckets in independently administered AWS
 accounts, separate from the private custody ledger. Give each bucket a publisher
-role in its own account. Keep the publisher role, bucket administration and role
+role and a separate administrator role in its own account. Keep all role
 assumption paths independent across the two accounts and separate from the host
-and ingress. Allow public reads of exactly the policy object. Disable lifecycle
+and ingress. The bucket policy bars publishers from changing its controls.
+Allow public reads of exactly the policy object. Disable lifecycle
 deletion and configure CORS for wallet origins to `GET` with
 `x-amz-expected-bucket-owner`. The wallet reads both buckets directly.
 Pass absolute file paths to commands run with `pnpm --dir example`.
@@ -231,7 +239,7 @@ approaching expiration.
 
 ```sh
 cargo xtask nitro-sign policy.json --key "$signing_key_arn" --public-key "$signer_sec1_hex"
-pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" --bucket-policy "$publisher_role"
+pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" --bucket-policy "$bucket_admin_role" "$publisher_role"
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" "$signed_policy"
 ```
 

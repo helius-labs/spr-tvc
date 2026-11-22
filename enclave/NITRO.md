@@ -11,7 +11,7 @@ SPR senders can encrypt an output for a wallet that has no registry entry. The s
 | Custody approval signers | Two of three pinned KMS keys approve the custody record or authorize release of shares to one measured target. The custody ledger admits one record per epoch. |
 | Release signers | At least two distinct pinned P-256 keys authorize a policy. Use two of three separately controlled KMS signing keys. Each signed target names an HTTPS route, release ID, executable SHA-256 and PCR0–PCR3. |
 | EC2 parent and ingress | Can choose when and where to forward requests, and can deny service. See note ciphertexts, wrapped shares, TLS metadata, timings and sizes. Never receive note plaintext or a private key via the protocol. |
-| AWS Nitro, KMS and S3 | Nitro isolates enclave memory and signs evidence. KMS enforces key policies. S3 serializes conditional creation of custody records in a separately administered bucket. |
+| AWS Nitro, KMS and S3 | Nitro isolates enclave memory and signs evidence. KMS enforces key policies. S3 serializes conditional ledger writes. The bucket policies separate object publishers from bucket administration. Account root and the separate bucket administrator remain trusted. |
 | Policy publishers | Each controls one pinned S3 bucket in a separate AWS account. They publish the same signed release policy independently. Either can interrupt service. Once both publish a policy, replay by one publisher cannot make a wallet use an earlier policy. |
 | Wallet integration | Distributes both publication pins, network, security domain, note seed commitment, authority public keys, threshold, minimum release sequence and minimum custody epoch. Stores the highest accepted sequence, policy digest and custody floor in durable atomic state. |
 
@@ -57,13 +57,14 @@ compare its KMS policies to the approved role, context and measurements before
 opening a share. A custodian workstation temporarily sees its one share. KMS
 rewraps it for the target. The host sees ciphertext during this flow.
 
-The wallet publisher raises the custody floor after the replacement attests.
+The wallet publishers raise the custody floor after the replacement attests.
 Custody signers then verify the published floor and the exact replacement
-receipt before closing the old epoch. The ledger blocks new wraps and lists
-all registered wrapping keys. The retirement roles make those keys and the
-old recovery keys unusable. Drain the old enclaves before collecting the
-retirement evidence. An already reconstructed seed remains in the memory of
-its serving enclave until that enclave stops.
+receipt before closing the old epoch. Operators verify the retirement record
+against both committed receipts before producing the key inventory. An
+unverifiable record at the retirement key halts new wraps and requires ledger
+recovery. The retirement roles make the inventoried keys unusable. Drain the
+old enclaves before collecting retirement evidence. A reconstructed seed
+remains in its serving enclave's memory until that enclave stops.
 
 A serving EIF measures its network, release, security domain and current
 custody record. Both serving and rotation use the same bootstrap:

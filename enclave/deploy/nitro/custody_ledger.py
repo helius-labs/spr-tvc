@@ -10,7 +10,7 @@ from pathlib import Path
 
 from approval import (
     KEY_ARN, ROLE_ARN, MAX_DOCUMENT_BYTES, add_approval, approval_keys, arn, aws, canonical, check_approvals,
-    fields, file_digest, get_signing_key, hex_digest, key_result, kms, parse_json, read_json, require_kms_key,
+    epoch_number, fields, file_digest, get_signing_key, hex_digest, key_result, kms, parse_json, read_json, require_kms_key,
     sha256, signing_key,
 )
 from kms_policy import acknowledgement_policy, context, recovery_policy, validate_custodian_roles
@@ -18,6 +18,7 @@ from provenance import MAIN_REF, verify as verify_build
 
 LABEL = "custody-epoch"
 ACKNOWLEDGEMENT = "custodian-acknowledgement"
+RETIREMENT = "custody-retirement"
 RECOVERY_SPECS = {"RSA_2048", "RSA_3072", "RSA_4096"}
 
 
@@ -87,6 +88,11 @@ def ledger_object(trust, epoch):
     return f"{epoch}.json"
 
 
+def retirement_object_name(epoch):
+    epoch_number(epoch)
+    return f"retired/{epoch}.json"
+
+
 def storage(trust, operation, args):
     ledger, _ = ledger_prefix(trust)
     return aws(ledger["region"], "s3api", operation, [
@@ -133,14 +139,38 @@ def list_objects(trust, name):
         args = [*args[:5], "--continuation-token", page["NextContinuationToken"]]
 
 
-def ledger_policy(trust, publisher, readers):
+def ledger_reader_policy(trust):
     ledger, prefix = ledger_prefix(trust)
+    bucket = f"arn:aws:s3:::{ledger['bucket']}"
+    return {"Version": "2012-10-17", "Statement": [
+        {"Sid": "ReadCustodyRecords", "Effect": "Allow", "Action": "s3:GetObject", "Resource": f"{bucket}/{prefix}*"},
+        {"Sid": "ListCustodyTargetsAndRetirement", "Effect": "Allow", "Action": "s3:ListBucket", "Resource": bucket,
+         "Condition": {"StringLike": {"s3:prefix": [f"{prefix}targets/*", f"{prefix}retired/*"]}}},
+    ]}
+
+
+def ledger_policy(trust, administrator, publisher, readers):
+    read, listing = ledger_reader_policy(trust)["Statement"]
+    ledger = trust["ledger"]
     if arn(ROLE_ARN, publisher)[1] != ledger["account"]:
         raise ValueError("publisher must be a dedicated role in the custody ledger account")
+    if arn(ROLE_ARN, administrator)[1] != ledger["account"] or administrator in {publisher, *readers}:
+        raise ValueError("bucket administrator must be a separate role in the custody ledger account")
     for reader in readers:
         arn(ROLE_ARN, reader)
-    resource = f"arn:aws:s3:::{ledger['bucket']}/{prefix}*"
+    resource = read["Resource"]
+    principals = {"AWS": sorted(set([publisher, *readers]))}
     return {"Version": "2012-10-17", "Statement": [
+        {"Sid": "RestrictBucketAdministration", "Effect": "Deny", "Principal": "*",
+         "Action": ["s3:DeleteBucket", "s3:DeleteBucketPolicy", "s3:PutBucketPolicy", "s3:PutBucketVersioning",
+                    "s3:PutLifecycleConfiguration", "s3:PutReplicationConfiguration", "s3:PutBucketOwnershipControls",
+                    "s3:PutBucketAcl", "s3:PutBucketPublicAccessBlock", "s3:PutEncryptionConfiguration",
+                    "s3:PutBucketObjectLockConfiguration"],
+         "Resource": listing["Resource"], "Condition": {"StringNotEquals": {"aws:PrincipalArn": administrator}}},
+        {"Sid": "RestrictRecordReads", "Effect": "Deny", "Principal": "*", "Action": "s3:GetObject*", "Resource": resource,
+         "Condition": {"StringNotEquals": {"aws:PrincipalArn": [administrator, *principals["AWS"]]}}},
+        {"Sid": "RestrictBucketListing", "Effect": "Deny", "Principal": "*", "Action": "s3:ListBucket*",
+         "Resource": listing["Resource"], "Condition": {"StringNotEquals": {"aws:PrincipalArn": [administrator, *principals["AWS"]]}}},
         {"Sid": "RequireWriteOnce", "Effect": "Deny", "Principal": "*", "Action": "s3:PutObject",
          "Resource": resource, "Condition": {"StringNotEquals": {"s3:if-none-match": "*"}}},
         {"Sid": "RestrictPublisher", "Effect": "Deny", "Principal": "*", "Action": "s3:PutObject",
@@ -149,12 +179,8 @@ def ledger_policy(trust, publisher, readers):
          "Action": ["s3:DeleteObject", "s3:DeleteObjectVersion", "s3:ReplicateObject", "s3:ReplicateDelete"]},
         {"Sid": "AllowPublisher", "Effect": "Allow", "Principal": {"AWS": publisher},
          "Action": "s3:PutObject", "Resource": resource},
-        {"Sid": "AllowReaders", "Effect": "Allow", "Principal": {"AWS": sorted(set([publisher, *readers]))},
-         "Action": "s3:GetObject", "Resource": resource},
-        {"Sid": "ListCustodyTargetsAndRetirement", "Effect": "Allow",
-         "Principal": {"AWS": sorted(set([publisher, *readers]))}, "Action": "s3:ListBucket",
-         "Resource": f"arn:aws:s3:::{ledger['bucket']}",
-         "Condition": {"StringLike": {"s3:prefix": [f"{prefix}targets/*", f"{prefix}retired/*"]}}},
+        {**read, "Principal": principals},
+        {**listing, "Principal": principals},
     ]}
 
 
@@ -175,6 +201,35 @@ def check_commit(trust, document, receipt, custodians):
     check_approvals(approval_keys(trust, receipt["custody"]["epoch"]), LABEL, document["authorization"])
     check_approvals([custodian["acknowledgementKey"] for custodian in custodians],
                     ACKNOWLEDGEMENT, acknowledgements(document), minimum=6)
+
+
+def verify_retirement(trust, document, epoch):
+    fields(document, "manifest", "signatures")
+    manifest = document["manifest"]
+    fields(manifest, "network", "securityDomainId", "epoch", "receiptSha256", "replacementEpoch",
+           "replacementReceiptSha256", "replacementCustodyDigest", "approvalFromEpoch", "walletPolicyDigest")
+    if ((manifest["network"], manifest["securityDomainId"], manifest["epoch"]) !=
+            (trust["network"], trust["securityDomainId"], epoch) or
+            epoch_number(manifest["replacementEpoch"]) <= epoch_number(epoch)):
+        raise ValueError("retirement record does not match the requested epoch")
+    for field in ("receiptSha256", "replacementReceiptSha256", "replacementCustodyDigest", "walletPolicyDigest"):
+        hex_digest(manifest[field])
+    start = manifest["approvalFromEpoch"]
+    if not any(entry["fromEpoch"] == start for entry in trust["approvalKeys"]):
+        raise ValueError("unknown retirement approval roster")
+    check_approvals(approval_keys(trust, start), RETIREMENT, document)
+    return manifest
+
+
+def load_retirement(trust, epoch):
+    marker = verify_retirement(trust, read_object(trust, retirement_object_name(epoch)), epoch)
+    _, previous, custodians = load_epoch(trust, epoch)
+    _, replacement, _ = load_epoch(trust, marker["replacementEpoch"])
+    if (marker["receiptSha256"] != sha256(previous) or marker["replacementReceiptSha256"] != sha256(replacement) or
+            marker["replacementCustodyDigest"] != sha256(replacement["custody"]) or
+            previous["custody"]["noteSeedCommitment"] != replacement["custody"]["noteSeedCommitment"]):
+        raise ValueError("retirement receipts do not match the ledger")
+    return marker, custodians
 
 
 def verify_archive(trust, document, expected_digest):
@@ -335,8 +390,10 @@ def main():
     verify.add_argument("archive", type=Path)
     verify.add_argument("sha256")
     policy = commands.add_parser("policy")
+    policy.add_argument("administrator")
     policy.add_argument("publisher")
     policy.add_argument("readers", nargs="+")
+    commands.add_parser("reader-policy")
     recovery = commands.add_parser("recovery-policy")
     recovery.add_argument("custodian_role")
     recovery.add_argument("retirement_role")
@@ -348,7 +405,10 @@ def main():
     try:
         trust = read_json(args.trust)
         if args.command == "policy":
-            print(canonical(ledger_policy(trust, args.publisher, args.readers)).decode())
+            print(canonical(ledger_policy(trust, args.administrator, args.publisher, args.readers)).decode())
+            return
+        if args.command == "reader-policy":
+            print(canonical(ledger_reader_policy(trust)).decode())
             return
         if args.command == "recovery-policy":
             print(canonical(recovery_policy(args.custodian_role, args.retirement_role, args.epoch)).decode())

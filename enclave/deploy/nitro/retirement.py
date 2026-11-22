@@ -5,14 +5,14 @@ import subprocess
 from pathlib import Path
 
 from approval import (
-    add_approval, approval_keys, canonical, check_approvals, epoch_number, fields, file_digest, hex_digest, kms,
+    add_approval, approval_keys, canonical, check_approvals, epoch_number, file_digest, hex_digest, kms,
     parse_json, read_json, sha256,
 )
-from custody_ledger import list_objects, load_epoch, read_object, write_once
-from deployment import require_active_epoch, retirement_object_name, target_object_name, verify_target_approval
+from custody_ledger import (
+    RETIREMENT, list_objects, load_epoch, load_retirement, read_object, retirement_object_name, verify_retirement, write_once,
+)
+from deployment import require_active_epoch, target_object_name, verify_target_approval
 from kms_policy import context, key_policy, recovery_policy
-
-LABEL = "custody-retirement"
 
 
 def retirement_scope(trust, epoch, replacement):
@@ -51,36 +51,18 @@ def qualified_manifest(trust, wallet_trust, epoch, replacement):
 def commit_retirement(trust, wallet_trust, document):
     manifest = document["manifest"]
     keys = approval_keys(trust)
-    check_approvals(keys, LABEL, document)
+    check_approvals(keys, RETIREMENT, document)
     qualified = qualified_manifest(trust, wallet_trust, manifest["epoch"], manifest["replacementEpoch"])
     if manifest != qualified:
         raise ValueError("retirement no longer matches the qualified replacement and wallet policy")
     write_once(trust, retirement_object_name(manifest["epoch"]), document,
-               lambda stored: verified_retirement(trust, stored, manifest["epoch"]))
-
-
-def verified_retirement(trust, document, epoch):
-    manifest = document["manifest"]
-    fields(manifest, "network", "securityDomainId", "epoch", "receiptSha256", "replacementEpoch",
-           "replacementReceiptSha256", "replacementCustodyDigest", "approvalFromEpoch", "walletPolicyDigest")
-    if ((manifest["network"], manifest["securityDomainId"], manifest["epoch"]) !=
-            (trust["network"], trust["securityDomainId"], epoch) or
-            epoch_number(manifest["replacementEpoch"]) <= epoch_number(epoch)):
-        raise ValueError("retirement record does not match the requested epoch")
-    start = manifest["approvalFromEpoch"]
-    if not any(entry["fromEpoch"] == start for entry in trust["approvalKeys"]):
-        raise ValueError("unknown retirement approval roster")
-    check_approvals(approval_keys(trust, start), LABEL, document)
-    return manifest
+               lambda stored: verify_retirement(trust, stored, manifest["epoch"]))
 
 
 def key_inventory(trust, epoch, index):
     if index not in range(1, 7):
         raise ValueError("invalid custody slot")
-    marker = verified_retirement(trust, read_object(trust, retirement_object_name(epoch)), epoch)
-    _, receipt, custodians = load_epoch(trust, epoch)
-    if sha256(receipt) != marker["receiptSha256"]:
-        raise ValueError("retirement receipt does not match the ledger")
+    marker, custodians = load_retirement(trust, epoch)
     member = custodians[index - 1]
     custodian, admin = member["custodianRole"], member["retirementRole"]
     keys = {member["recoveryKeyArn"]: recovery_policy(custodian, admin, epoch)}
@@ -148,7 +130,7 @@ def main():
             manifest = document["manifest"]
             if manifest != qualified_manifest(trust, args.wallet_trust, manifest["epoch"], manifest["replacementEpoch"]):
                 raise ValueError("retirement no longer matches the qualified replacement and wallet policy")
-            result = add_approval(approval_keys(trust), LABEL, document, args.key)
+            result = add_approval(approval_keys(trust), RETIREMENT, document, args.key)
         print(canonical(result).decode())
     except (OSError, ValueError, KeyError, TypeError, IndexError, subprocess.SubprocessError) as error:
         raise SystemExit(str(error)) from None

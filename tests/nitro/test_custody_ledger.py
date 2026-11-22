@@ -9,14 +9,18 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import approval_keys, sha256
-from custody_ledger import ACKNOWLEDGEMENT, LABEL, acknowledge, ledger_policy, load_epoch, publish, record, verify_archive, write_once
-from deployment import LABEL as TARGET, register_target, require_registered_target
+from custody_ledger import (
+    ACKNOWLEDGEMENT, LABEL, RETIREMENT, acknowledge, ledger_policy, ledger_reader_policy, load_epoch,
+    publish, record, verify_archive, write_once,
+)
+from deployment import LABEL as TARGET, register_target, require_active_epoch, require_registered_target
 from kms_policy import acknowledgement_policy
 from nitro_fixtures import DOMAIN, HOST, key, pin, schedule, sign
-from retirement import LABEL as RETIRE, commit_retirement, inspect_keys, key_inventory, qualified_manifest
+from retirement import commit_retirement, inspect_keys, key_inventory, qualified_manifest
 
 READ_ROLE = "arn:aws:iam::000000000001:role/custodian"
 PUBLISHER = "arn:aws:iam::000000000008:role/publisher"
+ADMIN = "arn:aws:iam::000000000008:role/ledger-admin"
 
 
 class CustodyLedgerTests(unittest.TestCase):
@@ -169,15 +173,32 @@ class CustodyLedgerTests(unittest.TestCase):
         approval.assert_not_called()
 
     def test_bucket_policy_enforces_single_publisher_and_conditional_creation(self):
-        statements = {item["Sid"]: item for item in ledger_policy(self.trust, PUBLISHER, [READ_ROLE])["Statement"]}
+        statements = {item["Sid"]: item for item in ledger_policy(self.trust, ADMIN, PUBLISHER, [READ_ROLE])["Statement"]}
         self.assertEqual(statements["RequireWriteOnce"]["Condition"], {"StringNotEquals": {"s3:if-none-match": "*"}})
         self.assertEqual(statements["RequireWriteOnce"]["Principal"], "*")
         self.assertEqual(statements["RestrictPublisher"]["Condition"], {"StringNotEquals": {"aws:PrincipalArn": PUBLISHER}})
         self.assertIn("s3:DeleteObject", statements["PreserveCustodyHistory"]["Action"])
-        self.assertEqual(statements["AllowReaders"]["Principal"], {"AWS": [READ_ROLE, PUBLISHER]})
-        self.assertEqual(statements["ListCustodyTargetsAndRetirement"]["Condition"], {
+        readers = ledger_reader_policy(self.trust)["Statement"]
+        for statement in readers:
+            self.assertEqual(statements[statement["Sid"]], {**statement, "Principal": {"AWS": [READ_ROLE, PUBLISHER]}})
+        self.assertEqual(readers[0]["Resource"], f"arn:aws:s3:::custody-journal/spr-custody/devnet/{DOMAIN}/*")
+        self.assertEqual(readers[1]["Condition"], {
             "StringLike": {"s3:prefix": [f"spr-custody/devnet/{DOMAIN}/{part}/*" for part in ("targets", "retired")]},
         })
+        guard = statements["RestrictBucketAdministration"]
+        self.assertEqual(guard["Resource"], "arn:aws:s3:::custody-journal")
+        self.assertEqual(guard["Effect"], "Deny")
+        self.assertEqual(guard["Principal"], "*")
+        self.assertEqual(guard["Condition"], {"StringNotEquals": {"aws:PrincipalArn": ADMIN}})
+        self.assertTrue({"s3:PutBucketPolicy", "s3:PutBucketVersioning", "s3:PutLifecycleConfiguration",
+                         "s3:PutReplicationConfiguration"}.issubset(guard["Action"]))
+        for name in ("RestrictRecordReads", "RestrictBucketListing"):
+            self.assertEqual(statements[name]["Condition"], {
+                "StringNotEquals": {"aws:PrincipalArn": [ADMIN, READ_ROLE, PUBLISHER]},
+            })
+        for administrator, readers in ((PUBLISHER, [READ_ROLE]), (READ_ROLE, [READ_ROLE]), (ADMIN, [ADMIN])):
+            with self.assertRaisesRegex(ValueError, "administrator must be a separate role"):
+                ledger_policy(self.trust, administrator, PUBLISHER, readers)
 
     def signed_subject(self, label, manifest):
         return {"manifest": manifest, "signatures": [sign(label, manifest, member["keyArn"])
@@ -202,7 +223,7 @@ class CustodyLedgerTests(unittest.TestCase):
         require_registered_target(self.trust, target)
 
         marker = qualified_manifest(self.trust, None, "1", "2")
-        retired = self.signed_subject(RETIRE, marker)
+        retired = self.signed_subject(RETIREMENT, marker)
         qualification.return_value = "cd" * 32
         with self.assertRaisesRegex(ValueError, "no longer matches"):
             commit_retirement(self.trust, None, retired)
@@ -239,3 +260,31 @@ class CustodyLedgerTests(unittest.TestCase):
                 inspect_keys(self.trust, "1", 1, True)
             states[key(1, 11)] = "Disabled"
             self.assertEqual({row["state"] for row in inspect_keys(self.trust, "1", 1, True)["keys"]}, set(states.values()))
+
+    @patch("retirement.qualified_policy", return_value="fe" * 32)
+    def test_unverified_retirement_halts_share_release_without_authorizing_key_retirement(self, _):
+        publish(self.trust, self.sign(self.document(1)))
+        _, old, _ = load_epoch(self.trust, "1")
+        self.trust["approvalKeys"].append(schedule("2", 9))
+        publish(self.trust, self.sign(self.document(2, old, variant="fe")))
+        path = f"spr-custody/devnet/{DOMAIN}/retired/1.json"
+        self.objects[path] = b"{}"
+        with self.assertRaisesRegex(ValueError, "cannot verify retirement record"):
+            require_active_epoch(self.trust, "1")
+        with patch("retirement.kms") as kms, self.assertRaises(ValueError):
+            inspect_keys(self.trust, "1", 1, False)
+        kms.assert_not_called()
+
+        marker = qualified_manifest(self.trust, None, "1", "2")
+        wrong = self.signed_subject(RETIREMENT, {**marker, "replacementReceiptSha256": "ab" * 32})
+        self.objects[path] = json.dumps(wrong).encode()
+        with patch("retirement.kms") as kms, self.assertRaisesRegex(ValueError, "retirement receipts do not match the ledger"):
+            inspect_keys(self.trust, "1", 1, False)
+        kms.assert_not_called()
+
+        self.objects[path] = json.dumps(self.signed_subject(RETIREMENT, marker)).encode()
+        stale = {**self.trust, "approvalKeys": self.trust["approvalKeys"][:1]}
+        with self.assertRaisesRegex(ValueError, "cannot verify.*unknown retirement approval roster"):
+            require_active_epoch(stale, "1")
+        with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
+            require_active_epoch(self.trust, "1")

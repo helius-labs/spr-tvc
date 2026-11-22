@@ -39,13 +39,21 @@ function publicationFor(trust: NitroTrust, bucket: string) {
   return nitroPublication(trust, publication);
 }
 
-function bucketPolicy(trust: NitroTrust, name: string, publisher: string) {
+export function bucketPolicy(trust: NitroTrust, name: string, administrator: string, publisher: string) {
   const { bucket, account, key } = publicationFor(trust, name);
-  if (!new RegExp(`^arn:aws:iam::${account}:role/[A-Za-z0-9+=,.@_/-]+$`).test(publisher)) {
-    throw new Error("use a dedicated publisher role in the publication account");
+  const ownerRole = new RegExp(`^arn:aws:iam::${account}:role/[A-Za-z0-9+=,.@_/-]+$`);
+  if (!ownerRole.test(publisher) || !ownerRole.test(administrator) || publisher === administrator) {
+    throw new Error("use separate administrator and publisher roles in the publication account");
   }
-  const resource = `arn:aws:s3:::${bucket}/${key}`;
+  const bucketArn = `arn:aws:s3:::${bucket}`;
+  const resource = `${bucketArn}/${key}`;
   return { Version: "2012-10-17", Statement: [
+    { Sid: "RestrictBucketAdministration", Effect: "Deny", Principal: "*", Resource: bucketArn,
+      Action: ["s3:DeleteBucket", "s3:DeleteBucketPolicy", "s3:PutBucketPolicy", "s3:PutBucketVersioning",
+        "s3:PutLifecycleConfiguration", "s3:PutReplicationConfiguration", "s3:PutBucketOwnershipControls",
+        "s3:PutBucketAcl", "s3:PutBucketPublicAccessBlock", "s3:PutEncryptionConfiguration",
+        "s3:PutBucketObjectLockConfiguration", "s3:PutBucketCORS"],
+      Condition: { StringNotEquals: { "aws:PrincipalArn": administrator } } },
     { Sid: "ReadPublishedPolicy", Effect: "Allow", Principal: "*", Action: "s3:GetObject", Resource: resource },
     { Sid: "PublishPolicy", Effect: "Allow", Principal: { AWS: publisher }, Action: "s3:PutObject", Resource: resource },
     { Sid: "RestrictPublisher", Effect: "Deny", Principal: "*", Action: "s3:PutObject", Resource: resource,
@@ -108,19 +116,19 @@ export async function publish(
 }
 
 async function main() {
-  const [trustPath, bucket, policyPath, option, previousTrustPath, ...extra] = process.argv.slice(2);
+  const [trustPath, bucket, policyPath, firstOption, secondOption, ...extra] = process.argv.slice(2);
   const renderPolicy = policyPath === "--bucket-policy";
-  if (!trustPath || !bucket || !policyPath || extra.length || (renderPolicy ? !option || previousTrustPath :
-      option !== undefined && (option !== "--previous-trust" || !previousTrustPath))) {
-    throw new Error("usage: nitro-publish.ts <wallet-trust.json> <bucket> <signed-policy.json> [--previous-trust <old-trust.json>] | <wallet-trust.json> <bucket> --bucket-policy <publisher-role>");
+  if (!trustPath || !bucket || !policyPath || extra.length || (renderPolicy ? !firstOption || !secondOption :
+      firstOption !== undefined && (firstOption !== "--previous-trust" || !secondOption))) {
+    throw new Error("usage: nitro-publish.ts <wallet-trust.json> <bucket> <signed-policy.json> [--previous-trust <old-trust.json>] | <wallet-trust.json> <bucket> --bucket-policy <administrator-role> <publisher-role>");
   }
   const trust = parseStrictJson<NitroTrust>(await readFile(trustPath, "utf8"));
   validateNitroTrust(trust);
-  if (renderPolicy && option) {
-    console.log(JSON.stringify(bucketPolicy(trust, bucket, option), null, 2));
+  if (renderPolicy && firstOption && secondOption) {
+    console.log(JSON.stringify(bucketPolicy(trust, bucket, firstOption, secondOption), null, 2));
     return;
   }
-  const previousTrust = previousTrustPath ? parseStrictJson<NitroTrust>(await readFile(previousTrustPath, "utf8")) : trust;
+  const previousTrust = secondOption ? parseStrictJson<NitroTrust>(await readFile(secondOption, "utf8")) : trust;
   validateNitroTrust(previousTrust);
   await publish(trust, bucket, await readPolicy(policyPath), aws, previousTrust);
 }

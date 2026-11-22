@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { nitroPolicySigningDigest, type NitroPolicy, type NitroTrust } from "../../sdk/src/attestation/nitro-policy.js";
 import { signP256Prehash } from "../../sdk/src/crypto/p256.js";
 import { encodeLowerHex } from "../../sdk/src/protocol/hex.js";
-import { publish } from "../../xtask/nitro-publish.js";
+import { bucketPolicy, publish } from "../../xtask/nitro-publish.js";
 
 const secrets = [1, 2].map(byte => Buffer.alloc(32, byte));
 const trust: NitroTrust = {
@@ -119,4 +119,22 @@ test("checks the second bucket holds the predecessor before advancing the first 
     await writeFile(args.at(-1)!, signed(second));
     return { stdout: JSON.stringify({ ETag: '"second"' }) };
   }), /ReleasePolicyInvalid/);
+});
+
+test("each wallet policy bucket separates control-plane administration from publishing", () => {
+  for (const { bucket, account } of trust.publications) {
+    const administrator = `arn:aws:iam::${account}:role/bucket-admin`;
+    const publisher = `arn:aws:iam::${account}:role/publisher`;
+    const { Statement: statements } = bucketPolicy(trust, bucket, administrator, publisher);
+    const guard = statements.find(statement => statement.Sid === "RestrictBucketAdministration");
+    assert.equal(guard?.Effect, "Deny");
+    assert.equal(guard.Principal, "*");
+    assert.equal(guard.Resource, `arn:aws:s3:::${bucket}`);
+    assert.deepEqual(guard.Condition, { StringNotEquals: { "aws:PrincipalArn": administrator } });
+    for (const action of ["s3:PutBucketPolicy", "s3:DeleteBucketPolicy", "s3:PutLifecycleConfiguration", "s3:PutBucketCORS"]) {
+      assert.ok(guard.Action.includes(action));
+    }
+    assert.throws(() => bucketPolicy(trust, bucket, publisher, publisher), /separate administrator and publisher/);
+    assert.throws(() => bucketPolicy(trust, bucket, administrator.replace(account, "000000000003"), publisher), /publication account/);
+  }
 });
