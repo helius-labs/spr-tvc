@@ -525,6 +525,9 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
     replica = retirement_replica(trust, replica_profile)
     document, custodians, published_at = load_retirement(trust, epoch)
     marker = document["manifest"]
+    _, retired, _ = load_epoch(trust, epoch)
+    if sha256(retired) != marker["receiptSha256"]:
+        raise ValueError("retired custody receipt changed during verification")
     qualification = retirement_qualification(trust, document, published_at, requalification)
     _, replacement, replacement_custodians = load_epoch(trust, qualification["replacementEpoch"])
 
@@ -575,8 +578,19 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
     require_active_epoch(trust, qualification["replacementEpoch"])
     require_current_requalification(trust, qualification)
     boot.require_current()
-    report = {"retirementSha256": sha256(document), "retirementObservedAtMs": str(after_ms),
-              "replacement": boot.evidence, "slots": slots, "terminatedParents": parents}
+    report = {
+        "retirementSha256": sha256(document), "retirementObservedAtMs": str(after_ms),
+        "retired": {
+            "network": marker["network"], "securityDomainId": marker["securityDomainId"],
+            "custodyEpoch": epoch, "custodyDigest": sha256(retired["custody"]),
+            "publishedAtMs": str(int(published_at * 1000)),
+        },
+        "replacement": {
+            **boot.evidence, "custodyEpoch": qualification["replacementEpoch"],
+            "custodyDigest": qualification["replacementCustodyDigest"],
+        },
+        "slots": slots, "terminatedParents": parents,
+    }
     if requalification is not None:
         report["requalificationSha256"] = sha256(requalification)
     return report

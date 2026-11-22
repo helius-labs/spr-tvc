@@ -5,20 +5,44 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { NitroPolicy, NitroTarget, NitroPolicyCheckpoint } from "@heliuslabs/spr-decryption-service/nitro";
-import { acceptedReplacementPolicy, checkpointStore, nativeDevnet, parseRetirementReport, requireOriginalPolicy } from "../nitro.js";
+import {
+  acceptedReplacementPolicy, checkpointStore, nativeDevnet, parseRetirementReport,
+  requireCurrentPolicy, requireOriginalPolicy, requireRetirementPolicy,
+} from "../nitro.js";
 
-test("the retirement canary accepts a later boot with three distinct slots after the transfer", () => {
+test("the retirement canary binds the transfer to the exact retired custody record and a later boot", () => {
+  const original = { custodyEpoch: "2", custodyDigest: "12".repeat(32) };
+  const scope = { network: "devnet" as const, securityDomainId: "34".repeat(32), original, transferredAt: 1_999n, replacementEpoch: "3" };
   const bootKeyId = "ab".repeat(32);
   const walletPolicyDigest = "cd".repeat(32);
-  const bootstrap = { bootedAtMs: "301", bootKeyId, slots: [2, 4, 6] };
-  function report(observed: string, replacementBootstrap = bootstrap) {
-    return JSON.stringify({ retirementObservedAtMs: observed, replacement: { walletPolicyDigest, replacementBootstrap } });
+  const custodyDigest = "ef".repeat(32);
+  const bootstrap = { bootedAtMs: "3001", bootKeyId, slots: [2, 4, 6] };
+  const retired = {
+    ...original, network: scope.network, securityDomainId: scope.securityDomainId, publishedAtMs: "2000",
+  };
+  const replacement = { custodyEpoch: "3", custodyDigest, walletPolicyDigest, replacementBootstrap: bootstrap };
+  const report = { retired, retirementObservedAtMs: "3000", replacement };
+  const parse = (candidate: unknown) => parseRetirementReport(JSON.stringify(candidate), scope);
+
+  assert.deepEqual(parse(report), { bootKeyId, walletPolicyDigest, custodyDigest });
+  for (const change of [
+    { network: "mainnet" },
+    { securityDomainId: "56".repeat(32) },
+    { custodyEpoch: "1" },
+    { custodyDigest: "23".repeat(32) },
+  ]) {
+    assert.throws(() => parse({ ...report, retired: { ...retired, ...change } }), /custody domain and epochs/);
   }
-  assert.deepEqual(parseRetirementReport(report("300"), 299n), { bootKeyId, walletPolicyDigest });
-  assert.throws(() => parseRetirementReport(report("298"), 299n), /later boot from three custody slots/);
-  assert.throws(() => parseRetirementReport(report("301"), 299n), /later boot from three custody slots/);
+  assert.throws(() => parse({ ...report, retired: undefined }), /custody domain and epochs/);
+  assert.throws(() => parse({ ...report, replacement: { ...replacement, custodyEpoch: "4" } }), /custody domain and epochs/);
+  for (const publishedAtMs of ["1000", "1999", "4000"]) {
+    assert.throws(() => parse({ ...report, retired: { ...retired, publishedAtMs } }), /after the confirmed transfer and before verification/);
+  }
+  assert.throws(() => parse({ ...report, retirementObservedAtMs: bootstrap.bootedAtMs }), /later boot from three custody slots/);
   for (const slots of [[2, 2, 6], [2, 4, 7], [2, 4], [1, 2, 4, 6]]) {
-    assert.throws(() => parseRetirementReport(report("300", { ...bootstrap, slots }), 299n), /later boot from three custody slots/);
+    assert.throws(() => parse({
+      ...report, replacement: { ...replacement, replacementBootstrap: { ...bootstrap, slots } },
+    }), /later boot from three custody slots/);
   }
 });
 
@@ -45,12 +69,15 @@ test("native rotation rehearsal checks both published policies and the exact ser
   };
   const checkpoint = { sequence: "1", digest: "55".repeat(32), recoveryOnly: false, minimumCustodyEpoch: "1" };
   const published = { sameEnvelope: true, checkpoint, policy, validFrom: 1n, expiresAt: 10n };
-  requireOriginalPolicy(published, checkpoint, 2n);
+  assert.deepEqual(requireOriginalPolicy(published, checkpoint, 2n), {
+    custodyEpoch: target.custodyEpoch, custodyDigest: target.custodyDigest,
+  });
   for (const candidate of [
     { ...published, sameEnvelope: false },
     { ...published, policy: { ...policy, recoveryOnly: true } },
     { ...published, checkpoint: { ...checkpoint, digest: "66".repeat(32) } },
     { ...published, policy: { ...policy, targets: [target, replacement] } },
+    { ...published, policy: { ...policy, targets: [target, { ...target, custodyDigest: "99".repeat(32) }] } },
     { ...published, policy: { ...policy, targets: [replacement] } },
   ]) {
     assert.throws(() => requireOriginalPolicy(candidate, checkpoint, 2n), /original custody epoch only/);
@@ -70,6 +97,16 @@ test("native rotation rehearsal checks both published policies and the exact ser
   for (const targets of [[later], [replacement, later]]) {
     assert.equal(acceptedReplacementPolicy({ ...next, policy: { ...replacementPolicy, targets } }, nextCheckpoint, "2"), false);
   }
+
+  const report = { walletPolicyDigest: nextCheckpoint.digest, custodyDigest: replacement.custodyDigest, bootKeyId: "88".repeat(32) };
+  requireRetirementPolicy(next, report);
+  assert.throws(() => requireRetirementPolicy(next, { ...report, walletPolicyDigest: checkpoint.digest }), /differs from the verified retirement report/);
+  assert.throws(() => requireRetirementPolicy(next, { ...report, custodyDigest: "99".repeat(32) }), /differs from the verified retirement report/);
+
+  requireCurrentPolicy(next, nextCheckpoint, nextCheckpoint);
+  assert.throws(() => requireCurrentPolicy(next, checkpoint, nextCheckpoint), /policy changed during the rehearsal/);
+  assert.throws(() => requireCurrentPolicy(published, nextCheckpoint, nextCheckpoint), /policy changed during the rehearsal/);
+  assert.throws(() => requireCurrentPolicy({ ...next, sameEnvelope: false }, nextCheckpoint, nextCheckpoint), /policy changed during the rehearsal/);
 });
 
 test("native rehearsal checkpoints survive closing the database and exclude earlier custody floors", async () => {

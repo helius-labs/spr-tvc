@@ -32,14 +32,16 @@ pnpm --filter spr-tvc-typescript-client-example example
 
 Use absolute file paths and a new checkpoint file for each rehearsal. The
 example checks that both buckets serve the policy it accepted for the original
-epoch before sending. Wait for the confirmed transfer, stop the old replica,
-then publish the replacement custody floor to both buckets. The example
-waits up to five minutes for both buckets to serve its accepted policy
-with targets only at the requested replacement epoch. It checks that the
+epoch after resolving the address and again before sending. Wait for the
+confirmed transfer, stop the old replica, then publish the replacement custody
+floor to both buckets. The example waits up to five minutes for both buckets
+to serve the accepted policy with targets only at the requested replacement
+epoch. It checks that the
 recipient's viewing and nullifier public keys match their pre-rotation
-values, recovers the transferred amount, and checks that its accepted
-policy is still the one used to qualify the replacement before sending
-the sweep. The recipient remains unregistered and holds no public SOL.
+values and recovers the transferred amount. Before proving and sending the
+sweep, it checks that both published heads and its local checkpoint still
+match the policy used to qualify the replacement. The recipient remains
+unregistered and holds no public SOL.
 
 To tie the claim to the post-retirement cold boot, set
 `NITRO_RETIREMENT_REPORT` to a new absolute path. Run the canary and
@@ -47,10 +49,13 @@ To tie the claim to the post-retirement cold boot, set
 canary logs its confirmed transfer, follow the
 [retirement procedure](../enclave/deploy/nitro/README.md#rotate-custody-and-activate-releases).
 Use a separate canary transfer for the check before scheduling key deletion.
-Pass the canary's path to `verify-retired --output`. The complete report
-appears after verification. The canary waits up to one hour and recovers
-the note only through the report's attested boot key and policy, and logs the
-boot key ID alongside the transfer and sweep signatures.
+Pass the canary's path to `verify-retired --output` in a directory
+controlled by the operator. The canary waits up to one hour for the verified
+report. It checks that the S3 closure was published after transfer confirmation
+for the original domain, epoch and custody digest. It recovers the note
+through the exact replacement custody record, signed policy and attested boot
+in the report.
+It logs the boot key ID alongside the transfer and sweep signatures.
 
 ## Live seed cutover
 
@@ -63,7 +68,8 @@ buckets and activate the new domain. Keep the old recovery replicas running.
 The example waits for both policy pairs to agree. It checks that old payment
 lookup fails and the new domain returns different viewing and nullifier keys
 for the same recipient. It then opens the old note and sweeps it to the
-recipient's wallet-local keys.
+recipient's wallet-local keys. Before proving and sending the sweep, it
+rechecks the agreed published policy and checkpoint in each domain.
 
 ## Synthetic recovery drill
 

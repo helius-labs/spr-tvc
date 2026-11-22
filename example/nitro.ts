@@ -76,17 +76,21 @@ function sameCheckpoint(accepted: NitroPolicyCheckpoint | undefined, checkpoint:
     accepted.minimumCustodyEpoch === checkpoint.minimumCustodyEpoch && accepted.recoveryOnly === checkpoint.recoveryOnly;
 }
 
+type Custody = { custodyEpoch: string; custodyDigest: string };
+
 export function requireOriginalPolicy(
   published: VerifiedPublication,
   accepted: NitroPolicyCheckpoint | undefined,
   replacement?: bigint,
-): void {
+): Custody {
   const { policy } = published;
-  const epoch = policy.targets[0]?.custodyEpoch;
-  if (!acceptedPolicy(published, accepted) || policy.action !== "activate" || policy.recoveryOnly || epoch === undefined ||
-      (replacement !== undefined && BigInt(epoch) >= replacement) || policy.targets.some(target => target.custodyEpoch !== epoch)) {
+  const first = policy.targets[0];
+  if (!acceptedPolicy(published, accepted) || policy.action !== "activate" || policy.recoveryOnly || !first ||
+      (replacement !== undefined && BigInt(first.custodyEpoch) >= replacement) ||
+      policy.targets.some(({ custodyEpoch, custodyDigest }) => custodyEpoch !== first.custodyEpoch || custodyDigest !== first.custodyDigest)) {
     throw new Error("start with both buckets serving the accepted policy for the original custody epoch only");
   }
+  return { custodyEpoch: first.custodyEpoch, custodyDigest: first.custodyDigest };
 }
 
 export function acceptedReplacementPolicy(
@@ -101,26 +105,51 @@ export function acceptedReplacementPolicy(
 
 type Replacement = { epoch: string; retirementReport?: string } | { walletTrust: string };
 
-export function parseRetirementReport(text: string, transferredAt: bigint) {
+type RetirementScope = Pick<NitroTrust, "network" | "securityDomainId"> & {
+  original: Custody;
+  replacementEpoch: string;
+  transferredAt: bigint;
+};
+
+export function parseRetirementReport(text: string, scope: RetirementScope) {
   const report = parseStrictJson<{
     retirementObservedAtMs: string;
-    replacement: {
+    retired: Custody & Pick<NitroTrust, "network" | "securityDomainId"> & { publishedAtMs: string };
+    replacement: Custody & {
       walletPolicyDigest: string;
       replacementBootstrap: { bootedAtMs: string; bootKeyId: string; slots: number[] };
     };
   }>(text);
+  const { retired, replacement } = report;
+  if (!retired || !replacement || retired.network !== scope.network || retired.securityDomainId !== scope.securityDomainId ||
+      retired.custodyEpoch !== scope.original.custodyEpoch || retired.custodyDigest !== scope.original.custodyDigest ||
+      replacement.custodyEpoch !== scope.replacementEpoch) {
+    throw new Error("retirement report does not match the transfer's custody domain and epochs");
+  }
+  const published = decodeDecimalU64(retired.publishedAtMs);
   const observed = decodeDecimalU64(report.retirementObservedAtMs);
-  const { walletPolicyDigest, replacementBootstrap: { bootedAtMs, bootKeyId, slots } } = report.replacement;
+  if (published <= scope.transferredAt || observed < published) {
+    throw new Error("expected retirement to be published after the confirmed transfer and before verification");
+  }
+  const { custodyDigest, walletPolicyDigest, replacementBootstrap: { bootedAtMs, bootKeyId, slots } } = replacement;
+  requireHex(custodyDigest, 32);
   requireHex(walletPolicyDigest, 32);
   requireHex(bootKeyId, 32);
-  if (observed < transferredAt || decodeDecimalU64(bootedAtMs) <= observed || !Array.isArray(slots) ||
+  if (decodeDecimalU64(bootedAtMs) <= observed || !Array.isArray(slots) ||
       slots.length !== 3 || new Set(slots).size !== 3 || slots.some(slot => !Number.isInteger(slot) || slot < 1 || slot > 6)) {
     throw new Error("expected a retirement report for a later boot from three custody slots");
   }
-  return { walletPolicyDigest, bootKeyId };
+  return { custodyDigest, walletPolicyDigest, bootKeyId };
 }
 
-async function waitForRetirement(path: string, transferredAt: bigint) {
+export function requireRetirementPolicy(published: VerifiedPublication, retired: ReturnType<typeof parseRetirementReport>) {
+  if (published.checkpoint.digest !== retired.walletPolicyDigest ||
+      published.policy.targets.some(target => target.custodyDigest !== retired.custodyDigest)) {
+    throw new Error("replacement policy differs from the verified retirement report");
+  }
+}
+
+async function waitForRetirement(path: string, scope: RetirementScope) {
   const signal = AbortSignal.timeout(60 * 60_000);
   for (;;) {
     signal.throwIfAborted();
@@ -131,7 +160,7 @@ async function waitForRetirement(path: string, transferredAt: bigint) {
       try {
         const { size } = await file.stat();
         if (size > 256 * 1024) throw new Error("retirement report exceeds 256 KiB");
-        return parseRetirementReport(await file.readFile({ encoding: "utf8", signal }), transferredAt);
+        return parseRetirementReport(await file.readFile({ encoding: "utf8", signal }), scope);
       } finally {
         await file.close();
       }
@@ -144,6 +173,21 @@ async function devnetTrust(path: string): Promise<NitroTrust> {
   const trust = JSON.parse(await readFile(path, "utf8")) as NitroTrust;
   if (trust.network !== "devnet") throw new Error("the Nitro rehearsal requires devnet wallet trust");
   return trust;
+}
+
+export function requireCurrentPolicy(
+  published: VerifiedPublication,
+  current: NitroPolicyCheckpoint | undefined,
+  expected: NitroPolicyCheckpoint,
+) {
+  if (!acceptedPolicy(published, expected) || !sameCheckpoint(current, expected)) {
+    throw new Error("wallet policy changed during the rehearsal");
+  }
+}
+
+async function checkCurrentPolicy(trust: NitroTrust, store: NitroPolicyStore, expected: NitroPolicyCheckpoint) {
+  const published = await readPublishedNitroPolicy(trust, AbortSignal.timeout(5_000));
+  requireCurrentPolicy(published, await store.current(), expected);
 }
 
 export async function nativeDevnet(walletTrust: string, checkpoint: string, replacement: Replacement) {
@@ -169,6 +213,7 @@ export async function nativeDevnet(walletTrust: string, checkpoint: string, repl
   }
 
   const original = checkpointStore(checkpoint, trust);
+  let originalCustody: Custody | undefined;
   let replacementStore: typeof original | undefined;
   function close() {
     replacementStore?.close();
@@ -184,12 +229,25 @@ export async function nativeDevnet(walletTrust: string, checkpoint: string, repl
       service,
       seedChanged,
       close,
-      async beforeSend() {
+      async prepareTransfer() {
         const published = await readPublishedNitroPolicy(trust, AbortSignal.timeout(5_000));
-        requireOriginalPolicy(published, await original.store.current(), replacementEpoch === undefined ? undefined : BigInt(replacementEpoch));
+        const custody = requireOriginalPolicy(
+          published, await original.store.current(), replacementEpoch === undefined ? undefined : BigInt(replacementEpoch),
+        );
+        return async () => {
+          await checkCurrentPolicy(trust, original.store, published.checkpoint);
+          originalCustody = custody;
+        };
       },
       async afterTransfer(oldDestination: ShieldedAddress, confirmedAt: bigint) {
-        const retired = retirementReport ? await waitForRetirement(retirementReport, confirmedAt) : undefined;
+        let retired: Awaited<ReturnType<typeof waitForRetirement>> | undefined;
+        if (retirementReport) {
+          if (!originalCustody || replacementEpoch === undefined) throw new Error("verify the original custody policy before sending");
+          retired = await waitForRetirement(retirementReport, {
+            network: trust.network, securityDomainId: trust.securityDomainId,
+            original: originalCustody, replacementEpoch, transferredAt: confirmedAt,
+          });
+        }
         const next = createNitroDecryptionService({
           trust: nextTrust, policyStore: nextStore, ...(retired ? { requiredBootKeyId: retired.bootKeyId } : {}),
         });
@@ -198,6 +256,7 @@ export async function nativeDevnet(walletTrust: string, checkpoint: string, repl
         const options = { signal, timeoutMs: 10_000 };
         while (!signal.aborted) {
           try {
+            let recoveryCheckpoint: NitroPolicyCheckpoint | undefined;
             if (reader) {
               try {
                 await reader.address(recipient, options);
@@ -206,18 +265,17 @@ export async function nativeDevnet(walletTrust: string, checkpoint: string, repl
                 if (!(error instanceof DecryptionServiceError) || error.code !== "ReleasePolicyRecoveryOnly") throw error;
               }
               const oldHead = await readPublishedNitroPolicy(recoveryTrust, signal);
-              if (!acceptedPolicy(oldHead, await original.store.current())) {
+              if (!oldHead.policy.recoveryOnly || !acceptedPolicy(oldHead, await original.store.current())) {
                 await setTimeout(2_000, undefined, { signal });
                 continue;
               }
+              recoveryCheckpoint = oldHead.checkpoint;
             }
             const destination = await next.address(recipient, options);
             const published = await readPublishedNitroPolicy(nextTrust, signal);
             const accepted = await nextStore.current();
             if (accepted && acceptedReplacementPolicy(published, accepted, replacementEpoch)) {
-              if (retired && accepted.digest !== retired.walletPolicyDigest) {
-                throw new Error("replacement policy differs from the verified retirement report");
-              }
+              if (retired) requireRetirementPolicy(published, retired);
               const sameViewingKey = Buffer.from(destination.viewingPublicKey.toBytes()).equals(oldDestination.viewingPublicKey.toBytes());
               const sameNullifierKey = Buffer.from(destination.nullifierPublicKey).equals(oldDestination.nullifierPublicKey);
               if (reader && (sameViewingKey || sameNullifierKey)) {
@@ -230,9 +288,10 @@ export async function nativeDevnet(walletTrust: string, checkpoint: string, repl
                 service: reader ?? next,
                 bootKeyId: retired?.bootKeyId,
                 async requireSamePolicy() {
-                  if (!sameCheckpoint(await nextStore.current(), accepted)) {
-                    throw new Error("replacement policy changed during the claim");
-                  }
+                  await Promise.all([
+                    checkCurrentPolicy(nextTrust, nextStore, accepted),
+                    recoveryCheckpoint && checkCurrentPolicy(recoveryTrust, original.store, recoveryCheckpoint),
+                  ]);
                 },
               };
             }

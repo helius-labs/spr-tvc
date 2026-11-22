@@ -1980,6 +1980,8 @@ class CustodyLedgerTests(unittest.TestCase):
             marker = qualified_manifest(self.trust, None, "1", "2")
             retired = self.signed_retirement(marker)
             commit_retirement(self.trust, None, retired)
+        self.now += 1
+        observed_at_ms = self.now * 1000
 
         profiles = [f"old-slot-{index}" for index in range(1, 7)]
         inventory = {arn: (profile, policy) for index, profile in enumerate(profiles, 1)
@@ -2007,7 +2009,7 @@ class CustodyLedgerTests(unittest.TestCase):
         boot = self.qualification(replacement)["replacementBootstrap"]
         observed = {**target_attestation(replacement), "bootstrap": boot}
         stale = self.attestation_reply({"policyDigest": "fe" * 32, "targets": [observed]})
-        fresh = {**boot, "bootKeyId": "be" * 32, "bootedAtMs": str(self.booted_at_ms + 1_000)}
+        fresh = {**boot, "bootKeyId": "be" * 32, "bootedAtMs": str(observed_at_ms + 1_000)}
         ready = self.attestation_reply({"policyDigest": "fe" * 32, "targets": [{**observed, "bootstrap": fresh}]})
 
         wallet = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory())) / "wallet.json"
@@ -2018,6 +2020,12 @@ class CustodyLedgerTests(unittest.TestCase):
               patch("retirement.run_command") as query, patch("retirement.time.sleep"),
               patch("retirement.require_host_state", side_effect=require_host_state) as host_state,
               patch("retirement.require_recovery_quorum") as quorum):
+            original_receipt = load_epoch(self.trust, "1")[1]
+            changed_receipt = {**original_receipt, "custody": {**original_receipt["custody"], "epoch": "9"}}
+            with patch("retirement.load_epoch", return_value=(None, changed_receipt, [])):
+                with self.assertRaisesRegex(ValueError, "retired custody receipt changed"):
+                    verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
+            query.assert_not_called()
             identity.side_effect = ValueError("inspection profile is in the wrong account")
             with self.assertRaisesRegex(ValueError, "wrong account"):
                 verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
@@ -2067,7 +2075,14 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertEqual(set(inventory), set(visited))
             self.assertEqual(len(visited), 2 * len(inventory))
             self.assertEqual(report["retirementSha256"], sha256(retired))
-            self.assertEqual(report["retirementObservedAtMs"], str(self.booted_at_ms))
+            self.assertEqual(report["retirementObservedAtMs"], str(observed_at_ms))
+            self.assertEqual(report["retired"], {
+                "network": self.trust["network"], "securityDomainId": self.trust["securityDomainId"],
+                "custodyEpoch": "1", "custodyDigest": sha256(load_epoch(self.trust, "1")[1]["custody"]),
+                "publishedAtMs": str(self.booted_at_ms),
+            })
+            self.assertEqual(report["replacement"]["custodyEpoch"], "2")
+            self.assertEqual(report["replacement"]["custodyDigest"], sha256(load_epoch(self.trust, "2")[1]["custody"]))
             self.assertEqual({call.args for call in identity.call_args_list},
                              {(profile, REGION, f"{slot:012d}") for slot, profile in enumerate(profiles, 1)} |
                              {(host_profiles[parent["account"]], parent["region"], parent["account"]) for parent in parents})

@@ -592,8 +592,9 @@ pinned history and excluded versions.
    records again, including the observed replacement's registration. It
    verifies the replica's installed protections, the six keys used by the
    new boot, and the same registered boot and wallet policy.
-   Pass a new report path. The complete file appears
-   only after verification succeeds. AWS usually lists terminated instances
+   The report records the retired domain and custody digest, the S3 closure
+   time, and the replacement custody digest, policy and boot. Pass a new
+   report path. The complete file appears only after verification succeeds. AWS usually lists terminated instances
    for less than an hour. When EC2 cannot report a parent, the verifier
    requires that the latest AWS Config record
    for that exact managed EC2 instance is `ResourceDeleted`. Archive the

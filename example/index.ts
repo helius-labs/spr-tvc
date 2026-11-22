@@ -46,6 +46,7 @@ async function main(): Promise<void> {
     await syncWallet({ client: zolana, wallet, keys, config: { requireSlot: depositTx.slot } });
 
     const recipientAddress = await resolvePaymentAddress({ rpc: zolana, owner: recipient.address, service });
+    const requireOriginalPaymentPolicy = await nitro?.prepareTransfer();
     const transfer = await buildTransferTransaction({
       client: zolana,
       wallet,
@@ -54,7 +55,7 @@ async function main(): Promise<void> {
       recipient: recipientAddress,
       amount: AMOUNT,
     });
-    await nitro?.beforeSend();
+    await requireOriginalPaymentPolicy?.();
     const transferTx = await send(transfer);
     const confirmedAt = BigInt(Date.now());
     if (nitro) console.log(`transfer recipient=${recipient.address} tx=${transferTx.signature} awaiting ${nitro.seedChanged ? "the seed cutover" : "the replacement custody epoch"}`);
