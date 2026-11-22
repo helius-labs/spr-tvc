@@ -1,11 +1,11 @@
 //! QOS startup, discovery, and HTTP routing.
 
-use std::io;
 use std::sync::Arc;
 #[cfg(feature = "qos-runtime")]
 use std::{fs, path::Path};
+use std::{future::Future, io};
 
-use axum::body::{to_bytes, Body};
+use axum::body::{to_bytes, Body, Bytes};
 use axum::extract::State;
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, Response};
@@ -98,10 +98,23 @@ pub(crate) fn router(service: Arc<Service>) -> Router {
     Router::new().fallback(dispatch).with_state(service)
 }
 
-pub(crate) async fn dispatch(
-    State(service): State<Arc<Service>>,
+async fn dispatch(State(service): State<Arc<Service>>, request: Request<Body>) -> Response<Body> {
+    dispatch_with_crypto(service, request, |operation, service, body| async move {
+        operation(&service, &body)
+    })
+    .await
+}
+
+type Operation = fn(&Service, &[u8]) -> Response<Body>;
+
+pub(crate) async fn dispatch_with_crypto<F>(
+    service: Arc<Service>,
     request: Request<Body>,
-) -> Response<Body> {
+    run: impl FnOnce(Operation, Arc<Service>, Bytes) -> F,
+) -> Response<Body>
+where
+    F: Future<Output = Response<Body>>,
+{
     let (parts, body) = request.into_parts();
     let body_limit = usize::try_from(
         service
@@ -118,8 +131,8 @@ pub(crate) async fn dispatch(
         ("POST", "/v1/ping" | "/v1/operations") if !has_json_content_type(&parts.headers) => {
             PublicError::InvalidRequest.into_response()
         }
-        ("POST", "/v1/ping") => handle_ping(&service, &body),
-        ("POST", "/v1/operations") => operations::handle(&service, &body),
+        ("POST", "/v1/ping") => run(handle_ping, service, body).await,
+        ("POST", "/v1/operations") => run(operations::handle, service, body).await,
         ("GET", "/health") => match jcs_serialize(&HealthResponse {
             status: HealthStatus::Healthy,
         }) {

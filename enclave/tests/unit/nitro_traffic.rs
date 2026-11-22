@@ -19,10 +19,9 @@ fn reads_time_from_an_aws_nitro_document_and_rejects_malformed_evidence() {
     assert_eq!(nsm_timestamp_ms(&[]), None);
 }
 
-#[tokio::test]
-async fn wallet_preflight_allows_only_credential_free_json_and_attestation_posts() {
+fn service() -> Arc<Service> {
     let transport = NativePair::generate().unwrap();
-    let service = Arc::new(Service {
+    Arc::new(Service {
         info: Release {
             security_domain_id: [1; 32],
             release_id: "fixture".into(),
@@ -33,9 +32,13 @@ async fn wallet_preflight_allows_only_credential_free_json_and_attestation_posts
         quorum: KeyPair::Native(transport),
         ephemeral: KeyPair::Native(NativePair::generate().unwrap()),
         note_seed: NoteSeed(Zeroizing::new([4; 32])),
-    });
+    })
+}
+
+#[tokio::test]
+async fn wallet_preflight_allows_only_credential_free_json_and_attestation_posts() {
     let router = serving_router(
-        service,
+        service(),
         BootstrapEvidence {
             slots: [1, 3, 5],
             booted_at_ms: 1_795_290_719_965,
@@ -74,6 +77,41 @@ async fn wallet_preflight_allows_only_credential_free_json_and_attestation_posts
     let response = router.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+}
+
+#[tokio::test]
+async fn crypto_waits_for_capacity_without_blocking_health_or_discovery() {
+    let service = State(service());
+    let worker = Extension(Arc::new(Semaphore::new(1)));
+    for path in ["/v1/ping", "/v1/operations"] {
+        let permit = worker.0.try_acquire().unwrap();
+        let request = Request::post(path)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        let response = serve_request(service.clone(), worker.clone(), request);
+        tokio::pin!(response);
+        tokio::select! {
+            biased;
+            result = &mut response => panic!("crypto ran with no capacity: {}", result.status()),
+            _ = std::future::ready(()) => {}
+        }
+        for public_path in ["/health", "/v1/info"] {
+            let request = Request::get(public_path).body(Body::empty()).unwrap();
+            let response = tokio::time::timeout(
+                SERVING_DEADLINE,
+                serve_request(service.clone(), worker.clone(), request),
+            )
+            .await
+            .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        drop(permit);
+        let response = tokio::time::timeout(SERVING_DEADLINE, response)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 }
 
 #[tokio::test]
@@ -123,7 +161,7 @@ async fn custody_worker_refuses_work_and_replies_past_the_listener_deadline() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn request_budget_fails_fast_and_releases_capacity_at_deadline() {
     let capacity = Arc::new(Semaphore::new(1));
     let started = Arc::new(tokio::sync::Notify::new());
@@ -133,7 +171,8 @@ async fn request_budget_fails_fast_and_releases_capacity_at_deadline() {
             "/",
             get(move || async move {
                 handler_started.notify_one();
-                std::future::pending::<StatusCode>().await
+                tokio::time::sleep(SERVING_DEADLINE).await;
+                StatusCode::OK
             }),
         )
         .layer(middleware::from_fn_with_state(

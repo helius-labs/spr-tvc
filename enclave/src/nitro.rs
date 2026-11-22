@@ -34,7 +34,7 @@ use spr_tvc_protocol::{
     types::{Network, ServiceInfo},
 };
 use tokio::{
-    sync::{oneshot, Semaphore},
+    sync::{oneshot, OwnedSemaphorePermit, Semaphore},
     time::Instant,
 };
 use tokio_vsock::{VsockAddr, VsockListener, VsockStream, VMADDR_CID_ANY};
@@ -50,7 +50,7 @@ use crate::{
     native_crypto::NativePair,
     nitro_http,
     release::NETWORK,
-    service::dispatch,
+    service::dispatch_with_crypto,
     wire::KeyPair,
     Release, Service,
 };
@@ -170,7 +170,8 @@ fn serving_router(service: Arc<Service>, bootstrap: BootstrapEvidence) -> Router
             limit_serving_request,
         ));
     Router::new()
-        .fallback(dispatch)
+        .fallback(serve_request)
+        .layer(Extension(Arc::new(Semaphore::new(1))))
         .layer(middleware::from_fn_with_state(
             Arc::new(Semaphore::new(MAX_SERVING_REQUESTS)),
             limit_serving_request,
@@ -186,6 +187,22 @@ fn serving_router(service: Arc<Service>, bootstrap: BootstrapEvidence) -> Router
         .with_state(service)
 }
 
+async fn serve_request(
+    State(service): State<Arc<Service>>,
+    Extension(worker): Extension<Arc<Semaphore>>,
+    request: Request,
+) -> Response {
+    dispatch_with_crypto(service, request, |operation, service, body| async move {
+        let Ok(permit) = worker.acquire_owned().await else {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        };
+        run_with_permit(permit, move || operation(&service, &body))
+            .await
+            .unwrap_or_else(IntoResponse::into_response)
+    })
+    .await
+}
+
 async fn limit_serving_request(
     State(capacity): State<Arc<Semaphore>>,
     request: Request,
@@ -194,9 +211,10 @@ async fn limit_serving_request(
     let Ok(_permit) = capacity.try_acquire() else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
-    match tokio::time::timeout(SERVING_DEADLINE, next.run(request)).await {
-        Ok(response) => response,
-        Err(_) => StatusCode::REQUEST_TIMEOUT.into_response(),
+    tokio::select! {
+        biased;
+        _ = tokio::time::sleep(SERVING_DEADLINE) => StatusCode::REQUEST_TIMEOUT.into_response(),
+        response = next.run(request) => response,
     }
 }
 
@@ -551,13 +569,20 @@ async fn with_worker<T: Send + 'static>(
     let permit = worker
         .try_acquire_owned()
         .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
+    run_with_permit(permit, work).await?
+}
+
+async fn run_with_permit<T: Send + 'static>(
+    permit: OwnedSemaphorePermit,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, StatusCode> {
     tokio::task::spawn_blocking(move || {
         // Keep the slot until the worker exits, even if its caller disconnects.
         let _permit = permit;
         work()
     })
     .await
-    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
 }
 
 fn attested_json(
