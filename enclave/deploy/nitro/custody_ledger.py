@@ -55,6 +55,11 @@ def record(trust, document):
     if epoch == "1":
         if mode != "initialize" or previous is not None or rotation is not None:
             raise ValueError("genesis requires initialization without a predecessor or rotation target")
+        pcrs = capture["pcrs"]
+        fields(pcrs, "0", "1", "2", "3")
+        expected = boot_pins(manifest["ceremonyHostRole"], {f"PCR{pcr}": pcrs[pcr] for pcr in ("0", "1", "2")})
+        if pcrs["3"] != expected["PCR3"]:
+            raise ValueError("genesis capture does not match the ceremony host role")
     else:
         if mode != "rotate":
             raise ValueError("a successor receipt requires a rotation ceremony")
@@ -586,18 +591,14 @@ def verify_ceremony_capture(capture):
                    input=canonical(capture), timeout=25, check=True)
 
 
-def sign_epoch(trust, document, key, build, source_commit, source_ref, inspection_profiles=None, relay_build=None):
-    receipt, custodians = record(trust, document)
-    target = check_previous(trust, document, receipt)
-    authorization = document["authorization"]
-    manifest = authorization["manifest"]
+def verify_reviewed_ceremony(manifest, target, build, source_commit, source_ref):
     capture = manifest["capture"]
     configuration = read_document(build / "configuration.json")
     config = parse_json(configuration)
     configuration_digest = hashlib.sha256(configuration).hexdigest()
     if target is not None and target["configurationSha256"] != configuration_digest:
         raise ValueError("ceremony build configuration does not match the registered rotation target")
-    reviewed = verify_build(build, receipt["network"], source_commit, source_ref)
+    reviewed = verify_build(build, capture["receipt"]["network"], source_commit, source_ref)
     pins = target_attestation(target)["pcrs"] if target is not None else {
         name.removeprefix("PCR"): pin for name, pin in boot_pins(manifest["ceremonyHostRole"], reviewed["pcrs"]).items()
     }
@@ -607,6 +608,13 @@ def sign_epoch(trust, document, key, build, source_commit, source_ref, inspectio
              (reviewed["executableSha256"], reviewed["pcrs"]))):
         raise ValueError("captured ceremony does not match the verified build provenance")
     verify_ceremony_capture(capture)
+
+
+def sign_epoch(trust, document, key, build, source_commit, source_ref, inspection_profiles=None, relay_build=None):
+    receipt, custodians = record(trust, document)
+    target = check_previous(trust, document, receipt)
+    authorization = document["authorization"]
+    verify_reviewed_ceremony(authorization["manifest"], target, build, source_commit, source_ref)
     epoch = receipt["custody"]["epoch"]
     check_custody_roster(trust, epoch, custodians, [package["recipientSha256"] for package in receipt["packages"]],
                          inspection_profiles, relay_build)
@@ -632,10 +640,12 @@ def sign_share_recovery(trust, custodians, receipt, index, label, approval, rela
     return add_approval(keys, label, approval, key)["signatures"]
 
 
-def acknowledge(trust, document, index, relay_port):
+def acknowledge(trust, document, index, relay_port, build, source_commit, source_ref):
     receipt, custodians = record(trust, document)
-    check_approvals(approval_keys(trust, receipt["custody"]["epoch"]), LABEL, document["authorization"])
-    check_previous(trust, document, receipt)
+    authorization = document["authorization"]
+    check_approvals(approval_keys(trust, receipt["custody"]["epoch"]), LABEL, authorization)
+    target = check_previous(trust, document, receipt)
+    verify_reviewed_ceremony(authorization["manifest"], target, build, source_commit, source_ref)
     signatures = sign_share_recovery(trust, custodians, receipt, index, ACKNOWLEDGEMENT, acknowledgements(document), relay_port)
     return {**document, "acknowledgements": signatures}
 
@@ -644,6 +654,7 @@ def publish(trust, document):
     receipt, custodians = record(trust, document)
     check_commit(trust, document, receipt, custodians)
     check_previous(trust, document, receipt)
+    verify_ceremony_capture(document["authorization"]["manifest"]["capture"])
     epoch = receipt["custody"]["epoch"]
     def subject(committed):
         stored_receipt, roster = record(trust, committed)
@@ -674,9 +685,12 @@ def main():
     sign.add_argument("--relay-build", nargs=3, metavar=("BUILD", "COMMIT", "REF"), required=True)
     ack = commands.add_parser("acknowledge")
     ack.add_argument("candidate", type=Path)
+    ack.add_argument("build", type=Path)
     ack.add_argument("share", type=int, choices=range(1, 7))
     ack.add_argument("output", type=Path)
     ack.add_argument("--relay-port", type=int, required=True)
+    ack.add_argument("--source-commit", required=True)
+    ack.add_argument("--source-ref", default=MAIN_REF)
     post = commands.add_parser("publish")
     post.add_argument("candidate", type=Path)
     check = commands.add_parser("check-serving-policy")
@@ -731,7 +745,8 @@ def main():
         signed = (sign_epoch(trust, document, args.key, args.build, args.source_commit, args.source_ref,
                              args.inspection_profiles, args.relay_build)
                   if args.command == "sign"
-                  else acknowledge(trust, document, args.share, args.relay_port))
+                  else acknowledge(trust, document, args.share, args.relay_port, args.build,
+                                   args.source_commit, args.source_ref))
         with args.output.open("xb") as output:
             output.write(canonical(signed) + b"\n")
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:

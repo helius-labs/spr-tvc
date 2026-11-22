@@ -12,7 +12,6 @@ from custody_ledger import (
     check_commit, check_predecessor, check_registered_target, check_rotation_target, ledger_object,
     publication_time, read_object, read_stored_object, record, rotation_target_name, verify_ceremony_capture,
 )
-from kms_policy import boot_pins
 
 MAX_ARCHIVE_ENTRY_BYTES = 2 * MAX_DOCUMENT_BYTES + 256
 
@@ -28,12 +27,6 @@ def check_archive_entry(trust, epoch, entry, previous):
     if previous is None:
         if rotation is not None:
             raise ValueError("genesis archive cannot include a rotation")
-        capture = manifest["capture"]
-        pcrs = capture["pcrs"]
-        fields(pcrs, "0", "1", "2", "3")
-        expected = boot_pins(manifest["ceremonyHostRole"], {f"PCR{pcr}": pcrs[pcr] for pcr in ("0", "1", "2")})
-        if pcrs["3"] != expected["PCR3"]:
-            raise ValueError("genesis capture does not match the ceremony host role")
     else:
         predecessor, previous_roster = previous
         check_predecessor(document, receipt, predecessor, previous_roster)

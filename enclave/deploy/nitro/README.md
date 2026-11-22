@@ -71,6 +71,9 @@ inspect. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
 
 ## Commit a custody epoch
 
+Install the repository's pnpm dependencies on the approval, custodian and
+publisher hosts. All three roles run the Nitro evidence verifier locally.
+
 1. Create `configuration.json` with `releaseId`, `securityDomainId` and
    `deployment`. Initialization uses `{"mode":"initialize","recipientPublicKeys":[...]}`.
    Each recipient is the lowercase-hex DER SPKI of its RSA recovery key, in roster order.
@@ -108,8 +111,10 @@ inspect. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
    attestation, archived AWS evidence, and the attested relay's build, PCRs
    and ordered signer keys. Each approver checks both installed policies and
    public keys in all six slots. Pass each updated document to the next
-   signer. Each custodian acknowledges in its own account after the measured
-   relay proves possession of its committed share. Forward the relay's vsock
+   signer. Each custodian independently verifies the ceremony build and Nitro
+   evidence using the reviewed commit and ref, then acknowledges in its own
+   account after the measured relay proves possession of its committed share.
+   Forward the relay's vsock
    port 44031 through SSM to a loopback port. It serves for ten minutes.
    Publish the fully acknowledged document with the dedicated publisher role.
 
@@ -118,14 +123,14 @@ inspect. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
      epoch-signed.json --source-commit "$reviewed_commit" --source-ref "$source_ref" \
      --relay-build "$relay_build" "$relay_commit" "$relay_ref" \
      --inspection-profiles "${inspection_profiles[@]}"
-   python3 "$nitro/custody_ledger.py" trust.json acknowledge epoch-signed.json "$share_index" epoch-ack.json \
-     --relay-port "$port"
+   python3 "$nitro/custody_ledger.py" trust.json acknowledge epoch-signed.json "$build_dir" "$share_index" epoch-ack.json \
+     --relay-port "$port" --source-commit "$reviewed_commit" --source-ref "$source_ref"
    python3 "$nitro/custody_ledger.py" trust.json publish epoch-ack.json
    python3 "$nitro/custody_ledger.py" trust.json read 1 > receipt.json
    ```
 
-   `publish` requires two approvals and all six acknowledgements on the same
-   candidate. The first successful conditional write fixes the receipt for that
+   `publish` verifies the Nitro evidence, two approvals and all six
+   acknowledgements on the same candidate. The first successful conditional write fixes the receipt for that
    epoch and its recovery relay. A rotated receipt pins the previous receipt
    and the registered rotation approval. Drafting and signing check the measured configuration.
    Acknowledgement, publication and online reads verify the same image, host

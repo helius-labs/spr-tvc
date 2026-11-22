@@ -59,6 +59,7 @@ class CustodyLedgerTests(unittest.TestCase):
         self.enterContext(patch("time.time", side_effect=lambda: self.now))
         self.enterContext(patch("custody_ledger.aws", side_effect=self.aws))
         self.enterContext(patch("approval.kms", side_effect=AssertionError("receipt verification must not call KMS")))
+        self.capture_verifier = self.enterContext(patch("custody_ledger.verify_ceremony_capture"))
 
     def rotate_approvals(self, epoch):
         self.now += 60
@@ -249,7 +250,8 @@ class CustodyLedgerTests(unittest.TestCase):
         (build / "measurements.json").write_bytes(canonical({"Measurements": PINS}))
         commit = "ab" * 20
         reviewed = describe(build, "devnet", commit)
-        with (patch("custody_ledger.verify_build") as verify_build, patch("custody_ledger.subprocess") as capture_verifier,
+        self.capture_verifier.reset_mock()
+        with (patch("custody_ledger.verify_build") as verify_build,
               patch("custody_ledger.check_custody_roster"),
               patch("custody_ledger.add_approval", return_value=document["authorization"]) as sign_record):
             for field in ("configurationSha256", "eifSha256", "executableSha256", "pcrs"):
@@ -257,11 +259,11 @@ class CustodyLedgerTests(unittest.TestCase):
                 verify_build.return_value = {**reviewed, field: value}
                 with self.subTest(field=field), self.assertRaisesRegex(ValueError, "verified build provenance"):
                     sign_epoch(self.trust, document, key(8, 7), build, commit, "refs/heads/devnet")
-            capture_verifier.run.assert_not_called()
+            self.capture_verifier.assert_not_called()
             sign_record.assert_not_called()
             verify_build.return_value = reviewed
             self.assertEqual(sign_epoch(self.trust, document, key(8, 7), build, commit, "refs/heads/devnet"), document)
-            capture_verifier.run.assert_called_once()
+            self.capture_verifier.assert_called_once_with(capture)
             sign_record.assert_called_once()
 
     def test_rotation_receipt_must_match_the_registered_image_and_successor_roster(self):
@@ -306,7 +308,7 @@ class CustodyLedgerTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, message):
                         sign_epoch(self.trust, bad, key(8, 7), build, "", "")
                     with self.assertRaisesRegex(ValueError, message):
-                        acknowledge(self.trust, bad, 1, 7443)
+                        acknowledge(self.trust, bad, 1, 7443, build, "", "")
                     with self.assertRaisesRegex(ValueError, message):
                         publish(self.trust, bad)
                     provenance.assert_not_called()
@@ -421,25 +423,56 @@ class CustodyLedgerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "invalid ceremony evidence"):
                 verify(payload)
 
+    def test_genesis_host_role_must_match_the_captured_identity_before_publication(self):
+        document = self.document(1)
+        document["authorization"]["manifest"]["capture"]["pcrs"]["3"] = "ef" * 48
+        with self.assertRaisesRegex(ValueError, "genesis capture does not match the ceremony host role"):
+            publish(self.trust, self.sign(document))
+        self.capture_verifier.assert_not_called()
+        self.assertEqual(self.objects, {})
+
+    def test_publication_rechecks_ceremony_evidence_before_the_immutable_write(self):
+        document = self.sign(self.document(1))
+        capture = document["authorization"]["manifest"]["capture"]
+        self.capture_verifier.side_effect = ValueError("unverified ceremony evidence")
+        with self.assertRaisesRegex(ValueError, "unverified ceremony evidence"):
+            publish(self.trust, document)
+        self.capture_verifier.assert_called_once_with(capture)
+        self.assertEqual(self.objects, {})
+        self.capture_verifier.side_effect = None
+        publish(self.trust, document)
+        self.assertEqual(load_epoch(self.trust, "1")[0], document)
+
+    @patch("custody_ledger.verify_reviewed_ceremony")
     @patch("custody_ledger.prove_share")
     @patch("custody_ledger.add_approval")
     @patch("custody_ledger.kms")
-    def test_acknowledgement_requires_a_sealed_key_and_attested_share_proof(self, kms, approve, prove):
+    def test_acknowledgement_requires_reviewed_ceremony_and_attested_share_proof(self, kms, approve, prove, review):
         document = self.sign(self.document(1))
         document["acknowledgements"] = []
-        member = document["authorization"]["manifest"]["custodians"][0]
+        manifest = document["authorization"]["manifest"]
+        member = manifest["custodians"][0]
+        build, commit, ref = pathlib.Path("build"), "ab" * 20, "refs/heads/devnet"
+        review.side_effect = ValueError("unreviewed ceremony")
+        with self.assertRaisesRegex(ValueError, "unreviewed ceremony"):
+            acknowledge(self.trust, document, 1, 7443, build, commit, ref)
+        review.assert_called_once_with(manifest, None, build, commit, ref)
+        kms.assert_not_called()
+        prove.assert_not_called()
+        approve.assert_not_called()
+        review.side_effect = None
         kms.return_value = {"Policy": "{}"}
         with self.assertRaisesRegex(ValueError, "installed acknowledgement policy"):
-            acknowledge(self.trust, document, 1, 7443)
+            acknowledge(self.trust, document, 1, 7443, build, commit, ref)
         prove.assert_not_called()
         kms.return_value = {"Policy": json.dumps(acknowledgement_policy(member["custodianRole"], member["retirementRole"]))}
         prove.side_effect = ValueError("unverified relay proof")
         with self.assertRaisesRegex(ValueError, "unverified relay proof"):
-            acknowledge(self.trust, document, 1, 7443)
+            acknowledge(self.trust, document, 1, 7443, build, commit, ref)
         approve.assert_not_called()
         prove.side_effect = None
         approve.return_value = {"signatures": ["fixture"]}
-        result = acknowledge(self.trust, document, 1, 7443)
+        result = acknowledge(self.trust, document, 1, 7443, build, commit, ref)
         self.assertEqual(result["acknowledgements"], ["fixture"])
         _, args_receipt, args_member, slot, port, check = prove.call_args.args
         self.assertEqual(args_receipt["custody"]["epoch"], "1")
@@ -677,9 +710,9 @@ class CustodyLedgerTests(unittest.TestCase):
             require_registered_target(self.trust, target)
         with self.assertRaisesRegex(ValueError, "retired"):
             register_target(self.trust, target_doc)
-        with patch("custody_ledger.kms") as kms:
+        with patch("custody_ledger.kms") as kms, patch("custody_ledger.verify_reviewed_ceremony"):
             with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
-                acknowledge(self.trust, first, 1, 7443)
+                acknowledge(self.trust, first, 1, 7443, pathlib.Path("build"), "ab" * 20, "refs/heads/devnet")
             kms.assert_not_called()
 
         self.rotate_approvals("3")

@@ -68,7 +68,10 @@ The ceremony serves only the custody port. Its measured recipient list controls
 where shares can be sent. A reboot can issue a different record for the same
 epoch. The capture retains the original evidence, challenge and verification
 time. Two approval signers reverify the proof and bind the record to the six
-recovery keys, measured relay and exact predecessor. A rotated receipt pins
+recovery keys, measured relay and exact predecessor. Before opening its
+share, each custodian verifies the evidence and build provenance against an
+independently reviewed ref and commit. The publisher verifies the Nitro proof
+before committing the signed record. A rotated receipt pins
 the registered rotation approval. It must match the approved rotation image,
 host role, successor roster and successor relay. All six custodians sign an
 acknowledgement that their sealed key can open its share.
