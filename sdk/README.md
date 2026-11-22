@@ -35,6 +35,13 @@ and system clock, including when a caller supplies a fresh signed policy.
 [Direct Turnkey example](../example) · [Security flow](../enclave/SPEC.md)
 
 
+## Test a standalone SDK build
+
+CI uploads `spr-decryption-sdk-<build-sha>` for the checked-out commit.
+Use `gh run download RUN_ID --pattern 'spr-decryption-sdk-*'`, verify
+`SHA256SUMS`, and install the tarball with compatible `@heliuslabs/spr`
+and `@solana/kit` packages in the wallet project.
+
 ## Native Nitro
 
 Import `createNitroDecryptionService` from

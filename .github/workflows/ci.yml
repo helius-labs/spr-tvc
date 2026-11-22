@@ -22,6 +22,17 @@ jobs:
           node-version: "24"
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
       - run: just ci
+      - name: Pack standalone TypeScript SDK
+        run: |
+          mkdir -p "$RUNNER_TEMP/decryption-sdk"
+          npx --yes pnpm@9.15.0 --dir sdk pack --pack-destination "$RUNNER_TEMP/decryption-sdk"
+          cd "$RUNNER_TEMP/decryption-sdk"
+          sha256sum -- *.tgz > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: spr-decryption-sdk-${{ github.sha }}
+          path: ${{ runner.temp }}/decryption-sdk/
+          if-no-files-found: error
       - name: Check native KMS policy and provisioning
         run: python3 -B -m unittest discover -s tests/nitro
       - name: Build native Nitro service
