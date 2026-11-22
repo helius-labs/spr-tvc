@@ -13,7 +13,7 @@ from subprocess import run as run_command
 from approval import (
     KEY_ARN, MAX_DOCUMENT_BYTES, ROLE_ARN, add_approval, approval_keys, approval_roster, arn, aws, canonical, check_approvals,
     epoch_number, fields, hex_digest, kms,
-    parse_json, read_json, require_kms_key, sha256,
+    parse_json, read_json, require_inspection_profiles, require_kms_key, require_profile_account, sha256,
 )
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
@@ -295,28 +295,35 @@ def require_terminated_parent(target, profile):
 
 
 def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_seconds):
-    if len(profiles) != 6 or len(set(profiles)) != 6 or wait_seconds <= 0:
-        raise ValueError("provide six distinct read-only profiles in slot order and a positive wait time")
+    require_inspection_profiles(profiles)
+    if wait_seconds <= 0:
+        raise ValueError("provide a positive replacement boot wait time")
     document, custodians = load_retirement(trust, epoch)
     marker = document["manifest"]
     _, replacement, replacement_custodians = load_epoch(trust, marker["replacementEpoch"])
 
-    def inspect_all():
+    def inspect_all(*, check_profiles=False):
         targets = list(registered_targets(trust, epoch, marker["receiptSha256"]))
+        hosts = {(arn(ROLE_ARN, target["hostRole"])[1], target["hostRegion"], target["instanceId"]): target
+                 for target in targets}
+        host_regions = {account: region for account, region, _ in hosts}
+        if set(host_profiles) != host_regions.keys():
+            raise ValueError("provide one host inspection profile for each old parent account")
         with ThreadPoolExecutor(max_workers=6) as workers:
+            if check_profiles:
+                accounts = [arn(KEY_ARN, member["recoveryKeyArn"]) for member in custodians]
+                checks = [(profile, key[1], key[2]) for profile, key in zip(profiles, accounts, strict=True)]
+                checks.extend((host_profiles[account], region, account) for account, region in host_regions.items())
+                list(workers.map(lambda check: require_profile_account(*check), checks))
             slots = list(workers.map(
                 lambda index, member, profile: inspect_inventory(
                     slot_inventory(trust, epoch, member, targets, index), True, profile=profile),
                 range(1, 7), custodians, profiles,
             ))
-        hosts = {(arn(ROLE_ARN, target["hostRole"])[1], target["hostRegion"], target["instanceId"]): target
-                 for target in targets}
-        if set(host_profiles) != {account for account, _, _ in hosts}:
-            raise ValueError("provide one host inspection profile for each old parent account")
         terminated = [require_terminated_parent(hosts[host], host_profiles[host[0]]) for host in sorted(hosts)]
         return slots, terminated
 
-    inspect_all()
+    inspect_all(check_profiles=True)
     after_ms = int(time.time() * 1000)
     deadline = time.monotonic() + wait_seconds
     seed = replacement["custody"]["noteSeedCommitment"]

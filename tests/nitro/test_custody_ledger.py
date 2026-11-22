@@ -483,7 +483,8 @@ class CustodyLedgerTests(unittest.TestCase):
     @patch("custody_ledger.get_signing_key")
     @patch("custody_ledger.sealed_rsa_key")
     @patch("custody_ledger.verify_relay_build")
-    def test_custody_approval_checks_the_relay_and_both_installed_keys_per_slot(self, provenance, inspect, signing, kms):
+    @patch("custody_ledger.require_profile_account")
+    def test_custody_approval_checks_the_relay_and_both_installed_keys_per_slot(self, identity, provenance, inspect, signing, kms):
         roster = self.document(1)["authorization"]["manifest"]["custodians"]
         keys = [bytes([i]) * 264 for i in range(1, 7)]
         fingerprints = [hashlib.sha256(key).hexdigest() for key in keys]
@@ -499,6 +500,11 @@ class CustodyLedgerTests(unittest.TestCase):
             check_custody_roster(self.trust, "1", roster, fingerprints, profiles, reviewed)
         inspect.assert_not_called()
         provenance.side_effect = None
+        identity.side_effect = ValueError("inspection profile is in the wrong account")
+        with self.assertRaisesRegex(ValueError, "wrong account"):
+            check_custody_roster(self.trust, "1", roster, fingerprints, profiles, reviewed)
+        inspect.assert_not_called()
+        identity.side_effect = None
         acknowledgements = {member["acknowledgementKey"]["keyArn"]: member for member in roster}
 
         def checked_member(key, profile):
@@ -532,10 +538,13 @@ class CustodyLedgerTests(unittest.TestCase):
 
         inspect.reset_mock()
         kms.reset_mock()
+        identity.reset_mock()
         inspect.side_effect = keys
         kms.side_effect = policy
         check_custody_roster(self.trust, "1", roster, fingerprints, profiles, reviewed)
         provenance.assert_called_with(self.trust, "1", *reviewed)
+        self.assertEqual([call.args for call in identity.call_args_list],
+                         [(profile, REGION, f"{slot:012d}") for slot, profile in enumerate(profiles, 1)])
         self.assertEqual([call.kwargs["profile"] for call in inspect.call_args_list], profiles)
         self.assertEqual([call.args[0] for call in inspect.call_args_list], [member["recoveryKeyArn"] for member in roster])
         self.assertEqual([call.args[0] for call in kms.call_args_list], list(acknowledgements))
@@ -898,9 +907,16 @@ class CustodyLedgerTests(unittest.TestCase):
         wallet.write_bytes(b"{}")
         self.trust["walletTrustSha256"] = hashlib.sha256(wallet.read_bytes()).hexdigest()
         with (patch("retirement.kms", side_effect=kms),
+              patch("retirement.require_profile_account") as identity,
               patch("retirement.run_command") as query, patch("retirement.time.sleep"),
               patch("retirement.require_host_state", side_effect=require_host_state) as host_state,
               patch("retirement.require_recovery_quorum") as quorum):
+            identity.side_effect = ValueError("inspection profile is in the wrong account")
+            with self.assertRaisesRegex(ValueError, "wrong account"):
+                verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
+            self.assertEqual(visited, [])
+            host_state.assert_not_called()
+            identity.side_effect = None
             with self.assertRaisesRegex(ValueError, active):
                 verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
             query.assert_not_called()
@@ -926,6 +942,7 @@ class CustodyLedgerTests(unittest.TestCase):
                         verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
             visited.clear()
             host_state.reset_mock()
+            identity.reset_mock()
             query.reset_mock()
             quorum.reset_mock()
 
@@ -942,6 +959,9 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertEqual(len(visited), 2 * len(inventory))
             self.assertEqual(report["retirementSha256"], sha256(retired))
             self.assertEqual(report["retirementObservedAtMs"], str(self.booted_at_ms))
+            self.assertEqual({call.args for call in identity.call_args_list},
+                             {(profile, REGION, f"{slot:012d}") for slot, profile in enumerate(profiles, 1)} |
+                             {(host_profiles[parent["account"]], parent["region"], parent["account"]) for parent in parents})
             self.assertEqual(report["terminatedParents"], parents)
             self.assertEqual(host_state.call_count, 4)
             host_state.assert_called_with(other_host, "terminated", "old-service")

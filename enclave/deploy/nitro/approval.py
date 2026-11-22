@@ -228,6 +228,15 @@ def require_inspection_profiles(profiles):
         raise ValueError("provide six distinct read-only inspection profiles in custody slot order")
 
 
+def require_profile_account(profile, region, account):
+    try:
+        identity = aws(region, "sts", "get-caller-identity", [], profile=profile)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        raise ValueError(f"cannot identify AWS inspection profile {profile}") from error
+    if not isinstance(identity, dict) or identity.get("Account") != account:
+        raise ValueError(f"AWS inspection profile {profile} must belong to account {account}")
+
+
 def get_signing_key(key, **options):
     require_kms_key(kms(key, "describe-key", **options)["KeyMetadata"], key, {"ECC_NIST_P256"}, "SIGN_VERIFY")
     result = key_result(key, "get-public-key", **options)

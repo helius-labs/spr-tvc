@@ -13,7 +13,7 @@ from pathlib import Path
 from approval import (
     KEY_ARN, ROLE_ARN, MAX_DOCUMENT_BYTES, add_approval, approval_keys, approval_roster, arn, aws, canonical, check_approvals,
     epoch_number, fields, file_digest, get_signing_key, hex_digest, kms, parse_json, read_document,
-    read_json, require_inspection_profiles, sha256, signing_key, signing_sec1,
+    read_json, require_inspection_profiles, require_profile_account, sha256, signing_key, signing_sec1,
 )
 from kms_policy import acknowledgement_policy, boot_pins, target_boot_pins, validate_custodian_roles, validate_scope
 from provenance import MAIN_REF, verify as verify_build
@@ -570,8 +570,11 @@ def check_custody_roster(trust, epoch, custodians, fingerprints, inspection_prof
         raise ValueError("provide the independently reviewed recovery relay build, commit and ref")
     verify_relay_build(trust, epoch, *relay_build)
     for custodian, fingerprint, profile in zip(custodians, fingerprints, inspection_profiles, strict=True):
+        recovery_key = custodian["recoveryKeyArn"]
+        key = arn(KEY_ARN, recovery_key)
+        require_profile_account(profile, key[1], key[2])
         expected = custody_recovery_policy(trust, custodian, epoch)
-        public = sealed_rsa_key(custodian["recoveryKeyArn"], expected, profile=profile)
+        public = sealed_rsa_key(recovery_key, expected, profile=profile)
         if hashlib.sha256(public).hexdigest() != fingerprint:
             raise ValueError("inspected recovery key does not match its recovery package")
         ack = custodian["acknowledgementKey"]

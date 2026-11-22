@@ -1,7 +1,6 @@
 import base64
 import hashlib
 import json
-import json
 import os
 import pathlib
 import struct
@@ -12,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
-from approval import aws
+from approval import aws, require_profile_account
 from deployment import host_policy
 from kms_policy import RSA_OAEP, acknowledgement_policy, key_policy, recovery_policy, validate_scope
 from provision import UnconfirmedBootstrap, provision, read_target, recipient_for
@@ -36,6 +35,19 @@ SHARES = pathlib.Path("shares")
 
 
 class KeyPolicyTests(unittest.TestCase):
+    @patch("approval.aws")
+    def test_inspection_profile_uses_its_actual_aws_account(self, aws_call):
+        aws_call.return_value = {"Account": "222222222222"}
+        require_profile_account("slot", "eu-north-1", "222222222222")
+        aws_call.assert_called_once_with("eu-north-1", "sts", "get-caller-identity", [], profile="slot")
+        for identity in ({"Account": "111111111111"}, {}, []):
+            aws_call.return_value = identity
+            with self.assertRaisesRegex(ValueError, "profile slot must belong to account 222222222222"):
+                require_profile_account("slot", "eu-north-1", "222222222222")
+        aws_call.side_effect = ValueError("expired credentials")
+        with self.assertRaisesRegex(ValueError, "cannot identify AWS inspection profile slot"):
+            require_profile_account("slot", "eu-north-1", "222222222222")
+
     def test_only_the_approved_principal_with_all_pcrs_can_decrypt(self):
         for policy, principal in (
             (recovery_policy(CUSTODIAN, RETIREMENT, HOST, PINS, "5"), CUSTODIAN),

@@ -67,6 +67,8 @@ the measured relay. The acknowledgement key permits only the custodian role
 to sign. Give the approvers read-only profiles in all six slot accounts with
 `kms:DescribeKey`, `kms:GetKeyPolicy` and `kms:GetPublicKey` on the keys they
 inspect. AWS KMS requires `GetKeyPolicy` to run in the key's own account.
+Custody approval checks each profile's actual AWS account through STS before
+inspecting that slot's keys.
 [GetKeyPolicy permissions](https://docs.aws.amazon.com/kms/latest/APIReference/API_GetKeyPolicy.html)
 
 ## Commit a custody epoch
@@ -294,7 +296,8 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    Scheduling immediately disables cryptographic use. Canceling leaves the
    key disabled, and the sealed policy grants no permission to re-enable it.
    Give the verifier a KMS inspection profile for each old custody account
-   and an EC2 inspection profile for each old parent account. Add
+   in slot order and an EC2 inspection profile for each old parent account.
+   It checks the accounts through STS before reading the retirement inventory. Add
    `cloudtrail:LookupEvents` to a custody inspection profile to verify keys
    after permanent deletion. The verifier requires the exact key's AWS KMS
    `DeleteKey` service event and includes its ID in the report. CloudTrail
