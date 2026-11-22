@@ -774,6 +774,26 @@ policy or its exact predecessor. A mirror ahead of the primary blocks new
 connections. Retirement requires agreement. Set alerts for mismatched heads
 and approaching expiration.
 
+Retain the S3 version ID of each verified policy outside its publication
+bucket. Read it with `head-object` using the pinned bucket owner and the key
+`spr-release/<network>/<securityDomainId>/policy.json`. Record it with the
+signed policy and wallet trust in the release record.
+
+If one current policy is unreadable, suspend other writes to the affected
+bucket. Use its publisher role and the independently retained version ID.
+Grant the role `s3:ListBucketVersions` scoped to the policy key prefix and
+`s3:GetObjectVersion` on that key. The command checks both signature quorums,
+checks the intact peer agrees or forms the supported primary and predecessor
+pair, and refuses to replace a later version carrying a different
+authenticated policy. It restores the retained bytes against the damaged
+head's ETag. An expired head can be restored so that a new revision or
+emergency revocation can follow it. The restoration leaves the old expiry in
+force. [S3 version listing](https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectVersions.html)
+
+```sh
+pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" --restore-from "$retained_version_id"
+```
+
 ```sh
 cargo xtask nitro-sign policy.json --custody --key "$custody_key_arn" --public-key "$custody_sec1_hex" --custody-trust "$custody_trust"
 cargo xtask nitro-sign policy.json --key "$signing_key_arn" --public-key "$signer_sec1_hex" --custody-trust "$custody_trust"

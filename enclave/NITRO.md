@@ -333,6 +333,10 @@ missing or invalid head, a fork, a gap or an expired primary blocks new
 connections. For retirement, custodians verify the exact wallet trust file
 against its pinned hash and their own publication pins. Both buckets must
 agree before the verifier qualifies a replacement and again after attestation.
+An operator can restore the exact bytes of an independently recorded S3
+version when one head is damaged. Restoration requires the intact peer and
+checks every intervening version for a different authenticated policy.
+Wallet expiry and checkpoint checks still apply to the restored bytes.
 
 Shipped pins bind the minimum sequence to its exact policy digest. The
 immediate successor must name that digest as its predecessor. The checkpoint

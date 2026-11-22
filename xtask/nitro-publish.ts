@@ -7,13 +7,14 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
 import {
-  nextNitroPublication, nitroPublication, requireNitroTrustTransition, validateNitroTrust,
-  verifyNitroMirrorPolicy, verifyNitroPolicy, type NitroTarget, type NitroTrust,
+  authenticateNitroPolicy, nextNitroPublication, nitroPublication, requireNitroTrustTransition, validateNitroTrust,
+  verifyNitroMirrorPolicy, verifyNitroPolicy, verifyStoredNitroPolicy, type NitroTarget, type NitroTrust,
 } from "../sdk/src/attestation/nitro-policy.js";
 import { readNitroPolicy, readPublishedNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
 import { probeNitroTarget } from "../sdk/src/client/nitro-probe.js";
 import { remainingReleasePolicyMs } from "../sdk/src/connection/operations.js";
 import { decodeDecimalU64 } from "../sdk/src/protocol/decimal.js";
+import { DecryptionServiceError } from "../sdk/src/protocol/error.js";
 import { parseStrictJson } from "../sdk/src/protocol/json.js";
 
 const execute = promisify(execFile);
@@ -68,6 +69,17 @@ function publicationFor(trust: NitroTrust, bucket: string) {
   const publication = trust.publications.find(candidate => candidate.bucket === bucket);
   if (!publication) throw new Error("expected one of the pinned publication buckets");
   return nitroPublication(trust, publication);
+}
+
+function publicationStorage({ bucket, region, account }: ReturnType<typeof publicationFor>, run: Run) {
+  return (operation: string, args: readonly string[], timeout = 25_000) =>
+    run("aws", ["--region", region, "--no-cli-pager", "--output", "json", "s3api", operation,
+      "--bucket", bucket, "--expected-bucket-owner", account, ...args], timeout);
+}
+
+function etag(value: unknown): string {
+  if (typeof value !== "string" || !/^"[^"\s]{1,128}"$/.test(value)) throw new Error("invalid S3 revision");
+  return value;
 }
 
 function requireCustodyWriteWindow(nextCutover: bigint | undefined, now: bigint): void {
@@ -126,7 +138,8 @@ export async function publish(
   { custodyTrust, replicaProfile, nextTrust, emergencyFrom, run = runCommand, probe = probeNitroTarget }: PublicationOptions = {},
 ): Promise<void> {
   validateNitroTrust(trust);
-  const { bucket, region, account, key } = publicationFor(trust, name);
+  const publication = publicationFor(trust, name);
+  const { bucket, key } = publication;
   const [first, second] = trust.publications;
   const isSecond = bucket === second.bucket;
   async function readPeer() {
@@ -161,16 +174,13 @@ export async function publish(
   const candidate = join(directory, "candidate.json");
   const current = join(directory, "current.json");
 
-  async function call(operation: string, args: readonly string[]) {
-    return run("aws", ["--region", region, "--no-cli-pager", "--output", "json", "s3api", operation,
-      "--bucket", bucket, "--expected-bucket-owner", account, "--key", key, ...args], 25_000);
-  }
+  const storage = publicationStorage(publication, run);
+  const call = (operation: string, args: readonly string[]) => storage(operation, ["--key", key, ...args]);
 
   async function readHead() {
     const { stdout } = await call("get-object", ["--range", `bytes=0-${MAX_BYTES}`, current]);
-    const { ETag: etag } = JSON.parse(stdout) as { ETag: string };
-    if (typeof etag !== "string" || !/^"[^"\s]{1,128}"$/.test(etag)) throw new Error("invalid S3 revision");
-    return { etag, text: await readPolicy(current) };
+    const { ETag } = JSON.parse(stdout) as { ETag: string };
+    return { etag: etag(ETag), text: await readPolicy(current) };
   }
 
   try {
@@ -247,6 +257,129 @@ async function pinnedPublication(trust: NitroTrust) {
   return published;
 }
 
+type StoredVersion = { VersionId: string; Size: number };
+
+function versionId(value: unknown): string {
+  if (typeof value !== "string" || value === "null" || !/^[!-~]{1,1024}$/.test(value)) {
+    throw new Error("expected an original S3 policy version");
+  }
+  return value;
+}
+
+/** Restore the exact retained policy in one bucket using the other bucket as witness. */
+export async function restorePublication(trust: NitroTrust, name: string, retainedVersion: string, { run = runCommand }: Pick<PublicationOptions, "run"> = {}) {
+  validateNitroTrust(trust);
+  versionId(retainedVersion);
+  const publication = publicationFor(trust, name);
+  const { key } = publication;
+  const [primary, mirror] = trust.publications;
+  const isPrimary = name === primary.bucket;
+  const peer = nitroPublication(trust, isPrimary ? mirror : primary);
+  const deadline = performance.now() + 180_000;
+  const storage = publicationStorage(publication, run);
+  async function call(operation: string, args: readonly string[]) {
+    const remaining = Math.floor(deadline - performance.now());
+    if (remaining <= 0) throw new Error("policy restoration exceeded its deadline");
+    return storage(operation, args, Math.min(25_000, remaining));
+  }
+  async function head() {
+    const { stdout } = await call("head-object", ["--key", key]);
+    const result = JSON.parse(stdout) as { VersionId: unknown; ETag: unknown; ContentLength: number };
+    return { VersionId: versionId(result.VersionId), Size: result.ContentLength, etag: etag(result.ETag) };
+  }
+  const directory = await mkdtemp(join(tmpdir(), "spr-policy-restore-"));
+  const path = join(directory, "policy.json");
+  async function readVersion(version: StoredVersion) {
+    if (!Number.isSafeInteger(version.Size) || version.Size < 0) throw new Error("invalid S3 policy size");
+    if (version.Size === 0 || version.Size > MAX_BYTES) return undefined;
+    const { stdout } = await call("get-object", [
+      "--key", key, "--version-id", versionId(version.VersionId), "--range", `bytes=0-${MAX_BYTES}`, path,
+    ]);
+    if (JSON.parse(stdout).VersionId !== version.VersionId) throw new Error("S3 returned a different policy version");
+    try {
+      const text = await readPolicy(path);
+      if (Buffer.byteLength(text) !== version.Size) throw new Error("S3 policy size differs from the retained version");
+      return text;
+    } catch (error) {
+      if (error instanceof TypeError) return undefined; // Malformed UTF-8.
+      throw error;
+    }
+  }
+
+  try {
+    const damaged = await head();
+    let tokens: string[] = [];
+    const seen = new Set<string>();
+    const later: StoredVersion[] = [];
+    let retained: StoredVersion | undefined;
+    while (!retained) {
+      const { stdout } = await call("list-object-versions", ["--prefix", key, "--max-keys", "64", "--no-paginate", ...tokens]);
+      const page = JSON.parse(stdout) as {
+        Versions?: (StoredVersion & { Key: string; IsLatest: boolean })[];
+        DeleteMarkers?: { Key: string }[];
+        IsTruncated: boolean;
+        NextKeyMarker?: string;
+        NextVersionIdMarker?: string;
+      };
+      if (page.DeleteMarkers?.some(marker => marker.Key === key) || typeof page.IsTruncated !== "boolean") {
+        throw new Error("cannot verify the current policy version history");
+      }
+      for (const row of page.Versions ?? []) {
+        if (row.Key !== key) continue;
+        const id = versionId(row.VersionId);
+        if (seen.has(id) || (seen.size === 0 ? id !== damaged.VersionId || row.IsLatest !== true : row.IsLatest !== false)) {
+          throw new Error("policy head changed during restoration");
+        }
+        seen.add(id);
+        if (id === retainedVersion) {
+          retained = row;
+          break;
+        }
+        later.push(row);
+      }
+      if (retained) break;
+      if (!page.IsTruncated || page.NextKeyMarker !== key || page.NextVersionIdMarker === tokens.at(-1)) {
+        throw new Error("retained policy version is missing");
+      }
+      tokens = ["--key-marker", key, "--version-id-marker", versionId(page.NextVersionIdMarker)];
+    }
+    const text = await readVersion(retained);
+    if (text === undefined) throw new Error("retained policy version has an invalid body");
+    authenticateNitroPolicy(text, trust);
+    let alreadyRestored = later.length === 0;
+    for (const version of later) {
+      const observed = await readVersion(version);
+      if (observed === text && version.VersionId === damaged.VersionId) alreadyRestored = true;
+      if (observed === undefined || observed === text) continue;
+      try {
+        authenticateNitroPolicy(observed, trust);
+      } catch (error) {
+        if (error instanceof DecryptionServiceError) continue;
+        throw error;
+      }
+      throw new Error("a later S3 version contains a different authenticated policy");
+    }
+    const witness = await readNitroPolicy(peer.url, AbortSignal.timeout(5_000), peer.account);
+    const primaryText = isPrimary ? text : witness;
+    const primaryPolicy = verifyStoredNitroPolicy(primaryText, trust, BigInt(Date.now()));
+    nextNitroPublication(primaryPolicy, isPrimary ? witness : text, trust);
+    if (!alreadyRestored) await writeFile(path, text, { mode: 0o600 });
+    const confirmed = await head();
+    if (confirmed.VersionId !== damaged.VersionId || confirmed.etag !== damaged.etag) {
+      throw new Error("policy head changed during restoration");
+    }
+    if (alreadyRestored) return;
+    try {
+      await call("put-object", ["--key", key, "--if-match", damaged.etag, "--content-type", "application/json",
+        "--cache-control", "no-store", "--body", path]);
+    } catch (error) {
+      if (await head().then(readVersion).catch(() => undefined) !== text) throw error;
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 /** Verify the exact current, witnessed revision before shipping a new pin file. */
 export async function verifyDistributionPins(
   trust: NitroTrust,
@@ -283,7 +416,7 @@ export async function verifyDistributionPins(
 async function main() {
   const [trustPath, bucket, ...args] = process.argv.slice(2);
   const activationOptions = "[--custody-trust <custody-trust.json>] [--replica-profile <aws-profile>]";
-  const usage = `usage: nitro-publish.ts <wallet-trust.json> --check-wallet-trust ${activationOptions} | nitro-publish.ts <wallet-trust.json> <bucket> <signed-policy.json> ${activationOptions} [--next-trust <incoming.json> | --emergency-from <outgoing.json>] | <wallet-trust.json> <bucket> --bucket-policy <administrator-role> <publisher-role>`;
+  const usage = `usage: nitro-publish.ts <wallet-trust.json> --check-wallet-trust ${activationOptions} | nitro-publish.ts <wallet-trust.json> <bucket> <signed-policy.json> ${activationOptions} [--next-trust <incoming.json> | --emergency-from <outgoing.json>] | <wallet-trust.json> <bucket> --bucket-policy <administrator-role> <publisher-role> | <wallet-trust.json> <bucket> --restore-from <version-id>`;
   const activationFlags = { "custody-trust": { type: "string" }, "replica-profile": { type: "string" } } as const;
   if (!trustPath || !bucket) {
     throw new Error(usage);
@@ -306,6 +439,11 @@ async function main() {
     const [administrator, publisher] = extra;
     if (!administrator || !publisher || extra.length !== 2) throw new Error(usage);
     console.log(JSON.stringify(bucketPolicy(trust, bucket, administrator, publisher), null, 2));
+    return;
+  }
+  if (policyPath === "--restore-from") {
+    if (extra.length !== 1) throw new Error(usage);
+    await restorePublication(trust, bucket, extra[0]!);
     return;
   }
   const { values: { "custody-trust": custodyTrust, "replica-profile": replicaProfile, "next-trust": nextPath, "emergency-from": emergencyPath } } = parseArgs({

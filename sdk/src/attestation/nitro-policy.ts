@@ -192,7 +192,8 @@ function verifyQuorum(
   if (approvals < threshold) invalid();
 }
 
-function verifySignedPolicy(text: string, trust: NitroTrust) {
+/** Verify the policy's domain and both signature quorums against pinned keys. */
+export function authenticateNitroPolicy(text: string, trust: NitroTrust) {
   const { policy, signatures, custodySignatures } = parseStrictJson<{
     policy: NitroPolicy;
     signatures: readonly PolicySignature[];
@@ -237,9 +238,6 @@ function verifySignedPolicy(text: string, trust: NitroTrust) {
   verifyQuorum(signatures, trust.keys, trust.threshold, digest, seen);
   verifyQuorum(custodySignatures, trust.custodyKeys, CUSTODY_QUORUM, nitroCustodySigningDigest(policy), seen);
   const digestHex = encodeLowerHex(digest);
-  const anchor = decodeDecimalU64(trust.minimumSequence);
-  if ((sequence === anchor && digestHex !== trust.minimumPolicyDigest) ||
-      (sequence === anchor + 1n && policy.previousPolicyDigest !== trust.minimumPolicyDigest)) invalid();
   return {
     policy, signatures, custodySignatures, validFrom, expiresAt,
     checkpoint: Object.freeze({
@@ -249,7 +247,16 @@ function verifySignedPolicy(text: string, trust: NitroTrust) {
   };
 }
 
-type VerifiedPolicy = ReturnType<typeof verifySignedPolicy>;
+type VerifiedPolicy = ReturnType<typeof authenticateNitroPolicy>;
+
+function verifySignedPolicy(text: string, trust: NitroTrust): VerifiedPolicy {
+  const verified = authenticateNitroPolicy(text, trust);
+  const anchor = decodeDecimalU64(trust.minimumSequence);
+  const sequence = decodeDecimalU64(verified.policy.sequence);
+  if ((sequence === anchor && verified.checkpoint.digest !== trust.minimumPolicyDigest) ||
+      (sequence === anchor + 1n && verified.policy.previousPolicyDigest !== trust.minimumPolicyDigest)) invalid();
+  return verified;
+}
 
 function requirePolicyPins({ policy }: VerifiedPolicy, trust: NitroTrust): void {
   if (decodeDecimalU64(policy.sequence) < decodeDecimalU64(trust.minimumSequence) ||
@@ -271,6 +278,11 @@ export function verifyNitroPolicy(text: string, trust: NitroTrust, now: bigint):
 /** Reconcile the mirror with the exact policy already published by the primary. */
 export function verifyNitroMirrorPolicy(text: string, primary: string, trust: NitroTrust, now: bigint): VerifiedPolicy {
   if (text !== primary) throw new DecryptionServiceError("ReleasePolicyInvalid", "mirror the primary's exact signed policy file");
+  return verifyStoredNitroPolicy(text, trust, now);
+}
+
+/** Authenticate an already published head, including after its expiry. */
+export function verifyStoredNitroPolicy(text: string, trust: NitroTrust, now: bigint): VerifiedPolicy {
   const verified = verifySignedPolicy(text, trust);
   requirePolicyPins(verified, trust);
   if (now < verified.validFrom) invalid();
@@ -320,7 +332,7 @@ export function requireNitroTrustTransition(from: NitroTrust, to: NitroTrust, se
 export function nextNitroPublication(
   next: VerifiedPolicy, previous: string | undefined, trust: NitroTrust, previousTrust = trust,
 ): boolean {
-  if (!previous) {
+  if (previous === undefined) {
     if (next.policy.sequence !== "1") invalid();
     return true;
   }

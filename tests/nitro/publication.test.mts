@@ -3,11 +3,12 @@ import { createECDH } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { test } from "node:test";
 import {
-  nitroCustodySigningDigest, nitroPolicySigningDigest, verifyPublishedNitroPolicy, type NitroPolicy, type NitroTrust,
+  nitroCustodySigningDigest, nitroPolicySigningDigest, nitroPublication, verifyPublishedNitroPolicy,
+  type NitroPolicy, type NitroTrust,
 } from "../../sdk/src/attestation/nitro-policy.js";
 import { signP256Prehash } from "../../sdk/src/crypto/p256.js";
 import { encodeLowerHex } from "../../sdk/src/protocol/hex.js";
-import { bucketPolicy, publish, verifyDistributionPins } from "../../xtask/nitro-publish.js";
+import { bucketPolicy, publish, restorePublication, verifyDistributionPins } from "../../xtask/nitro-publish.js";
 
 const secrets = [1, 2, 3, 4].map(byte => Buffer.alloc(32, byte));
 const custodySecrets = [5, 6, 7, 8, 9, 10].map(byte => Buffer.alloc(32, byte));
@@ -69,6 +70,85 @@ function freshProbe(remaining = () => 60_000) {
     policyFreshnessRemainingMs: remaining,
   } };
 }
+
+test("restores an exact signed historical policy without replacing a different authenticated head", async context => {
+  const previous = { ...first, expiresAtMs: String(now - 1) };
+  const next = { ...first, sequence: "2", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(previous)) };
+  const backup = signed(previous);
+  const [primary, mirror] = trust.publications;
+  const restorePins = pins(previous);
+  let selected = primary;
+  let witness = mirror;
+  let peer = backup;
+  context.mock.method(globalThis, "fetch", async (url: URL, options: RequestInit) => {
+    assert.ok(url.hostname.startsWith(`${witness.bucket}.s3.`));
+    assert.equal(new Headers(options.headers).get("x-amz-expected-bucket-owner"), witness.account);
+    return new Response(peer);
+  });
+  let head = "damaged";
+  const held = new Map<string, string>([["damaged", "{}"], ["invalid", ""], ["backup", backup]]);
+  let failedResponse = false;
+  let race = false;
+  let reads = 0;
+  let writes = 0;
+  const options = awsOnly(async args => {
+    assert.equal(args[args.indexOf("--expected-bucket-owner") + 1], selected.account);
+    if (args.includes("head-object")) {
+      return { stdout: JSON.stringify({ VersionId: head, ContentLength: held.get(head)!.length,
+        ETag: race && ++reads > 1 ? '"different-etag"' : '"current-etag"' }) };
+    }
+    if (args.includes("list-object-versions")) {
+      const after = args.includes("--version-id-marker");
+      const actualKey = args[args.indexOf("--prefix") + 1]!;
+      assert.equal(actualKey, nitroPublication(restorePins, selected).key);
+      assert.ok(args.includes("--no-paginate"));
+      const entries = after ? ["invalid", "backup"] : [head];
+      return { stdout: JSON.stringify({
+        Versions: entries.map(id => ({ Key: actualKey, VersionId: id, Size: held.get(id)!.length, IsLatest: id === head })),
+        IsTruncated: !after, ...(!after ? { NextKeyMarker: actualKey, NextVersionIdMarker: head } : {}),
+      }) };
+    }
+    if (args.includes("get-object")) {
+      const id = args[args.indexOf("--version-id") + 1]!;
+      await writeFile(args.at(-1)!, held.get(id)!);
+      return { stdout: JSON.stringify({ VersionId: id }) };
+    }
+    assert.ok(args.includes("put-object"));
+    assert.equal(args[args.indexOf("--if-match") + 1], '"current-etag"');
+    assert.equal(await readFile(args.at(-1)!, "utf8"), backup);
+    writes++;
+    held.set("restored", backup);
+    head = "restored";
+    if (failedResponse) throw new Error("lost response");
+    return { stdout: "{}" };
+  });
+  await assert.rejects(restorePublication(restorePins, primary.bucket, "missing", options), /retained.*missing/);
+  held.set("invalid", signed(next));
+  await assert.rejects(restorePublication(restorePins, primary.bucket, "backup", options), /different authenticated policy/);
+  held.set("invalid", signed({ ...previous, recoveryOnly: true }));
+  await assert.rejects(restorePublication(restorePins, primary.bucket, "backup", options), /different authenticated policy/);
+  held.set("invalid", "");
+  peer = signed(next);
+  await assert.rejects(restorePublication(restorePins, primary.bucket, "backup", options), /ReleasePolicyInvalid/);
+  peer = "";
+  await assert.rejects(restorePublication(restorePins, primary.bucket, "backup", options), /InvalidCanonicalJson/);
+  peer = backup;
+  race = true;
+  await assert.rejects(restorePublication(restorePins, primary.bucket, "backup", options), /head changed/);
+  race = false;
+  assert.equal(writes, 0);
+  await restorePublication(restorePins, primary.bucket, "backup", options);
+  await restorePublication(restorePins, primary.bucket, "backup", options);
+  assert.equal(writes, 1);
+
+  selected = mirror;
+  witness = primary;
+  head = "damaged";
+  peer = signed(next);
+  failedResponse = true;
+  await restorePublication(restorePins, mirror.bucket, "backup", options);
+  assert.equal(writes, 2);
+});
 
 test("one conditional publisher wins and replaying the exact policy is idempotent", async context => {
   let head = signed(first);
