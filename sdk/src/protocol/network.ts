@@ -8,3 +8,12 @@ export function requireNetwork(value: unknown): Network {
   }
   return value;
 }
+
+const GENESIS_HASHES = Object.freeze({
+  devnet: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+  mainnet: "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+});
+
+export function genesisHashForNetwork(network: Network): string {
+  return GENESIS_HASHES[requireNetwork(network)];
+}

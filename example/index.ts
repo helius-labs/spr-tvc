@@ -71,6 +71,7 @@ async function main(): Promise<void> {
       await sweepSend(registration);
       await checkRecipient(true);
       const registered = await resolvePaymentAddress({ rpc: zolana, owner: recipient.address, service: {
+        genesisHash: service.genesisHash,
         async address() { throw new Error("a registered owner must use its registry address"); },
       } });
       if (!Buffer.from(registered.toBytes()).equals(ownKeys.address().toBytes())) {

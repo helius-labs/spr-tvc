@@ -10,6 +10,7 @@ import { requireCurrentReleasePolicy } from "../connection/operations.js";
 import { awaitWithSignal } from "../connection/request.js";
 import { sessionFromConnector } from "../connection/session.js";
 import { DecryptionServiceError } from "../protocol/error.js";
+import { genesisHashForNetwork } from "../protocol/network.js";
 import { decryptionServiceFromSession, type DecryptionService } from "./decryption.js";
 
 export { advancesNitroPolicy } from "../attestation/nitro-policy.js";
@@ -127,5 +128,5 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
       },
     };
   });
-  return decryptionServiceFromSession(session, { requestTimeoutMs: config.requestTimeoutMs, retryPublicKeys: true });
+  return decryptionServiceFromSession(session, genesisHashForNetwork(trust.network), { requestTimeoutMs: config.requestTimeoutMs, retryPublicKeys: true });
 }

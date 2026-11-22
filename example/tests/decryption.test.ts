@@ -18,7 +18,7 @@ const endpoint = process.env["DECRYPTION_SERVICE_LOCAL_ENDPOINT"];
 
 test("the direct service opens signed batches and the SDK checks commitments", { skip: !endpoint }, async () => {
   await initializePoseidon();
-  const service = createLocalDecryptionService({ network: "devnet", endpoint: new URL(endpoint!) });
+  const service = createLocalDecryptionService({ network: "devnet", endpoint: new URL(endpoint!), genesisHash: "11111111111111111111111111111111" });
   const signer = await generateKeyPairSigner();
   const approvals: string[] = [];
   const owner = {

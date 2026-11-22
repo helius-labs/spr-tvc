@@ -26,6 +26,7 @@ import { SignedTeePolicy } from "@heliuslabs/spr/client";
 import { ed25519DerivationMessage } from "@heliuslabs/spr/keypair";
 import type { AssetBalance } from "@heliuslabs/spr/transaction";
 import { createDecryptionService, type DecryptionService, type Network } from "@heliuslabs/spr-decryption-service";
+import { genesisHashForNetwork } from "@heliuslabs/spr-decryption-service/protocol";
 import { createLocalDecryptionService } from "@heliuslabs/spr-decryption-service/testing";
 
 import { turnkeyClient, turnkeySigner, type OwnerSigner } from "./turnkey.js";
@@ -47,8 +48,6 @@ function env(name: string): string {
   return value;
 }
 
-const DEVNET_GENESIS = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
-const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 function loopback(url: string | URL | undefined): boolean {
   return url !== undefined && ["127.0.0.1", "localhost", "[::1]"].includes(new URL(url).hostname);
 }
@@ -98,7 +97,7 @@ export async function setup(): Promise<ExampleSetup> {
   await initializePoseidon();
   const zolana = await createSprClient(config);
   const genesis = await zolana.solanaRpc.getGenesisHash().send();
-  if (genesis === MAINNET_GENESIS || (!localEndpoint && genesis !== DEVNET_GENESIS)) {
+  if (genesis === genesisHashForNetwork("mainnet") || (!localEndpoint && genesis !== genesisHashForNetwork(network))) {
     throw new Error("the example requires a Solana devnet or localnet RPC");
   }
   if (localEndpoint) {
@@ -107,7 +106,7 @@ export async function setup(): Promise<ExampleSetup> {
       sender: await filePayer(),
       recipient: await generateKeyPairSigner(),
       localnet: true,
-      service: createLocalDecryptionService({ network, endpoint: new URL(localEndpoint) }),
+      service: createLocalDecryptionService({ network, endpoint: new URL(localEndpoint), genesisHash: genesis }),
     };
   }
   if (nitroTrust) {

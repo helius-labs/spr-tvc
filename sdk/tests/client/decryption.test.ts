@@ -12,6 +12,7 @@ import { decodeLowerHex, encodeLowerHex } from "../../src/protocol/hex.js";
 import { DecryptionServiceError } from "../../src/protocol/error.js";
 import type { ServiceInfo } from "../../src/protocol/types.js";
 import * as exchange from "../../src/client/exchange.js";
+import { genesisHashForNetwork } from "../../src/protocol/network.js";
 import { decryptionServiceFromSession } from "../../src/client/decryption.js";
 import type { ServiceRequest } from "../../src/protocol/decryption.js";
 
@@ -40,7 +41,7 @@ function fixture() {
 it("asks for an address's keys from the release it verified", async () => {
   const { context, fetch, quorum, info } = fixture();
   const forget = vi.fn();
-  const service = decryptionServiceFromSession({ context: async () => context, forget, reset: vi.fn() });
+  const service = decryptionServiceFromSession({ context: async () => context, forget, reset: vi.fn() }, genesisHashForNetwork("devnet"));
   const owner = ownerAddress;
 
   await expect(service.address(owner)).rejects.toMatchObject({ code: "OperationUnavailable" });
@@ -64,7 +65,7 @@ it("discards a disconnected native endpoint and reconnects on the next call", as
   const { context, fetch } = fixture();
   fetch.mockRejectedValueOnce(new DecryptionServiceError("EndpointUnavailable"));
   const connect = vi.fn(async () => context);
-  const service = decryptionServiceFromSession(sessionFromConnector(connect));
+  const service = decryptionServiceFromSession(sessionFromConnector(connect), genesisHashForNetwork("devnet"));
 
   await expect(service.address(ownerAddress)).rejects.toMatchObject({ code: "EndpointUnavailable" });
   expect(fetch).toHaveBeenCalledOnce();
@@ -134,7 +135,7 @@ it.each([undefined, 25])("bounds stalled verification with client timeout %s", a
   vi.useFakeTimers();
   try {
     const connect = vi.fn((_signal: AbortSignal) => new Promise<ConnectedTvcRuntime>(() => {}));
-    const service = decryptionServiceFromSession(sessionFromConnector(connect), { requestTimeoutMs: timeoutMs });
+    const service = decryptionServiceFromSession(sessionFromConnector(connect), genesisHashForNetwork("devnet"), { requestTimeoutMs: timeoutMs });
     for (const invalid of [0, -1, NaN, Infinity, 0.5, 2_147_483_648]) {
       await expect(service.address(ownerAddress, { timeoutMs: invalid })).rejects.toThrow("InvalidRequestTimeout");
     }
@@ -165,7 +166,7 @@ it.each(["caller", "client"])("uses one %s deadline across all decrypt batches",
   const viewing = ViewingKey.generate();
   const viewingPublicKey = viewing.publicKey();
   const service = decryptionServiceFromSession(
-    sessionFromConnector(async () => context), { requestTimeoutMs: source === "client" ? 10 : undefined },
+    sessionFromConnector(async () => context), genesisHashForNetwork("devnet"), { requestTimeoutMs: source === "client" ? 10 : undefined },
   );
   const operation = vi.spyOn(exchange, "executeServiceCall")
     .mockResolvedValueOnce({
@@ -225,7 +226,7 @@ it("binds subsequent replies to the opened owner, nullifier secret and each requ
   const nullifier = NullifierKey.fromSecret(secret);
   const viewing = ViewingKey.generate();
   const viewingPublicKey = viewing.publicKey();
-  const service = decryptionServiceFromSession(sessionFromConnector(async () => context));
+  const service = decryptionServiceFromSession(sessionFromConnector(async () => context), genesisHashForNetwork("devnet"));
   const bootstrap = { type: "Decrypt" as const, plaintexts: [], nullifier_secret: encodeLowerHex(secret) };
   const publicKeys = {
     type: "PublicKeys" as const, viewing_public_key: encodeLowerHex(viewingPublicKey.toBytes()),

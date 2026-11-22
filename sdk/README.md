@@ -20,8 +20,9 @@ const keys = await service.open(owner, spr.proofService);
 
 Pass `recipient` to the SPR transfer builder. The resolver reads the
 registry through your trusted RPC. It uses the service only after a successful
-lookup finds no record. Run it when building a payment. The transfer publishes
-the recipient's Solana address as its owner tag. `open` signs an empty batch to
+lookup finds no record and the RPC's Solana genesis hash matches the service.
+Run it when building a payment. The transfer publishes the recipient's Solana
+address as its owner tag. `open` signs an empty batch to
 obtain the nullifier secret and returns SPR `WalletKeys`. Sync with those keys
 to sign and decrypt note batches for that owner, including notes received
 through the service before registration. Call `keys.destroy()` when finished

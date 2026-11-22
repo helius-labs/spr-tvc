@@ -39,11 +39,12 @@ signs the request.
 
 ## Send, claim, and sweep
 
-1. **Look up the recipient.** For a recipient without a registry record, the
-   sender can call `PublicKeys(address)` on the verified service. Anyone can
-   look up the service viewing and nullifier public keys. The enclave accepts
-   on-curve Ed25519 addresses and rejects small-order keys. Program-derived
-   addresses cannot authorize this flow.
+1. **Look up the recipient.** Use the registered wallet keys when present.
+   After a confirmed registry miss, the wallet checks that the payment RPC’s
+   Solana genesis hash matches the service network before requesting
+   `PublicKeys(address)`. Anyone can request the service viewing and nullifier
+   public keys. The enclave accepts on-curve Ed25519 addresses and rejects
+   small-order keys and program-derived addresses.
 2. **Encrypt and publish.** The sender uses its ephemeral X25519 viewing
    secret and the recipient's service viewing public key to encrypt the
    note's asset ID, amount, blinding, and optional ring and application data.

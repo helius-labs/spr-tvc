@@ -9,7 +9,7 @@ import { createDecryptionServiceSession, type DecryptionServiceSession } from ".
 import type { DecryptionServiceTransport } from "../connection/http.js";
 import { DecryptionServiceError, DecryptionServiceHttpError } from "../protocol/error.js";
 import { bytesEqual, requireHex } from "../protocol/hex.js";
-import { requireNetwork } from "../protocol/network.js";
+import { genesisHashForNetwork, requireNetwork } from "../protocol/network.js";
 import { releaseForConnection, type ReleaseTrust } from "../protocol/releases.js";
 import type { DecryptItem, Network } from "../protocol/types.js";
 import { batched, checkPlaintexts } from "./items.js";
@@ -32,6 +32,8 @@ export type DecryptionServiceConfig = {
 };
 
 export type DecryptionService = {
+  /** Full base58 Solana genesis hash bound to these service keys. */
+  readonly genesisHash: string;
   /** The shielded address a sender pays `owner` at before `owner` registers a wallet. */
   address(owner: Address, options?: DecryptionServiceRequestOptions): Promise<ShieldedAddress>;
   /**
@@ -47,6 +49,7 @@ export type DecryptionService = {
 
 export function decryptionServiceFromSession(
   session: DecryptionServiceSession,
+  genesisHash: string,
   { requestTimeoutMs, retryPublicKeys = false }: { requestTimeoutMs?: number | undefined; retryPublicKeys?: boolean } = {},
 ): DecryptionService {
   async function withinRequest<T>(
@@ -104,7 +107,8 @@ export function decryptionServiceFromSession(
     return result;
   }
 
-  return {
+  return Object.freeze<DecryptionService>({
+    genesisHash,
     address(owner, options) {
       return withinRequest(options, (signal) => address(owner, signal, true));
     },
@@ -136,7 +140,7 @@ export function decryptionServiceFromSession(
         }
       });
     },
-  };
+  });
 }
 
 function retryableReplicaFailure(error: unknown): boolean {
@@ -159,6 +163,7 @@ export function createDecryptionService(config: DecryptionServiceConfig): Decryp
       ...(network === "devnet" && nowMs !== undefined ? { nowMs } : {}),
       ...(transport === undefined ? {} : { transport }),
     }),
+    genesisHashForNetwork(network),
     { requestTimeoutMs },
   );
 }

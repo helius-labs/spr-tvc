@@ -4,3 +4,4 @@ export type {
 } from "./protocol/types.js";
 export type { ServiceRequest, ServiceResult } from "./protocol/decryption.js";
 export { decodeLowerHex, encodeLowerHex } from "./protocol/hex.js";
+export { genesisHashForNetwork } from "./protocol/network.js";
