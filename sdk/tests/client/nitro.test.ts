@@ -459,11 +459,12 @@ describe("native client trust gate", () => {
   });
 
   it("requires the pinned boot before sending an operation or asking the owner to sign", async () => {
+    const policy = signedPolicy();
     const discovery = await attestedDiscovery().json();
-    const fetch = policyHeads().mockResolvedValueOnce(Response.json(discovery));
-    policyHeads(fetch).mockResolvedValueOnce(Response.json(discovery))
+    const fetch = policyHeads(vi.fn(), policy).mockResolvedValueOnce(Response.json(discovery));
+    policyHeads(fetch, policy).mockResolvedValueOnce(Response.json(discovery))
       .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
-    policyHeads(fetch);
+    policyHeads(fetch, policy);
     vi.stubGlobal("fetch", fetch);
     const blocked = createNitroDecryptionService({ trust, policyStore: checkpointStore(), requiredBootKeyId: "42".repeat(32) });
     await expect(blocked.open(signer, proofs)).rejects.toThrow("no authorized Nitro replica");
