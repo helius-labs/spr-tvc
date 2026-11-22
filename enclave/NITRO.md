@@ -86,9 +86,10 @@ epoch. Target approvals and retirement records verify under the roster
 active at the original S3 write. Publishing after a cutover requires
 approval from the incoming roster. Retiring an approval or acknowledgement
 signing key leaves custody receipts verifiable offline. The archive checks
-the independently pinned digest of the entire history, each predecessor link
-and registered rotation approval, and each ceremony’s Nitro proof at its
-recorded verification time.
+the independently pinned digest of the receipt chain, each registered
+rotation approval, and each ceremony’s Nitro proof at its recorded
+verification time. Live admission also depends on the complete target and
+retirement history and the original S3 write times.
 
 The custody ledger registers one wrapping-key set per epoch, release ID and
 PCR0–PCR4. Before signing, each approver checks that all six RSA wrapping

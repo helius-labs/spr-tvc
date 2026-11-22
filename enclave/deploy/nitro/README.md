@@ -169,6 +169,15 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    python3 "$nitro/custody_archive.py" trust.json verify "$epoch" custody.jsonl "$pinned_sha256"
    ```
 
+   Preserve the original ledger object versions and their write times. The
+   receipt archive covers receipts and rotation approvals. A ledger recovery
+   also needs every serving registration and retirement record. Suspend
+   target registration, share release and key retirement if the canonical
+   ledger is unavailable or incomplete. Before resuming, independently verify
+   the recovered records, original write times and complete target and
+   retirement indexes. An ordinary S3 object restore assigns a new creation
+   date. [AWS Backup metadata](https://docs.aws.amazon.com/aws-backup/latest/devguide/s3-backups.html)
+
    To change custody approval keys, append a schedule entry for the first
    uncommitted epoch and set a cutover time. Distribute the updated trust file
    independently before cutover. Custody receipts use the roster for their
