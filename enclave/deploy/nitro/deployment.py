@@ -14,7 +14,7 @@ from approval import (
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_custody_roster, list_objects, load_epoch, publication_time,
     read_registered_target, read_stored_object, require_active_epoch, require_publication_roster, require_target_approval_window,
-    target_attestation, target_object_name, validate_target, verify_target_approval, write_once,
+    target_attestation, target_object_name, validate_target, verify_target_approval, wrapping_pairs, write_once,
 )
 from kms_policy import decrypt_conditions, key_policy, target_boot_pins
 from provenance import verify as verify_build
@@ -178,20 +178,9 @@ def target(trust, document, receipt, custodians, build, *, at=None):
     if any(hex_digest(pin, 48) != measured[name] for name, pin in pins.items()):
         raise ValueError("target measurements do not match the approval")
 
-    wrapping_keys = manifest["wrappingKeys"]
-    host_account = arn(ROLE_ARN, host)[1]
-    if not isinstance(wrapping_keys, list) or len(wrapping_keys) != 6:
-        raise ValueError("target requires six custody slots")
-    accounts, policies = {host_account}, []
-    for member, wrapper in zip(custodians, wrapping_keys, strict=True):
-        recovery = member["recoveryKeyArn"]
-        custodian, retirement = member["custodianRole"], member["retirementRole"]
-        account = arn(KEY_ARN, recovery)[2]
-        if (account in accounts or recovery == wrapper or arn(KEY_ARN, wrapper)[2] != account or
-                arn(ROLE_ARN, custodian)[1] != account or arn(ROLE_ARN, retirement)[1] != account):
-            raise ValueError("each custody slot requires separate keys and roles in its own account")
-        accounts.add(account)
-        policies.append(key_policy(host, custodian, retirement, pins, manifest["instanceId"]))
+    wrapping_pairs(manifest, custodians)
+    policies = [key_policy(host, member["custodianRole"], member["retirementRole"], pins, manifest["instanceId"])
+                for member in custodians]
     return roster["keys"], policies, next_keys
 
 

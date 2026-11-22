@@ -525,8 +525,9 @@ pinned history and excluded versions.
    the replacement under the current wallet policy before and after checking
    its six recovery and wrapping keys. The replacement epoch must remain
    open and the boot must use the three proved slots after the marker's S3
-   write second. If a candidate fails a key, replication or repeated
-   attestation check, inspection and final verification try another boot
+   write second. Inspection and the final report check the replica's bucket
+   protections after confirming the live replacement. If a candidate fails a
+   key, replication or repeated attestation check, both commands try another boot
    from the same observation. The role
    needs `kms:DescribeKey` for the six replacement keys. Use
    `inspect --check-inactive` for the historical key state check after scheduling.
@@ -712,6 +713,11 @@ activation target and verifies its encrypted `PublicKeys` reply through
 uses a fixed public address and needs no wallet signature. The publisher
 rereads the peer and custody ledger after the probes, checks the active
 roster and cutover window, and writes against its original ETag.
+For mainnet payment activation, give signers, publishers, and wallet pin
+verifiers `kms:DescribeKey` on the registered recovery and wrapping keys.
+Each target needs three slots with both keys enabled in the same account.
+A warm enclave still needs that quorum to accept new payments. Recovery-only
+policy publication can proceed during a key outage. [Cross-account KMS permissions](https://docs.aws.amazon.com/kms/latest/developerguide/key-policy-modifying-external-accounts.html)
 Publish from the first listed bucket's AWS account, then mirror the exact signed
 file from the second account. The tool checks the full signed file at both
 buckets before advancing past it. Use a new revision to change its signatures.

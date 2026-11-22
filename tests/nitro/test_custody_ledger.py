@@ -173,7 +173,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 self.assertEqual(args[args.index("--if-none-match") + 1], "*")
                 if name in self.objects:
                     raise ValueError("precondition failed")
-                self.objects[name] = pathlib.Path(args[-1]).read_bytes()
+                self.objects[name] = pathlib.Path(args[args.index("--body") + 1]).read_bytes()
                 self.timestamps[name] = now
             elif operation == "get-object" and name in self.objects:
                 pathlib.Path(args[-1]).write_bytes(self.objects[name])
@@ -847,14 +847,18 @@ class CustodyLedgerTests(unittest.TestCase):
             with (patch("retirement.check_recovery_bucket") as check_bucket,
                   patch("retirement.inspect_inventory", return_value={"keys": []}) as inspect,
                   patch("retirement.inspect_old_parents", return_value=[]),
-                  patch("retirement.qualify_key_retirement", return_value={"boot": "replacement"})):
+                  patch("retirement.qualify_key_retirement", return_value={"boot": "replacement"}) as qualify):
                 wallet = pathlib.Path("wallet-trust.json")
                 with self.assertRaisesRegex(ValueError, "provide --replica-profile"):
                     inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)
-                check_bucket.side_effect = ValueError("custody ledger bucket must have no lifecycle configuration")
+                def check_after_qualification(*_args):
+                    inspect.assert_called_once()
+                    qualify.assert_called_once()
+                    raise ValueError("custody ledger bucket must have no lifecycle configuration")
+
+                check_bucket.side_effect = check_after_qualification
                 with self.assertRaisesRegex(ValueError, "must have no lifecycle"):
                     inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet, replica_profile="recovery-read")
-                inspect.assert_not_called()
                 check_bucket.side_effect = None
                 result = inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet, replica_profile="recovery-read")
                 self.assertEqual(result, {"keys": [], "terminatedParents": [], "replacement": {"boot": "replacement"}})
@@ -1211,7 +1215,8 @@ class CustodyLedgerTests(unittest.TestCase):
                 raise ValueError("object missing")
             return payload, {**metadata, "ReplicationStatus": "REPLICA", **changes.get(name, {})}
 
-        with patch("custody_ledger.read_stored_payload", side_effect=read):
+        with (patch("custody_ledger.read_stored_payload", side_effect=read),
+              patch("custody_ledger.require_payment_recovery_quorums")):
             check_release_policy(self.trust, document)
             self.assertEqual(copied, expected)
             prefix = f"spr-custody/mainnet/{DOMAIN}/"
@@ -1236,6 +1241,67 @@ class CustodyLedgerTests(unittest.TestCase):
                 missing.clear()
             changes[target_object_name(registered)] = {"VersionId": "a-different-version"}
             with self.assertRaisesRegex(ValueError, "differs from the pinned replica"):
+                check_release_policy(self.trust, document)
+
+    def test_mainnet_payments_require_three_enabled_pairs_on_every_registered_target(self):
+        self.trust["network"] = "mainnet"
+        publish(self.trust, self.sign(self.document(1)))
+        _, receipt, custodians = load_epoch(self.trust, "1")
+        self.trust["ledgerReplica"] = {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1",
+                                       "role": "arn:aws:iam::000000000008:role/replication"}
+        primary = self.replacement_target(epoch="1", releaseId="primary")
+        standby = self.replacement_target(epoch="1", releaseId="standby", wrappingKeys=[key(i, 55) for i in range(1, 7)])
+        targets = []
+        for registered in (primary, standby):
+            register_target(self.trust, self.signed_subject(TARGET_APPROVAL, registered))
+            targets.append({**target_attestation(registered), "custodyEpoch": "1",
+                            "executableSha256": registered["executableSha256"], "custodyDigest": sha256(receipt["custody"])})
+        policy = {"action": "activate", "recoveryOnly": False, "network": "mainnet", "securityDomainId": DOMAIN,
+                  "noteSeedCommitment": receipt["custody"]["noteSeedCommitment"], "minimumCustodyEpoch": "1",
+                  "publications": self.trust["publications"], "targets": targets}
+        document = {"policy": policy, "signatures": [], "custodySignatures": []}
+        recovery = [member["recoveryKeyArn"] for member in custodians]
+        unavailable = set(recovery[:2])
+        bad_metadata = set()
+
+        def describe(arn, operation):
+            self.assertEqual(operation, "describe-key")
+            if arn in unavailable:
+                raise ValueError("key temporarily unavailable")
+            return {"KeyMetadata": {"Arn": arn, "KeySpec": "RSA_2048", "KeyUsage": "ENCRYPT_DECRYPT",
+                                    "Origin": "AWS_KMS", "MultiRegion": False,
+                                    "KeyState": "PendingDeletion" if arn in bad_metadata else "Enabled"}}
+
+        with (patch("custody_ledger.require_replicated_custody"),
+              patch("custody_ledger.kms", side_effect=describe) as kms):
+            check_release_policy(self.trust, document)
+            self.assertCountEqual([call.args[0] for call in kms.call_args_list],
+                                  [*recovery, *primary["wrappingKeys"], *standby["wrappingKeys"]])
+            # Each set has four keys, but only two slots have both keys.
+            bad_metadata.update(standby["wrappingKeys"][-2:])
+            with self.assertRaisesRegex(ValueError, "target standby requires three enabled recovery and wrapping pairs"):
+                check_release_policy(self.trust, document)
+            check_release_policy(self.trust, {**document, "policy": {**policy, "targets": targets[:1]}})
+
+            kms.reset_mock()
+            check_release_policy(self.trust, {**document, "policy": {**policy, "recoveryOnly": True}})
+            kms.assert_not_called()
+
+            prefix = f"spr-custody/mainnet/{DOMAIN}/"
+            standby_path = prefix + target_object_name(standby)
+            other_slots = {**standby, "wrappingKeys": standby["wrappingKeys"][::-1]}
+            with patch.dict(self.objects, {standby_path: canonical(self.signed_subject(TARGET_APPROVAL, other_slots))}):
+                with self.assertRaisesRegex(ValueError, "six custody slots|separate keys and roles"):
+                    check_release_policy(self.trust, document)
+            kms.assert_not_called()
+
+            bad_metadata.clear()
+            def retire_after_key_read(arn, operation):
+                self.objects[prefix + "retired/1.json"] = b"{}"
+                return describe(arn, operation)
+
+            kms.side_effect = retire_after_key_read
+            with self.assertRaisesRegex(ValueError, "cannot verify retirement"):
                 check_release_policy(self.trust, document)
 
     def test_revocation_checks_the_pinned_pair_without_reading_the_ledger(self):
@@ -1893,7 +1959,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 query.assert_not_called()
 
                 def check_replica(*_args):
-                    query.assert_called_once()
+                    self.assertEqual(query.call_count, 2)
                     raise ValueError("custody ledger bucket must have no lifecycle configuration")
 
                 check_bucket.side_effect = check_replica

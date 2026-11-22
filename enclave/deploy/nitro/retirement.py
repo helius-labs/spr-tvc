@@ -346,10 +346,7 @@ def qualify_key_retirement(trust, wallet_trust, qualification, published_at):
     def confirm(boot):
         attested_boots(pinned_trust, candidates, qualification, seed, after_ms=after_ms, expected=boot)
 
-    evidence = ready_boot(trust, qualification, boots, custodians, confirm=confirm)
-    require_active_epoch(trust, replacement)
-    require_current_requalification(trust, qualification)
-    return evidence
+    return ready_boot(trust, qualification, boots, custodians, confirm=confirm)
 
 
 def retirement_replica(trust, profile):
@@ -365,12 +362,11 @@ def inspect_keys(trust, epoch, index, check_inactive, *, wallet_trust=None, repl
                  requalification=None):
     if check_inactive and requalification is not None:
         raise ValueError("inactive-key inspection uses the committed retirement")
+    replica = None
     if not check_inactive:
         if wallet_trust is None:
             raise ValueError("provide --wallet-trust before scheduling key deletion")
         replica = retirement_replica(trust, replica_profile)
-        if replica is not None:
-            check_recovery_bucket(trust, replica, replica_profile)
     qualification, role, keys, published_at, targets = retirement_inventory(
         trust, epoch, index, requalification=requalification,
     )
@@ -378,6 +374,10 @@ def inspect_keys(trust, epoch, index, check_inactive, *, wallet_trust=None, repl
     if not check_inactive:
         result["terminatedParents"] = inspect_old_parents(targets, host_profiles or {})
         result["replacement"] = qualify_key_retirement(trust, wallet_trust, qualification, published_at)
+        if replica is not None:
+            check_recovery_bucket(trust, replica, replica_profile)
+        require_active_epoch(trust, qualification["replacementEpoch"])
+        require_current_requalification(trust, qualification)
         if requalification is not None:
             result["requalificationSha256"] = sha256(requalification)
     return result
@@ -529,14 +529,14 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
             time.sleep(min(2, remaining))
 
     slots, parents = inspect_all()
-    if replica is not None:
-        check_recovery_bucket(trust, replica, replica_profile)
     candidates = replacement_targets(trust, qualification)
 
     def confirm(boot):
         attested_boots(pinned_trust, candidates, qualification, seed, after_ms=after_ms, expected=boot)
 
     evidence = ready_boot(trust, qualification, boots, replacement_custodians, confirm=confirm)
+    if replica is not None:
+        check_recovery_bucket(trust, replica, replica_profile)
     require_active_epoch(trust, qualification["replacementEpoch"])
     require_current_requalification(trust, qualification)
     report = {"retirementSha256": sha256(document), "retirementObservedAtMs": str(after_ms),

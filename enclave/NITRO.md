@@ -186,7 +186,8 @@ registration must also match its copy in the pinned replica. Pre-deletion
 inspection and final verification try other boots from the same observation
 if a candidate fails its key, replication or repeated attestation check.
 The second attestation must confirm the selected boot ID, bootstrap time,
-slots and policy digest.
+slots and policy digest. Inspection and reporting then check the replica's
+installed protections and confirm the replacement epoch is still active.
 If the proven trio is unavailable or its epoch has been retired, three
 custodians of the same or a newer active receipt can prove recovery again.
 The new proof binds the original retirement digest and a boot after that
@@ -196,8 +197,7 @@ new receipt. The original closure and old-key inventory stay authoritative.
 The read-only retirement verifier checks the old key inventory in all six
 accounts and requires each registered old serving or rotation parent to be
 terminated. It then checks for a later attested boot using the proved trio
-and repeats the old key, parent and replica record checks. It verifies the
-replica's installed protections before issuing the report. When EC2 no longer lists a
+and repeats the old key, parent and replica record checks. When EC2 no longer lists a
 parent, the verifier requires its AWS Config deletion record for the exact
 managed EC2 resource. When KMS no longer returns a key's policy or state, the verifier
 requires a successful KMS `DeleteKey` service event in CloudTrail for the exact
@@ -264,7 +264,12 @@ require a pinned mainnet custody replica and compare the receipt chain,
 rotation approvals and serving registrations against it. Each copy must
 match the source bytes, S3 version ID and write time. They verify each receipt
 and predecessor link from genesis and check each rotation approval at its
-original S3 write time. Two of the three independently pinned custody approval
+original S3 write time. Before authorizing new mainnet payments, they also
+check that every serving target has three distinct custody slots where both
+the recovery key and the target wrapping key are enabled. These checks use
+live KMS metadata and the exact key ARNs in the receipt and registration.
+Recovery-only publication can preserve access through a running enclave during
+a key outage. Two of the three independently pinned custody approval
 keys also sign the entire policy. Their digest uses
 `SPR/native-nitro/custody-release-policy/v1`
 followed by the same canonical JSON. The SDK verifies both quorums before

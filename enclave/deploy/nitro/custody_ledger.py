@@ -13,9 +13,9 @@ from pathlib import Path
 from approval import (
     KEY_ARN, ROLE_ARN, MAX_DOCUMENT_BYTES, add_approval, approval_keys, approval_roster, arn, aws, canonical, check_approvals,
     epoch_number, fields, file_digest, get_signing_key, hex_digest, kms, parse_json, read_document,
-    read_json, require_inspection_profiles, require_profile_account, sha256, signing_key, signing_sec1,
+    read_json, require_inspection_profiles, require_kms_key, require_profile_account, sha256, signing_key, signing_sec1,
 )
-from kms_policy import acknowledgement_policy, boot_pins, target_boot_pins, validate_custodian_roles, validate_scope
+from kms_policy import RSA_KEYS, acknowledgement_policy, boot_pins, target_boot_pins, validate_custodian_roles, validate_scope
 from provenance import verify as verify_build
 from relay import custody_recovery_policy, prove_share, relay_pins, sealed_rsa_key, verify_relay_build
 
@@ -736,6 +736,43 @@ def require_pinned_publications(trust, publications):
         raise ValueError("wallet publications require separate buckets and accounts")
 
 
+def wrapping_pairs(target, custodians):
+    wrapping_keys = target["wrappingKeys"]
+    if not isinstance(wrapping_keys, list) or len(wrapping_keys) != 6:
+        raise ValueError("target requires six custody slots")
+    accounts = {arn(ROLE_ARN, target["hostRole"])[1]}
+    pairs = []
+    for member, wrapping in zip(custodians, wrapping_keys, strict=True):
+        recovery = member["recoveryKeyArn"]
+        account = arn(KEY_ARN, recovery)[2]
+        if (account in accounts or recovery == wrapping or arn(KEY_ARN, wrapping)[2] != account or
+                arn(ROLE_ARN, member["custodianRole"])[1] != account or
+                arn(ROLE_ARN, member["retirementRole"])[1] != account):
+            raise ValueError("each custody slot requires separate keys and roles in its own account")
+        accounts.add(account)
+        pairs.append((recovery, wrapping))
+    return pairs
+
+
+def require_payment_recovery_quorums(target_slots):
+    keys = list(dict.fromkeys(
+        key for _, _, pairs in target_slots for pair in pairs for key in pair
+    ))
+
+    def enabled(key):
+        try:
+            require_kms_key(kms(key, "describe-key")["KeyMetadata"], key, RSA_KEYS, "ENCRYPT_DECRYPT")
+        except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired):
+            return False
+        return True
+
+    with ThreadPoolExecutor(max_workers=min(len(keys), 24)) as workers:
+        available = {key for key, valid in zip(keys, workers.map(enabled, keys), strict=True) if valid}
+    for epoch, release, pairs in target_slots:
+        if sum(recovery in available and wrapping in available for recovery, wrapping in pairs) < 3:
+            raise ValueError(f"custody epoch {epoch} target {release} requires three enabled recovery and wrapping pairs")
+
+
 def check_release_policy(trust, document, custody_signer=None):
     fields(document, "policy", "signatures", "custodySignatures")
     policy = document["policy"]
@@ -762,12 +799,13 @@ def check_release_policy(trust, document, custody_signer=None):
 
     def check_epoch(item):
         epoch, replicas = item
-        _, receipt, _ = load_epoch(trust, epoch)
+        _, receipt, custodians = load_epoch(trust, epoch)
         custody = receipt["custody"]
         if policy["noteSeedCommitment"] != custody["noteSeedCommitment"]:
             raise ValueError("wallet policy does not match the committed note seed")
         custody_digest, receipt_digest = sha256(custody), sha256(receipt)
         registrations = set()
+        target_slots = []
         for replica in replicas:
             if replica["custodyDigest"] != custody_digest:
                 raise ValueError("serving target does not match the committed custody record")
@@ -778,13 +816,18 @@ def check_release_policy(trust, document, custody_signer=None):
                     hex_digest(registered["executableSha256"]) != replica["executableSha256"]):
                 raise ValueError("serving executable does not match the custody-approved target")
             registrations.add(name)
-        return registrations
+            pairs = wrapping_pairs(registered, custodians)
+            target_slots.append((epoch, registered["releaseId"], pairs))
+        return registrations, target_slots
 
     with ThreadPoolExecutor(max_workers=len(by_epoch)) as workers:
-        registrations = set().union(*workers.map(check_epoch, by_epoch.items()))
+        readiness = list(workers.map(check_epoch, by_epoch.items()))
+        registrations = set().union(*(names for names, _ in readiness))
         if ledger_backup is not None:
             require_replicated_custody(trust, ledger_backup, max(by_epoch, key=epoch_number), registrations)
-        # Check retirement after all of the immutable receipt and target reads.
+        if trust["network"] == "mainnet" and not policy["recoveryOnly"]:
+            require_payment_recovery_quorums([target for _, targets in readiness for target in targets])
+        # Check retirement after reading receipts, targets and key state.
         list(workers.map(lambda epoch: require_active_epoch(trust, epoch), by_epoch))
     now = time.time()
     roster = approval_roster(trust, at=now)
