@@ -179,6 +179,8 @@ impl Relay {
                 &self.epoch.to_be_bytes(),
                 &[request.slot],
                 &request.share_commitment,
+                &self.relay_key_id,
+                &sha256(&request.envelope),
             ]
             .concat(),
         ))

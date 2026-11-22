@@ -232,8 +232,8 @@ def prove_recovery(trust, document, index, relay_port):
     if index not in retirement_bootstrap(manifest["replacementBootstrap"]):
         raise ValueError("custodian did not supply an attested bootstrap slot")
     proof = {"manifest": manifest, "signatures": document["recoveryProofs"]}
-    signatures = sign_share_recovery(trust, custodians, receipt, index, RETIREMENT_RECOVERY, proof, relay_port)
-    require_recovery_window(manifest)
+    signatures = sign_share_recovery(trust, custodians, receipt, index, RETIREMENT_RECOVERY, proof, relay_port,
+                                     require_window=lambda: require_recovery_window(manifest))
     return {**document, "recoveryProofs": signatures}
 
 

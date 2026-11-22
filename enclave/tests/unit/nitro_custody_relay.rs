@@ -198,10 +198,16 @@ fn proves_a_recovered_share_without_returning_it() {
             &EPOCH.to_be_bytes(),
             &[4],
             &proof.share_commitment,
+            &fix.relay.relay_key_id,
+            &sha256(&proof.envelope),
         ]
         .concat(),
     );
     assert_eq!(fix.relay.prove(&proof), Some(expected));
+    assert_eq!(Fixture::new().relay.prove(&proof), None);
+    proof.envelope = envelope(&fix.relay.recipient, &fix.share);
+    let another_envelope = fix.relay.prove(&proof).unwrap();
+    assert_ne!(another_envelope, expected);
     proof.slot = 3;
     assert_eq!(fix.relay.prove(&proof), None);
     proof.slot = 4;

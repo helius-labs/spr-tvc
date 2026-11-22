@@ -609,6 +609,11 @@ attestation to KMS, and passes the encrypted response to the relay. The relay
 checks the signatures, share commitment and authorization deadline, then
 returns an RSA-OAEP-SHA-256 ciphertext for the registered destination.
 
+For custody acknowledgements and retirement recovery proofs, the relay attests
+the exact KMS envelope, its own public key, the slot and the share commitment.
+The custodian checks that evidence before using its acknowledgement key. A
+closed epoch or expired retirement window invalidates a late KMS response.
+
 ```sh
 python3 "$nitro/relay_wrap.py" trust.json target-signed.json "$build_dir" "$slot" --relay-port "$port" \
   draft --inspection-profile "$slot_read_profile" > relay-draft.json

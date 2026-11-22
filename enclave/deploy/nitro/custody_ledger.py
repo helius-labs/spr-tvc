@@ -994,13 +994,17 @@ def sign_epoch(trust, document, key, build, review, inspection_profiles=None, re
     return {**document, "authorization": add_approval(keys, LABEL, authorization, key)}
 
 
-def sign_share_recovery(trust, custodians, receipt, index, label, approval, relay_port):
+def sign_share_recovery(trust, custodians, receipt, index, label, approval, relay_port, *, require_window=None):
     if index not in range(1, 7):
         raise ValueError("invalid custody slot")
     epoch = receipt["custody"]["epoch"]
 
     def require_open_epoch():
+        if require_window is not None:
+            require_window()
         require_active_epoch(trust, epoch)
+        if require_window is not None:
+            require_window()
 
     require_open_epoch()
     custodian = custodians[index - 1]
@@ -1009,7 +1013,9 @@ def sign_share_recovery(trust, custodians, receipt, index, label, approval, rela
     prove_share(trust, receipt, custodian, index, relay_port, require_open_epoch)
     require_open_epoch()
     keys = [member["acknowledgementKey"] for member in custodians]
-    return add_approval(keys, label, approval, key)["signatures"]
+    signed = add_approval(keys, label, approval, key)
+    require_open_epoch()
+    return signed["signatures"]
 
 
 def acknowledge(trust, document, index, relay_port, build, review):

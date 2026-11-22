@@ -166,13 +166,32 @@ class RelayTests(unittest.TestCase):
     @patch("relay.relay_request", return_value=b"attested share proof")
     @patch("relay.recover_to_relay", return_value=b"envelope")
     @patch("relay.live_recipient", return_value=("12" * 32, b"evidence"))
-    def test_acknowledgement_verifies_fresh_evidence_for_the_exact_slot(self, _recipient, _decrypt, request, verify):
+    def test_acknowledgement_verifies_evidence_for_the_exact_envelope_and_relay(self, recipient, decrypt, request, verify):
         prove_share(TRUST, RECEIPT, CUSTODIAN, 1, 7443, lambda: None)
         self.assertEqual(request.call_args.args[:2], (7443, "/prove"))
         self.assertEqual(verify.call_args.args[1:], (b"attested share proof", SCOPE))
-        expected = hashlib.sha256(b"SPR/native-nitro/relay-share-proof/v1devnet" + bytes.fromhex(DOMAIN) +
-                                  (1).to_bytes(8, "big") + b"\x01" + bytes.fromhex("ab" * 32)).hexdigest()
+        scope = (b"SPR/native-nitro/relay-share-proof/v1devnet" + bytes.fromhex(DOMAIN) +
+                 (1).to_bytes(8, "big") + b"\x01" + bytes.fromhex("ab" * 32))
+        expected = hashlib.sha256(scope + bytes.fromhex("12" * 32) + hashlib.sha256(b"envelope").digest()).hexdigest()
         self.assertEqual(verify.call_args.kwargs["binding"], expected)
+        decrypt.return_value = b"another envelope"
+        prove_share(TRUST, RECEIPT, CUSTODIAN, 1, 7443, lambda: None)
+        self.assertNotEqual(verify.call_args.kwargs["binding"], expected)
+        recipient.return_value = ("34" * 32, b"another recipient")
+        decrypt.return_value = b"envelope"
+        prove_share(TRUST, RECEIPT, CUSTODIAN, 1, 7443, lambda: None)
+        self.assertNotEqual(verify.call_args.kwargs["binding"], expected)
+
+        request.reset_mock()
+        verify.reset_mock()
+
+        def expired():
+            raise ValueError("authorization expired during KMS decrypt")
+
+        with self.assertRaisesRegex(ValueError, "during KMS decrypt"):
+            prove_share(TRUST, RECEIPT, CUSTODIAN, 1, 7443, expired)
+        request.assert_not_called()
+        verify.assert_not_called()
 
     @patch("relay_wrap.require_active_epoch")
     @patch("relay_wrap.verify_target_approval")

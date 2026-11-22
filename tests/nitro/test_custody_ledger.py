@@ -927,6 +927,12 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertEqual((args_member, slot, port), (member, 1, 7443))
         check()
 
+        approve.reset_mock()
+        with patch("custody_ledger.require_active_epoch", side_effect=[None, None, ValueError("custody epoch is retired")]):
+            with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
+                acknowledge(self.trust, document, 1, 7443, build, review_file)
+        approve.assert_called_once()
+
     @patch("custody_ledger.kms")
     @patch("custody_ledger.get_signing_key")
     @patch("custody_ledger.sealed_rsa_key")
@@ -2308,3 +2314,24 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertEqual(len(proven["recoveryProofs"]), 1)
             approval.assert_called_once_with([item["acknowledgementKey"] for item in roster], RETIREMENT_RECOVERY,
                                              {"manifest": marker, "signatures": []}, key_arn)
+
+            def late_signature(*_args):
+                self.now = marker["recoveryDeadline"]
+                return approval.return_value
+
+            approval.side_effect = late_signature
+            with patch.object(self, "now", self.now), self.assertRaisesRegex(ValueError, "recovery window"):
+                prove_recovery(self.trust, candidate, 2, 7443)
+            approval.side_effect = None
+            approval.reset_mock()
+
+            def late_decrypt(*args):
+                require_authorized = args[-1]
+                require_authorized()
+                self.now = marker["recoveryDeadline"]
+                require_authorized()
+
+            prove_share.side_effect = late_decrypt
+            with patch.object(self, "now", self.now), self.assertRaisesRegex(ValueError, "recovery window"):
+                prove_recovery(self.trust, candidate, 2, 7443)
+            approval.assert_not_called()

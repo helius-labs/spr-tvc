@@ -141,16 +141,18 @@ def recover_to_relay(trust, receipt, custodian, index, evidence, before_decrypt)
     return decrypt_recipient(key, base64.b64encode(bytes.fromhex(package["ciphertext"])).decode(), evidence)
 
 
-def prove_share(trust, receipt, custodian, index, port, before_decrypt):
+def prove_share(trust, receipt, custodian, index, port, require_authorized):
     epoch = receipt["custody"]["epoch"]
     scope = relay_pins(trust, epoch)
-    _, evidence = live_recipient(port, scope)
-    envelope = recover_to_relay(trust, receipt, custodian, index, evidence, before_decrypt)
+    key_id, evidence = live_recipient(port, scope)
+    envelope = recover_to_relay(trust, receipt, custodian, index, evidence, require_authorized)
+    require_authorized()
     nonce = secrets.token_bytes(32)
     commitment = receipt["custody"]["shareCommitments"][index - 1]
     binding = hashlib.sha256(b"SPR/native-nitro/relay-share-proof/v1" + trust["network"].encode() +
                              bytes.fromhex(receipt["securityDomainId"]) + int(epoch).to_bytes(8, "big") +
-                             bytes([index]) + bytes.fromhex(commitment)).hexdigest()
+                             bytes([index]) + bytes.fromhex(commitment) + bytes.fromhex(key_id) +
+                             hashlib.sha256(envelope).digest()).hexdigest()
     proof = relay_request(port, "/prove", canonical({"slot": index, "shareCommitment": commitment,
                                                      "envelope": envelope.hex(), "nonce": nonce.hex()}), MAX_EVIDENCE)
     verify_evidence(nonce, proof, scope, binding=binding)

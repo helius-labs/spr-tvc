@@ -25,8 +25,17 @@ keys are distinct.
 The relay checks the share commitment and requires two approvals of the exact
 target key, relay boot and deadline. It reads Nitro time before opening the
 share and again before returning ciphertext. The approved target obtains its
-share through a second attested KMS decrypt. Fresh relay evidence confirms
-recovery before the operator tool uses the custodian's acknowledgement key.
+share through a second attested KMS decrypt. For a custody acknowledgement or
+retirement recovery proof, the relay attests a fresh nonce and the SHA-256
+digest of the following bytes in order.
+
+1. ASCII `SPR/native-nitro/relay-share-proof/v1` and the ASCII network name.
+2. The 32-byte domain, eight-byte big-endian epoch, one-byte slot and 32-byte share commitment.
+3. SHA-256 of the relay's DER public key and SHA-256 of the exact KMS `CiphertextForRecipient` bytes.
+
+The custodian checks the digest against the KMS response and the attested relay
+before signing. The tool checks epoch closure and any retirement deadline
+after the KMS decrypt, before signing, and after the KMS signing call.
 The ledger verifies the custodian's signed assertion over the candidate.
 
 During roster rotation, the active quorum signs target registration and the
