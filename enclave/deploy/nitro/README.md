@@ -250,21 +250,25 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    role with `s3:InitiateReplication` scoped to that prefix. The live rule
    handles writes after promotion. [S3 Batch Replication](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-batch-replication-batch.html)
 
-   Verify the installed frozen policy on the recovered bucket. Then use a
-   read-only profile from each bucket owner's account with the checkpoint
-   permissions above. The recovery profile also needs
+   Use read-only profiles in the original and recovered bucket accounts with
+   the checkpoint permissions above. The recovery profile also needs
    `s3:GetReplicationConfiguration` on the recovered bucket and list and read
-   access to the new replica. [S3 bucket policy permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketPolicy.html)
+   access to the new replica. Supply `--replica-profile` from the new replica
+   owner's account with the S3 bucket inspection permissions above, excluding
+   `s3:GetReplicationConfiguration`. Omit it for devnet promotion without a
+   new replica. [S3 bucket policy permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketPolicy.html)
 
    ```sh
    python3 "$nitro/custody_archive.py" trust.json verify-promotion recovered-trust.json \
      --expect "$ledger_checkpoint_sha256" \
-     --source-profile "$source_read_profile" --recovery-profile "$recovery_read_profile"
+     --source-profile "$source_read_profile" --recovery-profile "$recovery_read_profile" \
+     --replica-profile "$new_replica_read_profile"
    ```
 
    The verifier matches both frozen buckets against the independently retained
-   checkpoint and checks the new destination's records and live rule. After it
-   succeeds, install and verify the writable policy on the recovered bucket
+   checkpoint. It checks the new destination's records, replication rule
+   and installed bucket protections. After it succeeds, install and verify
+   the writable policy on the recovered bucket
    and distribute the recovered trust file. While the original bucket is
    unreachable or its write deny is unverified, keep custody changes suspended.
 

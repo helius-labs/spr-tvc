@@ -12,7 +12,7 @@ from approval import (
     unique_object,
 )
 from custody_ledger import (
-    check_commit, check_predecessor, check_registered_target, check_rotation_target,
+    check_commit, check_predecessor, check_recovery_bucket, check_registered_target, check_rotation_target,
     ledger_object, ledger_prefix, ledger_record_fingerprint, ledger_replica,
     list_objects, publication_time, read_object, read_replicated_record, read_stored_object, read_stored_payload,
     record, replica_trust, require_frozen_ledger, require_pinned_replication, rotation_target_name, verify_ceremony_capture,
@@ -109,7 +109,7 @@ def ledger_checkpoint(trust, expected=None, **options):
     return actual
 
 
-def verify_promotion(trust, promoted, expected, source_profile, recovery_profile):
+def verify_promotion(trust, promoted, expected, source_profile, recovery_profile, *, replica_profile=None):
     hex_digest(expected)
     source, _ = ledger_prefix(trust)
     recovery, _ = ledger_prefix(promoted)
@@ -123,8 +123,11 @@ def verify_promotion(trust, promoted, expected, source_profile, recovery_profile
     next_replica = ledger_replica(promoted)
     if next_replica is None and trust["network"] == "mainnet":
         raise ValueError("mainnet promotion requires a new pinned replica")
-    if next_replica is not None and next_replica["bucket"] == source["bucket"]:
-        raise ValueError("promotion must keep the original ledger frozen")
+    if next_replica is not None:
+        if next_replica["bucket"] == source["bucket"]:
+            raise ValueError("promotion must keep the original ledger frozen")
+        if not replica_profile:
+            raise ValueError("provide --replica-profile to verify the new ledger replica")
 
     require_profile_account(source_profile, source["region"], source["account"])
     require_profile_account(recovery_profile, recovery["region"], recovery["account"])
@@ -133,6 +136,8 @@ def verify_promotion(trust, promoted, expected, source_profile, recovery_profile
     require_pinned_replication(promoted, profile=recovery_profile)
     # Re-read the original history after checking the recovered copy.
     ledger_checkpoint(original, expected, profile=source_profile)
+    if next_replica is not None:
+        check_recovery_bucket(promoted, next_replica, replica_profile)
     require_frozen_ledger(promoted, profile=recovery_profile)
     return expected
 
@@ -154,6 +159,7 @@ def main():
     promote.add_argument("--expect", required=True, metavar="SHA256")
     promote.add_argument("--source-profile", required=True)
     promote.add_argument("--recovery-profile", required=True)
+    promote.add_argument("--replica-profile", help="read-only profile in the new replica bucket owner's account")
     args = parser.parse_args()
     try:
         trust = read_json(args.trust)
@@ -163,7 +169,7 @@ def main():
             print(ledger_checkpoint(trust, args.expect))
         elif args.command == "verify-promotion":
             print(verify_promotion(trust, read_json(args.recovered_trust), args.expect,
-                                   args.source_profile, args.recovery_profile))
+                                   args.source_profile, args.recovery_profile, replica_profile=args.replica_profile))
         else:
             with args.archive.open("rb") as source:
                 receipt = verify_archive(trust, args.epoch, source, args.sha256)

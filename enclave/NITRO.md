@@ -114,7 +114,8 @@ Promotion requires the original and recovered buckets to remain frozen and
 match the same independently retained checkpoint. The original bucket must
 be reachable for verification and stays frozen after promotion. Before
 resuming mainnet writes, backfill the inherited versions to a new replica and
-verify its contents and the recovered bucket's live replication rule.
+verify its contents, its bucket protections under the new owner's account
+and the recovered bucket's live replication rule.
 
 The custody ledger registers one wrapping-key set per epoch, release ID and
 PCR0–PCR4. Before signing, each approver checks that all six RSA wrapping

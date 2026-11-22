@@ -214,11 +214,33 @@ class LedgerReplicationTests(unittest.TestCase):
         names = {bucket: ["1.json", "retired/1.json"] for bucket in (SOURCE_BUCKET, DESTINATION_BUCKET, new_replica["bucket"])}
         profiles = {SOURCE_BUCKET: "source-read", DESTINATION_BUCKET: "recovery-read", new_replica["bucket"]: "recovery-read"}
         replication = replication_configuration(promoted, new_replica)
+        replica_policy = ledger_replica_plan(
+            promoted, f"arn:aws:iam::{new_replica['account']}:role/admin",
+            f"arn:aws:iam::{new_replica['account']}:role/publisher", [],
+        )["destinationPolicy"]
+        replica_controls = BUCKET_CONTROLS.copy()
 
         def policy(ledger, *, profile):
             bucket = ledger["ledger"]["bucket"]
+            if bucket == new_replica["bucket"]:
+                self.assertEqual(profile, "new-replica-read")
+                return replica_policy
             self.assertEqual(profile, profiles[bucket])
             return policies[bucket]
+
+        def bucket_controls(ledger, operation, **options):
+            if operation == "get-bucket-replication":
+                self.assertEqual(ledger, promoted)
+                self.assertEqual(options["profile"], "recovery-read")
+                return {"ReplicationConfiguration": replication}
+            bucket = ledger["ledger"]["bucket"]
+            if bucket in policies:
+                self.assertEqual(operation, "get-bucket-lifecycle-configuration")
+                self.assertEqual(options["profile"], profiles[bucket])
+                return None
+            self.assertEqual(ledger, replica_trust(promoted, new_replica))
+            self.assertEqual(options["profile"], "new-replica-read")
+            return replica_controls[operation]
 
         def list_names(ledger, _prefix, *, profile):
             bucket = ledger["ledger"]["bucket"]
@@ -233,24 +255,29 @@ class LedgerReplicationTests(unittest.TestCase):
                                    "ReplicationStatus": "COMPLETED" if bucket == SOURCE_BUCKET else "REPLICA"}
 
         with (patch("custody_ledger.installed_ledger_policy", side_effect=policy),
-              patch("custody_ledger.require_no_ledger_lifecycle"),
-              patch("custody_ledger.storage", return_value={"ReplicationConfiguration": replication}) as storage,
+              patch("custody_ledger.storage", side_effect=bucket_controls),
               patch("custody_archive.list_objects", side_effect=list_names),
               patch("custody_archive.read_stored_payload", side_effect=read),
               patch("custody_ledger.read_stored_payload", side_effect=read),
-              patch("custody_archive.require_profile_account") as account):
+              patch("custody_archive.require_profile_account") as account,
+              patch("custody_ledger.require_profile_account", account)):
             pin = ledger_checkpoint(source_scope, profile="source-read")
 
             def verify(candidate=promoted):
-                return verify_promotion(trust, candidate, pin, "source-read", "recovery-read")
+                return verify_promotion(trust, candidate, pin, "source-read", "recovery-read", replica_profile="new-replica-read")
 
             self.assertEqual(verify(), pin)
-            storage.assert_called_once_with(promoted, "get-bucket-replication", absent="ReplicationConfigurationNotFoundError",
-                                            profile="recovery-read")
             self.assertEqual([call.args for call in account.call_args_list], [
                 ("source-read", TRUST["ledger"]["region"], SOURCE_ACCOUNT),
                 ("recovery-read", REPLICA["region"], DESTINATION_ACCOUNT),
+                ("new-replica-read", new_replica["region"], new_replica["account"]),
             ])
+            with patch.dict(replica_controls, {"get-bucket-lifecycle-configuration": {"Rules": [{"Expiration": {"Days": 1}}]}}):
+                with self.assertRaisesRegex(ValueError, "no lifecycle"):
+                    verify()
+            with patch.dict(replica_policy, {"Statement": []}):
+                with self.assertRaisesRegex(ValueError, "pinned replica write and delete protections"):
+                    verify()
             for ledger in (trust, promoted):
                 bucket = ledger["ledger"]["bucket"]
                 with self.subTest(writable=bucket), patch.dict(policies, {bucket: {"Statement": []}}):
@@ -278,6 +305,8 @@ class LedgerReplicationTests(unittest.TestCase):
                 verify({name: value for name, value in promoted.items() if name != "ledgerReplica"})
             with self.assertRaisesRegex(ValueError, "keep the original ledger frozen"):
                 verify({**promoted, "ledgerReplica": {**trust["ledger"], "role": new_replica["role"]}})
+            with self.assertRaisesRegex(ValueError, "provide --replica-profile"):
+                verify_promotion(trust, promoted, pin, "source-read", "recovery-read")
 
 
 if __name__ == "__main__":

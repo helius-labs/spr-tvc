@@ -107,6 +107,7 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-99 | The TypeScript SDK could ask for wallet approval of an output with a malformed slot, cipher label or salt. | Validate all requested items before requesting approval for any batch. [Key handle tests](../sdk/tests/client/keys.test.ts) |
 | N-100 | The TypeScript wallet and release probe accepted a 32-byte nullifier key outside the BN254 scalar field. | Share one public-key decoder and reject out-of-field values before using recipient keys or qualifying a replica. [Wallet and probe tests](../sdk/tests/client/nitro.test.ts) |
 | N-101 | A malformed TypeScript checkpoint could let a later signed revision bypass the stored rollback anchor. An IndexedDB record holding `undefined` looked absent. | Validate stored checkpoints before comparing revisions and distinguish empty storage from an invalid record. [Policy tests](../sdk/tests/attestation/nitro-policy.test.ts) · [IndexedDB tests](../sdk/tests/attestation/nitro-checkpoint.test.ts) · [SQLite tests](../example/tests/nitro.test.ts) |
+| N-102 | A ledger with matching replicated records could qualify for promotion while its new replica had a lifecycle policy or lacked write and deletion protections. | Before approving promotion, verify the new replica's installed bucket protections through its owner's read-only profile. [Promotion tests](nitro/test_ledger_replication.py) |
 
 ## Remaining qualification and review
 
