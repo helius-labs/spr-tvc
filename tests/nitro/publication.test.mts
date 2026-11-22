@@ -30,6 +30,7 @@ const now = Date.now();
 const first: NitroPolicy = {
   version: 1, action: "revoke", recoveryOnly: false, network: trustBase.network, securityDomainId: trustBase.securityDomainId,
   noteSeedCommitment: trustBase.noteSeedCommitment, sequence: "1", minimumCustodyEpoch: "1", previousPolicyDigest: null,
+  publications: trustBase.publications,
   validFromMs: String(now - 1000), expiresAtMs: String(now + 60_000), targets: [],
 };
 const target = {
@@ -111,7 +112,7 @@ test("requires custody registration, the active roster and live attestation befo
   const run = async (command: string, args: string[]) => {
     assert.equal(command, "python3");
     assert.ok(args[1]?.endsWith("/custody_ledger.py"));
-    assert.deepEqual(args.slice(2, 4), [custodyTrust, "check-serving-policy"]);
+    assert.deepEqual(args.slice(2, 4), [custodyTrust, "check-release-policy"]);
     assert.equal(await readFile(args.at(-1)!, "utf8"), text);
     assert.equal(fetch.mock.callCount(), 0);
     checked += 1;
@@ -398,7 +399,7 @@ test("wallet activation pins require the active custody roster and a stable publ
   let retired = false;
   const run = async (command: string, args: string[]) => {
     assert.equal(command, "python3");
-    assert.deepEqual(args.slice(2, 4), [custodyTrust, "check-serving-policy"]);
+    assert.deepEqual(args.slice(2, 4), [custodyTrust, "check-release-policy"]);
     assert.equal(await readFile(args.at(-1)!, "utf8"), text);
     if (retired) throw new Error("custody epoch is retired");
     if (changedEnvelope) head = changedEnvelope;

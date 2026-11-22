@@ -20,8 +20,8 @@ from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
     check_recovery_bucket, find_retirement, ledger_object, ledger_replica, list_objects, load_epoch,
     load_retirement, read_registered_target, read_replicated_record, recovery_deadline, replica_trust,
-    require_active_epoch, require_publication_roster, retirement_approval, retirement_bootstrap,
-    retirement_object_name, retirement_recovery,
+    require_active_epoch, require_pinned_publications, require_publication_roster, retirement_approval,
+    retirement_bootstrap, retirement_object_name, retirement_recovery,
     retirement_target, rotation_target_name, sign_share_recovery, target_attestation, target_object_name,
     target_path, write_once,
 )
@@ -76,6 +76,8 @@ def pinned_wallet_trust(trust, wallet_trust):
     if (len(pinned_trust) > MAX_DOCUMENT_BYTES or
             hashlib.sha256(pinned_trust).hexdigest() != hex_digest(trust["walletTrustSha256"])):
         raise ValueError("wallet trust file does not match the pinned digest")
+    wallet = parse_json(pinned_trust)
+    require_pinned_publications(trust, wallet.get("publications") if isinstance(wallet, dict) else None)
     return pinned_trust
 
 

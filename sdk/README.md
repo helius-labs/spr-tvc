@@ -51,8 +51,9 @@ with independent AWS owners, plus their regions, the network, security domain,
 note seed commitment, minimum sequence and its policy digest, minimum custody
 epoch, release quorum and three independent `custodyKeys`. Both activation and
 revocation require the release quorum and two custody signatures over the
-exact policy. The SDK reads both heads. Browsers store the checkpoint in
-IndexedDB.
+exact policy, including the ordered buckets, regions and owners. The SDK
+requires that pair to match its pins in both heads. Browsers store the
+checkpoint in IndexedDB.
 Other runtimes supply a durable `policyStore` scoped to network and domain.
 Its `accept(update)` method applies `advancesNitroPolicy` to both authenticated
 heads inside the write transaction and saves `update[0].checkpoint`.

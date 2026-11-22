@@ -37,6 +37,7 @@ function signedPolicy(overrides: Partial<NitroPolicy> = {}) {
   const now = Date.now();
   const policy: NitroPolicy = {
     network: trust.network, securityDomainId: trust.securityDomainId, noteSeedCommitment: trust.noteSeedCommitment,
+    publications: trust.publications,
     version: 1, action: "activate", recoveryOnly: false, sequence: "2", minimumCustodyEpoch: "1",
     previousPolicyDigest: "88".repeat(32),
     validFromMs: String(now - 1000), expiresAtMs: String(now + 100_000),

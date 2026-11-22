@@ -641,16 +641,36 @@ def require_active_epoch(trust, epoch):
         raise ValueError("custody epoch is retired")
 
 
-def check_serving_policy(trust, document, custody_signer=None):
+def require_pinned_publications(trust, publications):
+    pinned = trust.get("publications")
+    if not isinstance(pinned, list) or len(pinned) != 2 or pinned != publications:
+        raise ValueError("wallet policy publications must match the pinned primary and mirror")
+    for publication in pinned:
+        fields(publication, "bucket", "region", "account")
+        for field, pattern in (
+            ("bucket", r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]"),
+            ("region", r"[a-z]{2}-[a-z]+-[1-9][0-9]*"),
+            ("account", r"[0-9]{12}"),
+        ):
+            if not isinstance(publication[field], str) or not re.fullmatch(pattern, publication[field]):
+                raise ValueError(f"invalid publication {field}")
+    if any(pinned[0][field] == pinned[1][field] for field in ("bucket", "account")):
+        raise ValueError("wallet publications require separate buckets and accounts")
+
+
+def check_release_policy(trust, document, custody_signer=None):
     fields(document, "policy", "signatures", "custodySignatures")
     policy = document["policy"]
     targets = policy["targets"]
     if type(policy["recoveryOnly"]) is not bool:
         raise ValueError("expected a recoveryOnly boolean")
-    if policy["action"] != "activate" or not isinstance(targets, list) or not 1 <= len(targets) <= 8:
-        raise ValueError("expected an activation with one to eight serving targets")
     if (policy["network"], policy["securityDomainId"]) != (trust["network"], trust["securityDomainId"]):
         raise ValueError("wallet policy does not match the pinned custody domain")
+    require_pinned_publications(trust, policy.get("publications"))
+    if policy["action"] == "revoke" and targets == []:
+        return None
+    if policy["action"] != "activate" or not isinstance(targets, list) or not 1 <= len(targets) <= 8:
+        raise ValueError("expected an activation with one to eight serving targets")
     by_epoch = {}
     floor = epoch_number(policy["minimumCustodyEpoch"])
     for target in targets:
@@ -887,7 +907,7 @@ def main():
     ack.add_argument("--review", type=Path, required=True)
     post = commands.add_parser("publish")
     post.add_argument("candidate", type=Path)
-    check = commands.add_parser("check-serving-policy")
+    check = commands.add_parser("check-release-policy")
     check.add_argument("candidate", type=Path)
     check.add_argument("--custody-signer", nargs=2, metavar=("KEY_ARN", "SEC1_HEX"))
     get = commands.add_parser("read")
@@ -947,8 +967,8 @@ def main():
         if args.command == "publish":
             publish(trust, document)
             return
-        if args.command == "check-serving-policy":
-            print(canonical(check_serving_policy(trust, document, args.custody_signer)).decode())
+        if args.command == "check-release-policy":
+            print(canonical(check_release_policy(trust, document, args.custody_signer)).decode())
             return
         signed = (sign_epoch(trust, document, args.key, args.build, args.review,
                              args.inspection_profiles, args.relay_build)

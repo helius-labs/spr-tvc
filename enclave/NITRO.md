@@ -228,14 +228,18 @@ Each publisher writes to its own bucket. The mirror copies the primary's signed 
 all signatures. The primary checks that the mirror holds the same file before
 advancing again. The enclave and ingress have no publication permission.
 
-Wallets pin both buckets, regions and AWS owners. They read directly from both
-without caching or redirects and authenticate both policies. Equal digests
-agree. During rollout the primary can advance by one signed revision with a
-nondecreasing custody floor while the mirror serves its exact predecessor.
+Both quorums sign the ordered `publications` pair, including the bucket, region
+and AWS owner of each entry. Custody signers check the pair against their
+independently distributed custody trust file. Wallets pin the same pair and
+reject a policy signed for a different pair or order. They read both heads
+directly without caching or redirects. During rollout the primary can advance
+by one signed revision with a nondecreasing custody floor while the mirror
+serves its exact predecessor.
 The primary's policy authorizes the connection. A mirror that is ahead, a
 missing or invalid head, a fork, a gap or an expired primary blocks new
-connections. Both buckets must agree before custody retirement qualifies a
-replacement. The verifier checks agreement again after attestation.
+connections. For retirement, custodians verify the exact wallet trust file
+against its pinned hash and their own publication pins. Both buckets must
+agree before the verifier qualifies a replacement and again after attestation.
 
 Shipped pins bind the minimum sequence to its exact policy digest. The
 immediate successor must name that digest as its predecessor. The checkpoint

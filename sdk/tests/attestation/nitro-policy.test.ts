@@ -31,6 +31,7 @@ const binding: NitroPolicy = {
   network: trustBase.network,
   securityDomainId: trustBase.securityDomainId,
   noteSeedCommitment: trustBase.noteSeedCommitment,
+  publications: trustBase.publications,
   sequence: "9",
   previousPolicyDigest: "ab".repeat(32),
   minimumCustodyEpoch: "1",
@@ -140,6 +141,33 @@ describe("native Nitro release policy", () => {
     expect(() => verifyNitroPolicy(manifest(binding, 0, 1), { ...trust, recoveryOnly: true }, now)).toThrow();
     expect(() => verifyNitroPolicy(manifest({ ...binding, recoveryOnly: undefined } as unknown as NitroPolicy, 0, 1), trust, now)).toThrow();
     expect(verifyNitroPolicy(current, { ...recoveryTrust, recoveryOnly: true }, now).checkpoint.recoveryOnly).toBe(true);
+  });
+
+  it("binds activation and revocation to the ordered pinned bucket pair", () => {
+    const [primary, mirror] = trust.publications;
+    const alternatives = [
+      [mirror, primary],
+      [{ ...primary, bucket: "different-primary" }, mirror],
+      [primary, { ...mirror, region: "us-east-1" }],
+      [primary, { ...mirror, account: "000000000003" }],
+    ] as const;
+    for (const policy of [binding, { ...binding, action: "revoke", targets: [] } as const]) {
+      const copied = manifest(policy, 0, 1);
+      expect(() => verifyNitroPolicy(copied, pinned(policy), now)).not.toThrow();
+      for (const publications of alternatives) {
+        expect(() => verifyNitroPolicy(copied, { ...pinned(policy), publications }, now)).toThrow("ReleasePolicyInvalid");
+        const redirected = { ...policy, publications };
+        expect(() => verifyNitroPolicy(manifest(redirected, 0, 1), pinned(redirected), now)).toThrow("ReleasePolicyInvalid");
+        const redirectedTrust = { ...pinned(redirected), publications };
+        const tampered = { ...JSON.parse(copied), policy: redirected };
+        expect(() => verifyNitroPolicy(JSON.stringify(tampered), redirectedTrust, now)).toThrow("InvalidSignature");
+        tampered.signatures = signatures(redirected, 0, 1);
+        expect(() => verifyNitroPolicy(JSON.stringify(tampered), redirectedTrust, now)).toThrow("InvalidSignature");
+      }
+      const missing = JSON.parse(copied);
+      delete missing.policy.publications;
+      expect(() => verifyNitroPolicy(JSON.stringify(missing), pinned(policy), now)).toThrow("InvalidCanonicalJson");
+    }
   });
 
   it("checks the inclusive start, exclusive expiration and maximum policy lifetime", () => {

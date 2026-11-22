@@ -36,6 +36,10 @@ test("native rotation rehearsal checks both published policies and the exact ser
   const policy: NitroPolicy = {
     version: 1, action: "activate", recoveryOnly: false, network: "devnet", securityDomainId: "33".repeat(32),
     noteSeedCommitment: "44".repeat(32), minimumCustodyEpoch: "1", sequence: "1", previousPolicyDigest: null,
+    publications: [
+      { bucket: "release-primary", region: "eu-north-1", account: "000000000001" },
+      { bucket: "release-mirror", region: "eu-west-1", account: "000000000002" },
+    ],
     validFromMs: "1", expiresAtMs: "10", targets: [target, { ...target, endpoint: "https://original-b.example/" }],
   };
   const checkpoint = { sequence: "1", digest: "55".repeat(32), recoveryOnly: false, minimumCustodyEpoch: "1" };

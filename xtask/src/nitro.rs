@@ -27,9 +27,9 @@ pub(crate) struct Args {
     /// Independently pinned uncompressed SEC1 public key in lowercase hex.
     #[arg(long)]
     public_key: String,
-    /// Pinned custody trust file for an activation.
+    /// Custody trust file with the pinned primary and mirror for this domain.
     #[arg(long)]
-    custody_trust: Option<PathBuf>,
+    custody_trust: PathBuf,
     /// Sign as a custody approver.
     #[arg(long)]
     custody: bool,
@@ -114,7 +114,6 @@ pub(crate) fn sign(args: Args) -> Result<()> {
     );
     let mut manifest: SignedPolicy = serde_json::from_str(&text)?;
     validate_action(&manifest.policy)?;
-    let activate = manifest.policy["action"] == "activate";
     let bytes = decode_lower_hex(&args.public_key)?;
     ensure!(
         bytes.len() == 65 && bytes[0] == 4,
@@ -148,26 +147,21 @@ pub(crate) fn sign(args: Args) -> Result<()> {
         "expected an immutable KMS key ARN"
     );
 
-    if activate {
-        let trust = args
-            .custody_trust
-            .context("activation requires --custody-trust")?;
-        let script =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../enclave/deploy/nitro/custody_ledger.py");
-        let mut candidate = tempfile::NamedTempFile::new()?;
-        candidate.write_all(text.as_bytes())?;
-        let mut check = Command::new("python3");
-        check
-            .arg("-B")
-            .arg(script)
-            .arg(trust)
-            .arg("check-serving-policy")
-            .arg(candidate.path());
-        if args.custody {
-            check.args(["--custody-signer", &args.key, &args.public_key]);
-        }
-        crate::tools::capture_check(&mut check)?;
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../enclave/deploy/nitro/custody_ledger.py");
+    let mut candidate = tempfile::NamedTempFile::new()?;
+    candidate.write_all(text.as_bytes())?;
+    let mut check = Command::new("python3");
+    check
+        .arg("-B")
+        .arg(script)
+        .arg(args.custody_trust)
+        .arg("check-release-policy")
+        .arg(candidate.path());
+    if args.custody {
+        check.args(["--custody-signer", &args.key, &args.public_key]);
     }
+    crate::tools::capture_check(&mut check)?;
 
     let policy_digest = digest(&manifest.policy, false)?;
     let digest = if args.custody {

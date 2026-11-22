@@ -19,7 +19,7 @@ from approval import approval_keys, approval_roster, canonical, sha256
 from custody_archive import MAX_ARCHIVE_ENTRY_BYTES, archive, ledger_checkpoint, verify_archive
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
-    check_custody_roster, check_installed_ledger, check_serving_policy, draft, ledger_policy, ledger_reader_policy,
+    check_custody_roster, check_installed_ledger, check_release_policy, draft, ledger_policy, ledger_reader_policy,
     list_objects, load_epoch, publish, read_registered_target,
     record, require_active_epoch,
     sign_epoch, target_attestation,
@@ -50,9 +50,14 @@ class CustodyLedgerTests(unittest.TestCase):
     def setUp(self):
         self.trust = {
             "network": "devnet", "securityDomainId": DOMAIN, "approvalKeys": [schedule()],
+            "publications": [
+                {"bucket": "release-primary", "region": "eu-north-1", "account": "000000000011"},
+                {"bucket": "release-mirror", "region": "eu-west-1", "account": "000000000012"},
+            ],
             "ledger": {"bucket": "custody-journal", "account": "000000000008", "region": "eu-north-1"},
             "recoveryRelays": {str(epoch): {"hostRole": HOST, "pcrs": PINS} for epoch in range(1, 4)},
         }
+        self.wallet_pins = canonical({"publications": self.trust["publications"]})
         self.objects = {}
         self.timestamps = {}
         self.versions = {}
@@ -837,14 +842,16 @@ class CustodyLedgerTests(unittest.TestCase):
                    "executableSha256": registered["executableSha256"], "custodyDigest": sha256(replacement["custody"])}
         policy = {"action": "activate", "recoveryOnly": False, "network": "devnet", "securityDomainId": DOMAIN,
                   "noteSeedCommitment": replacement["custody"]["noteSeedCommitment"], "minimumCustodyEpoch": "2",
-                  "targets": [replica]}
+                  "publications": self.trust["publications"], "targets": [replica]}
 
         def check(custody_signer=None, **overrides):
-            return check_serving_policy(self.trust, {"policy": {**policy, **overrides}, "signatures": [],
+            return check_release_policy(self.trust, {"policy": {**policy, **overrides}, "signatures": [],
                                                     "custodySignatures": []}, custody_signer)
 
         with self.assertRaisesRegex(ValueError, "object missing"):
             check()
+        with self.assertRaisesRegex(ValueError, "pinned primary and mirror"):
+            check(publications=self.trust["publications"][::-1])
         name = f"spr-custody/devnet/{DOMAIN}/{target_object_name(registered)}"
         roster = rotated["authorization"]["manifest"]["custodians"]
         rotation = {**registered, "mode": "rotate", "nextCustodians": roster, "nextRelay": self.trust["recoveryRelays"]["3"]}
@@ -908,6 +915,16 @@ class CustodyLedgerTests(unittest.TestCase):
         with patch("custody_ledger.read_registered_target", side_effect=close_during_target_read):
             with self.assertRaisesRegex(ValueError, "cannot verify retirement"):
                 check()
+
+    def test_revocation_checks_the_pinned_pair_without_reading_the_ledger(self):
+        policy = {"action": "revoke", "recoveryOnly": True, "targets": [], "network": "devnet",
+                  "securityDomainId": DOMAIN, "publications": self.trust["publications"]}
+        with patch("custody_ledger.storage", side_effect=AssertionError("revocation needs only local pins")):
+            document = {"policy": policy, "signatures": [], "custodySignatures": []}
+            self.assertIsNone(check_release_policy(self.trust, document))
+            for alternate in (None, self.trust["publications"][::-1]):
+                with self.assertRaisesRegex(ValueError, "pinned primary and mirror"):
+                    check_release_policy(self.trust, {**document, "policy": {**policy, "publications": alternate}})
 
     @patch("retirement.require_recovery_quorum")
     @patch("retirement.qualified_policy")
@@ -1032,7 +1049,7 @@ class CustodyLedgerTests(unittest.TestCase):
         self.now = marker["recoveryDeadline"] + 1
         directory = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
         wallet = directory / "wallet.json"
-        wallet.write_bytes(b"{}")
+        wallet.write_bytes(self.wallet_pins)
         self.trust["walletTrustSha256"] = hashlib.sha256(wallet.read_bytes()).hexdigest()
         boot = {**marker["replacementBootstrap"], "bootKeyId": "ae" * 32, "bootedAtMs": str(self.now * 1000)}
         observed = {**target_attestation(replacement), "bootstrap": boot}
@@ -1052,7 +1069,7 @@ class CustodyLedgerTests(unittest.TestCase):
 
             query.return_value.stdout = evidence(observed)
             self.assertEqual(inspect_keys(self.trust, "1", 1, False, wallet_trust=wallet)["replacement"], expected)
-            self.assertEqual(query.call_args.kwargs["input"], b"{}")
+            self.assertEqual(query.call_args.kwargs["input"], self.wallet_pins)
             _, _, members = load_epoch(self.trust, "2")
             quorum.assert_called_once_with(self.trust, marker, [members[slot - 1] for slot in boot["slots"]])
 
@@ -1092,7 +1109,7 @@ class CustodyLedgerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             wallet_trust = pathlib.Path(directory) / "wallet.json"
-            body = b'{"wallet":"trust fixture"}\n'
+            body = self.wallet_pins + b"\n"
             wallet_trust.write_bytes(body)
             self.trust["walletTrustSha256"] = hashlib.sha256(body).hexdigest()
             with patch("retirement.run_command") as query:
@@ -1142,6 +1159,11 @@ class CustodyLedgerTests(unittest.TestCase):
                 query.reset_mock()
                 wallet_trust.write_bytes(b"{}")
                 with self.assertRaisesRegex(ValueError, "does not match the pinned digest"):
+                    qualified_policy(self.trust, wallet_trust, scope, seed)
+                wrong_pair = canonical({"publications": self.trust["publications"][::-1]})
+                wallet_trust.write_bytes(wrong_pair)
+                self.trust["walletTrustSha256"] = hashlib.sha256(wrong_pair).hexdigest()
+                with self.assertRaisesRegex(ValueError, "pinned primary and mirror"):
                     qualified_policy(self.trust, wallet_trust, scope, seed)
                 query.assert_not_called()
 
@@ -1193,7 +1215,7 @@ class CustodyLedgerTests(unittest.TestCase):
         ready = json.dumps({"policyDigest": "fe" * 32, "targets": [{**observed, "bootstrap": fresh}]}).encode()
 
         wallet = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory())) / "wallet.json"
-        wallet.write_bytes(b"{}")
+        wallet.write_bytes(self.wallet_pins)
         self.trust["walletTrustSha256"] = hashlib.sha256(wallet.read_bytes()).hexdigest()
         with (patch("retirement.kms", side_effect=kms),
               patch("retirement.require_profile_account") as identity,

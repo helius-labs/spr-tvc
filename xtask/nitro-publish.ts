@@ -61,7 +61,7 @@ function requireCustodyWriteWindow(nextCutover: bigint | undefined, now: bigint)
 }
 
 async function checkActivationRoster(candidate: string, custodyTrust: string, trust: NitroTrust, run: Run) {
-  const { stdout } = await run("python3", ["-B", custodyLedger, custodyTrust, "check-serving-policy", candidate], 60_000);
+  const { stdout } = await run("python3", ["-B", custodyLedger, custodyTrust, "check-release-policy", candidate], 60_000);
   const roster = parseStrictJson<{ custodyKeys: string[]; nextCutover: string | null }>(stdout, ["custodyKeys", "nextCutover"]);
   const expected = trust.custodyKeys;
   if (!Array.isArray(roster.custodyKeys) || roster.custodyKeys.length !== expected.length ||

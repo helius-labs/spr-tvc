@@ -19,6 +19,9 @@ export type NitroTarget = {
   readonly pcrs: NitroTargetPcrs;
 };
 
+type Publication = Readonly<{ bucket: string; region: string; account: string }>;
+type Publications = readonly [primary: Publication, mirror: Publication];
+
 export type NitroPolicy = {
   readonly version: 1;
   readonly action: "activate" | "revoke";
@@ -26,6 +29,7 @@ export type NitroPolicy = {
   readonly network: Network;
   readonly securityDomainId: string;
   readonly noteSeedCommitment: string;
+  readonly publications: Publications;
   readonly minimumCustodyEpoch: string;
   readonly sequence: string;
   readonly previousPolicyDigest: string | null;
@@ -33,8 +37,6 @@ export type NitroPolicy = {
   readonly expiresAtMs: string;
   readonly targets: readonly NitroTarget[];
 };
-
-type Publication = Readonly<{ bucket: string; region: string; account: string }>;
 
 export type NitroTrust = {
   readonly network: Network;
@@ -46,7 +48,7 @@ export type NitroTrust = {
   readonly minimumPolicyDigest: string;
   /** Pin recovery mode when distributing the old domain after a cutover. */
   readonly recoveryOnly?: boolean;
-  readonly publications: readonly [primary: Publication, mirror: Publication];
+  readonly publications: Publications;
   readonly threshold: number;
   /** Uncompressed SEC1 P-256 public keys pinned by the wallet integrator. */
   readonly keys: readonly string[];
@@ -89,7 +91,7 @@ const POLICY_ENVELOPE_KEYS = ["policy", "signatures", "custodySignatures"];
 const MAX_LIFETIME_MS = 7n * 24n * 60n * 60n * 1000n;
 const POLICY_KEYS = [
   "version", "action", "network", "securityDomainId", "noteSeedCommitment", "sequence",
-  "validFromMs", "expiresAtMs", "minimumCustodyEpoch", "previousPolicyDigest", "targets", "recoveryOnly",
+  "validFromMs", "expiresAtMs", "minimumCustodyEpoch", "previousPolicyDigest", "targets", "recoveryOnly", "publications",
 ];
 const TARGET_KEYS = ["endpoint", "releaseId", "executableSha256", "custodyEpoch", "custodyDigest", "pcrs"];
 const te = new TextEncoder();
@@ -186,7 +188,8 @@ function verifySignedPolicy(text: string, trust: NitroTrust) {
   assertExactObjectKeys(policy, POLICY_KEYS, "ReleasePolicyInvalid");
   if (policy.version !== 1 || policy.network !== trust.network ||
       policy.securityDomainId !== trust.securityDomainId ||
-      policy.noteSeedCommitment !== trust.noteSeedCommitment || typeof policy.recoveryOnly !== "boolean") invalid();
+      policy.noteSeedCommitment !== trust.noteSeedCommitment || typeof policy.recoveryOnly !== "boolean" ||
+      canonicalizeJsonValue(policy.publications) !== canonicalizeJsonValue(trust.publications)) invalid();
   const sequence = decodeDecimalU64(policy.sequence);
   const floor = decodeDecimalU64(policy.minimumCustodyEpoch);
   const validFrom = decodeDecimalU64(policy.validFromMs);

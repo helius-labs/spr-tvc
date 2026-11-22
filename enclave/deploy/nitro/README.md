@@ -18,8 +18,9 @@ Export public keys as `{keyArn, publicKey}` with `python3 enclave/deploy/nitro/a
 
 Pin `trust.json` outside the host and artifact distributor. It contains
 `network`, `securityDomainId` (32 random bytes in lowercase hex), `approvalKeys`,
-`recoveryRelays`, and `ledger` with `bucket`, `region` and `account` (the
-12-digit bucket owner's account ID). Each `approvalKeys` entry contains `fromEpoch`, `activeFrom`
+`recoveryRelays`, the ordered wallet policy `publications` pair, and `ledger`.
+Each bucket lists `bucket`, `region` and `account` (the 12-digit bucket owner's
+account ID). Each `approvalKeys` entry contains `fromEpoch`, `activeFrom`
 in Unix seconds, and three exported key objects. Start at epoch `"1"` with
 `activeFrom: 0`. Both values increase with each roster change. The ordered
 `roster.json` contains six entries with `recoveryKeyArn`, `acknowledgementKey`
@@ -545,7 +546,10 @@ Pass absolute file paths to commands run with `pnpm --dir example`.
 
 The canonical envelope starts with `{"custodySignatures":[],"policy":...,"signatures":[]}`. Its policy
 fields are `version`, `action`, `network`, `securityDomainId`, `noteSeedCommitment`,
-`minimumCustodyEpoch`, `sequence`, `previousPolicyDigest`, `validFromMs`, `expiresAtMs`, `recoveryOnly` and `targets`.
+`minimumCustodyEpoch`, `sequence`, `previousPolicyDigest`, `publications`,
+`validFromMs`, `expiresAtMs`, `recoveryOnly` and `targets`. Use the same ordered
+`publications` pair in the policy, custody trust and wallet trust. List the
+primary bucket first. Both quorums sign the pair with the rest of the policy.
 Sequence 1 has `previousPolicyDigest: null`. Each later sequence signs the
 digest of the current published policy. Use the domain-separated policy
 digest specified in [the Nitro security spec](../../NITRO.md#proposal-and-publication).
@@ -562,17 +566,18 @@ leave at least 30 seconds before a scheduled roster cutover to submit the S3 wri
 Give release signers, custody signers and both publishers scoped ledger read
 access using `reader-policy`. Distribute the custody trust file independently.
 Collect the release quorum and two custody signatures on every policy.
-For activation, each signer checks the approved targets. For an emergency
-revocation, sign the target-free policy with both quorums and omit
-`--custody-trust`. Revocation needs access to the signing keys and publication
-buckets, even when the ledger and replicas are offline.
+Each signer supplies `--custody-trust` to verify the publication pair. For
+activation, the signer also checks the approved targets against the ledger.
+For revocation, sign a target-free policy with both quorums using the local
+custody trust file. Publish the revocation without `--custody-trust` when the
+ledger is offline. Revocation needs the signing keys and publication buckets.
 
 Pin network, domain, seed commitment, minimum sequence, minimum policy digest,
 minimum custody epoch,
 release `keys` and `threshold`, the three `custodyKeys`, and `publications` with
 two `{bucket, region, account}` entries in `wallet-trust.json`. The key lists
 must be disjoint and use uncompressed SEC1 hex. Export that format with
-`python3 "$nitro/approval.py" "$key_arn" --sec1`. List the primary bucket first.
+`python3 "$nitro/approval.py" "$key_arn" --sec1`.
 The `minimumPolicyDigest` is the release signing digest printed by
 `cargo xtask nitro-sign` for the pinned `minimumSequence`. Times, sequence and
 epochs are canonical decimal strings. The wallet stores the
