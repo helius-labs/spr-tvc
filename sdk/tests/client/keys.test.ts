@@ -1,5 +1,5 @@
 import { NullifierKey, ShieldedAddress, ShieldedPublicKey, initializePoseidon, type Bytes32, type RequestContext } from "@heliuslabs/spr";
-import { X25519Keypair, type Bytes31 } from "@heliuslabs/spr/keypair";
+import { X25519Keypair, X25519PublicKey, type Bytes31 } from "@heliuslabs/spr/keypair";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { encodeLowerHex } from "../../src/protocol/hex.js";
@@ -56,6 +56,31 @@ describe("the keys of an address under the service", () => {
     } as const);
     expect(await held.decrypt([request(7), request(8)])).toEqual([bytes(7, 50), bytes(8, 50)]);
     expect(decrypt.mock.calls[0]?.[0].map((item) => item.slot_index)).toEqual(["7", "8"]);
+  });
+
+  it("rejects a batch for an unheld viewing key before requesting approval or deriving keys", async () => {
+    const { address, nullifier, decrypt, keys: held } = keys(bytes(5, 31) as Bytes31);
+    try {
+      const viewingPublicKey = X25519PublicKey.fromBytes(address.viewingPublicKey.toBytes());
+      const other = X25519Keypair.generate().publicKey();
+      const output = {
+        ciphertext: bytes(7, 50), viewingPublicKey, txViewingPublicKey: other,
+        salt: bytes(0, 16) as never, slotIndex: 0, label: "transfer",
+      } as const;
+      const transaction = { viewingPublicKey, firstNullifier: bytes(1) as Bytes32 };
+      await expect(held.decrypt([output, { ...output, viewingPublicKey: other }]))
+        .rejects.toMatchObject({ code: "UnknownViewingKey" });
+      await expect(held.transactionKeys([transaction, { ...transaction, viewingPublicKey: other }]))
+        .rejects.toMatchObject({ code: "UnknownViewingKey" });
+      expect(decrypt).not.toHaveBeenCalled();
+      await expect(held.decrypt([output])).resolves.toEqual([bytes(7, 50)]);
+      const [key] = await held.transactionKeys([transaction]);
+      expect(key).toBeDefined();
+      key?.destroy();
+    } finally {
+      held.destroy();
+      nullifier.destroy();
+    }
   });
 
   it("aborts pending decrypts and prevents new requests after destruction", async () => {

@@ -155,8 +155,9 @@ export async function publish(
 /** Verify the exact current, witnessed revision before shipping a new pin file. */
 export async function verifyDistributionPins(trust: NitroTrust) {
   validateNitroTrust(trust);
-  const { agreed, checkpoint } = await readPublishedNitroPolicy(trust, AbortSignal.timeout(5_000));
-  if (!agreed || checkpoint.sequence !== trust.minimumSequence || checkpoint.digest !== trust.minimumPolicyDigest ||
+  const { sameEnvelope, checkpoint } = await readPublishedNitroPolicy(trust, AbortSignal.timeout(5_000));
+  if (!sameEnvelope) throw new Error("both buckets must serve the same signed policy file");
+  if (checkpoint.sequence !== trust.minimumSequence || checkpoint.digest !== trust.minimumPolicyDigest ||
       checkpoint.minimumCustodyEpoch !== trust.minimumCustodyEpoch ||
       checkpoint.recoveryOnly !== (trust.recoveryOnly ?? false)) {
     throw new Error("wallet pins must match the current policy agreed by both buckets");

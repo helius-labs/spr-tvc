@@ -416,9 +416,9 @@ pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" 
 ```
 
 Before distributing a wallet trust file, run this read-only check. It requires
-both buckets to serve the pinned revision with the expected custody floor and
-recovery mode. Use the reported `trustSha256` to identify the exact file in
-the wallet release.
+both buckets to serve the exact same signed file at the pinned revision, with
+the expected custody floor and recovery mode. Use the reported `trustSha256`
+to identify the exact file in the wallet release.
 
 ```sh
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" --check-wallet-trust

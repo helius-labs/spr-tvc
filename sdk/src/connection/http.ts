@@ -10,7 +10,7 @@ export function createDefaultTransport(): DecryptionServiceTransport {
   return { fetch: (input, init) => fetch(input, init) };
 }
 
-const td = new TextDecoder("utf-8", { fatal: true });
+const td = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 export function endpointUrl(endpoint: URL, path: string): URL {
   const base = new URL(endpoint);

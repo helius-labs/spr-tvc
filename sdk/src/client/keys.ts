@@ -83,7 +83,11 @@ export class ServiceKeys implements DecryptionServiceKeys {
     const signal = context?.signal ? AbortSignal.any([context.signal, this.#lifetime.signal]) : this.#lifetime.signal;
     signal.throwIfAborted();
     if (requests.length === 0) return [];
-    const plaintexts = await awaitWithSignal(this.#decrypt(requests.map(decryptItem), { ...context, signal }), signal);
+    const items = requests.map((request) => {
+      this.#requireViewingKey(request.viewingPublicKey);
+      return decryptItem(request);
+    });
+    const plaintexts = await awaitWithSignal(this.#decrypt(items, { ...context, signal }), signal);
     return plaintexts.map(decodeLowerHex);
   }
 
@@ -91,10 +95,17 @@ export class ServiceKeys implements DecryptionServiceKeys {
     return this.#local.derive(requests);
   }
 
-  transactionKeys(requests: readonly TransactionKeyRequest[]): Promise<readonly ViewingKey[]> {
+  async transactionKeys(requests: readonly TransactionKeyRequest[]): Promise<readonly ViewingKey[]> {
     return this.#local.transactionKeys(
-      requests.map((request) => ({ ...request, viewingPublicKey: this.#transactionKey })),
+      requests.map((request) => {
+        this.#requireViewingKey(request.viewingPublicKey);
+        return { ...request, viewingPublicKey: this.#transactionKey };
+      }),
     );
+  }
+
+  #requireViewingKey(key: X25519PublicKey): void {
+    if (!this.#address.viewingPublicKey.equals(key)) throw new DecryptionServiceError("UnknownViewingKey");
   }
 
   prove: LocalKeys["prove"] = (inputs, context) => this.#local.prove(inputs, context);

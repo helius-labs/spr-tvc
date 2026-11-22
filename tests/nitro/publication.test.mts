@@ -247,14 +247,20 @@ test("each wallet policy bucket separates control-plane administration from publ
 test("ships only the exact current policy agreed by the two pinned buckets", async context => {
   let current = { ...first, sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest };
   let peer = first;
+  let mirrorEnvelope: string | undefined;
   context.mock.method(globalThis, "fetch", async (url: URL, options: RequestInit) => {
     const isPrimary = url.hostname.startsWith(trust.publications[0].bucket + ".");
     const account = trust.publications[isPrimary ? 0 : 1].account;
     assert.equal(new Headers(options.headers).get("x-amz-expected-bucket-owner"), account);
-    return new Response(signed(isPrimary ? current : peer));
+    return new Response(isPrimary ? signed(current) : mirrorEnvelope ?? signed(peer));
   });
-  await assert.rejects(verifyDistributionPins(pins(current)), /agreed by both buckets/);
+  await assert.rejects(verifyDistributionPins(pins(current)), /same signed policy file/);
   peer = current;
+  mirrorEnvelope = signed(current, [0, 1, 2, 3]);
+  await assert.rejects(verifyDistributionPins(pins(current)), /same signed policy file/);
+  mirrorEnvelope = "\uFEFF" + signed(current);
+  await assert.rejects(verifyDistributionPins(pins(current)), /InvalidCanonicalJson/);
+  mirrorEnvelope = undefined;
   await assert.rejects(verifyDistributionPins(trust), /match the current policy/);
   await assert.rejects(verifyDistributionPins({ ...pins(current), minimumPolicyDigest: "99".repeat(32) }), /ReleasePolicyInvalid/);
   assert.equal((await verifyDistributionPins(pins(current))).sequence, current.sequence);
