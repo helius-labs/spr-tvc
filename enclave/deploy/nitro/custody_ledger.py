@@ -914,11 +914,15 @@ def require_payment_recovery_quorums(trust, target_slots, profiles):
                     accounts.setdefault(account, region)
 
     def verify_account(account):
-        require_profile_account(profiles[account], accounts[account], account)
+        try:
+            require_profile_account(profiles[account], accounts[account], account)
+        except ValueError:
+            return False
+        return True
 
     def qualified(key):
         account = arn(KEY_ARN, key)[2]
-        if account not in accounts:
+        if account not in verified_accounts:
             return False
         try:
             _, policy = inspect_rsa_key(key, profile=profiles[account])
@@ -927,7 +931,8 @@ def require_payment_recovery_quorums(trust, target_slots, profiles):
             return False
 
     with ThreadPoolExecutor(max_workers=min(len(expected), 24)) as workers:
-        list(workers.map(verify_account, accounts))
+        verified_accounts = {account for account, valid in zip(accounts, workers.map(verify_account, accounts), strict=True)
+                             if valid}
         available = {key for key, valid in zip(expected, workers.map(qualified, expected), strict=True) if valid}
     for epoch, target, _, pairs, bootstrapped in target_slots:
         release = target["releaseId"]
@@ -1356,6 +1361,7 @@ def main():
             profiles = None
             if args.custody_key_profiles and document["policy"]["action"] == "activate" and document["policy"]["recoveryOnly"] is False:
                 profiles = read_json(args.custody_key_profiles)
+                require_custody_key_profiles(profiles)
             print(canonical(check_release_policy(trust, document, args.custody_signer,
                                                  source_profile=args.source_profile, replica_profile=args.replica_profile,
                                                  key_profiles=profiles, bootstrap_slots=slots)).decode())

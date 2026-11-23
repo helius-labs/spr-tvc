@@ -1746,8 +1746,12 @@ class CustodyLedgerTests(unittest.TestCase):
                                   [*recovery, *primary["wrappingKeys"], *standby["wrappingKeys"]])
             self.assertEqual(sts.call_count, 6)
             profiles = {**PAYMENT_PROFILES["key_profiles"], "000000000003": "unexpected-profile"}
-            with self.assertRaisesRegex(ValueError, "wrong profile account"):
-                check_release_policy(self.trust, document, key_profiles=profiles, **ledger_profiles)
+            kms.reset_mock()
+            check_release_policy(self.trust, document, key_profiles=profiles, **ledger_profiles)
+            self.assertTrue(all(request.args[0].split(":")[4] != "000000000003" for request in kms.call_args_list))
+            with self.assertRaisesRegex(ValueError, "unavailable attested bootstrap slot"):
+                check_release_policy(self.trust, document, key_profiles=profiles, **ledger_profiles,
+                                     bootstrap_slots=[[3, 4, 5], [3, 4, 5]])
             profiles = {account: profile for account, profile in PAYMENT_PROFILES["key_profiles"].items()
                         if int(account) in {3, 4, 5}}
             check_release_policy(self.trust, document, key_profiles=profiles, **ledger_profiles)
