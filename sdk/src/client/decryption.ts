@@ -17,6 +17,7 @@ import { batched, checkPlaintexts } from "./items.js";
 import { decodePublicKeys, executeServiceCall, type ServiceCall, type ServiceCallResult } from "./exchange.js";
 import { ServiceKeys, type DecryptionServiceKeys } from "./keys.js";
 const addressEncoder = getAddressEncoder();
+type LookupPurpose = "payment" | "recovery";
 
 export type DecryptionServiceConfig = {
   readonly network: Network;
@@ -68,27 +69,29 @@ export function decryptionServiceFromSession(
   async function call<T extends ServiceCall>(
     operation: T,
     signal: AbortSignal,
-    forPayment = false,
+    lookup?: LookupPurpose,
   ): Promise<ServiceCallResult<T>> {
     let retry = retryPublicKeys && operation.type === "PublicKeys";
     for (;;) {
       let context: ConnectedTvcRuntime | undefined;
+      let exchanging = false;
       try {
-        context = await session.context(signal, forPayment);
-        if (forPayment && context.recoveryOnly) {
-          await context.requireCurrentCheckpoint?.(signal);
-          throw new DecryptionServiceError("ReleasePolicyRecoveryOnly");
+        context = await session.context(signal);
+        if (lookup && context.requirePublishedPolicy) {
+          await awaitWithSignal(context.requirePublishedPolicy(signal, lookup === "payment"), signal);
         }
+        exchanging = true;
         const result = await executeServiceCall(context, operation, signal);
-        if (forPayment && context.requirePublishedPolicy) {
-          await awaitWithSignal(context.requirePublishedPolicy(signal, true), signal);
+        if (lookup && context.requirePublishedPolicy) {
+          await awaitWithSignal(context.requirePublishedPolicy(signal, lookup === "payment"), signal);
         }
         signal.throwIfAborted();
         return result;
       } catch (error) {
-        const recoverable = context ? retryableExchangeFailure(error)
+        const recoverable = exchanging ? retryableExchangeFailure(error)
           : error instanceof DecryptionServiceError && error.code === "ReleasePolicySuperseded";
-        if (context && (recoverable || (error instanceof DecryptionServiceHttpError && error.status !== 429))) {
+        if (context && (recoverable ||
+          (exchanging && error instanceof DecryptionServiceHttpError && error.status !== 429))) {
           session.forget(context);
         }
         if (!retry || !recoverable) throw error;
@@ -98,8 +101,8 @@ export function decryptionServiceFromSession(
     }
   }
 
-  async function address(owner: Address, signal: AbortSignal, forPayment: boolean): Promise<ShieldedAddress> {
-    const result = await call({ type: "PublicKeys", address: owner }, signal, forPayment);
+  async function address(owner: Address, signal: AbortSignal, lookup: LookupPurpose): Promise<ShieldedAddress> {
+    const result = await call({ type: "PublicKeys", address: owner }, signal, lookup);
     signal.throwIfAborted();
     const { nullifierPublicKey, viewingPublicKey } = decodePublicKeys(result);
     return ShieldedAddress.fromPublicKeys(
@@ -122,12 +125,12 @@ export function decryptionServiceFromSession(
   return Object.freeze<DecryptionService>({
     genesisHash,
     address(owner, options) {
-      return withinRequest(options, (signal) => address(owner, signal, true));
+      return withinRequest(options, (signal) => address(owner, signal, "payment"));
     },
     open(owner, proofs, options) {
       return withinRequest(options, async (signal) => {
         const signer = { address: owner.address, signMessages: owner.signMessages.bind(owner) };
-        const shielded = await address(signer.address, signal, false);
+        const shielded = await address(signer.address, signal, "recovery");
         const bootstrap = await decrypt(signer, [], signal);
         signal.throwIfAborted();
         const nullifierSecret = requireHex(bootstrap.nullifier_secret, 31) as Bytes31;

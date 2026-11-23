@@ -59,7 +59,6 @@ export type ConnectedTvcRuntime = {
   readonly info: ServiceInfo;
   readonly transport: DecryptionServiceTransport;
   readonly responseTimeoutMs?: number;
-  readonly recoveryOnly?: boolean;
   readonly releasePolicyValidFromMs: bigint;
   readonly releasePolicyExpiresAtMs: bigint;
   readonly policyFreshnessRemainingMs?: () => number;

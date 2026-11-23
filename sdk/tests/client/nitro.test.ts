@@ -157,7 +157,7 @@ function openCanaryItem(viewing: ViewingKey, item: DecryptItem) {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.mocked(verifyNativeNitroEvidence).mockReset();
-  signMessages.mockClear();
+  signMessages.mockReset();
 });
 
 describe("operator replica probe", () => {
@@ -445,8 +445,9 @@ describe("native client trust gate", () => {
       signedReply(openRequest(init, secrets), secrets, { type: "PublicKeys", viewing_public_key, nullifier_public_key });
     const lastFieldElement = (BigInt(BN254_MODULUS_DEC) - 1n).toString(16);
     const policy = signedPolicy();
-    const fetch = policyHeads(vi.fn(), policy).mockResolvedValueOnce(attestedDiscovery())
-      .mockImplementationOnce((_url, init) => response(init, nullifierModulus));
+    const fetch = policyHeads(vi.fn(), policy).mockResolvedValueOnce(attestedDiscovery());
+    policyHeads(fetch, policy).mockImplementationOnce((_url, init) => response(init, nullifierModulus));
+    policyHeads(fetch, policy);
     policyHeads(fetch, policy).mockImplementationOnce((_url, init) => response(init, lastFieldElement));
     policyHeads(fetch, policy);
     vi.stubGlobal("fetch", fetch);
@@ -462,8 +463,8 @@ describe("native client trust gate", () => {
     const policy = signedPolicy();
     const discovery = await attestedDiscovery().json();
     const fetch = policyHeads(vi.fn(), policy).mockResolvedValueOnce(Response.json(discovery));
-    policyHeads(fetch, policy).mockResolvedValueOnce(Response.json(discovery))
-      .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    policyHeads(fetch, policy).mockResolvedValueOnce(Response.json(discovery));
+    policyHeads(fetch, policy).mockImplementationOnce((_url, init) => lookupReply(init, secrets));
     policyHeads(fetch, policy);
     vi.stubGlobal("fetch", fetch);
     const blocked = createNitroDecryptionService({ trust, policyStore: checkpointStore(), requiredBootKeyId: "42".repeat(32) });
@@ -487,8 +488,8 @@ describe("native client trust gate", () => {
     const fetch = policyHeads(vi.fn(), policy).mockResolvedValueOnce(Response.json({
       ...response, boot: { ...response.boot, bootstrapSlots: [1, 3, 6] },
     }));
-    policyHeads(fetch, policy).mockResolvedValueOnce(Response.json(response))
-      .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    policyHeads(fetch, policy).mockResolvedValueOnce(Response.json(response));
+    policyHeads(fetch, policy).mockImplementationOnce((_url, init) => lookupReply(init, secrets));
     policyHeads(fetch, policy);
     vi.stubGlobal("fetch", fetch);
     const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
@@ -574,12 +575,42 @@ describe("native client trust gate", () => {
     expect(fetch.mock.calls.filter(([url]) => !url.pathname.endsWith("/policy.json"))).toHaveLength(1);
   });
 
+  it.each([
+    ["revocation", "cached"], ["publisher outage", "cached"],
+    ["revocation", "fresh"], ["publisher outage", "fresh"],
+  ] as const)("keeps the recovery address private after %s during a %s session", async (event, session) => {
+    const active = signedPolicy();
+    const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(active).policy));
+    const revoked = signedPolicy({ sequence: "3", previousPolicyDigest, action: "revoke", targets: [] });
+    let changed = false;
+    const fetch = vi.fn(async (url: URL, init: RequestInit) => {
+      if (url.pathname === "/v1/nitro/attestation") {
+        changed = session === "fresh";
+        return attestedDiscovery();
+      }
+      if (url.pathname === "/v1/operations") return lookupReply(init, secrets);
+      if (!changed) return new Response(active);
+      if (event === "revocation") return new Response(revoked);
+      return url.hostname.startsWith("release-peer.") ? new Response(null, { status: 503 }) : new Response(active);
+    });
+    vi.stubGlobal("fetch", fetch);
+    const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
+    if (session === "cached") {
+      await client.address(signer.address);
+      changed = true;
+    }
+    await expect(client.open(signer, proofs)).rejects.toMatchObject(event === "revocation"
+      ? { code: "ReleasePolicyRevoked" } : { code: "ReleasePolicyInvalid", status: 503 });
+    expect(signMessages).not.toHaveBeenCalled();
+    expect(fetch.mock.calls.filter(([url]) => url.pathname === "/v1/operations")).toHaveLength(session === "cached" ? 1 : 0);
+  });
+
   it("checks both published policies before a cached boot resolves a payment", async () => {
     const old = signedPolicy();
     const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(old).policy));
     const recovery = signedPolicy({ sequence: "3", previousPolicyDigest, recoveryOnly: true });
-    const fetch = policyHeads(vi.fn(), old).mockResolvedValueOnce(attestedDiscovery())
-      .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    const fetch = policyHeads(vi.fn(), old).mockResolvedValueOnce(attestedDiscovery());
+    policyHeads(fetch, old).mockImplementationOnce((_url, init) => lookupReply(init, secrets));
     policyHeads(fetch, old);
     policyHeads(fetch, recovery, old);
     vi.stubGlobal("fetch", fetch);
@@ -597,8 +628,8 @@ describe("native client trust gate", () => {
     ["publication outage", undefined, { code: "ReleasePolicyInvalid", status: 503 }],
   ] as const)("discards a valid payment lookup reply after %s", async (_event, update, error) => {
     const old = signedPolicy();
-    const fetch = policyHeads(vi.fn(), old).mockResolvedValueOnce(attestedDiscovery())
-      .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    const fetch = policyHeads(vi.fn(), old).mockResolvedValueOnce(attestedDiscovery());
+    policyHeads(fetch, old).mockImplementationOnce((_url, init) => lookupReply(init, secrets));
     if (update) {
       const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(old).policy));
       policyHeads(fetch, signedPolicy({ sequence: "3", previousPolicyDigest, ...update }), old);
@@ -618,8 +649,8 @@ describe("native client trust gate", () => {
 
   it("blocks a cached payment while a publisher is unavailable and retains the attested boot", async () => {
     const policy = signedPolicy();
-    const fetch = policyHeads(vi.fn(), policy).mockResolvedValueOnce(attestedDiscovery())
-      .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    const fetch = policyHeads(vi.fn(), policy).mockResolvedValueOnce(attestedDiscovery());
+    policyHeads(fetch, policy).mockImplementationOnce((_url, init) => lookupReply(init, secrets));
     policyHeads(fetch, policy);
     fetch.mockResolvedValueOnce(new Response(policy)).mockResolvedValueOnce(new Response(null, { status: 503 }));
     policyHeads(fetch, policy).mockImplementationOnce((_url, init) => lookupReply(init, secrets));
@@ -653,12 +684,11 @@ describe("native client trust gate", () => {
       const policy = signedPolicy();
       const validThrough = BigInt(Date.now()) + 1_000n;
       const initialDiscovery = attestedDiscovery(undefined, secrets, validThrough);
-      const fetch = policyHeads(vi.fn(), policy)
-        .mockResolvedValueOnce(initialDiscovery)
-        .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+      const fetch = policyHeads(vi.fn(), policy).mockResolvedValueOnce(initialDiscovery);
+      policyHeads(fetch, policy).mockImplementationOnce((_url, init) => lookupReply(init, secrets));
       policyHeads(fetch, policy);
-      policyHeads(fetch, policy).mockImplementationOnce(() => attestedDiscovery(undefined, replacementBoot))
-        .mockImplementationOnce((_url, init) => lookupReply(init, replacementBoot));
+      policyHeads(fetch, policy).mockImplementationOnce(() => attestedDiscovery(undefined, replacementBoot));
+      policyHeads(fetch, policy).mockImplementationOnce((_url, init) => lookupReply(init, replacementBoot));
       policyHeads(fetch, policy);
       vi.stubGlobal("fetch", fetch);
       const requiredBootKeyId = encodeLowerHex(sha256(requireHex(publicPair(secrets), 130)));
@@ -982,7 +1012,7 @@ describe("native client trust gate", () => {
       else await expect(lookup).rejects.toMatchObject({
         code: change === "revoke" ? "ReleasePolicyRevoked" : "ReleasePolicyInvalid",
       });
-      expect(fetch.mock.calls.filter(([url]) => url.pathname.endsWith("/policy.json"))).toHaveLength(change === "activate" ? 4 : 2);
+      expect(fetch.mock.calls.filter(([url]) => url.pathname.endsWith("/policy.json"))).toHaveLength(change === "activate" ? 6 : 2);
       const contacts = fetch.mock.calls.filter(([url]) => !url.pathname.endsWith("/policy.json")).map(([url]) => url.href);
       expect(contacts).toEqual(change === "activate" ? [
         `${replacement}v1/nitro/attestation`, `${replacement}v1/operations`,
@@ -995,8 +1025,9 @@ describe("native client trust gate", () => {
     const old = signedPolicy();
     const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(old).policy));
     const revoked = signedPolicy({ sequence: "3", previousPolicyDigest, action: "revoke", targets: [] });
-    const fetch = policyHeads(vi.fn(), old).mockResolvedValueOnce(attestedDiscovery())
-      .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    const fetch = policyHeads(vi.fn(), old).mockResolvedValueOnce(attestedDiscovery());
+    policyHeads(fetch, old).mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    policyHeads(fetch, old);
     policyHeads(fetch, old);
     policyHeads(fetch, revoked);
     vi.stubGlobal("fetch", fetch);
@@ -1008,7 +1039,7 @@ describe("native client trust gate", () => {
     });
     await expect(createNitroDecryptionService({ trust }).open(signer, proofs))
       .rejects.toMatchObject({ code: "ReleasePolicySuperseded" });
-    expect(fetch).toHaveBeenCalledTimes(8);
+    expect(fetch).toHaveBeenCalledTimes(12);
     expect(fetch.mock.calls.filter(([url]) => url.pathname === "/v1/operations")).toHaveLength(1);
     expect(signMessages).toHaveBeenCalledOnce();
   });
@@ -1018,8 +1049,9 @@ describe("native client trust gate", () => {
     const { policy } = JSON.parse(old) as { policy: NitroPolicy };
     const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(policy));
     const revoked = signedPolicy({ sequence: "3", previousPolicyDigest, action: "revoke", targets: [] });
-    const fetch = policyHeads(vi.fn(), old).mockResolvedValueOnce(attestedDiscovery())
-      .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    const fetch = policyHeads(vi.fn(), old).mockResolvedValueOnce(attestedDiscovery());
+    policyHeads(fetch, old).mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+    policyHeads(fetch, old);
     policyHeads(fetch, old);
     policyHeads(fetch, revoked);
     vi.stubGlobal("fetch", fetch);
@@ -1126,6 +1158,7 @@ describe("native client trust gate", () => {
     const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(old).policy));
     const revoked = signedPolicy({ sequence: "3", previousPolicyDigest, action: "revoke", targets: [], recoveryOnly: true });
     const fetch = policyHeads(vi.fn(), old).mockResolvedValueOnce(attestedDiscovery());
+    policyHeads(fetch, old);
     policyHeads(fetch, revoked);
     policyHeads(fetch, revoked);
     vi.stubGlobal("fetch", fetch);
@@ -1191,8 +1224,9 @@ describe("native client trust gate", () => {
     const ticks = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
     try {
       const policy = signedPolicy();
-      const fetch = policyHeads(vi.fn(), policy).mockResolvedValueOnce(attestedDiscovery())
-        .mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+      const fetch = policyHeads(vi.fn(), policy).mockResolvedValueOnce(attestedDiscovery());
+      policyHeads(fetch, policy).mockImplementationOnce((_url, init) => lookupReply(init, secrets));
+      policyHeads(fetch, policy);
       policyHeads(fetch, policy);
       vi.stubGlobal("fetch", fetch);
       signMessages.mockImplementationOnce(async () => {

@@ -134,7 +134,6 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
     return {
       ...nitroOperationBinding(connected),
       responseTimeoutMs: RESPONSE_TIMEOUT_MS,
-      recoveryOnly: policy.recoveryOnly,
       nowMs: clock,
       ...window,
       requireCurrentCheckpoint,
