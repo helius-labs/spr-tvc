@@ -109,6 +109,7 @@ def require_registered_target(trust, manifest, *, receipt_at=None, expected_vers
     if target_binding(recorded) != target_binding(manifest):
         raise ValueError("target does not match the immutable deployment register")
     require_active_epoch(trust, manifest["custodyEpoch"])
+    return version
 
 
 def target(trust, document, receipt, custodians, build, *, at=None):

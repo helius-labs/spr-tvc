@@ -715,8 +715,9 @@ policy, sends the recovery package and relay
 attestation to KMS, and passes the encrypted response to the relay. The relay
 checks the signatures, share commitment and authorization deadline, then
 returns an RSA-OAEP-SHA-256 ciphertext for the registered destination.
-The tool stages each wrapped share, then rechecks the target approval,
-open epoch and deadline before publishing the complete file.
+The tool rechecks the approved target, its original S3 registration version,
+the open epoch and the deadline before and after signing, before KMS decrypt,
+before relay rewrap and before publishing the complete file.
 
 For custody acknowledgements and retirement recovery proofs, the relay attests
 the exact KMS envelope, its own public key, the slot and the share commitment.

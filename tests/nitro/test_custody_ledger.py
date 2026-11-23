@@ -2930,17 +2930,18 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertEqual(sum(task.exception() is None for task in pending), 1)
         winner = original if pending[0].exception() is None else changed
         loser = changed if winner is original else original
+        registered_version = require_registered_target(self.trust, winner)
         with self.assertRaisesRegex(ValueError, "does not match"):
             require_registered_target(self.trust, loser)
 
         self.rotate_approvals("3")
         renewed = {**winner, "expiresAt": self.now + 60, "approvalFromEpoch": "3"}
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, renewed))
-        require_registered_target(self.trust, renewed)
+        self.assertEqual(require_registered_target(self.trust, renewed), registered_version)
         sibling = {**renewed, "instanceId": "i-1234567890abcdef3", "wrappingKeys": [key(i, 5) for i in range(1, 7)]}
         self.assertNotEqual(target_object_name(renewed), target_object_name(sibling))
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, sibling))
-        require_registered_target(self.trust, sibling)
+        self.assertNotEqual(require_registered_target(self.trust, sibling), registered_version)
         self.assertEqual(len([name for name in self.objects if "/targets/2/" in name]), 2)
 
     def test_target_registration_refuses_a_deadline_inside_the_write_budget(self):

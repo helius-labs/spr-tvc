@@ -23,6 +23,7 @@ RECEIPT = {"securityDomainId": DOMAIN, "custody": {"epoch": "1", "shareCommitmen
            "packages": [{"recipientSha256": hashlib.sha256(PUBLIC).hexdigest(), "ciphertext": "de" * 256}]}
 KEYS = [pin(key(i, 9)) for i in (10, 11, 12)]
 NEXT_KEYS = [pin(key(i, 9)) for i in (13, 14, 15)]
+TARGET_VERSION = "registered-version"
 
 
 class RelayTests(unittest.TestCase):
@@ -40,14 +41,16 @@ class RelayTests(unittest.TestCase):
         ciphertext = b"x" * 256
         write_bytes = pathlib.Path.write_bytes
         with (patch("sys.argv", args),
-              patch("relay_wrap.prepare", return_value=(statement, KEYS, RECEIPT, CUSTODIAN, b"evidence")),
+              patch("relay_wrap.prepare", return_value=(statement, KEYS, RECEIPT, CUSTODIAN, b"evidence", TARGET_VERSION)),
               patch("relay_wrap.require_reviewed_target"), patch("relay_wrap.recover_to_relay", return_value=b"envelope"),
               patch("relay_wrap.relay_request", return_value=ciphertext),
-              patch("relay_wrap.verify_target_approval") as approved, patch("relay_wrap.require_active_epoch") as active,
+              patch("relay_wrap.verify_target_approval") as approved,
+              patch("relay_wrap.require_registered_target", return_value=TARGET_VERSION) as registered,
               patch("relay_wrap.time", return_value=19) as now):
             for check, result, message in (
                 (now, 20, "relay authorization has expired"),
-                (active, ValueError("custody epoch is retired"), "custody epoch is retired"),
+                (registered, ValueError("custody epoch is retired"), "custody epoch is retired"),
+                (registered, ValueError("registered target object missing"), "registered target object missing"),
                 (approved, ValueError("target approval roster changed"), "target approval roster changed"),
             ):
                 def revoke_while_staging(path, payload):
@@ -243,7 +246,7 @@ class RelayTests(unittest.TestCase):
         request.assert_not_called()
         verify.assert_not_called()
 
-    @patch("relay_wrap.require_active_epoch")
+    @patch("relay_wrap.require_registered_target", return_value=TARGET_VERSION)
     @patch("relay_wrap.verify_target_approval")
     @patch("relay_wrap.relay_request", return_value=b"x" * 256)
     @patch("relay_wrap.recover_to_relay", return_value=b"envelope")
@@ -251,10 +254,10 @@ class RelayTests(unittest.TestCase):
     @patch("relay_wrap.require_reviewed_target")
     @patch("relay_wrap.time", return_value=10)
     def test_release_checks_the_live_boot_and_exact_quorum_before_any_recovery(
-        self, now, reviewed, prepare, recover, request, _verify, active,
+        self, now, reviewed, prepare, recover, request, _verify, registered,
     ):
         statement = {"custodyEpoch": "1", "relayKeyId": "ab" * 32, "destinationPublicKey": "cd" * 32, "expiresAt": 20}
-        prepare.return_value = (statement, KEYS, RECEIPT, CUSTODIAN, b"evidence")
+        prepare.return_value = (statement, KEYS, RECEIPT, CUSTODIAN, b"evidence", TARGET_VERSION)
         signatures = [sign(LABEL, statement, pin["keyArn"]) for pin in KEYS[:2]]
         approved = {"manifest": statement, "signatures": signatures}
         source = (TRUST, {"manifest": {}}, pathlib.Path("build"), 1, 7443)
@@ -275,7 +278,7 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(request.call_args.args[:2], (7443, "/rewrap"))
         payload = request.call_args.args[2]
         self.assertIn(b'"envelope":"656e76656c6f7065"', payload)
-        self.assertEqual(active.call_count, 2)
+        self.assertEqual(registered.call_count, 2)
         request.reset_mock()
         now.return_value = 20
         with self.assertRaisesRegex(ValueError, "relay authorization has expired"):
@@ -284,35 +287,40 @@ class RelayTests(unittest.TestCase):
 
     @patch("relay_wrap.time", return_value=10)
     @patch("relay_wrap.verify_target_approval")
-    @patch("relay_wrap.require_active_epoch")
+    @patch("relay_wrap.require_registered_target", return_value=TARGET_VERSION)
     @patch("relay_wrap.add_approval")
-    def test_signing_rechecks_the_ledger_and_cutoff_before_returning_the_signature(self, sign, active, _verify, now):
+    def test_signing_rechecks_the_ledger_and_cutoff_before_returning_the_signature(self, sign, registered, _verify, now):
         statement = {"custodyEpoch": "1", "expiresAt": 20}
         draft = {"manifest": statement, "signatures": []}
         args = (TRUST, {}, statement, KEYS, draft, KEYS[0]["keyArn"])
-        self.assertEqual(sign_release(*args), sign.return_value)
-        self.assertEqual(active.call_count, 2)
+        self.assertEqual(sign_release(*args, registered_version=TARGET_VERSION), sign.return_value)
+        self.assertEqual(registered.call_count, 2)
 
         sign.reset_mock()
         now.return_value = 20
         with self.assertRaisesRegex(ValueError, "relay authorization has expired"):
-            sign_release(*args)
+            sign_release(*args, registered_version=TARGET_VERSION)
         sign.assert_not_called()
 
         now.return_value = 10
-        active.side_effect = [None, ValueError("custody epoch is retired")]
-        with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
-            sign_release(*args)
-        sign.assert_called_once()
+        for changed, message in (
+            (ValueError("custody epoch is retired"), "custody epoch is retired"),
+            ("other-version", "registered target changed during share release"),
+        ):
+            sign.reset_mock()
+            registered.side_effect = [TARGET_VERSION, changed]
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                sign_release(*args, registered_version=TARGET_VERSION)
+            sign.assert_called_once()
 
         def late_signature(*_args):
             now.return_value = 20
             return draft
 
-        active.side_effect = None
+        registered.side_effect = None
         sign.side_effect = late_signature
         with self.assertRaisesRegex(ValueError, "relay authorization has expired"):
-            sign_release(*args)
+            sign_release(*args, registered_version=TARGET_VERSION)
 
 if __name__ == "__main__":
     unittest.main()

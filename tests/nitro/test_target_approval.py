@@ -90,8 +90,7 @@ class TargetApprovalTests(unittest.TestCase):
         self.enterContext(patch("relay.kms", side_effect=self.kms))
         self.ledger = self.enterContext(patch("relay_wrap.load_epoch_with_time", side_effect=self.load_epoch))
         self.reviewed = self.enterContext(patch("relay_wrap.require_reviewed_target"))
-        self.registry = self.enterContext(patch("relay_wrap.require_registered_target"))
-        self.active = self.enterContext(patch("relay_wrap.require_active_epoch"))
+        self.registry = self.enterContext(patch("relay_wrap.require_registered_target", return_value="target-version"))
         self.enterContext(patch("relay_wrap.live_recipient", return_value=(BOOT, b"evidence")))
         self.relay = self.enterContext(patch("relay_wrap.relay_request", return_value=b"c" * 256))
         self.decrypt_reply = {"KeyId": key(1), "EncryptionAlgorithm": RSA_OAEP, "CiphertextForRecipient": "ZW52ZWxvcGU="}
@@ -131,8 +130,8 @@ class TargetApprovalTests(unittest.TestCase):
 
     def test_quorum_and_installed_policy_checked_before_opening_one_share(self):
         self.assertEqual(self.wrap(), b"c" * 256)
-        self.registry.assert_called_once_with(self.trust, self.manifest, receipt_at=1)
-        self.assertEqual(self.active.call_count, 3)
+        self.assertEqual(self.registry.call_args_list,
+                         [call(self.trust, self.manifest, receipt_at=1), *[call(self.trust, self.manifest)] * 3])
         self.assertEqual(self.calls, ["describe-key", "get-key-policy", "get-public-key",
                                       "describe-key", "get-key-policy", "get-public-key", "decrypt"])
 
@@ -549,7 +548,7 @@ class TargetApprovalTests(unittest.TestCase):
     def test_rechecks_expiration_across_kms_calls(self):
         deadline = self.manifest["expiresAt"]
         for boundary, crossed, decrypts, wraps in (
-            ("ledger read", lambda: self.active.called, 0, 0),
+            ("ledger read", lambda: self.registry.call_count >= 2, 0, 0),
             ("KMS unwrap", lambda: "decrypt" in self.calls, 1, 0),
             ("relay wrap", lambda: self.relay.called, 1, 1),
         ):
@@ -557,7 +556,7 @@ class TargetApprovalTests(unittest.TestCase):
                   patch("relay_wrap.time", side_effect=lambda: deadline if crossed() else deadline - 1)):
                 self.calls.clear()
                 self.relay.reset_mock()
-                self.active.reset_mock()
+                self.registry.reset_mock()
                 with self.assertRaisesRegex(ValueError, "relay authorization has expired"):
                     self.wrap()
                 self.assertEqual(self.calls.count("decrypt"), decrypts)
@@ -572,10 +571,24 @@ class TargetApprovalTests(unittest.TestCase):
         self.assertNotIn("decrypt", self.calls)
 
     def test_stops_when_retirement_races_share_recovery(self):
-        self.active.side_effect = [None, ValueError("custody epoch is retired")]
+        self.registry.side_effect = ["target-version", "target-version", ValueError("custody epoch is retired")]
         with self.assertRaisesRegex(ValueError, "custody epoch is retired"):
             self.wrap()
         self.assertEqual(self.calls[-1], "decrypt")
+
+    def test_rechecks_target_registration_at_each_share_release_boundary(self):
+        output = self.build / "share.kms"
+        for reads, decrypts, wraps in ((1, 0, 0), (2, 1, 0), (3, 1, 1)):
+            with self.subTest(reads=reads):
+                output.unlink(missing_ok=True)
+                self.calls.clear()
+                self.relay.reset_mock()
+                self.registry.side_effect = ["target-version"] * reads + ["changed-version"]
+                with self.assertRaisesRegex(ValueError, "registered target changed during share release"):
+                    self.wrap()
+                self.assertEqual(self.calls.count("decrypt"), decrypts)
+                self.assertEqual(self.relay.call_count, wraps)
+                self.assertFalse(output.exists())
 
     def test_rejects_plaintext_or_a_reply_for_another_kms_key_before_rewrapping(self):
         original = self.decrypt_reply

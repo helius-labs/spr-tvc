@@ -10,7 +10,7 @@ from approval import (
     KEY_ARN, add_approval, approval_roster, arn, canonical, check_approvals, epoch_number, publish_new_file, read_json,
     require_profile_account, sha256,
 )
-from custody_ledger import load_epoch_with_time, require_active_epoch, verify_target_approval
+from custody_ledger import load_epoch_with_time, verify_target_approval
 from deployment import require_registered_target, require_reviewed_target, target
 from kms_policy import RSA_CIPHERTEXT_BYTES
 from relay import live_recipient, recover_to_relay, relay_pins, relay_request, sealed_rsa_key
@@ -23,11 +23,11 @@ def require_release_window(expires_at):
         raise ValueError("relay authorization has expired")
 
 
-def require_release_scope(trust, approval, statement):
-    expires_at = statement["expiresAt"]
+def require_release_scope(trust, approval, expires_at, registered_version):
     require_release_window(expires_at)
-    verify_target_approval(trust, approval)
-    require_active_epoch(trust, statement["custodyEpoch"])
+    manifest = verify_target_approval(trust, approval)
+    if require_registered_target(trust, manifest) != registered_version:
+        raise ValueError("registered target changed during share release")
     require_release_window(expires_at)
 
 
@@ -40,7 +40,7 @@ def prepare(trust, approval, build, index, port, inspection_profile=None):
     relay = relay_pins(trust, epoch)
     _, receipt, custodians, receipt_at = load_epoch_with_time(trust, epoch)
     _, policies, _ = target(trust, approval, receipt, custodians, build)
-    require_registered_target(trust, manifest, receipt_at=receipt_at)
+    registered_version = require_registered_target(trust, manifest, receipt_at=receipt_at)
     roster = approval_roster(trust, epoch=epoch)
     if epoch_number(roster["fromEpoch"]) < epoch_number(manifest["approvalFromEpoch"]):
         raise ValueError("the relay's measured approval roster has retired")
@@ -61,20 +61,21 @@ def prepare(trust, approval, build, index, port, inspection_profile=None):
         "relayKeyId": key_id, "targetDigest": sha256(manifest), "expiresAt": expires,
         "destinationPublicKey": destination.hex(),
     }
-    return statement, roster["keys"], receipt, custodians[index - 1], evidence
+    return statement, roster["keys"], receipt, custodians[index - 1], evidence, registered_version
 
 
-def sign_release(trust, approval, statement, keys, authorization, key):
+def sign_release(trust, approval, statement, keys, authorization, key, *, registered_version):
     if authorization["manifest"] != statement or len(authorization["signatures"]) >= 2:
         raise ValueError("relay authorization changed or already has two signatures")
-    require_release_scope(trust, approval, statement)
+    expires_at = statement["expiresAt"]
+    require_release_scope(trust, approval, expires_at, registered_version)
     signed = add_approval(keys, LABEL, authorization, key)
-    require_release_scope(trust, approval, statement)
+    require_release_scope(trust, approval, expires_at, registered_version)
     return signed
 
 
 def release(trust, approval, build, index, port, authorization, output, *, review):
-    statement, keys, receipt, custodian, evidence = prepare(trust, approval, build, index, port)
+    statement, keys, receipt, custodian, evidence, registered_version = prepare(trust, approval, build, index, port)
     if authorization["manifest"] != statement:
         raise ValueError("relay release does not match the live boot and registered target")
     check_approvals(keys, LABEL, authorization)
@@ -83,7 +84,7 @@ def release(trust, approval, build, index, port, authorization, output, *, revie
     require_reviewed_target(build, approval["manifest"], review)
 
     def still_authorized():
-        require_release_scope(trust, approval, statement)
+        require_release_scope(trust, approval, statement["expiresAt"], registered_version)
 
     envelope = recover_to_relay(trust, receipt, custodian, index, evidence, still_authorized)
     authorities = {key["keyArn"]: i for i, key in enumerate(keys, start=1)}
@@ -124,10 +125,11 @@ def main():
         if args.command == "wrap":
             release(*source, read_json(args.authorization), args.output, review=args.review)
         else:
-            statement, keys, _, _, _ = prepare(*source, inspection_profile=args.inspection_profile)
+            statement, keys, _, _, _, registered_version = prepare(*source, inspection_profile=args.inspection_profile)
             document = {"manifest": statement, "signatures": []}
             if args.command == "sign":
-                document = sign_release(trust, approval, statement, keys, read_json(args.authorization), args.key)
+                document = sign_release(trust, approval, statement, keys, read_json(args.authorization), args.key,
+                                        registered_version=registered_version)
             print(canonical(document).decode())
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         raise SystemExit(str(error)) from None

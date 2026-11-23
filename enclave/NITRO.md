@@ -193,9 +193,10 @@ must record the write within the approval window. A fresh quorum approval
 can extend the deadline for the same wrapping keys. Each share release
 checks the registered target and both installed KMS key policies. The
 custodian verifies build provenance against its independently reviewed ref
-and commit before requesting KMS recovery. The tool checks the epoch, roster
-and deadline after potentially slow ledger reads, before returning signatures
-from KMS and before returning wrapped shares from the relay. The relay
+and commit before requesting KMS recovery. The tool rechecks the exact
+registration version, open epoch, roster and deadline before and after
+KMS signing, before decrypting, before relay rewrap and before publishing
+the wrapped share. The relay
 opens the share and wraps it to the approved RSA key inside Nitro.
 
 The wallet publishers raise the custody floor after the replacement attests.
