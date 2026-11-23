@@ -130,7 +130,10 @@ independently reviewed ref and commit. The publisher verifies the Nitro proof
 before committing the signed record. A rotated receipt pins
 the registered rotation approval. It must match the approved rotation image,
 host role, successor roster and successor relay. All six custodians sign an
-acknowledgement that their sealed key can open its share.
+acknowledgement that their sealed key can open its share. Rotation signers
+recheck both open epochs and the exact S3 versions, write times and bytes
+of the predecessor and rotation registration before signing or recovering
+a share, after recovery, and before publishing the signed file.
 A conditional S3 write commits one record for the epoch. Before the first
 write, the publisher checks the enabled state, identity and sealed policy of
 each recovery and acknowledgement key through a read-only profile in the

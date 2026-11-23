@@ -625,6 +625,80 @@ class CustodyLedgerTests(unittest.TestCase):
                 del self.objects[name]
         publish(self.trust, document)
 
+    def test_rotation_signatures_require_the_original_predecessor_and_registration(self):
+        publish(self.trust, self.sign(self.document(1)))
+        _, predecessor, _ = load_epoch(self.trust, "1")
+        rotation, registration = self.rotation_document(predecessor)
+        rotation["authorization"]["manifest"]["capture"]["receipt"]["packages"] = [
+            {"recipientSha256": f"{index:02x}" * 32} for index in range(1, 7)
+        ]
+        document = self.sign(rotation)
+        build, review = pathlib.Path("build"), pathlib.Path("ceremony-review.json")
+        prefix = f"spr-custody/devnet/{DOMAIN}/"
+        registration_path = prefix + target_object_name(registration["manifest"])
+
+        def switch_registration(*_args):
+            self.versions[registration_path] = "changed-registration"
+
+        def change_predecessor_during_recovery(*args):
+            require_current = args[-1]
+            require_current()
+            self.versions[prefix + "1.json"] = "changed-predecessor"
+            require_current()
+
+        with self.subTest(operation="approval"):
+            with (patch.dict(self.versions), patch("custody_ledger.verify_reviewed_ceremony"),
+                  patch("custody_ledger.add_approval", return_value=document["authorization"]) as sign_record,
+                  patch("custody_ledger.check_custody_roster", side_effect=switch_registration),
+                  self.assertRaisesRegex(ValueError, "changed during verification")):
+                sign_epoch(self.trust, document, key(8, 7), build, review)
+            sign_record.assert_not_called()
+
+        with self.subTest(operation="acknowledgement"):
+            with (patch.dict(self.versions), patch("custody_ledger.verify_reviewed_ceremony"),
+                  patch("custody_ledger.check_acknowledgement_policy"),
+                  patch("custody_ledger.add_approval", return_value=document["authorization"]) as sign_record,
+                  patch("custody_ledger.prove_share", side_effect=change_predecessor_during_recovery),
+                  self.assertRaisesRegex(ValueError, "changed during verification")):
+                acknowledge(self.trust, document, 1, 7443, build, review)
+            sign_record.assert_not_called()
+
+    def test_rotation_signature_files_recheck_lineage_after_staging(self):
+        publish(self.trust, self.sign(self.document(1)))
+        _, predecessor, _ = load_epoch(self.trust, "1")
+        rotation, _ = self.rotation_document(predecessor)
+        rotation["authorization"]["manifest"]["capture"]["receipt"]["packages"] = [
+            {"recipientSha256": f"{index:02x}" * 32} for index in range(1, 7)
+        ]
+        document = self.sign(rotation)
+        output = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory())) / "signed.json"
+        build, review = pathlib.Path("build"), pathlib.Path("ceremony-review.json")
+        write_bytes = pathlib.Path.write_bytes
+
+        def change_while_staging(path, data):
+            size = write_bytes(path, data)
+            if path.name == output.name:
+                self.assertFalse(output.exists())
+                self.versions[f"spr-custody/devnet/{DOMAIN}/1.json"] = "changed-predecessor"
+            return size
+
+        with (patch("custody_ledger.verify_reviewed_ceremony"),
+              patch("custody_ledger.check_custody_roster"),
+              patch("custody_ledger.check_acknowledgement_policy"),
+              patch("custody_ledger.prove_share"),
+              patch("custody_ledger.add_approval", return_value=document["authorization"])):
+            for operation in (
+                lambda: sign_epoch(self.trust, document, key(8, 7), build, review, output=output),
+                lambda: acknowledge(self.trust, document, 1, 7443, build, review, output=output),
+            ):
+                with (patch.dict(self.versions), patch.object(pathlib.Path, "write_bytes", change_while_staging),
+                      self.assertRaisesRegex(ValueError, "changed during verification")):
+                    operation()
+                self.assertFalse(output.exists())
+                signed = operation()
+                self.assertEqual(output.read_bytes(), canonical(signed) + b"\n")
+                output.unlink()
+
     def test_unapproved_roster_or_insufficient_acknowledgements_never_commits(self):
         document = self.sign(self.document(1))
         document["acknowledgements"].pop()

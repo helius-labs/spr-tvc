@@ -8,6 +8,7 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 
 from approval import (
@@ -1219,50 +1220,63 @@ def verify_reviewed_ceremony(manifest, target, build, review):
     verify_ceremony_capture(capture)
 
 
-def sign_epoch(trust, document, key, build, review, inspection_profiles=None, relay_build=None):
+def require_open_ceremony(trust, document, receipt, observed_records):
+    check_previous(trust, document, receipt, observed_records=observed_records)
+    epoch = receipt["custody"]["epoch"]
+    require_active_epoch(trust, epoch)
+    if epoch != "1":
+        require_active_epoch(trust, str(epoch_number(epoch) - 1))
+
+
+def review_ceremony_for_signing(trust, document, receipt, build, review):
+    observed_records = {}
+    target = check_previous(trust, document, receipt, observed_records=observed_records)
+    verify_reviewed_ceremony(document["authorization"]["manifest"], target, build, review)
+    return partial(require_open_ceremony, trust, document, receipt, observed_records)
+
+
+def sign_epoch(trust, document, key, build, review, inspection_profiles=None, relay_build=None, *, output=None):
     receipt, custodians = record(trust, document)
-    target = check_previous(trust, document, receipt)
-    authorization = document["authorization"]
-    verify_reviewed_ceremony(authorization["manifest"], target, build, review)
+    require_current = review_ceremony_for_signing(trust, document, receipt, build, review)
     epoch = receipt["custody"]["epoch"]
     check_custody_roster(trust, epoch, custodians, [package["recipientSha256"] for package in receipt["packages"]],
                          inspection_profiles, relay_build)
     keys = approval_keys(trust, epoch)
-    return {**document, "authorization": add_approval(keys, LABEL, authorization, key)}
+    require_current()
+    signed = {**document, "authorization": add_approval(keys, LABEL, document["authorization"], key)}
+    if output is None:
+        require_current()
+    else:
+        publish_new_file(output, canonical(signed) + b"\n", before_publish=require_current)
+    return signed
 
 
-def sign_share_recovery(trust, custodians, receipt, index, label, approval, relay_port, *, require_window=None):
+def sign_share_recovery(trust, custodians, receipt, index, label, approval, relay_port, *, require_current):
     if index not in range(1, 7):
         raise ValueError("invalid custody slot")
-    epoch = receipt["custody"]["epoch"]
-
-    def require_open_epoch():
-        if require_window is not None:
-            require_window()
-        require_active_epoch(trust, epoch)
-        if require_window is not None:
-            require_window()
-
-    require_open_epoch()
+    require_current()
     custodian = custodians[index - 1]
     key = custodian["acknowledgementKey"]["keyArn"]
     check_acknowledgement_policy(custodian)
-    prove_share(trust, receipt, custodian, index, relay_port, require_open_epoch)
-    require_open_epoch()
+    prove_share(trust, receipt, custodian, index, relay_port, require_current)
+    require_current()
     keys = [member["acknowledgementKey"] for member in custodians]
     signed = add_approval(keys, label, approval, key)
-    require_open_epoch()
+    require_current()
     return signed["signatures"]
 
 
-def acknowledge(trust, document, index, relay_port, build, review):
+def acknowledge(trust, document, index, relay_port, build, review, *, output=None):
     receipt, custodians = record(trust, document)
     authorization = document["authorization"]
     check_approvals(approval_keys(trust, receipt["custody"]["epoch"]), LABEL, authorization)
-    target = check_previous(trust, document, receipt)
-    verify_reviewed_ceremony(authorization["manifest"], target, build, review)
-    signatures = sign_share_recovery(trust, custodians, receipt, index, ACKNOWLEDGEMENT, acknowledgements(document), relay_port)
-    return {**document, "acknowledgements": signatures}
+    require_current = review_ceremony_for_signing(trust, document, receipt, build, review)
+    signatures = sign_share_recovery(trust, custodians, receipt, index, ACKNOWLEDGEMENT, acknowledgements(document),
+                                     relay_port, require_current=require_current)
+    signed = {**document, "acknowledgements": signatures}
+    if output is not None:
+        publish_new_file(output, canonical(signed) + b"\n", before_publish=require_current)
+    return signed
 
 
 def publish(trust, document, *, key_profiles=None):
@@ -1281,10 +1295,7 @@ def publish(trust, document, *, key_profiles=None):
 
     def before_write():
         require_receipt_keys(trust, epoch, custodians, key_profiles)
-        check_previous(trust, document, receipt, observed_records=observed_records)
-        require_active_epoch(trust, epoch)
-        if epoch != "1":
-            require_active_epoch(trust, str(epoch_number(epoch) - 1))
+        require_open_ceremony(trust, document, receipt, observed_records)
 
     write_once(trust, ledger_object(trust, epoch), document, confirm, before_write=before_write)
 
@@ -1385,11 +1396,11 @@ def main():
                                                  source_profile=args.source_profile, replica_profile=args.replica_profile,
                                                  key_profiles=profiles, bootstrap_slots=slots)).decode())
             return
-        signed = (sign_epoch(trust, document, args.key, args.build, args.review,
-                             args.inspection_profiles, args.relay_build)
-                  if args.command == "sign"
-                  else acknowledge(trust, document, args.share, args.relay_port, args.build, args.review))
-        publish_new_file(args.output, canonical(signed) + b"\n")
+        if args.command == "sign":
+            sign_epoch(trust, document, args.key, args.build, args.review, args.inspection_profiles, args.relay_build,
+                       output=args.output)
+        else:
+            acknowledge(trust, document, args.share, args.relay_port, args.build, args.review, output=args.output)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         raise SystemExit(str(error)) from None
 
