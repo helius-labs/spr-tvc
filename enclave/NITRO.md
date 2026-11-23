@@ -57,6 +57,10 @@ The artifact packager runs the release binary against the exact
 configuration bytes it will measure, using the same checks as enclave startup.
 The native builder fetches OpenSSL from a pinned 3.5 LTS revision, verifies its
 source hash and checks the version reported by the statically linked binary.
+OpenSSL's build time and paths are fixed. The packager sets both application
+file timestamps to the Unix epoch before creating the EIF. For an
+independent rebuild, compare the executable hash, configuration hash and
+PCR0–PCR2. The released EIF's digest also covers Nitro CLI's build metadata.
 It checks the Linux x86-64 native lockfile against RustSec and verifies that
 the OpenSSL revision includes the vendor's published fixes. The release job
 repeats both checks after review and before signing the artifact.

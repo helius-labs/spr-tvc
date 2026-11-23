@@ -15,13 +15,13 @@ mkdir "$work/uapi"
 ln -s /usr/include/linux /usr/include/asm-generic /usr/include/x86_64-linux-gnu/asm "$work/uapi/"
 (
     cd "$work/openssl-$OPENSSL_REVISION"
-    CC=musl-gcc CPPFLAGS="-I$work/uapi" ./Configure linux-x86_64 \
+    CC=musl-gcc CPPFLAGS="-I../uapi" ./Configure linux-x86_64 \
         no-shared no-module no-tests no-apps no-async no-engine -fPIC \
-        --prefix="$work/install" --libdir=lib --openssldir=/etc/ssl
-    make -s -j "$(nproc)" install_dev
+        --prefix=/usr --libdir=lib --openssldir=/etc/ssl
+    SOURCE_DATE_EPOCH=0 make -s -j "$(nproc)" DESTDIR="$work/install" install_dev
 )
 
-X86_64_UNKNOWN_LINUX_MUSL_OPENSSL_DIR="$work/install" \
+X86_64_UNKNOWN_LINUX_MUSL_OPENSSL_DIR="$work/install/usr" \
 X86_64_UNKNOWN_LINUX_MUSL_OPENSSL_STATIC=1 \
 RUSTFLAGS='-C target-feature=+crt-static' \
     cargo build --locked --release --manifest-path enclave/native/Cargo.toml \

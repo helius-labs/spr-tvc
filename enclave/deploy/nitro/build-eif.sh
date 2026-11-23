@@ -12,6 +12,7 @@ output=$3
 mkdir "$output"
 install -m 0755 "$binary" "$output/tvc_app"
 install -m 0644 "$config" "$output/configuration.json"
+TZ=UTC touch -t 197001010000.00 "$output/tvc_app" "$output/configuration.json"
 "$output/tvc_app" --check-configuration "$output/configuration.json"
 cat > "$output/Dockerfile" <<'DOCKER'
 FROM scratch
@@ -22,7 +23,7 @@ DOCKER
 
 image_id="$(cd "$output" && sha256sum tvc_app configuration.json | sha256sum | cut -d ' ' -f 1)"
 image="spr-nitro-decryption:$image_id"
-docker build --platform linux/amd64 --network none --tag "$image" "$output"
+docker build --platform linux/amd64 --network none --build-arg SOURCE_DATE_EPOCH=0 --tag "$image" "$output"
 nitro-cli build-enclave --docker-uri "$image" --output-file "$output/enclave.eif" > "$output/build-measurements.json"
 nitro-cli describe-eif --eif-path "$output/enclave.eif" > "$output/measurements.json"
 jq -e -s '

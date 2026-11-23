@@ -283,6 +283,8 @@ class ProvenanceTests(unittest.TestCase):
         good = subprocess.run([*command, str(self.build / "good")], cwd=self.build,
                               env={**env, "EIF_PINS": env["BUILD_PINS"]}, capture_output=True, timeout=10)
         self.assertEqual(good.returncode, 0, good.stderr.decode())
+        for filename in ("tvc_app", "configuration.json"):
+            self.assertEqual((self.build / "good" / filename).stat().st_mtime, 0)
         for case, observed, failure in (
             ("wrong-pcr", measurements.replace(b"07", b"ef"), b"EIF PCR verification failed"),
             ("bad-checksum", measurements.replace(b'"CheckCRC":true', b'"CheckCRC":false'), b"EIF checksum verification failed"),
