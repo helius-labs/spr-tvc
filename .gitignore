@@ -12,3 +12,4 @@ dist/
 operator.json
 **/operator.json
 test-ledger/
+enclave/deploy/*/*.deploy.lock

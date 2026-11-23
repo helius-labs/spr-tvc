@@ -1,7 +1,9 @@
 use std::env;
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
@@ -35,24 +37,18 @@ fn stop_check(child: &mut Child) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn capture(command: &mut Command) -> Result<Vec<u8>> {
-    let output = command
-        .stdin(Stdio::null())
-        .output()
-        .with_context(|| format!("run {}", command.get_program().to_string_lossy()))?;
-    if !output.status.success() {
-        let details = if output.stderr.is_empty() {
-            &output.stdout
-        } else {
-            &output.stderr
-        };
-        anyhow::bail!(
-            "{} failed: {}",
-            command.get_program().to_string_lossy(),
-            String::from_utf8_lossy(details).trim()
-        );
-    }
-    Ok(output.stdout)
+pub(crate) fn open_regular(options: &mut OpenOptions, path: &Path) -> Result<File> {
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    let file = options
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    ensure!(
+        file.metadata()?.is_file(),
+        "expected a regular file at {}",
+        path.display()
+    );
+    Ok(file)
 }
 
 pub(crate) fn run(command: &mut Command) -> Result<()> {
@@ -127,11 +123,8 @@ pub(crate) fn tvc(args: &[&str]) -> Command {
     command
 }
 
-pub(crate) fn tvc_json<T: DeserializeOwned>(
-    command: &mut Command,
-    output: fn(&mut Command) -> Result<Vec<u8>>,
-) -> Result<T> {
-    let json = output(command.args(["--message-format", "json"]))?;
+pub(crate) fn tvc_json<T: DeserializeOwned>(command: &mut Command) -> Result<T> {
+    let json = capture_check(command.args(["--message-format", "json"]))?;
     let line = json
         .trim_ascii_end()
         .rsplit(|&b| b == b'\n')

@@ -29,6 +29,19 @@ digest-only image reference, so the check accepts that canonical form
 when its repository and digest match. Mainnet candidates use a separate
 app and ingress.
 
+Before submitting a create, `stage` records the organization and validated
+descriptor digest in the local deployment record. It allows 60 seconds for
+the Turnkey CLI. If the response is interrupted, find the resulting ID in
+Turnkey and recover it from the same release and checkout.
+
+```sh
+cargo xtask stage "$release" --network "$network" --deployment-id "$id"
+```
+
+Recovery verifies the deployment before recording its ID. A plain rerun
+resumes a recorded ID. If Turnkey confirms that creation failed, use a new
+release ID for a new attempt.
+
 Operators review and approve with `tvc deploy approve --deploy-id "$id"`.
 For a hosted share use `tvc deploy provision --deploy-id "$id" --operator-id "$operator"`.
 For a locally held share, use `tvc deploy provisioning-details`,

@@ -25,7 +25,7 @@ use spr_tvc_protocol::types::{
 };
 use zeroize::Zeroizing;
 
-use crate::stage::{Deployment, Descriptor};
+use crate::stage::Descriptor;
 use crate::tools::{capture_check, verify_live, Credentials};
 use crate::{app_config, lower_hex, read_json, write_json, Pcrs, Phase, Release};
 
@@ -277,7 +277,7 @@ impl Release<'_> {
     pub(crate) fn policy(&self) -> Result<()> {
         let mainnet = self.network() == Network::Mainnet;
         let trust = mainnet.then(|| self.production_trust()).transpose()?;
-        let record: Deployment = read_json(&self.path("deploy"))?;
+        let record = self.staged_deployment()?;
         ensure!(
             self.live_deployment()?.as_deref() == Some(&record.deploy_id),
             "the staged deployment is not live"

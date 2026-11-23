@@ -41,6 +41,9 @@ struct Args {
     source_commit: Option<String>,
     #[arg(long)]
     signed_policy: Option<PathBuf>,
+    /// Recover an interrupted stage using its authenticated Turnkey deployment ID.
+    #[arg(long)]
+    deployment_id: Option<String>,
 }
 
 fn parse_network(value: &str) -> Result<Network, &'static str> {
@@ -65,6 +68,10 @@ fn release_id(value: &str) -> Result<String, &'static str> {
 
 impl Args {
     fn validate(&self) -> Result<()> {
+        ensure!(
+            self.deployment_id.is_none() || self.phase == Phase::Stage,
+            "--deployment-id is only used to recover an interrupted stage"
+        );
         ensure!(
             self.image.is_some() == (self.phase == Phase::Describe),
             "--image is required for describe and only used by that phase"
@@ -182,6 +189,12 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
 }
 
 fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
+    store_json(path, value)?;
+    println!("wrote {}", path.display());
+    Ok(())
+}
+
+fn store_json(path: &Path, value: &impl Serialize) -> Result<()> {
     use std::io::Write;
     let dir = path
         .parent()
@@ -192,7 +205,6 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     writeln!(file)?;
     file.persist(path)
         .with_context(|| format!("write {}", path.display()))?;
-    println!("wrote {}", path.display());
     Ok(())
 }
 

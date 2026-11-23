@@ -16,6 +16,7 @@ fn release_requires_inputs_for_its_phase_and_network() {
         ("stage", "devnet", vec!["--source-commit", &sha]),
         ("prepare", "devnet", vec![]),
         ("pin", "devnet", vec!["--signed-policy", "signed.json"]),
+        ("pin", "devnet", vec!["--deployment-id", "existing"]),
         ("stage", "mainnet", vec![]),
         ("stage", "mainnet", vec!["--source-commit", &sha[..12]]),
         ("pin", "mainnet", vec!["--source-commit", &sha]),
@@ -30,6 +31,10 @@ fn release_requires_inputs_for_its_phase_and_network() {
         .validate()
         .unwrap();
     parse("stage", "devnet", &[]).unwrap().validate().unwrap();
+    parse("stage", "devnet", &["--deployment-id", "existing"])
+        .unwrap()
+        .validate()
+        .unwrap();
     parse("prepare", "mainnet", &["--source-commit", &sha])
         .unwrap()
         .validate()

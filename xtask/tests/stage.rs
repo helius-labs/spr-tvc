@@ -69,3 +69,147 @@ fn staging_copies_the_checked_descriptor_before_invoking_turnkey() {
     let submitted: Descriptor = read_json(approved_input.path()).unwrap();
     assert!(submitted == descriptor);
 }
+
+fn attempt() -> StageAttempt {
+    StageAttempt {
+        organization_id: "organization".into(),
+        descriptor_sha256: "a".repeat(64),
+    }
+}
+
+#[test]
+fn an_interrupted_create_can_only_resume_with_a_verified_deployment_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("candidate.deploy.json");
+    let never_create = || panic!("stage submitted a second create");
+    let never_verify = |_: &str| panic!("stage verified an unknown candidate");
+    let error = stage_deployment(
+        &path,
+        attempt(),
+        None,
+        |_| Ok(()),
+        || {
+            let pending: StageRecord = read_json(&path).unwrap();
+            assert!(matches!(pending, StageRecord::Pending(record) if record == attempt()));
+            anyhow::bail!("lost response after submission")
+        },
+        never_verify,
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("lost response after submission"));
+
+    let error = stage_deployment(
+        &path,
+        attempt(),
+        None,
+        |_| Ok(()),
+        never_create,
+        never_verify,
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("stage outcome is unknown"));
+
+    for altered in [
+        StageAttempt {
+            organization_id: "other".into(),
+            ..attempt()
+        },
+        StageAttempt {
+            descriptor_sha256: "b".repeat(64),
+            ..attempt()
+        },
+    ] {
+        let error = stage_deployment(
+            &path,
+            altered,
+            Some("candidate"),
+            |_| Ok(()),
+            never_create,
+            never_verify,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("different descriptor or organization"));
+    }
+
+    assert!(stage_deployment(
+        &path,
+        attempt(),
+        Some("wrong"),
+        |_| Ok(()),
+        never_create,
+        |_| anyhow::bail!("deployment did not match the approved input"),
+    )
+    .is_err());
+    assert!(matches!(
+        read_json::<StageRecord>(&path).unwrap(),
+        StageRecord::Pending(_)
+    ));
+
+    let saved = stage_deployment(
+        &path,
+        attempt(),
+        Some("candidate"),
+        |candidate| require_candidate(Some("candidate"), candidate),
+        never_create,
+        |id| {
+            assert_eq!(id, "candidate");
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(saved, "candidate");
+    assert_eq!(
+        read_json::<Deployment>(&path).unwrap().deploy_id,
+        "candidate"
+    );
+    let error = stage_deployment(
+        &path,
+        attempt(),
+        Some("other"),
+        |_| Ok(()),
+        never_create,
+        never_verify,
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("already records a different deployment ID"));
+}
+
+#[test]
+fn a_confirmed_create_survives_a_verification_failure_and_serializes_staging() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("candidate.deploy.json");
+    let never_create = || panic!("stage submitted a second create");
+    let error = stage_deployment(
+        &path,
+        attempt(),
+        None,
+        |_| Ok(()),
+        || {
+            let concurrent =
+                stage_deployment(&path, attempt(), None, |_| Ok(()), never_create, |_| Ok(()))
+                    .unwrap_err();
+            assert!(format!("{concurrent:#}").contains("another process is staging this release"));
+            Ok("candidate".into())
+        },
+        |_| anyhow::bail!("verification outage"),
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("verification outage"));
+    assert_eq!(
+        read_json::<Deployment>(&path).unwrap().deploy_id,
+        "candidate"
+    );
+    let saved = stage_deployment(
+        &path,
+        attempt(),
+        None,
+        |candidate| require_candidate(Some("candidate"), candidate),
+        never_create,
+        |id| {
+            assert_eq!(id, "candidate");
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(saved, "candidate");
+}

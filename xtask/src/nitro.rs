@@ -1,7 +1,7 @@
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::{
-    fs::{File, OpenOptions},
+    fs::OpenOptions,
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Command,
@@ -16,6 +16,8 @@ use spr_tvc_protocol::{
     digest::sha256,
     encoding::{decode_lower_hex, encode_lower_hex, is_rfc8785, jcs_serialize},
 };
+
+use crate::tools::open_regular;
 
 const MAX_POLICY_BYTES: usize = 32_768;
 
@@ -109,20 +111,6 @@ fn decode_signature(
     let signed = Signature::from_der(&STANDARD.decode(&signed.signature)?)?.normalize_s();
     pinned.verify_prehash(digest, &signed)?;
     Ok(signed)
-}
-
-fn open_regular(options: &mut OpenOptions, path: &Path) -> Result<File> {
-    #[cfg(unix)]
-    options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
-    let file = options
-        .open(path)
-        .with_context(|| format!("open {}", path.display()))?;
-    ensure!(
-        file.metadata()?.is_file(),
-        "expected a regular file at {}",
-        path.display()
-    );
-    Ok(file)
 }
 
 fn read_policy(path: &Path) -> Result<String> {
