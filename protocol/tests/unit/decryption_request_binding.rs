@@ -123,3 +123,24 @@ fn decrypt_items_reject_prerelease_fields() {
     wire["operation"]["items"][0]["viewing_public_key"] = serde_json::json!("04".repeat(33));
     assert!(parse_service_request(&wire.to_string()).is_err());
 }
+
+#[test]
+fn decrypt_batch_limit_is_enforced_by_the_request_decoder() {
+    let mut request = request(decrypt([0; 64], 0));
+    let ServiceOperation::Decrypt { items, .. } = &mut request.operation else {
+        unreachable!()
+    };
+    let item = items[0].clone();
+    items.resize(256, item.clone());
+    let wire = encoding::jcs_serialize(&request).unwrap();
+    assert_eq!(parse_service_request(&wire).unwrap(), request);
+
+    let ServiceOperation::Decrypt { items, .. } = &mut request.operation else {
+        unreachable!()
+    };
+    items.push(item);
+    assert_eq!(
+        parse_service_request(&encoding::jcs_serialize(&request).unwrap()).err(),
+        Some(ErrorCode::RequestTooLarge.into()),
+    );
+}

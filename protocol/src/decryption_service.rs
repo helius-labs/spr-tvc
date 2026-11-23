@@ -6,7 +6,7 @@ use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-use crate::constants::MAX_ENCRYPTED_RESPONSE_BYTES;
+use crate::constants::{MAX_ENCRYPTED_RESPONSE_BYTES, MAX_ITEMS_PER_BATCH};
 use crate::digest::domain_separated_hash;
 use crate::encoding::{self, canonicalize_json_value, decimal_u64, encode_lower_hex, hex};
 use crate::error::{ErrorCode, TvcError};
@@ -173,7 +173,14 @@ impl std::fmt::Debug for DecryptedOutputs {
 }
 
 pub fn parse_service_request(json: &str) -> Result<ServiceRequest, TvcError> {
-    encoding::parse_strict_json(json)
+    let request: ServiceRequest = encoding::parse_strict_json(json)?;
+    if matches!(
+        &request.operation,
+        ServiceOperation::Decrypt { items, .. } if items.len() as u64 > MAX_ITEMS_PER_BATCH
+    ) {
+        return Err(ErrorCode::RequestTooLarge.into());
+    }
+    Ok(request)
 }
 
 /// `H(SERVICE_REQUEST_DIGEST_DOMAIN, JCS(request))`, without a `Decrypt`'s signature.

@@ -521,9 +521,9 @@ with a five-second request deadline. Ping and decrypt share one blocking
 worker slot. Health and discovery can reply while that slot is busy.
 Attestation and each custody listener have their own worker slot. A worker
 keeps its permit until it exits, including after a client disconnects.
-A bootstrap recipient can be consumed
-only once, after share verification returns to the live handler and before
-its two-minute deadline. The relay refuses new crypto work and withholds
+The bootstrap worker verifies the shares and consumes the one-use recipient
+before releasing its permit. It can commit before the two-minute deadline
+even if the client disconnects after dispatch. The relay refuses new crypto work and withholds
 late replies after its ten-minute deadline, including while connections drain.
 
 ## QuorumOS decision

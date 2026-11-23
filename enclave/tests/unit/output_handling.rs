@@ -94,8 +94,8 @@ fn a_signed_empty_batch_returns_the_nullifier_secret() {
 }
 
 #[test]
-fn accepts_256_outputs_and_rejects_257() {
-    let service = service();
+fn accepts_256_outputs_and_rejects_257_before_reading_the_clock() {
+    let mut service = service();
     let owner = recipient_signer();
     let (viewing, _) = service_keys(&service, &owner);
     let output = transfer_output(viewing, b"amount", 0);
@@ -104,6 +104,7 @@ fn accepts_256_outputs_and_rejects_257() {
     assert_eq!(result.plaintexts, vec![b"amount".to_vec(); 256]);
 
     let overflow = decrypt(&service, &owner, NETWORK, vec![output; 257]);
+    service.now_ms = || panic!("oversized request reached the enclave clock");
     refused(&service, &overflow);
 }
 

@@ -25,8 +25,10 @@ pub(crate) fn handle(service: &Service, body: &[u8]) -> Response<Body> {
 }
 
 fn execute(service: &Service, body: &[u8]) -> Result<String, Failure> {
-    let plaintext = open_envelope(&service.info, &service.quorum, body)?;
-    let request = parse_service_request(&plaintext).map_err(|_| Failure::Invalid)?;
+    let request = {
+        let plaintext = open_envelope(&service.info, &service.quorum, body)?;
+        parse_service_request(&plaintext).map_err(|_| Failure::Invalid)?
+    };
     if !targets_release(&request, &service.info) {
         return Err(Failure::Invalid);
     }
@@ -68,6 +70,7 @@ fn execute(service: &Service, body: &[u8]) -> Result<String, Failure> {
         &response_key,
         &result,
     )?;
+    drop(result);
     if let ServiceOperation::Decrypt { expires_at_ms, .. } = request.operation {
         require_current_approval(service, expires_at_ms)?;
     }

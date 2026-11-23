@@ -2,7 +2,6 @@
 
 use spr_keypair::viewing_key::Salt;
 use spr_keypair::{ViewingKey, X25519Pubkey};
-use spr_tvc_protocol::constants::MAX_ITEMS_PER_BATCH;
 use spr_tvc_protocol::types::{DecryptItem, DecryptLabel};
 use zeroize::Zeroizing;
 
@@ -13,9 +12,6 @@ pub(crate) fn open_ciphertexts(
     viewing: &ViewingKey,
     items: &[DecryptItem],
 ) -> Result<Vec<Vec<u8>>, Failure> {
-    if items.len() as u64 > MAX_ITEMS_PER_BATCH {
-        return Err(Failure::Invalid);
-    }
     // Wipe plaintexts already opened if a later item fails.
     let mut plaintexts = Zeroizing::new(Vec::with_capacity(items.len()));
     for item in items {

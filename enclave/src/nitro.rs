@@ -423,13 +423,13 @@ async fn accept_shares(
     Extension(worker): Extension<Arc<Semaphore>>,
     body: Bytes,
 ) -> Reply<Vec<u8>> {
-    let verify = state.clone();
-    let restored = with_worker(worker, move || {
-        let private = verify.private_key()?;
-        open_shares(&private, &body, &verify.domain, &verify.custody).ok_or(StatusCode::BAD_REQUEST)
+    let slots = with_worker(worker, move || {
+        let private = state.private_key()?;
+        let restored = open_shares(&private, &body, &state.domain, &state.custody)
+            .ok_or(StatusCode::BAD_REQUEST)?;
+        state.complete(restored)
     })
     .await?;
-    let slots = state.complete(restored)?;
     Ok(([(CONTENT_TYPE, "application/octet-stream")], slots.to_vec()))
 }
 

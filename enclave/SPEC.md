@@ -68,19 +68,20 @@ signs the request.
    its clock, allowing a minute of clock skew. The SDK seals the signed request
    to the pinned Quorum encryption key. An empty batch uses the same
    authorization to obtain the service nullifier secret.
-4. **Open inside the enclave.** The enclave authenticates the envelope,
-   checks that it targets the running release, and verifies the owner's
-   Ed25519 signature. The deadline must be in the enclave's acceptance window.
-   The verified signer address alone selects the viewing secret for every
-   item. Each item's ephemeral viewing public key
-   is the sender's X25519 input. The enclave accepts up to 256 items. Any
-   malformed item fails the entire batch.
+4. **Open inside the enclave.** The enclave authenticates the envelope and
+   rejects batches over 256 items during request decoding, before hashing the
+   request or verifying the owner's signature. It checks the target release,
+   Ed25519 signature and deadline.
+   The verified signer address selects the viewing secret for every item.
+   Each item's ephemeral viewing public key is the sender's X25519 input.
+   Any malformed item fails the entire batch.
 5. **Return and verify.** The enclave seals the ordered plaintexts and the
    recipient's nullifier secret to the signed response public key. It writes
    canonical JSON directly into a fixed-capacity buffer and wipes that buffer
    after encryption. The replica signs an App Proof binding the request ID,
-   operation, request digest, and encrypted result digest. The enclave checks
-   the deadline again before releasing the encrypted reply. Native Nitro reads
+   operation, request digest, and encrypted result digest. The enclave wipes
+   the plaintext result before checking the deadline again and releasing the
+   encrypted reply. Native Nitro reads
    time from its local Nitro Secure Module. The QOS and loopback implementations
    use their system clock. A clock read failure denies decryption. The SDK verifies
    the proof and checks that the release is still current before opening

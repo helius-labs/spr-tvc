@@ -141,3 +141,43 @@ async fn bootstrap_refuses_to_commit_a_recovered_seed_at_the_deadline() {
         Err(oneshot::error::TryRecvError::Empty)
     ));
 }
+
+#[tokio::test]
+async fn verified_bootstrap_consumes_the_recipient_before_its_worker_is_released() {
+    use std::task::{Context, Waker};
+
+    let seed = NoteSeed(Zeroizing::new([0x88; 32]));
+    let (custody, shares) = fixture(1, &seed);
+    let private = key();
+    let [first, second, third] = [0, 2, 4].map(|index| envelope(&private, &shares[index]));
+    let (sender, mut restored) = oneshot::channel();
+    let state = Arc::new(Bootstrap {
+        recipient: Mutex::new(Some(Recipient { private, sender })),
+        domain: DOMAIN,
+        custody,
+        deadline: Instant::now() + BOOTSTRAP_TIMEOUT,
+    });
+    let worker = Arc::new(Semaphore::new(1));
+    let mut request = Box::pin(accept_shares(
+        State(state.clone()),
+        Extension(worker.clone()),
+        Bytes::from(frame(&[(1, &first), (3, &second), (5, &third)])),
+    ));
+    {
+        // Dispatch the worker, then let the HTTP caller disappear before it can send a reply.
+        let _pending_recipient = state.recipient.lock().unwrap();
+        assert!(request
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending());
+    }
+    drop(request);
+    let _permit = tokio::time::timeout(Duration::from_secs(5), worker.acquire())
+        .await
+        .unwrap()
+        .unwrap();
+    let (loaded, slots) = restored.try_recv().unwrap();
+    assert_eq!(*loaded.0, *seed.0);
+    assert_eq!(slots, [1, 3, 5]);
+    assert_eq!(state.private_key().err(), Some(StatusCode::GONE));
+}
