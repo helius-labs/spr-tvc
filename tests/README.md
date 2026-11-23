@@ -24,6 +24,10 @@ recipient keypair in a private directory outside the checkout. The same signer
 can authorize recovery of the note if the rehearsal process exits after the
 transfer. Leave this account unfunded and unregistered.
 
+This canary uses the published wallet SDK to qualify custody and recovery.
+Repeat the [wallet localnet registry assertion cases](https://github.com/helius-labs/privacy-rings/pull/652)
+on devnet after deploying the registry upgrade.
+
 ```sh
 solana-keygen new --silent --no-bip39-passphrase --outfile "$recipient_keypair"
 pnpm build:ts
