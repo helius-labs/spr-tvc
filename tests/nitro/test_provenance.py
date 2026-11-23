@@ -13,10 +13,11 @@ from provenance import WORKFLOW, check_artifact, describe, require_available_rev
 
 COMMIT = "ab" * 20
 ENVIRONMENT_ID = 73
+PROVENANCE_SHA256 = "cd" * 32
 
 
 class IndependentReleaseReviewTests(unittest.TestCase):
-    review = {"state": "approved", "user": {"id": 2, "type": "User"},
+    review = {"state": "approved", "comment": PROVENANCE_SHA256, "user": {"id": 2, "type": "User"},
               "environments": [{"name": "image-publish", "id": ENVIRONMENT_ID}]}
 
     def test_requires_a_configured_reviewer_before_building_mainnet(self):
@@ -48,7 +49,7 @@ class IndependentReleaseReviewTests(unittest.TestCase):
             require_available_reviewer(environment(other), "1", "2")
 
     def test_requires_an_independent_approval_of_the_production_environment(self):
-        require_independent_review([self.review], "1", "1", ENVIRONMENT_ID)
+        require_independent_review([self.review], "1", "1", ENVIRONMENT_ID, PROVENANCE_SHA256)
         for reviews in ([], [{**self.review, "state": "rejected"}],
                         [{**self.review, "environments": [{"name": "native-eif-devnet", "id": ENVIRONMENT_ID}]}],
                         [{**self.review, "environments": [{"name": "image-publish", "id": ENVIRONMENT_ID + 1}]}],
@@ -57,14 +58,25 @@ class IndependentReleaseReviewTests(unittest.TestCase):
                         [{**self.review, "user": {"id": 2, "type": "Bot"}}],
                         [{**self.review, "user": {"id": True, "type": "User"}}]):
             with self.subTest(reviews=reviews), self.assertRaisesRegex(ValueError, "from another GitHub user"):
-                require_independent_review(reviews, "1", "1", ENVIRONMENT_ID)
+                require_independent_review(reviews, "1", "1", ENVIRONMENT_ID, PROVENANCE_SHA256)
 
     def test_rejects_old_run_attempts_and_missing_dispatch_identity(self):
         with self.assertRaisesRegex(ValueError, "dispatch a new mainnet build"):
-            require_independent_review([self.review], "1", "2", ENVIRONMENT_ID)
+            require_independent_review([self.review], "1", "2", ENVIRONMENT_ID, PROVENANCE_SHA256)
         for actor in ("", "0", "invalid"):
             with self.subTest(actor=actor), self.assertRaisesRegex(ValueError, "invalid GitHub release review evidence"):
-                require_independent_review([self.review], actor, "1", ENVIRONMENT_ID)
+                require_independent_review([self.review], actor, "1", ENVIRONMENT_ID, PROVENANCE_SHA256)
+
+    def test_approval_must_name_the_exact_provenance_digest(self):
+        for comment in (None, "", "Approved", "de" * 32, PROVENANCE_SHA256.upper(),
+                        PROVENANCE_SHA256 + " another artifact"):
+            review = {**self.review, "comment": comment}
+            with self.subTest(comment=comment), self.assertRaisesRegex(ValueError, "provenance digest"):
+                require_independent_review([review], "1", "1", ENVIRONMENT_ID, PROVENANCE_SHA256)
+
+    def test_approval_cannot_be_reused_for_another_build(self):
+        with self.assertRaisesRegex(ValueError, "provenance digest"):
+            require_independent_review([self.review], "1", "1", ENVIRONMENT_ID, "de" * 32)
 
 
 class ProvenanceTests(unittest.TestCase):

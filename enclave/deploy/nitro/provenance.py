@@ -95,19 +95,22 @@ def require_available_reviewer(environment, actor_id, attempt):
     raise ValueError("image-publish has no required reviewer who can independently approve this dispatcher")
 
 
-def require_independent_review(reviews, actor_id, attempt, environment_id):
+def require_independent_review(reviews, actor_id, attempt, environment_id, provenance_sha256):
     actor = release_actor(actor_id, attempt)
+    digest = hex_digest(provenance_sha256)
     if not isinstance(reviews, list) or type(environment_id) is not int or environment_id <= 0:
         raise ValueError("invalid GitHub release review evidence")
     for review in reviews:
         reviewer = review["user"]
-        if (review["state"] == "approved" and reviewer["type"] == "User" and
+        if (review["state"] == "approved" and review.get("comment") == digest and
+                reviewer["type"] == "User" and
                 type(reviewer["id"]) is int and reviewer["id"] > 0 and reviewer["id"] != actor and
                 any(environment["name"] == MAIN_ENVIRONMENT and
                     type(environment.get("id")) is int and environment["id"] == environment_id
                     for environment in review["environments"])):
             return
-    raise ValueError("mainnet build requires an image-publish approval from another GitHub user")
+    raise ValueError("mainnet build requires an image-publish approval from another GitHub user "
+                     "with the exact provenance digest as the comment")
 
 
 def main():
@@ -132,6 +135,7 @@ def main():
         command.add_argument("actor_id")
         command.add_argument("attempt")
     review.add_argument("environment_id", type=int)
+    review.add_argument("provenance_sha256")
     args = parser.parse_args()
     try:
         if args.command == "describe":
@@ -147,7 +151,8 @@ def main():
             if args.command == "check-reviewers":
                 print(require_available_reviewer(evidence, args.actor_id, args.attempt))
             else:
-                require_independent_review(evidence, args.actor_id, args.attempt, args.environment_id)
+                require_independent_review(evidence, args.actor_id, args.attempt, args.environment_id,
+                                           args.provenance_sha256)
     except (OSError, TypeError, ValueError, KeyError, subprocess.SubprocessError) as error:
         raise SystemExit(str(error)) from None
 

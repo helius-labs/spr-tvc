@@ -127,6 +127,10 @@ jobs:
               --arg digest "$PROVENANCE_SHA256" \
               '{sourceCommit:$commit, sourceRef:$ref, provenanceSha256:$digest}'
             printf '~~~\n'
+            if [[ "$SPR_NETWORK" == mainnet ]]; then
+              printf '\nAfter verifying the unsigned artifact, approve image-publish with this exact comment.\n\n~~~text\n%s\n~~~\n' \
+                "$PROVENANCE_SHA256"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   attest:
@@ -140,6 +144,8 @@ jobs:
       contents: read
       id-token: write
       attestations: write
+    env:
+      PROVENANCE_SHA256: ${{ needs.build.outputs.provenance_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -158,7 +164,8 @@ jobs:
             exit 1
           fi
           timeout 20s gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/approvals" |
-            python3 -B enclave/deploy/nitro/provenance.py check-review "$GITHUB_ACTOR_ID" "$GITHUB_RUN_ATTEMPT" "$environment_id"
+            python3 -B enclave/deploy/nitro/provenance.py check-review \
+              "$GITHUB_ACTOR_ID" "$GITHUB_RUN_ATTEMPT" "$environment_id" "$PROVENANCE_SHA256"
       - name: Recheck native dependencies before attestation
         run: bash enclave/deploy/audit-dependencies.sh native
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -168,7 +175,6 @@ jobs:
       - name: Verify the reviewed artifact before signing
         env:
           SPR_NETWORK: ${{ inputs.network }}
-          PROVENANCE_SHA256: ${{ needs.build.outputs.provenance_sha256 }}
         run: |
           python3 -B enclave/deploy/nitro/provenance.py check-artifact \
             dist/native "$SPR_NETWORK" "$GITHUB_SHA" "$PROVENANCE_SHA256"
