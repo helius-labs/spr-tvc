@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from subprocess import run as run_command
+from time import sleep
 
 from approval import (
     KEY_ARN, MAX_DOCUMENT_BYTES, ROLE_ARN, add_approval, approval_keys, approval_roster, arn, aws, canonical, check_approvals,
@@ -627,7 +628,7 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
         except (ReplacementNotReady, subprocess.SubprocessError) as error:
             remaining = deadline - time.monotonic()
             if remaining > 0:
-                time.sleep(min(2, remaining))
+                sleep(min(2, remaining))
             if remaining <= 0 or time.monotonic() >= deadline:
                 raise ValueError(f"no replacement boot observed after verifying the old keys: {error}") from error
 

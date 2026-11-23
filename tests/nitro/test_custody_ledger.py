@@ -2307,7 +2307,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 profiles = [f"slot-{slot}" for slot in range(1, 7)]
                 report = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
                 self.assertEqual(report["replacement"]["replacementTargetSha256"], sha256(standby))
-            with self.subTest(stage="standby arrives on a later poll"), patch("retirement.time.sleep") as sleep:
+            with self.subTest(stage="standby arrives on a later poll"), patch("retirement.sleep") as sleep:
                 query.side_effect = [
                     observation(primary_observed), observation(primary_observed, standby_observed),
                     observation(standby_observed), SimpleNamespace(),
@@ -2523,7 +2523,7 @@ class CustodyLedgerTests(unittest.TestCase):
         self.trust["walletTrustSha256"] = hashlib.sha256(wallet.read_bytes()).hexdigest()
         with (patch("retirement.kms", side_effect=kms),
               patch("retirement.require_profile_account") as identity,
-              patch("retirement.run_command") as query, patch("retirement.time.sleep"),
+              patch("retirement.run_command") as query, patch("retirement.sleep"),
               patch("retirement.require_host_state", side_effect=require_host_state) as host_state,
               patch("retirement.require_recovery_quorum") as quorum):
             original_receipt = load_epoch(self.trust, "1")[1]
