@@ -136,7 +136,8 @@ class ProvenanceTests(unittest.TestCase):
         self.check_eif.assert_called_once_with(self.build / "enclave.eif", describe(self.build, "mainnet", COMMIT))
         run.assert_called_once()
         args = run.call_args.args[0]
-        self.assertEqual(args[args.index("--signer-workflow") + 1], WORKFLOW)
+        self.assertEqual(args[args.index("--cert-identity") + 1], f"https://github.com/{WORKFLOW}@refs/heads/main")
+        self.assertNotIn("--signer-workflow", args)
         self.assertEqual(args[args.index("--source-ref") + 1], "refs/heads/main")
         self.assertEqual(args[args.index("--source-digest") + 1], COMMIT)
         self.assertEqual(args[args.index("--signer-digest") + 1], COMMIT)
@@ -186,6 +187,7 @@ class ProvenanceTests(unittest.TestCase):
         verify(self.build, "devnet", self.review)
         args = run.call_args.args[0]
         self.assertEqual(args[args.index("--source-ref") + 1], branch)
+        self.assertEqual(args[args.index("--cert-identity") + 1], f"https://github.com/{WORKFLOW}@{branch}")
 
     @patch("provenance.subprocess.run")
     def test_rejects_pr_merge_refs_and_tags_for_devnet_commissioning(self, run):

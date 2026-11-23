@@ -60,7 +60,7 @@ def verify(build, network, review_file):
         bundle_path.write_bytes(bundle)
         subprocess.run([
             "gh", "attestation", "verify", str(subject), "--bundle", str(bundle_path),
-            "--repo", REPO, "--signer-workflow", WORKFLOW, "--source-ref", source_ref,
+            "--repo", REPO, "--cert-identity", f"https://github.com/{WORKFLOW}@{source_ref}", "--source-ref", source_ref,
             "--source-digest", source_commit, "--signer-digest", source_commit, "--deny-self-hosted-runners",
         ], check=True, timeout=30, stdout=subprocess.DEVNULL)
     return manifest

@@ -184,6 +184,8 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    recovery relay build has its own review file.
    Download the run's `native-eif-<network>-<commit>` artifact. Verify it
    against the review before starting the enclave in normal mode.
+   GitHub CLI checks the full signing workflow certificate identity, including
+   the reviewed branch ref, and pins both the source and signer commits.
    The verifier recomputes PCR0–PCR2 from the EIF and checks its embedded
    `/tvc_app`, configuration and startup command. It expects the unsigned
    x86-64 image layout and bootstrap of the pinned Nitro CLI. Review the
