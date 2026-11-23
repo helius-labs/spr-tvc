@@ -75,12 +75,15 @@ class LedgerReplicationTests(unittest.TestCase):
             "StringNotEquals": {"s3:x-amz-server-side-encryption": "AES256"},
         })
         empty = {"Name": DESTINATION_BUCKET, "Prefix": PREFIX + "1.json", "IsTruncated": False}
-        with patch("custody_ledger.storage", side_effect=[empty, {**empty, "Name": SOURCE_BUCKET}, {}]) as storage:
-            write_once(TRUST, "1.json", {"fixture": True}, lambda: None)
+        source = {**empty, "Name": SOURCE_BUCKET}
+        stored = {**source, "Versions": [{"Key": PREFIX + "1.json", "IsLatest": True, "VersionId": "version"}]}
+        with patch("custody_ledger.storage", side_effect=[empty, source, {"VersionId": "version"}, empty, stored]) as storage:
+            confirm = Mock()
+            write_once(TRUST, "1.json", {"fixture": True}, confirm)
+            confirm.assert_called_once_with("version")
             self.assertEqual([call.args[1] for call in storage.call_args_list],
-                             ["list-object-versions", "list-object-versions", "put-object"])
-            self.assertEqual(storage.call_args.args[1], "put-object")
-            args = storage.call_args.args[2]
+                             ["list-object-versions", "list-object-versions", "put-object", "list-object-versions", "list-object-versions"])
+            args = storage.call_args_list[2].args[2]
             self.assertEqual(args[args.index("--if-none-match") + 1], "*")
             self.assertEqual(args[args.index("--server-side-encryption") + 1], "AES256")
 
@@ -120,7 +123,7 @@ class LedgerReplicationTests(unittest.TestCase):
                 write_once(TRUST, name, {"fixture": True}, confirm)
                 listing.assert_any_call(replica_trust(TRUST, REPLICA), exact=name)
                 listing.assert_called_with(TRUST, exact=name)
-                confirm.assert_called_once_with()
+                confirm.assert_called_once_with("record-version")
                 write.assert_not_called()
 
     def test_delete_markers_or_noncurrent_versions_in_either_bucket_block_writes(self):

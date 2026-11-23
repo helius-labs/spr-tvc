@@ -212,6 +212,7 @@ class CustodyLedgerTests(unittest.TestCase):
                     raise ValueError("precondition failed")
                 self.objects[name] = pathlib.Path(args[args.index("--body") + 1]).read_bytes()
                 self.timestamps[name] = now
+                return {"VersionId": metadata(name)["VersionId"]}
             elif operation == "get-object" and name in self.objects:
                 pathlib.Path(args[-1]).write_bytes(self.objects[name])
                 return metadata(name)
@@ -267,7 +268,8 @@ class CustodyLedgerTests(unittest.TestCase):
         empty = {"Name": "custody-journal", "Prefix": f"spr-custody/devnet/{DOMAIN}/1.json", "IsTruncated": False}
         with patch("custody_ledger.storage", side_effect=[empty, ValueError("write timed out"), ValueError("read denied")]):
             with self.assertRaisesRegex(ValueError, r"could not confirm ledger write \(write timed out\).*\(read denied\)"):
-                write_once(self.trust, "1.json", {}, lambda: read_stored_object(self.trust, "1.json"))
+                write_once(self.trust, "1.json", {}, lambda version: read_stored_object(
+                    self.trust, "1.json", expected_version=version))
 
     def test_custody_publish_requires_an_authenticated_readback(self):
         document = self.sign(self.document(1))
@@ -301,6 +303,58 @@ class CustodyLedgerTests(unittest.TestCase):
         with patch("custody_ledger.aws", side_effect=unconfirmed_write):
             with self.assertRaisesRegex(ValueError, "object missing"):
                 publish(self.trust, self.sign(self.document(1)))
+
+    def test_custody_publish_pins_readback_to_the_committed_version(self):
+        document = self.sign(self.document(1))
+        path = f"spr-custody/devnet/{DOMAIN}/1.json"
+        for change in ("acknowledgement", "readback", "retry"):
+            with self.subTest(change=change), patch.dict(self.objects), patch.dict(self.timestamps):
+                if change == "retry":
+                    publish(self.trust, document)
+
+                def aws(region, service, operation, args, **options):
+                    reply = self.aws(region, service, operation, args, **options)
+                    if path in args and operation == "put-object":
+                        if change == "readback":
+                            raise ValueError("write acknowledgement lost")
+                        return {"VersionId": "unexpected-acknowledgement"}
+                    if path in args and operation == "get-object" and change != "acknowledgement":
+                        return {**reply, "VersionId": "unexpected-readback"}
+                    return reply
+
+                with patch("custody_ledger.aws", side_effect=aws) as request:
+                    with self.assertRaisesRegex(ValueError, "version"):
+                        publish(self.trust, document)
+                    operations = [entry.args[2] for entry in request.call_args_list]
+                    self.assertEqual(operations.count("put-object"), 0 if change == "retry" else 1)
+                self.assertEqual(load_epoch(self.trust, "1")[0], document)
+
+    def test_lost_acknowledgement_can_only_confirm_a_consistent_replica(self):
+        self.trust["ledgerReplica"] = {
+            "bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1",
+            **RECOVERY_ROLES, "role": "arn:aws:iam::000000000008:role/replication",
+        }
+        document = self.sign(self.document(1))
+        path = f"spr-custody/devnet/{DOMAIN}/1.json"
+
+        def aws(region, service, operation, args, **options):
+            if path in args and operation == "get-object" and region == "eu-west-1":
+                pathlib.Path(args[-1]).write_bytes(b"{}")
+                return {"LastModified": self.timestamps[path], "VersionId": hashlib.sha256(path.encode()).hexdigest(),
+                        "ReplicationStatus": "REPLICA"}
+            reply = self.aws(region, service, operation, args, **options)
+            if path in args and operation == "put-object":
+                self.replica_objects[path] = b"{}"
+                raise ValueError("write acknowledgement lost")
+            if path in args and operation == "get-object":
+                reply["ReplicationStatus"] = "COMPLETED"
+            return reply
+
+        with patch("custody_ledger.aws", side_effect=aws) as request:
+            with self.assertRaisesRegex(ValueError, "write acknowledgement lost.*differs from the pinned replica"):
+                publish(self.trust, document)
+            self.assertEqual([entry.args[2] for entry in request.call_args_list].count("put-object"), 1)
+        self.assertEqual(load_epoch(self.trust, "1")[0], document)
 
     def test_publish_cannot_replace_a_replica_only_custody_receipt(self):
         original = self.sign(self.document(1))

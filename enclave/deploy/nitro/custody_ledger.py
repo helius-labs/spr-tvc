@@ -280,22 +280,31 @@ def write_once(trust, name, document, confirm, *, before_write=None):
     payload = canonical(document) + b"\n"
     if len(payload) > MAX_DOCUMENT_BYTES:
         raise ValueError("record exceeds the ledger size limit")
-    if ledger_slot_version(trust, name) is not None:
-        confirm()
+    version = ledger_slot_version(trust, name)
+    if version is not None:
+        confirm(version)
         return
     encryption = ["--server-side-encryption", "AES256"] if "ledgerReplica" in trust else []
     write_error = None
+    acknowledged_version = None
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "record.json"
         path.write_bytes(payload)
         if before_write is not None:
             before_write()
         try:
-            storage(trust, "put-object", ["--key", prefix + name, "--if-none-match", "*", "--body", str(path), *encryption])
+            response = storage(trust, "put-object",
+                               ["--key", prefix + name, "--if-none-match", "*", "--body", str(path), *encryption])
+            acknowledged_version = ledger_record_version(name, response)
         except (ValueError, subprocess.TimeoutExpired) as error:
             write_error = error
     try:
-        confirm()
+        version = ledger_slot_version(trust, name)
+        if version is None:
+            raise ValueError(f"custody ledger object missing after write: {name}")
+        if acknowledged_version is not None and version != acknowledged_version:
+            raise ValueError(f"custody ledger record {name} differs from its acknowledged version")
+        confirm(version)
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as read_error:
         if write_error is None:
             raise
@@ -611,8 +620,8 @@ def read_epoch_record(trust, epoch, **options):
     return document, receipt, custodians, publication_time(metadata)
 
 
-def load_epoch_with_time(trust, epoch, **options):
-    document, receipt, custodians, published_at = read_epoch_record(trust, epoch, **options)
+def load_epoch_with_time(trust, epoch, *, expected_version=None, **options):
+    document, receipt, custodians, published_at = read_epoch_record(trust, epoch, expected_version=expected_version, **options)
     check_previous(trust, document, receipt, published_at=published_at, **options)
     return document, receipt, custodians, published_at
 
@@ -1182,8 +1191,8 @@ def publish(trust, document):
     verify_ceremony_capture(authorization["capture"])
     epoch = receipt["custody"]["epoch"]
 
-    def confirm():
-        stored, _, _ = load_epoch(trust, epoch)
+    def confirm(version):
+        stored, _, _ = load_epoch(trust, epoch, expected_version=version)
         if canonical(stored["authorization"]["manifest"]) != canonical(authorization):
             raise ValueError("a different custody receipt is already committed")
 

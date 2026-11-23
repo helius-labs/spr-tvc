@@ -118,15 +118,17 @@ def register_target(trust, document, *, build=None):
         require_target_approval_window(manifest, time.time(), remaining=LEDGER_WRITE_MARGIN_SECONDS)
         require_publication_roster(trust, manifest["approvalFromEpoch"])
 
-    write_once(trust, name, document, lambda: require_registered_target(trust, manifest, receipt_at=receipt_at),
-               before_write=before_write)
+    def confirm(version):
+        require_registered_target(trust, manifest, receipt_at=receipt_at, expected_version=version)
+
+    write_once(trust, name, document, confirm, before_write=before_write)
 
 
-def require_registered_target(trust, manifest, *, receipt_at=None):
+def require_registered_target(trust, manifest, *, receipt_at=None, expected_version=None):
     # Registration precedes the retirement check. Every wrap admitted before
     # the marker will appear in the subsequent inventory, even if it ends later.
     name = target_object_name(manifest)
-    version = ledger_slot_version(trust, name)
+    version = ledger_slot_version(trust, name) if expected_version is None else expected_version
     if version is None:
         raise ValueError(f"registered target object missing: {name}")
     recorded = read_registered_target(trust, name, manifest["custodyEpoch"], manifest["receiptSha256"],

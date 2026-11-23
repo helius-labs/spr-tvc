@@ -312,8 +312,11 @@ def commit_retirement(trust, wallet_trust, document):
         require_publication_roster(trust, manifest["approvalFromEpoch"])
         confirmed.require_current(remaining=LEDGER_WRITE_MARGIN_SECONDS)
 
-    write_once(trust, retirement_object_name(epoch), document, lambda: require_same_record(load_retirement(trust, epoch)[0]),
-               before_write=before_write)
+    def confirm(version):
+        stored, _, _ = load_retirement(trust, epoch, expected_version=version)
+        require_same_record(stored)
+
+    write_once(trust, retirement_object_name(epoch), document, confirm, before_write=before_write)
 
 
 def retirement_inventory(trust, epoch, index, *, requalification=None):

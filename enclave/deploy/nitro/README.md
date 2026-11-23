@@ -68,10 +68,12 @@ disallowed so S3's recorded write time can govern custody approvals. Protect
 account root and keep the publisher
 and host unable to assume the administrator role. Readers verify two pinned
 approvals and six custodian acknowledgements even when reading directly from
-S3. Publish commands read back and authenticate the committed record before
-reporting success. If the write and readback both fail, the error reports both
-failures. If a canonical record fails verification, halt the affected
-operation and compare it with the current trust schedule and signed archives. The
+S3. After a write attempt, publish commands check both buckets for the slot,
+match the current version to the S3 acknowledgement when available, and
+authenticate the readback at that version. If the write and readback both
+fail, the error reports both failures. If a canonical record fails
+verification, halt the affected operation and compare it with the current
+trust schedule and signed archives. The
 independent bucket administrator investigates and preserves the versions and
 audit logs before any repair. A valid retirement record permanently closes its epoch. When a replica is
 configured, check its retirement index first and the source last. The epoch
