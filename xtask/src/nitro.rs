@@ -5,6 +5,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Command,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{ensure, Context, Result};
@@ -14,12 +15,13 @@ use p256::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use spr_tvc_protocol::{
     digest::sha256,
-    encoding::{decode_lower_hex, encode_lower_hex, is_rfc8785, jcs_serialize},
+    encoding::{decode_decimal_u64, decode_lower_hex, encode_lower_hex, is_rfc8785, jcs_serialize},
 };
 
 use crate::tools::open_regular;
 
 const MAX_POLICY_BYTES: usize = 32_768;
+const MAX_CUSTODY_TRUST_BYTES: usize = 65_536;
 
 #[derive(Parser)]
 #[command(bin_name = "cargo xtask nitro-sign")]
@@ -113,17 +115,54 @@ fn decode_signature(
     Ok(signed)
 }
 
-fn read_policy(path: &Path) -> Result<String> {
+fn read_document(path: &Path, max_bytes: usize) -> Result<String> {
     let mut text = String::new();
     open_regular(OpenOptions::new().read(true), path)?
-        .take(MAX_POLICY_BYTES as u64 + 1)
+        .take(max_bytes as u64 + 1)
         .read_to_string(&mut text)?;
-    ensure!(text.len() <= MAX_POLICY_BYTES, "policy exceeds 32 KiB");
+    ensure!(
+        text.len() <= max_bytes,
+        "{} exceeds {max_bytes} bytes",
+        path.display()
+    );
     Ok(text)
 }
 
-fn store_signed_policy(path: &Path, prior: &str, signed: &str) -> Result<()> {
+fn require_signing_window(expires_at: u64, qualification: &serde_json::Value) -> Result<()> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+    ensure!(
+        now < u128::from(expires_at),
+        "policy expired during signing"
+    );
+    if !qualification.is_null() {
+        let cutover = qualification
+            .get("nextCutover")
+            .context("missing custody approval cutover")?;
+        if !cutover.is_null() {
+            let next = decode_decimal_u64(
+                cutover
+                    .as_str()
+                    .context("invalid custody approval cutover")?,
+            )?;
+            ensure!(
+                now < u128::from(next) * 1_000,
+                "custody approval roster rotated during signing"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn store_signed_policy(
+    path: &Path,
+    prior: &str,
+    signed: &str,
+    before_install: impl FnOnce() -> Result<()>,
+) -> Result<()> {
     let parent = path.parent().context("missing policy parent")?;
+    let mut output = tempfile::NamedTempFile::new_in(parent)?;
+    output.write_all(signed.as_bytes())?;
+    output.as_file().sync_all()?;
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
     #[cfg(unix)]
@@ -132,13 +171,11 @@ fn store_signed_policy(path: &Path, prior: &str, signed: &str) -> Result<()> {
     lock.try_lock()
         .context("lock signing directory for policy replacement")?;
     let result = (|| {
+        before_install()?;
         ensure!(
-            read_policy(path)? == prior,
+            read_document(path, MAX_POLICY_BYTES)? == prior,
             "policy changed during signing. Review the updated file and retry"
         );
-        let mut output = tempfile::NamedTempFile::new_in(parent)?;
-        output.write_all(signed.as_bytes())?;
-        output.as_file().sync_all()?;
         output.persist(path)?;
         Ok(())
     })();
@@ -147,11 +184,25 @@ fn store_signed_policy(path: &Path, prior: &str, signed: &str) -> Result<()> {
 }
 
 pub(crate) fn sign(args: Args) -> Result<()> {
+    sign_with_capture(args, crate::tools::capture_check)
+}
+
+fn sign_with_capture(
+    args: Args,
+    mut capture: impl FnMut(&mut Command) -> Result<Vec<u8>>,
+) -> Result<()> {
     let path = std::path::absolute(args.policy)?;
-    let text = read_policy(&path)?;
+    let text = read_document(&path, MAX_POLICY_BYTES)?;
     ensure!(is_rfc8785(&text), "use canonical policy JSON");
     let mut manifest: SignedPolicy = serde_json::from_str(&text)?;
     validate_action(&manifest.policy)?;
+    let expires_at = decode_decimal_u64(
+        manifest.policy["expiresAtMs"]
+            .as_str()
+            .context("missing policy expiry")?,
+    )?;
+    let activation = manifest.policy["action"] == "activate";
+    require_signing_window(expires_at, &serde_json::Value::Null)?;
     let bytes = decode_lower_hex(&args.public_key)?;
     ensure!(
         bytes.len() == 65 && bytes[0] == 4,
@@ -189,11 +240,14 @@ pub(crate) fn sign(args: Args) -> Result<()> {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../enclave/deploy/nitro/custody_ledger.py");
     let mut candidate = tempfile::NamedTempFile::new()?;
     candidate.write_all(text.as_bytes())?;
+    let reviewed_trust = read_document(&args.custody_trust, MAX_CUSTODY_TRUST_BYTES)?;
+    let mut trust_snapshot = tempfile::NamedTempFile::new()?;
+    trust_snapshot.write_all(reviewed_trust.as_bytes())?;
     let mut check = Command::new("python3");
     check
         .arg("-B")
         .arg(script)
-        .arg(args.custody_trust)
+        .arg(trust_snapshot.path())
         .arg("check-release-policy")
         .arg(candidate.path());
     if args.custody {
@@ -205,7 +259,17 @@ pub(crate) fn sign(args: Args) -> Result<()> {
     if let Some(profile) = args.replica_profile {
         check.args(["--replica-profile", &profile]);
     }
-    crate::tools::capture_check(&mut check)?;
+    let reviewed = capture(&mut check)?;
+    let qualification: serde_json::Value = serde_json::from_slice(&reviewed)?;
+    ensure!(
+        if activation {
+            qualification.is_object()
+        } else {
+            qualification.is_null()
+        },
+        "unexpected custody qualification"
+    );
+    require_signing_window(expires_at, &qualification)?;
 
     let policy_digest = digest(&manifest.policy, false)?;
     let digest = if args.custody {
@@ -234,7 +298,7 @@ pub(crate) fn sign(args: Args) -> Result<()> {
         "--message",
         &STANDARD.encode(digest),
     ]);
-    let signed: KmsSignature = serde_json::from_slice(&crate::tools::capture_check(&mut command)?)?;
+    let signed: KmsSignature = serde_json::from_slice(&capture(&mut command)?)?;
     let signature = decode_signature(&signed, &args.key, &public, &digest)?;
     approvals.push(Approval {
         key: args.public_key,
@@ -245,7 +309,19 @@ pub(crate) fn sign(args: Args) -> Result<()> {
         canonical.len() <= MAX_POLICY_BYTES,
         "signed policy exceeds 32 KiB"
     );
-    store_signed_policy(&path, &text, &canonical)?;
+    store_signed_policy(&path, &text, &canonical, || {
+        if activation {
+            ensure!(
+                capture(&mut check)? == reviewed,
+                "custody qualification changed during signing"
+            );
+        }
+        ensure!(
+            read_document(&args.custody_trust, MAX_CUSTODY_TRUST_BYTES)? == reviewed_trust,
+            "custody trust changed during signing. Review the updated file and retry"
+        );
+        require_signing_window(expires_at, &qualification)
+    })?;
     println!(
         "signed {} ({})",
         path.display(),

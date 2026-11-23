@@ -776,10 +776,12 @@ Give release signers, custody signers and the primary publisher scoped ledger re
 access using `reader-policy` in the source and replica. Distribute the custody
 trust file independently.
 Collect the release quorum and two custody signatures on every policy.
-Each signer supplies `--custody-trust` to verify the publication pair. For
-activation, the signer also checks the approved targets against the ledger.
-`nitro-sign` uses `.nitro-sign.lock` in the policy's directory when saving.
-If the policy file changed during signing, review the updated file and rerun.
+Each signer supplies `--custody-trust` to verify the publication pair.
+For activation, `nitro-sign` checks the approved targets against the ledger
+before and after KMS signs, using the same policy and custody trust bytes.
+It requires matching custody qualification and checks policy expiry and the
+next custody roster cutover before saving. `.nitro-sign.lock` serializes the
+final checks and replacement. If either input file changed, review it and rerun.
 For revocation, sign a target-free policy with both quorums using the local
 custody trust file. Publish the revocation without `--custody-trust` when the
 ledger is offline. Revocation needs the signing keys and publication buckets.

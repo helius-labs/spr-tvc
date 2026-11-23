@@ -232,6 +232,7 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-224 | Payment publication and pin verification could pass while either bucket's CORS rules blocked browser requests for the policy. | Check for an installed rule allowing `GET` with `x-amz-expected-bucket-owner`. Qualify the actual wallet origins during deployment. [Publication tests](nitro/publication.test.mts) · SPR-NITRO-80 |
 | N-225 | Policy restoration could report success after a write acknowledgement without checking the new head. | Read the current version and bytes together into a fresh file, then compare them with the acknowledged version when available and the authenticated retained bytes. [Publication tests](nitro/publication.test.mts) · SPR-NITRO-79 |
 | N-226 | Ordinary policy publication could report success after an acknowledgement without confirming the current head. A lost response could also be confirmed without a valid S3 version. | Use the same readback as restoration. Check the exact signed bytes, require a new version, and compare the acknowledged version when available. [Publication tests](nitro/publication.test.mts) · SPR-NITRO-69 |
+| N-227 | Activation signing could save an approval after custody qualification changed during the KMS call. | Recheck qualification after KMS against the reviewed policy and trust bytes. Check expiry, roster cutover and both original files before replacing the signed policy. [Signer tests](../xtask/tests/nitro_sign.rs) · SPR-NITRO-99 |
 
 ## Remaining qualification and review
 
