@@ -406,11 +406,14 @@ The primary's activation authorizes the connection when the mirror agrees
 or serves its exact predecessor. A missing or invalid head, a mirror ahead,
 a fork, a gap or an expired primary blocks new connections. Either bucket
 can supply a current target-free revocation signed by both quorums. The wallet
-commits it before reporting the stop, even when the peer head is missing or
-conflicting. The checkpoint preserves its custody and recovery floors. A
+starts committing the stop as soon as it authenticates that head. A stalled
+peer or cancellation of the wallet request does not interrupt the commit.
+The checkpoint preserves its custody and recovery floors. A
 revocation can replace a conflicting activation at its sequence. A later
 target-free reconciliation can advance the stop across a fork. Returning to
 service requires compatible signed heads that advance the stored checkpoint.
+If the same read observed a stop, its activation must also advance the
+checkpoints that preceded the stop.
 For retirement, custodians verify the exact wallet trust file
 against its pinned hash and their own publication pins. Both buckets must
 agree before the verifier qualifies a replacement and again after attestation.

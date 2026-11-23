@@ -276,7 +276,7 @@ export function hasCompleteNitroPolicySignatures(text: string, trust: NitroTrust
 
 type VerifiedPolicy = ReturnType<typeof authenticateNitroPolicy>;
 
-function verifySignedPolicy(text: string, trust: NitroTrust): VerifiedPolicy {
+export function verifySignedPolicy(text: string, trust: NitroTrust): VerifiedPolicy {
   const verified = authenticateNitroPolicy(text, trust);
   const anchor = decodeDecimalU64(trust.minimumSequence);
   const sequence = decodeDecimalU64(verified.policy.sequence);
@@ -291,14 +291,14 @@ function requirePolicyPins({ policy }: VerifiedPolicy, trust: NitroTrust): void 
       (trust.recoveryOnly && !policy.recoveryOnly)) invalid();
 }
 
-function requireCurrent(verified: VerifiedPolicy, trust: NitroTrust, now: bigint): void {
+export function requireCurrentNitroPolicy(verified: VerifiedPolicy, trust: NitroTrust, now: bigint): void {
   requirePolicyPins(verified, trust);
   if (now < verified.validFrom || now >= verified.expiresAt) invalid();
 }
 
 export function verifyNitroPolicy(text: string, trust: NitroTrust, now: bigint): VerifiedPolicy {
   const verified = verifySignedPolicy(text, trust);
-  requireCurrent(verified, trust, now);
+  requireCurrentNitroPolicy(verified, trust, now);
   return verified;
 }
 
@@ -330,14 +330,19 @@ function requireSuccessor(prior: VerifiedPolicy, next: VerifiedPolicy): void {
 
 /** The mirror must serve the primary's revision or its exact predecessor. */
 export function verifyPublishedNitroPolicy([primaryText, mirrorText]: readonly [string, string], trust: NitroTrust, now: bigint) {
-  const primary = verifySignedPolicy(primaryText, trust);
-  const mirror = verifySignedPolicy(mirrorText, trust);
+  return {
+    ...verifyNitroPolicyPair(verifySignedPolicy(primaryText, trust), verifySignedPolicy(mirrorText, trust), trust, now),
+    sameEnvelope: primaryText === mirrorText,
+  };
+}
+
+export function verifyNitroPolicyPair(primary: VerifiedPolicy, mirror: VerifiedPolicy, trust: NitroTrust, now: bigint) {
   const agreed = primary.checkpoint.digest === mirror.checkpoint.digest;
   if (!agreed) requireSuccessor(mirror, primary);
-  requireCurrent(primary, trust, now);
+  requireCurrentNitroPolicy(primary, trust, now);
   const { policy, checkpoint, validFrom, expiresAt } = primary;
   const update: NitroPolicyUpdate = Object.freeze([revision(primary), revision(mirror)] as const);
-  return { policy, checkpoint, validFrom, expiresAt, agreed, update, sameEnvelope: primaryText === mirrorText };
+  return { policy, checkpoint, validFrom, expiresAt, agreed, update };
 }
 
 function requireSameTrustDomain(first: NitroTrust, second: NitroTrust): void {

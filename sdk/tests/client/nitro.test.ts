@@ -1289,6 +1289,66 @@ it.each(["mirror is ahead", "primary is unavailable", "mirror is unavailable"] a
   },
 );
 
+it.each([0, 1])("checkpoints a revocation from bucket %i before its peer responds", async index => {
+  const active = signedPolicy();
+  const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(active).policy));
+  const revoked = signedPolicy({ action: "revoke", sequence: "3", previousPolicyDigest, targets: [] });
+  const fetch = policyHeads(vi.fn(), active).mockResolvedValueOnce(new Response(null, { status: 503 }));
+  for (const bucket of [0, 1]) {
+    if (bucket === index) fetch.mockResolvedValueOnce(new Response(revoked));
+    else fetch.mockImplementationOnce(() => new Promise<Response>(() => {}));
+  }
+  policyHeads(fetch, active);
+  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const wallet = createNitroDecryptionService({ trust });
+  await expect(wallet.address(signer.address)).rejects.toThrow("no authorized Nitro replica");
+  const controller = new AbortController();
+  const lookup = wallet.open(signer, proofs, { signal: controller.signal });
+  const cancelled = expect(lookup).rejects.toMatchObject({ name: "AbortError" });
+  try {
+    const store = indexedDbNitroPolicyStore(trust);
+    await vi.waitFor(async () => expect(await store.current()).toMatchObject({ sequence: "3", revoked: true }), {
+      timeout: 1_000,
+    });
+  } finally {
+    controller.abort();
+    await cancelled;
+  }
+  await expect(createNitroDecryptionService({ trust }).open(signer, proofs)).rejects.toThrow("policy rollback");
+  expect(fetch.mock.calls.filter(([url]) => !url.pathname.endsWith("/policy.json"))).toHaveLength(1);
+  expect(signMessages).not.toHaveBeenCalled();
+});
+
+it("finishes persisting an authenticated stop when a cancelled request has a stalled peer", async () => {
+  const revoked = signedPolicy({ action: "revoke", targets: [] });
+  const fetch = vi.fn().mockResolvedValueOnce(new Response(revoked))
+    .mockImplementationOnce(() => new Promise<Response>(() => {}));
+  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const store = indexedDbNitroPolicyStore(trust);
+  let finishWrite!: () => void;
+  const write = new Promise<void>(resolve => { finishWrite = resolve; });
+  const accept = vi.fn(async (update: NitroPolicyUpdate) => {
+    await write;
+    return store.accept(update);
+  });
+  const client = createNitroDecryptionService({ trust, policyStore: { current: store.current, accept } });
+  const controller = new AbortController();
+  const lookup = client.open(signer, proofs, { signal: controller.signal });
+  const cancelled = expect(lookup).rejects.toMatchObject({ name: "AbortError" });
+  try {
+    await vi.waitFor(() => expect(accept).toHaveBeenCalledOnce(), { timeout: 1_000 });
+    expect(await store.current()).toBeUndefined();
+  } finally {
+    controller.abort();
+    finishWrite();
+    await cancelled;
+  }
+  await vi.waitFor(async () => expect(await store.current()).toMatchObject({ sequence: "2", revoked: true }));
+  expect(signMessages).not.toHaveBeenCalled();
+});
+
 it("keeps a same-sequence emergency revocation and accepts a later agreed reconciliation", async () => {
   const active = signedPolicy();
   const revocation = signedPolicy({ action: "revoke", targets: [] });

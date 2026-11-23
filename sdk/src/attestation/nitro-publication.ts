@@ -1,7 +1,11 @@
 import { fetchWithSignal, httpError, readBoundedText } from "../connection/http.js";
+import { awaitWithSignal } from "../connection/request.js";
 import { nitroTransport } from "./nitro-connection.js";
 import { DecryptionServiceError } from "../protocol/error.js";
-import { nitroPublication, revision, verifyNitroPolicy, verifyPublishedNitroPolicy, type NitroPolicyRevision, type NitroPolicyUpdate, type NitroTrust } from "./nitro-policy.js";
+import {
+  nitroPublication, requireCurrentNitroPolicy, revision, verifyNitroPolicyPair, verifySignedPolicy,
+  type NitroPolicyUpdate, type NitroTrust,
+} from "./nitro-policy.js";
 
 async function readPolicyObject(url: URL, signal: AbortSignal, account: string) {
   const response = await fetchWithSignal(nitroTransport, url, {
@@ -24,20 +28,34 @@ export async function readPublishedNitroPolicy(
   const timeout = AbortSignal.timeout(5_000);
   const deadline = signal ? AbortSignal.any([signal, timeout]) : timeout;
   const [primary, mirror] = trust.publications;
-  const read = (publication: NitroTrust["publications"][number]) => {
+  const read = async (publication: NitroTrust["publications"][number]) => {
     const { url, account } = nitroPublication(trust, publication);
-    return readPolicyObject(url, deadline, account);
+    const head = await readPolicyObject(url, deadline, account);
+    return { ...head, verified: verifySignedPolicy(head.text, trust) };
   };
   function verify(first: Awaited<ReturnType<typeof read>>, second: Awaited<ReturnType<typeof read>>) {
     return {
-      ...verifyPublishedNitroPolicy([first.text, second.text], trust, BigInt(Date.now())),
+      ...verifyNitroPolicyPair(first.verified, second.verified, trust, BigInt(Date.now())),
+      sameEnvelope: first.text === second.text,
       text: first.text,
       versionIds: [first.versionId, second.versionId] as const,
     };
   }
   const reads = [read(primary), read(mirror)] as const;
   if (!accept) return verify(...await Promise.all(reads));
-  const heads = await Promise.allSettled(reads);
+  const stops = reads.map(read => read.then(async ({ verified }) => {
+    if (!verified.checkpoint.revoked) return;
+    try {
+      requireCurrentNitroPolicy(verified, trust, BigInt(Date.now()));
+    } catch (error) {
+      if (!(error instanceof DecryptionServiceError)) throw error;
+      return;
+    }
+    return await accept([revision(verified)]) ? "accepted" : "rejected";
+  }, () => undefined));
+  const [heads, revocations] = await awaitWithSignal(
+    Promise.all([Promise.allSettled(reads), Promise.all(stops)]), signal,
+  );
   let published: ReturnType<typeof verify> | undefined;
   let error: unknown;
   try {
@@ -50,22 +68,8 @@ export async function readPublishedNitroPolicy(
   }
   if (published && await accept(published.update)) return published;
   signal?.throwIfAborted();
-  const now = BigInt(Date.now());
-  const revocations: NitroPolicyRevision[] = [];
-  for (const head of heads) {
-    if (head.status !== "fulfilled") continue;
-    try {
-      const verified = verifyNitroPolicy(head.value.text, trust, now);
-      if (verified.checkpoint.revoked) revocations.push(revision(verified));
-    } catch (invalid) {
-      if (!(invalid instanceof DecryptionServiceError)) throw invalid;
-    }
-  }
-  revocations.sort((first, second) => Number(BigInt(second.checkpoint.sequence) - BigInt(first.checkpoint.sequence)));
-  for (const revoked of revocations) {
-    if (await accept([revoked])) throw new DecryptionServiceError("ReleasePolicyRevoked");
-  }
-  if (published || revocations.length) {
+  if (revocations.includes("accepted")) throw new DecryptionServiceError("ReleasePolicyRevoked");
+  if (published || revocations.includes("rejected")) {
     throw new DecryptionServiceError("ReleasePolicyInvalid", "policy rollback or checkpoint unavailable");
   }
   throw error;

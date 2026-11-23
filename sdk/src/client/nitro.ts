@@ -54,8 +54,25 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
     return true;
   }
 
-  const readPolicy = (signal?: AbortSignal) =>
-    readPublishedNitroPolicy(trust, signal, update => accept(update, signal));
+  function readPolicy(signal?: AbortSignal) {
+    let beforeStop: Promise<NitroPolicyCheckpoint | undefined> | undefined;
+    let remembered: NitroPolicyCheckpoint | undefined;
+    return readPublishedNitroPolicy(trust, signal, async update => {
+      if (!update[1]) {
+        if (!beforeStop) {
+          remembered = latest;
+          beforeStop = store.current();
+        }
+        await beforeStop;
+        // An authenticated stop can finish writing after the request is cancelled.
+        return accept(update);
+      }
+      // A stop accepted during this read cannot make a conflicting successor admissible.
+      if (!update[0].checkpoint.revoked && beforeStop &&
+          (!advancesNitroPolicy(remembered, update) || !advancesNitroPolicy(await beforeStop, update))) return false;
+      return accept(update, signal);
+    });
+  }
 
   const session = sessionFromConnector(async (signal): Promise<ConnectedTvcRuntime> => {
     const sessionExpiry = clock() + BigInt(CONNECTION_TTL_MS) - 1n;
