@@ -35,3 +35,33 @@ fn release_check_capture_preserves_complete_output_at_the_limit() {
     let output = capture_check(Command::new("head").args(["-c", "4194304", "/dev/zero"])).unwrap();
     assert_eq!(output.len() as u64, MAX_CHECK_OUTPUT_BYTES);
 }
+
+#[test]
+fn deployment_creation_ignores_environment_overrides_for_the_reviewed_descriptor() {
+    let path = Path::new("reviewed.json");
+    let overrides = [
+        "TVC_APP_ID",
+        "TVC_DANGEROUS_DEPLOY_DEBUG_MODE",
+        "TVC_PIVOT_ARGS",
+        "TVC_QOS_VERSION",
+        "TVC_PIVOT_PULL_SECRET",
+        "TVC_PUBLIC_INGRESS_PORT",
+        "TVC_FUTURE_OVERRIDE",
+    ];
+    let preserved = [TVC_ORG, TVC_PUBLIC, TVC_PRIVATE, "TVC_REPLICAS", "PATH"];
+    let command = tvc_create(
+        path,
+        overrides.into_iter().chain(preserved).map(OsString::from),
+    );
+    assert!(command
+        .get_args()
+        .eq(["deploy", "create", "--config-file", "reviewed.json"]));
+    let removed = command
+        .get_envs()
+        .map(|(name, value)| {
+            assert_eq!(value, None);
+            name.to_str().unwrap()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(removed, overrides.into_iter().collect());
+}

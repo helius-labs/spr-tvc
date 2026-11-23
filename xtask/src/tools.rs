@@ -1,4 +1,5 @@
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
@@ -143,6 +144,23 @@ const TVC_ORG: &str = "TVC_ORG_ID";
 const TVC_PUBLIC: &str = "TVC_API_KEY_PUBLIC";
 const TVC_PRIVATE: &str = "TVC_API_KEY_PRIVATE";
 const TVC_API: &str = "https://api.turnkey.com";
+
+pub(crate) fn tvc_create(path: &Path, environment: impl IntoIterator<Item = OsString>) -> Command {
+    let mut command = tvc(&["deploy", "create", "--config-file"]);
+    command.arg(path);
+    // Credentials and replica count are independent of the reviewed launch configuration.
+    for name in environment {
+        if name.as_encoded_bytes().starts_with(b"TVC_")
+            && !matches!(
+                name.to_str(),
+                Some(TVC_ORG | TVC_PUBLIC | TVC_PRIVATE | "TVC_REPLICAS")
+            )
+        {
+            command.env_remove(name);
+        }
+    }
+    command
+}
 
 #[derive(Deserialize)]
 struct ApiKey {

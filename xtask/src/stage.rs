@@ -6,12 +6,19 @@ use serde::{Deserialize, Serialize};
 use spr_tvc_protocol::types::{Network, ServiceInfo};
 
 use crate::tools::{
-    bridge, capture, capture_check, capture_with_timeout, run, tvc, tvc_json, Credentials,
+    bridge, capture, capture_check, capture_with_timeout, run, tvc, tvc_create, tvc_json,
+    Credentials,
 };
 use crate::{lower_hex, read_json, write_json, Release, APP};
 
 const PIVOT_PATH: &str = "/tvc_app";
 const IMAGE_INSPECTION_TIMEOUT: Duration = Duration::from_secs(300);
+
+fn copy_descriptor(descriptor: &Descriptor) -> Result<tempfile::NamedTempFile> {
+    let mut file = tempfile::Builder::new().suffix(".json").tempfile()?;
+    serde_json::to_writer(&mut file, descriptor)?;
+    Ok(file)
+}
 
 #[derive(Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -234,10 +241,12 @@ impl Release<'_> {
             struct CreatedDeployment {
                 deployment_id: String,
             }
-            let created: CreatedDeployment = tvc_json(
-                tvc(&["deploy", "create", "--config-file"]).arg(self.path("deployment")),
-                capture,
-            )?;
+            let approved_input = copy_descriptor(&descriptor)?;
+            let mut command = tvc_create(
+                approved_input.path(),
+                std::env::vars_os().map(|(name, _)| name),
+            );
+            let created: CreatedDeployment = tvc_json(&mut command, capture)?;
             let record = Deployment {
                 deploy_id: created.deployment_id,
             };
