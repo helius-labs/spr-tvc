@@ -3,7 +3,7 @@
 import re
 import subprocess
 
-from approval import ROLE_ARN, arn, aws, require_profile_account
+from approval import KEY_ARN, ROLE_ARN, arn, aws, canonical, require_profile_account
 from kms_policy import decrypt_conditions, target_boot_pins
 
 HOST_BOOTSTRAP_POLICY = "spr-nitro-bootstrap"
@@ -68,7 +68,49 @@ def require_host_state(manifest, state, profile):
     return {"account": account, "region": region, "instanceId": instance, "state": state, "source": "ec2"}
 
 
-def require_bootstrap_access(manifest, profile):
+def allowed_wrapping_keys(manifest, keys, conditions, profile):
+    by_region = {}
+    for key in keys:
+        by_region.setdefault(arn(KEY_ARN, key)[1], set()).add(key)
+    role = manifest["hostRole"]
+    account = arn(ROLE_ARN, role)[1]
+    host_region, instance = manifest["hostRegion"], manifest["instanceId"]
+    context = {
+        **conditions["StringEquals"],
+        **conditions["StringEqualsIgnoreCase"],
+        "aws:PrincipalArn": role,
+        "ec2:SourceInstanceARN": f"arn:aws:ec2:{host_region}:{account}:instance/{instance}",
+    }
+    allowed = set()
+    for region, requested in sorted(by_region.items()):
+        entries = [{"ContextKeyName": name, "ContextKeyValues": [value], "ContextKeyType": "string"}
+                   for name, value in {**context, "aws:RequestedRegion": region}.items()]
+        # This evaluates the host identity policies. Callers verify the
+        # installed KMS resource policies from the custody accounts.
+        reply = aws(host_region, "iam", "simulate-principal-policy", [
+            "--policy-source-arn", role, "--action-names", "kms:Decrypt",
+            "--resource-arns", *sorted(requested), "--context-entries", canonical(entries).decode(),
+            "--no-paginate",
+        ], profile=profile)
+        results = reply.get("EvaluationResults")
+        if (reply.get("IsTruncated") is not False or not isinstance(results, list) or len(results) != 1 or
+                not isinstance(results[0], dict) or results[0].get("EvalActionName") != "kms:Decrypt"):
+            raise ValueError("invalid IAM bootstrap simulation")
+        decisions = results[0].get("ResourceSpecificResults")
+        if not isinstance(decisions, list) or len(decisions) != len(requested):
+            raise ValueError("incomplete IAM bootstrap simulation")
+        seen = set()
+        for result in decisions:
+            key = result.get("EvalResourceName") if isinstance(result, dict) else None
+            if not isinstance(key, str) or key not in requested or key in seen:
+                raise ValueError("unexpected key in IAM bootstrap simulation")
+            seen.add(key)
+            if result.get("EvalResourceDecision") == "allowed" and result.get("MissingContextValues", []) == []:
+                allowed.add(key)
+    return allowed
+
+
+def require_bootstrap_access(manifest, profile, *, slots=range(1, 7), minimum=None):
     role = manifest["hostRole"]
     account = arn(ROLE_ARN, role)[1]
     if not profile:
@@ -77,9 +119,14 @@ def require_bootstrap_access(manifest, profile):
     require_profile_account(profile, region, account)
     require_host_state(manifest, "running", profile)
     role_name = role.rsplit("/", 1)[-1]
+    expected = host_policy(manifest)
     installed = aws(region, "iam", "get-role-policy", [
         "--role-name", role_name, "--policy-name", HOST_BOOTSTRAP_POLICY,
     ], profile=profile)
     if (installed.get("RoleName") != role_name or installed.get("PolicyName") != HOST_BOOTSTRAP_POLICY or
-            installed.get("PolicyDocument") != host_policy(manifest)):
+            installed.get("PolicyDocument") != expected):
         raise ValueError("target host's installed bootstrap policy differs from the approved policy")
+    keys = {manifest["wrappingKeys"][slot - 1] for slot in slots}
+    allowed = allowed_wrapping_keys(manifest, keys, expected["Statement"][0]["Condition"], profile)
+    if len(allowed) < (len(keys) if minimum is None else minimum):
+        raise ValueError("target host lacks effective bootstrap permission for the required wrapping keys")

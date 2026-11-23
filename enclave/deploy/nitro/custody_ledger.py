@@ -239,31 +239,34 @@ def require_replicated_custody(trust, replica, epoch, observed_records):
         payload, fingerprint = read_replicated_record(trust, destination, name)
         if name in observed_records and observed_records[name] != fingerprint:
             raise ValueError(f"custody ledger record {name} changed during verification")
-        return parse_json(payload), fingerprint[1]
+        return parse_json(payload), fingerprint
 
     def read_entry(number):
-        names = [ledger_object(trust, str(number))]
-        document, receipt_time = read(names[0])
+        name = ledger_object(trust, str(number))
+        document, receipt = read(name)
+        records = {name: receipt}
         rotation = None
         if number > 1:
             manifest = document["authorization"]["manifest"]
-            names.append(rotation_target_name(manifest, str(number - 1)))
-            approval, published_at = read(names[1])
-            rotation = {"approval": approval, "publishedAt": published_at}
-        return {"document": document, "publishedAt": receipt_time, "rotation": rotation}, names
+            name = rotation_target_name(manifest, str(number - 1))
+            approval, registration = read(name)
+            records[name] = registration
+            rotation = {"approval": approval, "publishedAt": registration[1]}
+        return {"document": document, "publishedAt": receipt[1], "rotation": rotation}, records
 
     # Schedule bounded batches even when a signed epoch number is very large.
     last = epoch_number(epoch)
     batch_size = 8
     previous = None
-    remaining = set(observed_records)
+    history = {}
     with ThreadPoolExecutor(max_workers=batch_size) as workers:
         for start in range(1, last + 1, batch_size):
             batch = range(start, min(start + batch_size, last + 1))
-            for number, (entry, names) in zip(batch, workers.map(read_entry, batch), strict=True):
+            for number, (entry, records) in zip(batch, workers.map(read_entry, batch), strict=True):
                 previous = check_custody_history_entry(trust, str(number), entry, previous)
-                remaining.difference_update(names)
-        list(workers.map(read, sorted(remaining)))
+                history.update(records)
+        list(workers.map(read, sorted(observed_records.keys() - history.keys())))
+    observed_records.update(history)
 
 
 def require_publication_roster(trust, start):
@@ -620,6 +623,8 @@ def require_replication_role(trust, replica, *, profile=None):
     role = inspect("get-role").get("Role")
     if not isinstance(role, dict) or role.get("Arn") != replica["role"]:
         raise ValueError("installed replication role is not the pinned ARN")
+    if "PermissionsBoundary" in role:
+        raise ValueError("installed replication role must have no permissions boundary")
     if role.get("AssumeRolePolicyDocument") != plan["roleTrust"]:
         raise ValueError("installed replication role trust policy differs from the pinned policy")
     policies = inspect("list-role-policies").get("PolicyNames")
@@ -941,7 +946,8 @@ def require_payment_recovery_quorums(trust, target_slots, profiles):
             raise ValueError(f"custody epoch {epoch} target {release} requires three enabled recovery and wrapping pairs with approved policies")
         if bootstrapped is not None and not ready.issuperset(bootstrapped):
             raise ValueError(f"custody epoch {epoch} target {release} has an unavailable attested bootstrap slot")
-        require_bootstrap_access(target, profiles.get(arn(ROLE_ARN, target["hostRole"])[1]))
+        require_bootstrap_access(target, profiles.get(arn(ROLE_ARN, target["hostRole"])[1]),
+                                 slots=ready if bootstrapped is None else bootstrapped, minimum=3)
 
     with ThreadPoolExecutor(max_workers=min(len(expected), 24)) as workers:
         verified_accounts = {account for account, valid in zip(accounts, workers.map(verify_account, accounts), strict=True)

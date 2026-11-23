@@ -74,7 +74,7 @@ def require_recovery_quorum(trust, manifest, custodians, replacement_profiles, *
 
     with ThreadPoolExecutor(max_workers=len(slots)) as workers:
         list(workers.map(lambda pair: check_slot(*pair), zip(slots, custodians, strict=True)))
-    require_bootstrap_access(target, replacement_profiles.get(arn(ROLE_ARN, target["hostRole"])[1]))
+    require_bootstrap_access(target, replacement_profiles.get(arn(ROLE_ARN, target["hostRole"])[1]), slots=slots)
 
 
 def registered_targets(trust, epoch, receipt_digest, **options):

@@ -131,7 +131,8 @@ python3 "$nitro/custody_ledger.py" trust.json replica-plan > replica-plan.json
 ```
 
 Create the source role with `roleTrust` and install `rolePermissions` as
-its only inline policy. Leave the role free of managed policy attachments.
+its only inline policy. The verifier rejects managed policy attachments and
+permissions boundaries on this role.
 Install `destinationPolicy` as the recovery bucket policy. Render the source policy
 from the updated trust file and install `replication` as the S3 replication
 configuration on the source. Run `policy --check-installed` on the source.
@@ -466,11 +467,14 @@ pinned history and excluded versions.
    the approval deadline. Before the first write, the publisher checks the
    running parent, attached role, the exact installed `spr-nitro-bootstrap`
    policy and all six enabled wrapping keys with their approved policies.
+   It simulates `kms:Decrypt` for the parent role on all six wrapping keys
+   using the approved PCRs, instance and key regions.
    It rechecks the committed receipt and rotation lineage before writing
    and during readback.
    Include the host account and all six custody accounts in
    `$custody_key_profiles`. The host profile also needs
-   `iam:GetRolePolicy` on the target role. The ledger verifies that S3
+   `iam:GetRolePolicy` and `iam:SimulatePrincipalPolicy` on the target role.
+   The ledger verifies that S3
    recorded the first registration before expiry. It keeps the signed target
    and all six wrapping-key ARNs. Within an epoch, a release ID
    and PCR0–PCR4 identify one wrapping-key set. Each parent needs its own set.
@@ -556,7 +560,8 @@ pinned history and excluded versions.
    the record within 24 hours of the replacement boot. Pass the same
    account-to-profile JSON file used for payment activation. Include the
    replacement host account so the tools can verify its attached role and
-   installed bootstrap policy. For each of the three
+   installed bootstrap policy and simulate the role's access to the three
+   attested wrapping keys. For each of the three
    attested slots, STS checks that its profile belongs to the replacement
    custodian's account, then `kms:DescribeKey` and `kms:GetKeyPolicy` check
    that both keys are enabled and have their exact sealed policies. KMS only
@@ -906,11 +911,14 @@ account IDs to read-only profiles. In the custody accounts, the profiles need
 Include both rosters if the policy spans epochs with different custodians.
 A slot without a profile does not count toward quorum. Each target also
 needs its host account profile, with `ec2:DescribeInstances`,
-`iam:GetInstanceProfile` and `iam:GetRolePolicy`, to check the running parent
-and the installed `spr-nitro-bootstrap` policy. Qualify the deployed IAM and
-network controls with a cold boot from three current slots. Permissions
-boundaries, organization policies and VPC endpoint policies can still deny
-the real KMS request. [IAM policy evaluation](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_evaluation-logic.html)
+`iam:GetInstanceProfile`, `iam:GetRolePolicy` and
+`iam:SimulatePrincipalPolicy`. The tools check the installed
+`spr-nitro-bootstrap` policy and simulate the parent role's `kms:Decrypt`
+access to each qualifying wrapping key. A denied key or one with missing
+simulation context cannot count. Qualify the deployed IAM and network
+controls with an actual cold boot from three current slots. The request
+also passes KMS resource and network controls in AWS.
+[IAM policy simulator](https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_testing-policies.html)
 · [KMS endpoint policies](https://docs.aws.amazon.com/kms/latest/developerguide/vpce-connect.html)
 
 `nitro-sign`, primary publication and `--check-wallet-trust` also take `--source-profile` and

@@ -148,7 +148,9 @@ must follow its receipt, and a retirement marker must follow both receipts and
 the replacement registration. The verifier allows equal S3 timestamps.
 Before writing a new target registration, the publisher verifies the running
 parent's approved role, its installed cross-account bootstrap policy and the
-enabled state and sealed policies of all six wrapping keys. It rechecks the
+enabled state and sealed policies of all six wrapping keys. The host IAM
+simulation must allow `kms:Decrypt` on all six under the approved boot
+context. The publisher rechecks the
 same receipt and rotation lineage before the write and at readback. The epoch
 must be open and the approval and roster valid through the write window.
 An exact retry verifies the stored record at its original write time and
@@ -217,7 +219,8 @@ before and after attestation. A draft selects a registered boot whose
 registration is replicated when configured. For its three slots, inspection
 profiles in the replacement custody accounts verify that each recovery and
 wrapping key is enabled and has the expected sealed policy. The replacement
-parent must still have its approved role and installed bootstrap policy. The
+parent must have its approved role and installed bootstrap policy, and
+simulation must allow that role to decrypt on the three attested slots. The
 signers and publisher reattest that boot, check the publication order of
 its receipt and registration, and recheck those keys. Signers repeat the
 qualification after KMS signs. When a replica is pinned, they also
@@ -329,14 +332,17 @@ require a pinned mainnet custody replica and compare the receipt chain,
 rotation approvals and serving registrations against it. Each copy must
 match the source bytes, S3 version ID and write time. They verify each receipt
 and predecessor link from genesis and check each rotation approval at its
-original S3 write time. Before authorizing new mainnet payments, they also
+original S3 write time. The release check hashes every verified receipt,
+rotation registration and selected target using the record's S3 version,
+write time and bytes. Before authorizing new mainnet payments, the tools also
 check that every serving target has three distinct custody slots where both
 the recovery key and the target wrapping key are enabled and have their
 approved sealed policies. An inspection profile in the owning account reads
 the live KMS state and policy for each exact ARN in the receipt and
 registration. They also verify the running parent's role and installed
-bootstrap policy. The primary publisher and wallet pin verifier require the
-three attested slots to pass the key checks.
+bootstrap policy, and use IAM simulation to verify that the role can
+decrypt with three qualifying wrapping keys. The primary publisher and
+wallet pin verifier require those checks on the three slots in the boot attestation.
 Recovery-only publication can preserve access through a running enclave during
 a key outage. Two of the three independently pinned custody approval
 keys also sign the entire policy. Their digest uses

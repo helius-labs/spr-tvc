@@ -14,7 +14,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/de
 from approval import P256_ORDER, is_p256_der_signature, sha256
 from custody_ledger import TARGET_APPROVAL, target_object_name
 from deployment import file_digest, main, register_target, target
-from host import HOST_BOOTSTRAP_POLICY, HostUnobserved, host_policy, require_host_state
+from host import HOST_BOOTSTRAP_POLICY, HostUnobserved, host_policy, require_bootstrap_access, require_host_state
 from kms_policy import RSA_OAEP, recovery_policy
 from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, schedule, sign
 from provenance import describe
@@ -416,6 +416,60 @@ class TargetApprovalTests(unittest.TestCase):
             write.assert_not_called()
             live.assert_not_called()
 
+    def test_bootstrap_simulation_requires_the_qualified_keys(self):
+        policy = host_policy(self.manifest)
+        keys = self.manifest["wrappingKeys"]
+        installed = {"RoleName": HOST.rsplit("/", 1)[-1], "PolicyName": HOST_BOOTSTRAP_POLICY, "PolicyDocument": policy}
+        decisions = [{"EvalResourceName": key, "EvalResourceDecision": "allowed"} for key in keys]
+        reply = {"IsTruncated": False, "EvaluationResults": [
+            {"EvalActionName": "kms:Decrypt", "ResourceSpecificResults": decisions},
+        ]}
+
+        def respond(region, service, operation, args, *, profile):
+            self.assertEqual((region, service, profile), (REGION, "iam", "host-read"))
+            if operation == "get-role-policy":
+                return installed
+            self.assertEqual(operation, "simulate-principal-policy")
+            self.assertEqual(args[:5], ["--policy-source-arn", HOST, "--action-names", "kms:Decrypt", "--resource-arns"])
+            context_index = args.index("--context-entries")
+            context = {entry["ContextKeyName"]: entry["ContextKeyValues"]
+                       for entry in json.loads(args[context_index + 1])}
+            conditions = policy["Statement"][0]["Condition"]
+            self.assertEqual(context, {**{key: [value] for group in conditions.values() for key, value in group.items()},
+                                       "aws:PrincipalArn": [HOST], "aws:RequestedRegion": [REGION],
+                                       "ec2:SourceInstanceARN": [f"arn:aws:ec2:{REGION}:{HOST.split(':')[4]}:instance/{INSTANCE}"]})
+            self.assertEqual(args[-1], "--no-paginate")
+            requested = args[5:context_index]
+            return {**reply, "EvaluationResults": [
+                {**result, "ResourceSpecificResults": [entry for entry in result["ResourceSpecificResults"]
+                                                        if entry["EvalResourceName"] in requested]}
+                for result in reply["EvaluationResults"]
+            ]}
+
+        with (patch("host.require_host_state"), patch("host.require_profile_account"),
+              patch("host.aws", side_effect=respond)):
+            require_bootstrap_access(self.manifest, "host-read")
+            decisions[0]["EvalResourceDecision"] = "explicitDeny"
+            with self.assertRaisesRegex(ValueError, "effective bootstrap permission"):
+                require_bootstrap_access(self.manifest, "host-read")
+            require_bootstrap_access(self.manifest, "host-read", slots={1, 2, 3, 4}, minimum=3)
+            with self.assertRaisesRegex(ValueError, "effective bootstrap permission"):
+                require_bootstrap_access(self.manifest, "host-read", slots=[1, 2, 3])
+            require_bootstrap_access(self.manifest, "host-read", slots=[2, 3, 4])
+            decisions[3]["MissingContextValues"] = ["aws:SourceVpce"]
+            with self.assertRaisesRegex(ValueError, "effective bootstrap permission"):
+                require_bootstrap_access(self.manifest, "host-read", slots={1, 2, 3, 4}, minimum=3)
+            decisions[3].pop("MissingContextValues")
+            decisions[5] = decisions[4]
+            with self.assertRaisesRegex(ValueError, "unexpected key"):
+                require_bootstrap_access(self.manifest, "host-read")
+            decisions.pop()
+            with self.assertRaisesRegex(ValueError, "incomplete"):
+                require_bootstrap_access(self.manifest, "host-read")
+            with patch.dict(reply, {"IsTruncated": True}):
+                with self.assertRaisesRegex(ValueError, "invalid IAM bootstrap simulation"):
+                    require_bootstrap_access(self.manifest, "host-read")
+
     def test_first_registration_rechecks_the_host_keys_and_approval_window(self):
         _, policies, _ = target(self.trust, self.approval, self.receipt, self.custodians, self.build)
         installed = dict(zip(self.manifest["wrappingKeys"], policies, strict=True))
@@ -475,7 +529,14 @@ class TargetApprovalTests(unittest.TestCase):
                 iam.return_value = {**policy, **change}
                 with self.subTest(change=change), self.assertRaisesRegex(ValueError, "installed bootstrap policy"):
                     register(**options)
-            iam.return_value = policy
+            simulated = {"IsTruncated": False, "EvaluationResults": [
+                {"EvalActionName": "kms:Decrypt", "ResourceSpecificResults": [
+                    {"EvalResourceName": key, "EvalResourceDecision": "allowed"} for key in self.manifest["wrappingKeys"]
+                ]},
+            ]}
+            iam.side_effect = lambda _region, _service, operation, _args, **_options: (
+                policy if operation == "get-role-policy" else simulated
+            )
             active.side_effect = ValueError("epoch is retired")
             with self.assertRaisesRegex(ValueError, "epoch is retired"):
                 register(**options)
@@ -503,7 +564,7 @@ class TargetApprovalTests(unittest.TestCase):
             self.assertEqual(writes, [target_object_name(self.manifest)])
             self.assertCountEqual([request.args[0] for request in keys.call_args_list], self.manifest["wrappingKeys"])
             self.assertCountEqual([request.args[2] for request in identity.call_args_list], profiles)
-            iam.assert_called_with(REGION, "iam", "get-role-policy", [
+            iam.assert_any_call(REGION, "iam", "get-role-policy", [
                 "--role-name", HOST.rsplit("/", 1)[-1], "--policy-name", HOST_BOOTSTRAP_POLICY,
             ], profile="host-read")
             registered.assert_called_once_with(self.trust, self.manifest, receipt_at=1, expected_version="written")

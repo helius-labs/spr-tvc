@@ -212,6 +212,10 @@ class LedgerReplicationTests(unittest.TestCase):
             broad_trust = {**plan["roleTrust"], "Statement": [*plan["roleTrust"]["Statement"], extra_principal]}
             for operation, changed, error in (
                 ("get-role", {"Role": {**role, "Arn": SOURCE_PUBLISHER}}, "not the pinned ARN"),
+                ("get-role", {"Role": {**role, "PermissionsBoundary": {
+                    "PermissionsBoundaryArn": f"arn:aws:iam::{SOURCE_ACCOUNT}:policy/restricted",
+                    "PermissionsBoundaryType": "Policy",
+                }}}, "permissions boundary"),
                 ("get-role", {"Role": {**role, "AssumeRolePolicyDocument": broad_trust}}, "trust policy differs"),
                 ("list-role-policies", {"PolicyNames": []}, "requires one inline policy"),
                 ("list-role-policies", {"PolicyNames": ["replicate-custody", "extra"]}, "requires one inline policy"),

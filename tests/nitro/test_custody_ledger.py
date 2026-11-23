@@ -1809,7 +1809,7 @@ class CustodyLedgerTests(unittest.TestCase):
               patch("custody_ledger.require_payment_recovery_quorums"),
               patch("custody_ledger.check_source_ledger") as inspect_source,
               patch("custody_ledger.check_recovery_bucket") as inspect_replica):
-            check_release_policy(self.trust, document, **PAYMENT_PROFILES)
+            fingerprint = check_release_policy(self.trust, document, **PAYMENT_PROFILES)["ledgerDigest"]
             self.assertEqual(copied, expected)
             inspect_source.assert_called_once_with(self.trust, "source-read")
             inspect_replica.assert_called_once_with(self.trust, replica, "replica-read")
@@ -1850,6 +1850,11 @@ class CustodyLedgerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "target registration precedes its custody receipt"):
                     check_release_policy(self.trust, document, **PAYMENT_PROFILES)
             genesis_path = prefix + "1.json"
+            for old_record in (genesis_path, prefix + target_object_name(rotation_approval["manifest"])):
+                with self.subTest(old_record=old_record), patch.dict(self.versions, {old_record: "historical-replacement"}):
+                    self.assertNotEqual(
+                        check_release_policy(self.trust, document, **PAYMENT_PROFILES)["ledgerDigest"], fingerprint,
+                    )
             genesis = json.loads(self.objects[genesis_path])
             with patch.dict(self.objects, {genesis_path: canonical({**genesis, "acknowledgements": []})}):
                 with self.assertRaisesRegex(ValueError, "signing quorum"):
@@ -1932,9 +1937,9 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertCountEqual([call.args[0] for call in kms.call_args_list if call.args[1] == "describe-key"],
                                   [*recovery, *primary["wrappingKeys"], *standby["wrappingKeys"]])
             self.assertEqual(sts.call_count, 6)
-            self.assertCountEqual(self.payment_host.call_args_list, [call(primary, "host-read"), call(standby, "host-read")])
+            self.assertCountEqual(self.payment_host.call_args_list, [call(target, "host-read", slots={3, 4, 5, 6}, minimum=3) for target in (primary, standby)])
 
-            def inspect_parent(target, profile):
+            def inspect_parent(target, profile, **_options):
                 if profile is None or target == standby:
                     raise ValueError("host bootstrap policy differs")
 
@@ -2041,7 +2046,7 @@ class CustodyLedgerTests(unittest.TestCase):
             require_payment_recovery_quorums(self.trust, targets, profiles)
             self.assertCountEqual([request.args[2] for request in identity.call_args_list], set(profiles) - {HOST_ACCOUNT})
             self.assertCountEqual([request.args[0] for request in keys.call_args_list], policies)
-            self.assertCountEqual(self.payment_host.call_args_list, [call(entry[1], "host-read") for entry in targets])
+            self.assertCountEqual(self.payment_host.call_args_list, [call(entry[1], "host-read", slots=[1, 3, 5], minimum=3) for entry in targets])
             del profiles[f"{35:012d}"]
             with self.assertRaisesRegex(ValueError, "custody epoch 2 target release-2 requires three"):
                 require_payment_recovery_quorums(self.trust, targets, profiles)
@@ -3348,7 +3353,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "host bootstrap policy differs"):
                     commit(retirement)
                 write.assert_not_called()
-            self.retirement_host.assert_called_with(replacement, "host-read")
+            self.retirement_host.assert_called_with(replacement, "host-read", slots=[1, 2, 3])
             self.retirement_host.side_effect = None
             journal = f"spr-custody/devnet/{DOMAIN}/"
             early_target = datetime.fromtimestamp(self.now - 1, timezone.utc).isoformat()
