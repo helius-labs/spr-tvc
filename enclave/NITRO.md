@@ -472,9 +472,10 @@ its policy fetch. Payment lookups read both signed heads before reusing a
 cached session and again after authenticating the key reply. The TypeScript
 wallet builders repeat the lookup after
 assembling a transfer or preparing a deposit and require the same recipient
-keys. Rust Nitro payment submissions bind the resolved keys to their outputs
-and repeat the lookup after signing and before broadcast. A permissionless
-sender can still pay a previously published destination.
+keys. A Rust Nitro payment submission requires at least one attached recipient
+and is consumed by a send attempt. It binds the resolved keys to the outputs,
+checks the signed blockhash, then repeats recipient checks before broadcast.
+A permissionless sender can still pay a previously published destination.
 Earlier ciphertexts retain
 their exposure, and owners must retain access to the old domain until recovery
 is complete. [Cutover runbook](deploy/nitro/README.md#replace-a-compromised-seed)
