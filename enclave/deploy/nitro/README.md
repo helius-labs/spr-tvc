@@ -428,9 +428,9 @@ pinned history and excluded versions.
 2. Two approval signers independently check and sign the target manifest. It
    binds the canonical receipt, mode, EIF, configuration, measurements, parent
    account, EC2 region and instance ID, and six wrapping keys. Each signer uses
-   a read-only profile in the host account with `ec2:DescribeInstances`,
-   `iam:GetInstanceProfile` and `iam:GetRolePolicy`. The parent must be running
-   on x86-64 with Nitro Enclaves enabled. The IAM profile returned for the EC2 attachment must
+   a read-only profile in the host account with `ec2:DescribeInstances` and
+   `iam:GetInstanceProfile`. The parent must be running on x86-64 with Nitro
+   Enclaves enabled. The IAM profile returned for the EC2 attachment must
    have the same ARN and ID, and contain the role bound into PCR3.
    [IAM instance profile lookup](https://docs.aws.amazon.com/IAM/latest/APIReference/API_GetInstanceProfile.html)
 
@@ -464,7 +464,8 @@ pinned history and excluded versions.
    running parent, attached role, the exact installed `spr-nitro-bootstrap`
    policy and all six enabled wrapping keys with their approved policies.
    Include the host account and all six custody accounts in
-   `$custody_key_profiles`. The ledger verifies that S3
+   `$custody_key_profiles`. The host profile also needs
+   `iam:GetRolePolicy` on the target role. The ledger verifies that S3
    recorded the first registration before expiry. It keeps the signed target
    and all six wrapping-key ARNs. Within an epoch, a release ID
    and PCR0–PCR4 identify one wrapping-key set. Each parent needs its own set.
@@ -894,8 +895,13 @@ Include both rosters if the policy spans epochs with different custodians.
 A slot without a profile does not count toward quorum. Each target also
 needs its host account profile, with `ec2:DescribeInstances`,
 `iam:GetInstanceProfile` and `iam:GetRolePolicy`, to check the running parent
-and the installed `spr-nitro-bootstrap` policy. `nitro-sign`, primary publication
-and `--check-wallet-trust` also take `--source-profile` and
+and the installed `spr-nitro-bootstrap` policy. Qualify the deployed IAM and
+network controls with a cold boot from three current slots. Permissions
+boundaries, organization policies and VPC endpoint policies can still deny
+the real KMS request. [IAM policy evaluation](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_evaluation-logic.html)
+· [KMS endpoint policies](https://docs.aws.amazon.com/kms/latest/developerguide/vpce-connect.html)
+
+`nitro-sign`, primary publication and `--check-wallet-trust` also take `--source-profile` and
 `--replica-profile` for the two ledger accounts.
 Both buckets must have the exact policy generated from custody trust,
 versioning, enforced bucket ownership, public access blocks and no lifecycle
