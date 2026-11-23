@@ -103,7 +103,7 @@ class TargetApprovalTests(unittest.TestCase):
             sign(LABEL, statement, member["keyArn"]) for member in self.trust["approvalKeys"][0]["keys"][:2]
         ]}
 
-    def load_epoch(self, trust, epoch):
+    def load_epoch(self, trust, epoch, **_options):
         self.assertEqual(trust, self.trust)
         self.assertEqual(epoch, "5")
         return {}, self.receipt, self.custodians, 1

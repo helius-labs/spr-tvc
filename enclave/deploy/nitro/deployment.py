@@ -63,7 +63,8 @@ def register_target(trust, document, *, build=None, key_profiles=None):
     manifest = document["manifest"]
     validate_target(trust, manifest)
     epoch = manifest["custodyEpoch"]
-    _, receipt, custodians, receipt_at = load_epoch_with_time(trust, epoch)
+    observed_records = {}
+    _, receipt, custodians, receipt_at = load_epoch_with_time(trust, epoch, observed_records=observed_records)
     if manifest["receiptSha256"] != sha256(receipt):
         raise ValueError("target does not match the committed custody receipt")
     name = target_object_name(manifest)
@@ -80,6 +81,7 @@ def register_target(trust, document, *, build=None, key_profiles=None):
     if published_at is not None:
         if ledger_slot_version(trust, name) != version:
             raise ValueError("target registration changed during retry")
+        load_epoch_with_time(trust, epoch, observed_records=observed_records)
         require_active_epoch(trust, epoch)
         if published_at < receipt_at:
             raise ValueError("target registration precedes its custody receipt")
@@ -87,11 +89,13 @@ def register_target(trust, document, *, build=None, key_profiles=None):
 
     def before_write():
         require_live_registration(manifest, custodians, key_profiles)
+        load_epoch_with_time(trust, epoch, observed_records=observed_records)
         require_active_epoch(trust, epoch)
         require_target_approval_window(manifest, time.time(), remaining=LEDGER_WRITE_MARGIN_SECONDS)
         require_publication_roster(trust, manifest["approvalFromEpoch"])
 
     def confirm(version):
+        load_epoch_with_time(trust, epoch, observed_records=observed_records)
         require_registered_target(trust, manifest, receipt_at=receipt_at, expected_version=version)
 
     write_once(trust, name, document, confirm, before_write=before_write)

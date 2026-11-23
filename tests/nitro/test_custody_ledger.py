@@ -1313,6 +1313,38 @@ class CustodyLedgerTests(unittest.TestCase):
         self.recovery_inspection.assert_not_called()
         self.key_identity.assert_not_called()
 
+    def test_rotation_receipt_rechecks_its_dependencies_through_publication(self):
+        publish(self.trust, self.sign(self.document(1)))
+        _, predecessor, _ = load_epoch(self.trust, "1")
+        rotation, registration = self.rotation_document(predecessor)
+        document = self.sign(rotation)
+        prefix = f"spr-custody/devnet/{DOMAIN}/"
+        successor = prefix + "2.json"
+
+        for name in ("1.json", target_object_name(registration["manifest"])):
+            for change_after_write in (False, True):
+                with (self.subTest(name=name, change_after_write=change_after_write),
+                      patch.dict(self.versions), patch.dict(self.objects), patch.dict(self.timestamps)):
+                    def change_dependency():
+                        self.versions[prefix + name] = "changed-version"
+
+                    def inspect_keys(*_args):
+                        if not change_after_write:
+                            change_dependency()
+
+                    def aws(region, service, operation, args, **options):
+                        result = self.aws(region, service, operation, args, **options)
+                        if operation == "put-object" and successor in args:
+                            self.assertTrue(change_after_write, "the receipt must fail before S3 PutObject")
+                            change_dependency()
+                        return result
+
+                    with (patch("custody_ledger.require_receipt_keys", side_effect=inspect_keys),
+                          patch("custody_ledger.aws", side_effect=aws),
+                          self.assertRaisesRegex(ValueError, "changed during verification")):
+                        publish(self.trust, document)
+                    self.assertEqual(successor in self.objects, change_after_write)
+
     @patch("custody_ledger.verify_reviewed_ceremony")
     @patch("custody_ledger.prove_share")
     @patch("custody_ledger.add_approval")
@@ -2981,6 +3013,48 @@ class CustodyLedgerTests(unittest.TestCase):
                 write.assert_not_called()
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, target))
         require_registered_target(self.trust, target)
+
+    def test_target_registration_rechecks_its_receipt_through_publication(self):
+        publish(self.trust, self.sign(self.document(1)))
+        rotation, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
+        publish(self.trust, self.sign(rotation))
+        approval = self.signed_subject(TARGET_APPROVAL, self.replacement_target())
+        prefix = f"spr-custody/devnet/{DOMAIN}/"
+        receipt_path = prefix + "2.json"
+        registration_path = prefix + target_object_name(approval["manifest"])
+
+        for change_after_write in (False, True):
+            with (self.subTest(change_after_write=change_after_write),
+                  patch.dict(self.versions), patch.dict(self.objects), patch.dict(self.timestamps)):
+                def inspect_target(*_args):
+                    if not change_after_write:
+                        self.versions[receipt_path] = "changed-version"
+
+                def aws(region, service, operation, args, **options):
+                    result = self.aws(region, service, operation, args, **options)
+                    if operation == "put-object" and registration_path in args:
+                        self.assertTrue(change_after_write, "the registration must fail before S3 PutObject")
+                        self.versions[receipt_path] = "changed-version"
+                    return result
+
+                with (patch("deployment.require_live_registration", side_effect=inspect_target),
+                      patch("custody_ledger.aws", side_effect=aws),
+                      self.assertRaisesRegex(ValueError, "changed during verification")):
+                    register_target(self.trust, approval)
+                self.assertEqual(registration_path in self.objects, change_after_write)
+
+        register_target(self.trust, approval)
+
+        def retry_with_changed_receipt(region, service, operation, args, **options):
+            result = self.aws(region, service, operation, args, **options)
+            if operation == "list-object-versions" and registration_path in args:
+                self.versions[receipt_path] = "changed-version"
+            return result
+
+        with (patch("custody_ledger.aws", side_effect=retry_with_changed_receipt),
+              patch("deployment.require_live_registration", side_effect=AssertionError("retry must skip KMS")),
+              self.assertRaisesRegex(ValueError, "changed during verification")):
+            register_target(self.trust, approval)
 
     def test_target_registration_uses_the_roster_active_at_s3_publication(self):
         publish(self.trust, self.sign(self.document(1)))

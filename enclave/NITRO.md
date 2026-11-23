@@ -134,22 +134,23 @@ acknowledgement that their sealed key can open its share.
 A conditional S3 write commits one record for the epoch. Before the first
 write, the publisher checks the enabled state, identity and sealed policy of
 each recovery and acknowledgement key through a read-only profile in the
-key-owning account. It authenticates the committed, versioned record
-before reporting success,
-including after a lost S3 response. Historical receipts verify with the
-public keys pinned for their epoch. Target approvals and retirement records
+key-owning account. For a rotation, it rechecks the same predecessor and
+registration S3 versions, write times and bytes after key inspection and
+during readback. It authenticates the committed, versioned record before
+reporting success, including after a lost S3 response. Historical receipts
+verify with the public keys pinned for their epoch. Target approvals and retirement records
 verify under the roster active at the original S3 write. A rotation registration
 must fall between its predecessor and successor receipts. A serving registration
 must follow its receipt, and a retirement marker must follow both receipts and
 the replacement registration. The verifier allows equal S3 timestamps.
 Before writing a new target registration, the publisher verifies the running
 parent's approved role, its installed cross-account bootstrap policy and the
-enabled state and sealed policies of all six wrapping keys. It checks that
-the epoch is still open and that the approval and its roster will remain
-valid through the write window. An exact retry
-verifies the stored record at its original write time and confirms the epoch
-is open. Retiring an approval or
-acknowledgement signing key leaves custody receipts verifiable offline.
+enabled state and sealed policies of all six wrapping keys. It rechecks the
+same receipt and rotation lineage before the write and at readback. The epoch
+must be open and the approval and roster valid through the write window.
+An exact retry verifies the stored record at its original write time and
+rechecks the receipt and open epoch. Retiring an approval or acknowledgement
+signing key leaves custody receipts verifiable offline.
 Repair can exclude an incomplete record from the recovered ledger if the frozen
 source retains it and every retained version matches the independent checkpoint.
 Two current custody approvers sign the exact excluded versions. A complete

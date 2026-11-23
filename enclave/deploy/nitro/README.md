@@ -463,6 +463,8 @@ pinned history and excluded versions.
    the approval deadline. Before the first write, the publisher checks the
    running parent, attached role, the exact installed `spr-nitro-bootstrap`
    policy and all six enabled wrapping keys with their approved policies.
+   It rechecks the committed receipt and rotation lineage before writing
+   and during readback.
    Include the host account and all six custody accounts in
    `$custody_key_profiles`. The host profile also needs
    `iam:GetRolePolicy` on the target role. The ledger verifies that S3

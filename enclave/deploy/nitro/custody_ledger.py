@@ -1268,18 +1268,20 @@ def acknowledge(trust, document, index, relay_port, build, review):
 def publish(trust, document, *, key_profiles=None):
     receipt, custodians = record(trust, document)
     check_commit(trust, document, receipt, custodians)
-    check_previous(trust, document, receipt)
+    observed_records = {}
+    check_previous(trust, document, receipt, observed_records=observed_records)
     authorization = document["authorization"]["manifest"]
     verify_ceremony_capture(authorization["capture"])
     epoch = receipt["custody"]["epoch"]
 
     def confirm(version):
-        stored, _, _ = load_epoch(trust, epoch, expected_version=version)
+        stored, _, _ = load_epoch(trust, epoch, expected_version=version, observed_records=observed_records)
         if canonical(stored["authorization"]["manifest"]) != canonical(authorization):
             raise ValueError("a different custody receipt is already committed")
 
     def before_write():
         require_receipt_keys(trust, epoch, custodians, key_profiles)
+        check_previous(trust, document, receipt, observed_records=observed_records)
         require_active_epoch(trust, epoch)
         if epoch != "1":
             require_active_epoch(trust, str(epoch_number(epoch) - 1))
