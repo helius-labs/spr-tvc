@@ -43,33 +43,29 @@ export async function readBoundedBytes(
     throw new DecryptionServiceError("ResponseTooLarge");
   }
   const limit = Number(maxBytes);
-  if (!response.body) {
-    const body = new Uint8Array(await awaitWithSignal(response.arrayBuffer(), signal));
-    if (body.length > limit) throw new DecryptionServiceError("ResponseTooLarge");
-    return body;
-  }
+  if (!response.body) return new Uint8Array(0);
   const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
+  let body = new Uint8Array(0);
   let total = 0;
   try {
     for (;;) {
       const { done, value } = await awaitWithSignal(reader.read(), signal);
       if (done) break;
-      total += value.length;
-      if (total > limit) throw new DecryptionServiceError("ResponseTooLarge");
-      chunks.push(value);
+      const end = total + value.length;
+      if (end > limit) throw new DecryptionServiceError("ResponseTooLarge");
+      if (end > body.length) {
+        const grown = new Uint8Array(Math.min(limit, Math.max(end, 2 * body.length)));
+        grown.set(body);
+        body = grown;
+      }
+      body.set(value, total);
+      total = end;
     }
   } finally {
     // A custom stream may never settle its cancellation promise.
     void reader.cancel().catch(() => undefined);
   }
-  const body = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return body;
+  return body.subarray(0, total);
 }
 
 /** Cancel a late custom-transport response as well as native fetch. */

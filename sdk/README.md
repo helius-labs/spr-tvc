@@ -35,6 +35,8 @@ A relay can forward ciphertexts and return Boot Proofs. The SDK verifies the
 release and signing replica itself. The supplied prover receives the spend
 witness. Mainnet uses the SDK's [independent trust anchors](trust/mainnet.json)
 and system clock, including when a caller supplies a fresh signed policy.
+Custom HTTP transports must expose response data through a readable
+`Response.body` stream so the SDK can enforce its byte limits.
 
 [Direct Turnkey example](../example) · [Security flow](../enclave/SPEC.md)
 
