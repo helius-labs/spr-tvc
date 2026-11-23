@@ -2410,9 +2410,12 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertEqual(qualified["replacementEpoch"], "3")
             self.assertIn(key(1, 1), keys)
             self.assertNotIn(key(1, 3), keys)
-            _, _, epoch, registrations = copies.call_args.args
+            _, _, epoch, records = copies.call_args.args
             self.assertEqual(epoch, "3")
-            self.assertTrue({"retired/1.json", target_object_name(replacement), target_object_name(latest)} <= registrations)
+            for name in ("retired/1.json", target_object_name(replacement), target_object_name(latest)):
+                payload, metadata = read_stored_payload(self.trust, name)
+                self.assertEqual(records[name], (metadata["VersionId"], metadata["LastModified"],
+                                                 hashlib.sha256(payload).hexdigest()))
             copies.side_effect = ValueError("new replacement registration has not replicated")
             with self.assertRaisesRegex(ValueError, "has not replicated"):
                 retirement_inventory(self.trust, "1", 1, requalification=requalification)
