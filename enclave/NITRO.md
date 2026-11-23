@@ -313,8 +313,11 @@ match the source bytes, S3 version ID and write time. They verify each receipt
 and predecessor link from genesis and check each rotation approval at its
 original S3 write time. Before authorizing new mainnet payments, they also
 check that every serving target has three distinct custody slots where both
-the recovery key and the target wrapping key are enabled. These checks use
-live KMS metadata and the exact key ARNs in the receipt and registration.
+the recovery key and the target wrapping key are enabled and have their
+approved sealed policies. An inspection profile in the owning account reads
+the live KMS state and policy for each exact ARN in the receipt and
+registration. The primary publisher and wallet pin verifier also require
+the three attested slots to pass these checks.
 Recovery-only publication can preserve access through a running enclave during
 a key outage. Two of the three independently pinned custody approval
 keys also sign the entire policy. Their digest uses

@@ -292,6 +292,14 @@ def require_inspection_profiles(profiles):
         raise ValueError("provide six distinct read-only inspection profiles in custody slot order")
 
 
+def require_custody_key_profiles(profiles):
+    if (not isinstance(profiles, dict) or len(profiles) < 3 or
+            any(not isinstance(account, str) or not re.fullmatch(r"[0-9]{12}", account)
+                or not isinstance(profile, str) or not profile.strip()
+                for account, profile in profiles.items()) or len(set(profiles.values())) != len(profiles)):
+        raise ValueError("provide --custody-key-profiles with distinct AWS profiles keyed by custody account")
+
+
 def require_profile_account(profile, region, account):
     try:
         identity = aws(region, "sts", "get-caller-identity", [], profile=profile)

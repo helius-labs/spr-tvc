@@ -539,8 +539,8 @@ pinned history and excluded versions.
    current epoch. Pass each output to the next custodian.
 
    Two custody approval signers then sign, and the ledger publisher commits
-   the record within 24 hours of the replacement boot. Provide six read-only
-   replacement inspection profiles in slot order. For each of the three
+   the record within 24 hours of the replacement boot. Pass the same
+   account-to-profile JSON file used for payment activation. For each of the three
    attested slots, STS checks that its profile belongs to the replacement
    custodian's account, then `kms:DescribeKey` and `kms:GetKeyPolicy` check
    that both keys are enabled and have their exact sealed policies. KMS only
@@ -568,19 +568,19 @@ pinned history and excluded versions.
 
    ```sh
    python3 "$nitro/retirement.py" trust.json draft wallet-trust.json 1 2 \
-     --replacement-inspection-profiles "${replacement_inspection_profiles[@]}" > retire-draft.json
+     --custody-key-profiles "$custody_key_profiles" > retire-draft.json
    python3 "$nitro/retirement.py" trust.json prove-recovery retire-draft.json 2 --relay-port "$port" > retire-proof-1.json
    python3 "$nitro/retirement.py" trust.json prove-recovery retire-proof-1.json 4 --relay-port "$port" > retire-proof-2.json
    python3 "$nitro/retirement.py" trust.json prove-recovery retire-proof-2.json 6 --relay-port "$port" > retire-proof-3.json
    python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-proof-3.json "$first_approval_key" \
-     --replacement-inspection-profiles "${replacement_inspection_profiles[@]}" > retire-signed-1.json
+     --custody-key-profiles "$custody_key_profiles" > retire-signed-1.json
    python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-signed-1.json "$second_approval_key" \
-     --replacement-inspection-profiles "${replacement_inspection_profiles[@]}" > retire-signed-2.json
+     --custody-key-profiles "$custody_key_profiles" > retire-signed-2.json
    python3 "$nitro/retirement.py" trust.json publish wallet-trust.json retire-signed-2.json \
-     --replacement-inspection-profiles "${replacement_inspection_profiles[@]}"
+     --custody-key-profiles "$custody_key_profiles"
    python3 "$nitro/retirement.py" trust.json inspect 1 "$share_index" \
      --wallet-trust wallet-trust.json \
-     --replacement-inspection-profiles "${replacement_inspection_profiles[@]}" \
+     --custody-key-profiles "$custody_key_profiles" \
      --host-inspection-profile "$old_host_account=$old_host_read_profile" \
      --replica-profile "$recovery_bucket_read_profile"
    ```
@@ -637,7 +637,7 @@ pinned history and excluded versions.
 
    ```sh
    python3 "$nitro/retirement.py" trust.json draft wallet-trust.json 1 "$active_epoch" \
-     --replacement-inspection-profiles "${replacement_inspection_profiles[@]}" \
+     --custody-key-profiles "$custody_key_profiles" \
      --requalify > requalification-draft.json
    ```
 
@@ -665,7 +665,7 @@ pinned history and excluded versions.
    ```sh
    python3 "$nitro/retirement.py" trust.json verify-retired wallet-trust.json 1 \
      --inspection-profiles "${old_inspection_profiles[@]}" \
-     --replacement-inspection-profiles "${replacement_inspection_profiles[@]}" \
+     --custody-key-profiles "$custody_key_profiles" \
      --host-inspection-profile "$old_host_account=$old_host_read_profile" \
      --replica-profile "$recovery_bucket_read_profile" \
      --output "$retirement_report"
@@ -872,13 +872,16 @@ original changes, review it and retry.
 An activation with `recoveryOnly: false` lets wallets use the listed targets to
 resolve new payment destinations. On mainnet, even a running enclave must
 retain three recoverable slots per target. Each slot needs its recovery and
-wrapping keys enabled in the slot's account. The publisher and wallet pin
+wrapping keys enabled with their approved sealed policies. The publisher and wallet pin
 verifier check the exact three slots in the target's attested boot. If a slot
 is unavailable, qualify a boot using three healthy slots before accepting
-new payments. Give signers, the primary publisher and wallet pin verifiers
-`kms:DescribeKey` on those keys. For mainnet payment policies, give
-`nitro-sign`, primary publication and `--check-wallet-trust` the read-only
-`--source-profile` and `--replica-profile` for the two ledger accounts.
+new payments. Pass `--custody-key-profiles` with a JSON object mapping each
+custody account ID to a read-only AWS profile with `kms:DescribeKey` and
+`kms:GetKeyPolicy` on its recovery and wrapping keys. Include both rosters
+if the policy spans epochs with different custodians. A slot without a
+profile does not count toward quorum. `nitro-sign`, primary publication
+and `--check-wallet-trust` also take `--source-profile` and
+`--replica-profile` for the two ledger accounts.
 Both buckets must have the exact policy generated from custody trust,
 versioning, enforced bucket ownership, public access blocks and no lifecycle
 rules. The source must use the pinned replication rule. Supply both profiles
@@ -965,12 +968,15 @@ mainnet payment activation.
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" --bucket-policy "$custody_trust"
 
 cargo xtask nitro-sign policy.json --custody --key "$custody_key_arn" --public-key "$custody_sec1_hex" \
-  --custody-trust "$custody_trust" --source-profile "$source_read_profile" --replica-profile "$replica_read_profile"
+  --custody-trust "$custody_trust" --source-profile "$source_read_profile" --replica-profile "$replica_read_profile" \
+  --custody-key-profiles "$custody_key_profiles"
 cargo xtask nitro-sign policy.json --key "$signing_key_arn" --public-key "$signer_sec1_hex" \
-  --custody-trust "$custody_trust" --source-profile "$source_read_profile" --replica-profile "$replica_read_profile"
+  --custody-trust "$custody_trust" --source-profile "$source_read_profile" --replica-profile "$replica_read_profile" \
+  --custody-key-profiles "$custody_key_profiles"
 
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$primary_bucket" "$signed_policy" \
   --custody-trust "$custody_trust" --source-profile "$source_read_profile" --replica-profile "$replica_read_profile" \
+  --custody-key-profiles "$custody_key_profiles" \
   --publication-profile "$primary_read_profile" --publication-profile "$mirror_read_profile"
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$mirror_bucket" "$signed_policy"
 ```
@@ -987,6 +993,7 @@ identify the exact file in the wallet release.
 ```sh
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" --check-wallet-trust \
   --custody-trust "$custody_trust" --source-profile "$source_read_profile" --replica-profile "$replica_read_profile" \
+  --custody-key-profiles "$custody_key_profiles" \
   --publication-profile "$primary_read_profile" --publication-profile "$mirror_read_profile"
 ```
 

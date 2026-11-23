@@ -634,9 +634,11 @@ test("rechecks live replica evidence after the final custody read", async contex
     custodyTrust: await custodyFixture(context),
     sourceProfile: "source-read",
     replicaProfile: "replica-read",
+    custodyKeyProfiles: "key-profiles.json",
     async run(command: string, args: string[]) {
       if (command === "python3") {
-        const profiles = ["--source-profile", "source-read", "--replica-profile", "replica-read"];
+        const profiles = ["--source-profile", "source-read", "--replica-profile", "replica-read",
+          "--custody-key-profiles", "key-profiles.json"];
         if (args.includes("--bootstrap-slots")) {
           assert.deepEqual(args.slice(5), [...profiles, "--bootstrap-slots", "[[1,2,3]]"]);
           if (unavailableBootstrap) throw new Error("unavailable attested bootstrap slot");
@@ -1143,9 +1145,13 @@ test("mainnet checks both installed publication buckets before enabling payments
   const options = {
     custodyTrust,
     sourceProfile: "source-read", replicaProfile: "replica-read",
+    custodyKeyProfiles: "key-profiles.json",
     publicationProfiles: ["primary-read", "mirror-read"],
     async run(command: string, args: string[]) {
       if (command === "python3") {
+        const candidate = JSON.parse(await readFile(args[4]!, "utf8"));
+        if (candidate.policy.recoveryOnly) assert.ok(!args.includes("--custody-key-profiles"));
+        else assert.equal(args[args.indexOf("--custody-key-profiles") + 1], "key-profiles.json");
         return { stdout: JSON.stringify({ custodyKeys: mainnet.custodyKeys, nextCutover: null, canaryDigest }) };
       }
       assert.equal(command, "aws");

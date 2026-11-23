@@ -15,7 +15,7 @@ from time import sleep
 from approval import (
     KEY_ARN, MAX_DOCUMENT_BYTES, ROLE_ARN, add_approval, approval_keys, approval_roster, arn, aws, canonical, check_approvals,
     epoch_number, fields, hex_digest, kms,
-    parse_json, publish_new_file, read_document, read_json, require_inspection_profiles, require_kms_key,
+    parse_json, publish_new_file, read_document, read_json, require_custody_key_profiles, require_inspection_profiles,
     require_profile_account, sha256,
 )
 from custody_ledger import (
@@ -30,8 +30,8 @@ from custody_ledger import (
     target_attestation, target_path, verify_retirement, write_once,
 )
 from deployment import HostUnobserved, require_host_state
-from kms_policy import RSA_KEYS, key_policy
-from relay import custody_recovery_policy
+from kms_policy import key_policy
+from relay import custody_recovery_policy, inspect_rsa_key
 
 
 def retirement_scope(trust, epoch, replacement, **options):
@@ -52,22 +52,22 @@ def retirement_scope(trust, epoch, replacement, **options):
 
 
 def require_recovery_quorum(trust, manifest, custodians, replacement_profiles, *, receipt_at=None, **options):
-    require_inspection_profiles(replacement_profiles)
+    require_custody_key_profiles(replacement_profiles)
     target = retirement_target(trust, manifest, receipt_at=receipt_at, retired_at=time.time(), **options)
     slots = retirement_bootstrap(manifest["replacementBootstrap"])
     epoch = manifest["replacementEpoch"]
 
     def check_slot(slot, member):
-        profile = replacement_profiles[slot - 1]
         region, account = arn(KEY_ARN, member["recoveryKeyArn"]).groups()
+        profile = replacement_profiles.get(account)
+        if profile is None:
+            raise ValueError(f"missing read-only inspection profile for custody account {account}")
         require_profile_account(profile, region, account)
         _, policies = slot_inventory(trust, epoch, member, [target], slot)
         for key, expected in policies.items():
             try:
-                metadata = kms(key, "describe-key", profile=profile)["KeyMetadata"]
-                require_kms_key(metadata, key, RSA_KEYS, "ENCRYPT_DECRYPT")
-                installed = kms(key, "get-key-policy", ["--policy-name", "default"], profile=profile)["Policy"]
-                if parse_json(installed) != expected:
+                _, installed = inspect_rsa_key(key, profile=profile)
+                if installed != expected:
                     raise ValueError("installed KMS policy does not match the approved recovery path")
             except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as error:
                 raise ValueError(f"proven replacement key is unavailable: {key}: {error}") from error
@@ -700,8 +700,8 @@ def main():
     verify.add_argument("epoch")
     verify.add_argument("--inspection-profiles", nargs=6, required=True)
     for command in (draft, sign, publish, inspect, verify):
-        command.add_argument("--replacement-inspection-profiles", nargs=6, required=command is not inspect,
-                             help="read-only profiles in the replacement custody slot order")
+        command.add_argument("--custody-key-profiles", type=Path, required=command is not inspect,
+                             help="JSON map from replacement custody account to read-only profile")
     for command in (inspect, verify):
         command.add_argument("--host-inspection-profile", metavar="ACCOUNT=PROFILE", action="append", default=[])
         command.add_argument("--requalification", type=Path, help="signed proof of a new quorum for the closed epoch")
@@ -711,9 +711,11 @@ def main():
     args = parser.parse_args()
     try:
         trust = read_json(args.trust)
-        replacement_profiles = getattr(args, "replacement_inspection_profiles", None)
+        replacement_profiles = None
         if args.command != "prove-recovery" and not (args.command == "inspect" and args.check_inactive):
-            require_inspection_profiles(replacement_profiles)
+            if args.custody_key_profiles is not None:
+                replacement_profiles = read_json(args.custody_key_profiles)
+            require_custody_key_profiles(replacement_profiles)
         requalification_file = getattr(args, "requalification", None)
         requalification = read_json(requalification_file) if requalification_file is not None else None
         if requalification_file is not None and not isinstance(requalification, dict):

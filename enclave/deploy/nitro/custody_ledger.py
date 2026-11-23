@@ -13,11 +13,12 @@ from pathlib import Path
 from approval import (
     KEY_ARN, ROLE_ARN, MAX_DOCUMENT_BYTES, add_approval, approval_keys, approval_roster, arn, aws, canonical, check_approvals,
     epoch_number, fields, file_digest, get_signing_key, hex_digest, kms, parse_json, publish_new_file, read_document,
-    read_json, require_inspection_profiles, require_kms_key, require_profile_account, sha256, signing_key, signing_sec1,
+    read_json, require_custody_key_profiles, require_inspection_profiles, require_kms_key, require_profile_account,
+    sha256, signing_key, signing_sec1,
 )
-from kms_policy import RSA_KEYS, acknowledgement_policy, boot_pins, target_boot_pins, validate_custodian_roles, validate_scope
+from kms_policy import RSA_KEYS, acknowledgement_policy, boot_pins, key_policy, target_boot_pins, validate_custodian_roles, validate_scope
 from provenance import verify as verify_build
-from relay import custody_recovery_policy, prove_share, relay_pins, sealed_rsa_key, verify_relay_build
+from relay import custody_recovery_policy, inspect_rsa_key, prove_share, relay_pins, sealed_rsa_key, verify_relay_build
 
 LABEL = "custody-epoch"
 ACKNOWLEDGEMENT = "custodian-acknowledgement"
@@ -896,31 +897,50 @@ def wrapping_pairs(target, custodians):
     return pairs
 
 
-def require_payment_recovery_quorums(target_slots):
-    keys = list(dict.fromkeys(
-        key for _, _, pairs, _ in target_slots for pair in pairs for key in pair
-    ))
+def require_payment_recovery_quorums(trust, target_slots, profiles):
+    expected = {}
+    accounts = {}
+    for epoch, target, custodians, pairs, _ in target_slots:
+        for (recovery, wrapping), member in zip(pairs, custodians, strict=True):
+            custodian, admin = member["custodianRole"], member["retirementRole"]
+            for key, policy in (
+                (recovery, custody_recovery_policy(trust, member, epoch)),
+                (wrapping, key_policy(target["hostRole"], custodian, admin, target["pcrs"], target["instanceId"])),
+            ):
+                if expected.setdefault(key, policy) != policy:
+                    raise ValueError("custody targets require different sealed policies for the same key")
+                region, account = arn(KEY_ARN, key).groups()
+                if account in profiles:
+                    accounts.setdefault(account, region)
 
-    def enabled(key):
+    def verify_account(account):
+        require_profile_account(profiles[account], accounts[account], account)
+
+    def qualified(key):
+        account = arn(KEY_ARN, key)[2]
+        if account not in accounts:
+            return False
         try:
-            require_kms_key(kms(key, "describe-key")["KeyMetadata"], key, RSA_KEYS, "ENCRYPT_DECRYPT")
+            _, policy = inspect_rsa_key(key, profile=profiles[account])
+            return policy == expected[key]
         except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired):
             return False
-        return True
 
-    with ThreadPoolExecutor(max_workers=min(len(keys), 24)) as workers:
-        available = {key for key, valid in zip(keys, workers.map(enabled, keys), strict=True) if valid}
-    for epoch, release, pairs, bootstrapped in target_slots:
+    with ThreadPoolExecutor(max_workers=min(len(expected), 24)) as workers:
+        list(workers.map(verify_account, accounts))
+        available = {key for key, valid in zip(expected, workers.map(qualified, expected), strict=True) if valid}
+    for epoch, target, _, pairs, bootstrapped in target_slots:
+        release = target["releaseId"]
         ready = {slot for slot, (recovery, wrapping) in enumerate(pairs, 1)
                  if recovery in available and wrapping in available}
         if len(ready) < 3:
-            raise ValueError(f"custody epoch {epoch} target {release} requires three enabled recovery and wrapping pairs")
+            raise ValueError(f"custody epoch {epoch} target {release} requires three enabled recovery and wrapping pairs with approved policies")
         if bootstrapped is not None and not ready.issuperset(bootstrapped):
             raise ValueError(f"custody epoch {epoch} target {release} has an unavailable attested bootstrap slot")
 
 
 def check_release_policy(trust, document, custody_signer=None, *, source_profile=None, replica_profile=None,
-                         bootstrap_slots=None):
+                         key_profiles=None, bootstrap_slots=None):
     fields(document, "policy", "signatures", "custodySignatures")
     policy = document["policy"]
     targets = policy["targets"]
@@ -938,10 +958,12 @@ def check_release_policy(trust, document, custody_signer=None, *, source_profile
     if ledger_backup is None and mainnet:
         raise ValueError("mainnet activation requires a pinned custody ledger replica")
     verify_payment_recovery = not policy["recoveryOnly"] and (
-        mainnet or source_profile is not None or replica_profile is not None
+        mainnet or source_profile is not None or replica_profile is not None or key_profiles is not None
     )
     if verify_payment_recovery and (not source_profile or not replica_profile):
         raise ValueError("payment activation requires both --source-profile and --replica-profile")
+    if verify_payment_recovery:
+        require_custody_key_profiles(key_profiles)
     if verify_payment_recovery and ledger_backup is None:
         raise ValueError("payment recovery verification requires a pinned custody ledger replica")
     if bootstrap_slots is not None and (
@@ -979,7 +1001,7 @@ def check_release_policy(trust, document, custody_signer=None, *, source_profile
                     hex_digest(registered["executableSha256"]) != replica["executableSha256"]):
                 raise ValueError("serving executable does not match the custody-approved target")
             pairs = wrapping_pairs(registered, custodians)
-            target_slots.append((epoch, registered["releaseId"], pairs, slots))
+            target_slots.append((epoch, registered, custodians, pairs, slots))
         return observed, target_slots, custody["canaryDigest"]
 
     with ThreadPoolExecutor(max_workers=len(by_epoch)) as workers:
@@ -994,7 +1016,7 @@ def check_release_policy(trust, document, custody_signer=None, *, source_profile
                     observe_record(observed_records, name, fingerprint)
             require_replicated_custody(trust, ledger_backup, max(by_epoch, key=epoch_number), observed_records)
         if verify_payment_recovery:
-            require_payment_recovery_quorums([target for _, targets, _ in readiness for target in targets])
+            require_payment_recovery_quorums(trust, [target for _, targets, _ in readiness for target in targets], key_profiles)
             check_source_ledger(trust, source_profile)
             check_recovery_bucket(trust, ledger_backup, replica_profile)
         # Check retirement after reading receipts, targets and key state.
@@ -1274,6 +1296,7 @@ def main():
     check = commands.add_parser("check-release-policy")
     check.add_argument("--source-profile")
     check.add_argument("--replica-profile")
+    check.add_argument("--custody-key-profiles", type=Path, help="JSON map from custody AWS account to read-only profile")
     check.add_argument("--bootstrap-slots", help="JSON array of attested slot triples in policy target order")
     check.add_argument("candidate", type=Path)
     check.add_argument("--custody-signer", nargs=2, metavar=("KEY_ARN", "SEC1_HEX"))
@@ -1330,9 +1353,12 @@ def main():
             return
         if args.command == "check-release-policy":
             slots = parse_json(args.bootstrap_slots.encode()) if args.bootstrap_slots is not None else None
+            profiles = None
+            if args.custody_key_profiles and document["policy"]["action"] == "activate" and document["policy"]["recoveryOnly"] is False:
+                profiles = read_json(args.custody_key_profiles)
             print(canonical(check_release_policy(trust, document, args.custody_signer,
                                                  source_profile=args.source_profile, replica_profile=args.replica_profile,
-                                                 bootstrap_slots=slots)).decode())
+                                                 key_profiles=profiles, bootstrap_slots=slots)).decode())
             return
         signed = (sign_epoch(trust, document, args.key, args.build, args.review,
                              args.inspection_profiles, args.relay_build)

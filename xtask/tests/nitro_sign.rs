@@ -35,7 +35,7 @@ fn refuses_to_sign_without_pinned_publications() {
 }
 
 #[test]
-fn accepts_read_only_source_and_replica_profiles_for_payment_activation() {
+fn accepts_custody_and_ledger_inspection_profiles_for_payment_activation() {
     let parsed = Args::try_parse_from([
         "nitro-sign",
         "policy.json",
@@ -49,10 +49,16 @@ fn accepts_read_only_source_and_replica_profiles_for_payment_activation() {
         "source-read",
         "--replica-profile",
         "replica-read",
+        "--custody-key-profiles",
+        "key-profiles.json",
     ])
     .unwrap();
     assert_eq!(parsed.source_profile.as_deref(), Some("source-read"));
     assert_eq!(parsed.replica_profile.as_deref(), Some("replica-read"));
+    assert_eq!(
+        parsed.custody_key_profiles.as_deref(),
+        Some(Path::new("key-profiles.json"))
+    );
 }
 
 #[test]
@@ -151,6 +157,7 @@ fn activation_is_requalified_after_kms_before_installing_a_signature() {
             custody_trust: trust.clone(),
             source_profile: None,
             replica_profile: None,
+            custody_key_profiles: None,
             custody: true,
         };
         let mut checks = 0;

@@ -26,7 +26,7 @@ from custody_ledger import (
     check_custody_roster, check_installed_ledger, check_release_policy, draft, ledger_policy, ledger_reader_policy,
     ledger_record_fingerprint, ledger_replica_plan,
     list_ledger_versions, list_objects, load_epoch, publish, read_registered_target, read_stored_object, read_stored_payload,
-    record, replication_configuration, require_active_epoch,
+    record, replication_configuration, require_active_epoch, require_payment_recovery_quorums,
     sign_epoch, storage, target_attestation,
     target_object_name, write_once,
 )
@@ -51,8 +51,11 @@ NEXT_ROLES = {
     "publisherRole": "arn:aws:iam::000000000011:role/publisher", "readerRoles": [READ_ROLE],
 }
 PINS = {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)}
-PAYMENT_PROFILES = {"source_profile": "source-read", "replica_profile": "replica-read"}
-REPLACEMENT_PROFILES = [f"replacement-{index}" for index in range(1, 7)]
+PAYMENT_PROFILES = {
+    "source_profile": "source-read", "replica_profile": "replica-read",
+    "key_profiles": {f"{slot:012d}": f"key-read-{slot}" for slot in range(1, 7)},
+}
+REPLACEMENT_PROFILES = {f"{index:012d}": f"replacement-{index}" for index in range(1, 7)}
 
 
 def listing(prefix, keys=(), **metadata):
@@ -1488,10 +1491,10 @@ class CustodyLedgerTests(unittest.TestCase):
                   "noteSeedCommitment": replacement["custody"]["noteSeedCommitment"], "minimumCustodyEpoch": "2",
                   "publications": self.trust["publications"], "targets": [replica]}
 
-        def check(custody_signer=None, *, source_profile=None, replica_profile=None, **overrides):
+        def check(custody_signer=None, *, source_profile=None, replica_profile=None, key_profiles=None, **overrides):
             document = {"policy": {**policy, **overrides}, "signatures": [], "custodySignatures": []}
             return check_release_policy(self.trust, document, custody_signer,
-                                        source_profile=source_profile, replica_profile=replica_profile)
+                                        source_profile=source_profile, replica_profile=replica_profile, key_profiles=key_profiles)
 
         with self.assertRaisesRegex(ValueError, "object missing"):
             check()
@@ -1687,7 +1690,7 @@ class CustodyLedgerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "differs from the pinned replica"):
                 check_release_policy(self.trust, document, **PAYMENT_PROFILES)
 
-    def test_mainnet_payments_require_three_enabled_pairs_on_every_registered_target(self):
+    def test_mainnet_payments_require_three_qualified_pairs_on_every_registered_target(self):
         self.trust["network"] = "mainnet"
         publish(self.trust, self.sign(self.document(1)))
         _, receipt, custodians = load_epoch(self.trust, "1")
@@ -1708,8 +1711,17 @@ class CustodyLedgerTests(unittest.TestCase):
         recovery = [member["recoveryKeyArn"] for member in custodians]
         unavailable = set(recovery[:2])
         bad_metadata = set()
+        bad_policy = set()
+        installed = {
+            key_arn: policy for slot, member in enumerate(custodians, 1)
+            for key_arn, policy in slot_inventory(self.trust, "1", member, [primary, standby], slot)[1].items()
+        }
 
-        def describe(arn, operation):
+        def describe(arn, operation, args=(), *, profile):
+            self.assertEqual(profile, PAYMENT_PROFILES["key_profiles"][arn.split(":")[4]])
+            if operation == "get-key-policy":
+                self.assertEqual(args, ["--policy-name", "default"])
+                return {"Policy": json.dumps({} if arn in bad_policy else installed[arn])}
             self.assertEqual(operation, "describe-key")
             if arn in unavailable:
                 raise ValueError("key temporarily unavailable")
@@ -1717,13 +1729,33 @@ class CustodyLedgerTests(unittest.TestCase):
                                     "Origin": "AWS_KMS", "MultiRegion": False,
                                     "KeyState": "PendingDeletion" if arn in bad_metadata else "Enabled"}}
 
+        def verify_profile(profile, region, account):
+            if profile != PAYMENT_PROFILES["key_profiles"][account]:
+                raise ValueError("wrong profile account")
+
         with (patch("custody_ledger.require_replicated_custody"),
-              patch("custody_ledger.kms", side_effect=describe) as kms,
+              patch("relay.kms", side_effect=describe) as kms,
+              patch("custody_ledger.require_profile_account", side_effect=verify_profile) as sts,
               patch("custody_ledger.check_source_ledger") as inspect_source,
               patch("custody_ledger.check_recovery_bucket") as inspect_replica):
+            ledger_profiles = {name: value for name, value in PAYMENT_PROFILES.items() if name != "key_profiles"}
+            with self.assertRaisesRegex(ValueError, "provide --custody-key-profiles"):
+                check_release_policy(self.trust, document, **ledger_profiles)
             check_release_policy(self.trust, document, **PAYMENT_PROFILES)
-            self.assertCountEqual([call.args[0] for call in kms.call_args_list],
+            self.assertCountEqual([call.args[0] for call in kms.call_args_list if call.args[1] == "describe-key"],
                                   [*recovery, *primary["wrappingKeys"], *standby["wrappingKeys"]])
+            self.assertEqual(sts.call_count, 6)
+            profiles = {**PAYMENT_PROFILES["key_profiles"], "000000000003": "unexpected-profile"}
+            with self.assertRaisesRegex(ValueError, "wrong profile account"):
+                check_release_policy(self.trust, document, key_profiles=profiles, **ledger_profiles)
+            profiles = {account: profile for account, profile in PAYMENT_PROFILES["key_profiles"].items()
+                        if int(account) in {3, 4, 5}}
+            check_release_policy(self.trust, document, key_profiles=profiles, **ledger_profiles)
+            for arn in (recovery[2], standby["wrappingKeys"][2]):
+                bad_policy.add(arn)
+                with self.assertRaisesRegex(ValueError, "unavailable attested bootstrap slot"):
+                    check_release_policy(self.trust, document, **PAYMENT_PROFILES, bootstrap_slots=[[3, 4, 5], [3, 4, 5]])
+                bad_policy.remove(arn)
             bad_metadata.add(standby["wrappingKeys"][-1])
             check_release_policy(self.trust, document, **PAYMENT_PROFILES,
                                  bootstrap_slots=[[3, 4, 6], [3, 4, 5]])
@@ -1768,13 +1800,47 @@ class CustodyLedgerTests(unittest.TestCase):
             kms.assert_not_called()
 
             bad_metadata.clear()
-            def retire_after_key_read(arn, operation):
+            def retire_after_key_read(arn, operation, args=(), **options):
                 self.objects[prefix + "retired/1.json"] = b"{}"
-                return describe(arn, operation)
+                return describe(arn, operation, args, **options)
 
             kms.side_effect = retire_after_key_read
             with self.assertRaisesRegex(ValueError, "cannot verify retirement"):
                 check_release_policy(self.trust, document, **PAYMENT_PROFILES)
+
+    def test_payment_checks_profiles_for_both_custody_rosters_in_an_overlap(self):
+        targets, profiles, policies = [], {}, {}
+        for epoch, first in (("1", 21), ("2", 31)):
+            accounts = range(first, first + 6)
+            members = [{
+                "recoveryKeyArn": key(account, 1),
+                "custodianRole": f"arn:aws:iam::{account:012d}:role/custodian",
+                "retirementRole": f"arn:aws:iam::{account:012d}:role/retirement",
+            } for account in accounts]
+            target = {
+                "hostRole": HOST, "instanceId": INSTANCE, "releaseId": f"release-{epoch}", "pcrs": PINS,
+                "wrappingKeys": [key(account, 2) for account in accounts],
+            }
+            pairs = [(member["recoveryKeyArn"], wrapping)
+                     for member, wrapping in zip(members, target["wrappingKeys"], strict=True)]
+            targets.append((epoch, target, members, pairs, [1, 3, 5]))
+            for slot in (1, 3, 5):
+                account = first + slot - 1
+                profiles[f"{account:012d}"] = f"key-read-{account}"
+                policies.update(slot_inventory(self.trust, epoch, members[slot - 1], [target], slot)[1])
+
+        def inspect(key_arn, *, profile):
+            self.assertEqual(profile, profiles[key_arn.split(":")[4]])
+            return {}, policies[key_arn]
+
+        with (patch("custody_ledger.require_profile_account") as identity,
+              patch("custody_ledger.inspect_rsa_key", side_effect=inspect) as keys):
+            require_payment_recovery_quorums(self.trust, targets, profiles)
+            self.assertCountEqual([request.args[2] for request in identity.call_args_list], profiles)
+            self.assertCountEqual([request.args[0] for request in keys.call_args_list], policies)
+            del profiles[f"{35:012d}"]
+            with self.assertRaisesRegex(ValueError, "custody epoch 2 target release-2 requires three"):
+                require_payment_recovery_quorums(self.trust, targets, profiles)
 
     def test_revocation_checks_the_pinned_pair_without_reading_the_ledger(self):
         policy = {"action": "revoke", "recoveryOnly": True, "targets": [], "network": "devnet",
@@ -2279,7 +2345,9 @@ class CustodyLedgerTests(unittest.TestCase):
         targets = [primary, standby]
 
         def describe(key_arn, operation, args=(), *, profile):
-            slot = REPLACEMENT_PROFILES.index(profile) + 1
+            account = key_arn.split(":")[4]
+            self.assertEqual(profile, REPLACEMENT_PROFILES[account])
+            slot = int(account)
             if operation == "get-key-policy":
                 _, policies = slot_inventory(self.trust, "2", members[slot - 1], targets, slot)
                 return {"Policy": json.dumps({} if key_arn in mismatched_policy else policies[key_arn])}
@@ -2292,7 +2360,7 @@ class CustodyLedgerTests(unittest.TestCase):
         def observation(*targets, policy="fe" * 32):
             return SimpleNamespace(stdout=self.attestation_reply({"policyDigest": policy, "targets": list(targets)}))
 
-        with (patch("retirement.run_command") as query, patch("retirement.kms", side_effect=describe),
+        with (patch("retirement.run_command") as query, patch("relay.kms", side_effect=describe),
               patch("retirement.inspect_inventory", return_value={"keys": []}),
               patch("retirement.inspect_old_parents", return_value=[]), patch("retirement.require_profile_account")):
             primary_observed = {**target_attestation(primary), "bootstrap": primary_boot}
@@ -2726,8 +2794,10 @@ class CustodyLedgerTests(unittest.TestCase):
         trust, wallet, report = (directory / name for name in ("trust.json", "wallet.json", "report.json"))
         trust.write_bytes(canonical(self.trust))
         profiles = [f"slot-{index}" for index in range(1, 7)]
+        key_profiles = directory / "key-profiles.json"
+        key_profiles.write_bytes(canonical(REPLACEMENT_PROFILES))
         argv = ["retirement.py", str(trust), "verify-retired", str(wallet), "1",
-                "--inspection-profiles", *profiles, "--replacement-inspection-profiles", *REPLACEMENT_PROFILES,
+                "--inspection-profiles", *profiles, "--custody-key-profiles", str(key_profiles),
                 "--replica-profile", "recovery-read", "--output", str(report)]
         result = {"retirementObservedAtMs": "100"}
 
@@ -2934,7 +3004,7 @@ class CustodyLedgerTests(unittest.TestCase):
         unreadable_policies = set()
 
         def describe(arn, operation, args=(), *, profile):
-            self.assertEqual(profile, REPLACEMENT_PROFILES[int(arn.split(":")[4]) - 1])
+            self.assertEqual(profile, REPLACEMENT_PROFILES[arn.split(":")[4]])
             if operation == "get-key-policy":
                 self.assertEqual(args, ["--policy-name", "default"])
                 policy_reads.add(arn)
@@ -2950,21 +3020,20 @@ class CustodyLedgerTests(unittest.TestCase):
 
         def caller_identity(region, service, operation, args, *, profile):
             self.assertEqual((service, operation, args), ("sts", "get-caller-identity", []))
-            return {"Account": f"{REPLACEMENT_PROFILES.index(profile) + 1:012d}"}
+            return {"Account": next(account for account, name in REPLACEMENT_PROFILES.items() if name == profile)}
 
         def commit(document):
             return commit_retirement(self.trust, None, document, replacement_profiles=REPLACEMENT_PROFILES)
 
-        with (patch("retirement.kms", side_effect=describe) as kms,
+        with (patch("relay.kms", side_effect=describe) as kms,
               patch("approval.aws", side_effect=caller_identity)):
             qualification.return_value = self.live_qualification(replacement)
             marker = qualified_manifest(self.trust, None, "1", "2")
             retirement = self.signed_retirement(marker)
-            with self.assertRaisesRegex(ValueError, "six distinct read-only inspection profiles"):
+            with self.assertRaisesRegex(ValueError, "provide --custody-key-profiles"):
                 commit_retirement(self.trust, None, retirement)
             kms.assert_not_called()
-            swapped = list(REPLACEMENT_PROFILES)
-            swapped[0], swapped[1] = swapped[1], swapped[0]
+            swapped = {**REPLACEMENT_PROFILES, f"{1:012d}": "replacement-2", f"{2:012d}": "replacement-1"}
             with self.assertRaisesRegex(ValueError, "inspection profile .* must belong to account"):
                 commit_retirement(self.trust, None, retirement, replacement_profiles=swapped)
             with self.assertRaisesRegex(ValueError, recovery_keys[2]):

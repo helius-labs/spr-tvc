@@ -86,10 +86,16 @@ def live_recipient(port, scope):
     return verify_evidence(nonce, evidence, scope), evidence
 
 
-def sealed_rsa_key(arn, expected, **options):
+def inspect_rsa_key(arn, **options):
     metadata = kms(arn, "describe-key", **options)["KeyMetadata"]
     require_kms_key(metadata, arn, RSA_KEYS, "ENCRYPT_DECRYPT")
-    if parse_json(kms(arn, "get-key-policy", ["--policy-name", "default"], **options)["Policy"]) != expected:
+    policy = parse_json(kms(arn, "get-key-policy", ["--policy-name", "default"], **options)["Policy"])
+    return metadata, policy
+
+
+def sealed_rsa_key(arn, expected, **options):
+    metadata, policy = inspect_rsa_key(arn, **options)
+    if policy != expected:
         raise ValueError("installed RSA key policy does not match its pinned recipient")
     result = key_result(arn, "get-public-key", **options)
     if (result.get("KeySpec") != metadata["KeySpec"] or result.get("KeyUsage") != "ENCRYPT_DECRYPT" or

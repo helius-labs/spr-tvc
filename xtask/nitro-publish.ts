@@ -37,6 +37,7 @@ type PublicationOptions = {
   custodyTrust?: string;
   sourceProfile?: string;
   replicaProfile?: string;
+  custodyKeyProfiles?: string;
   publicationProfiles?: readonly string[];
   nextTrust?: NitroTrust;
   emergencyFrom?: NitroTrust;
@@ -150,14 +151,17 @@ function requireCustodyWriteWindow(nextCutover: bigint | undefined, now: bigint)
 
 async function checkActivationRoster(
   candidate: string, custodyTrust: string, trust: NitroTrust, run: Run,
-  { sourceProfile, replicaProfile }: Pick<PublicationOptions, "sourceProfile" | "replicaProfile">,
+  { sourceProfile, replicaProfile, custodyKeyProfiles }:
+  Pick<PublicationOptions, "sourceProfile" | "replicaProfile" | "custodyKeyProfiles">,
   paymentProbes?: readonly ReplicaProbe[],
   expectedCanaryDigest?: string,
 ) {
   const args = ["-B", custodyLedger, custodyTrust, "check-release-policy", candidate];
   if (sourceProfile !== undefined) args.push("--source-profile", sourceProfile);
   if (replicaProfile !== undefined) args.push("--replica-profile", replicaProfile);
-  if (paymentProbes && (trust.network === "mainnet" || sourceProfile !== undefined || replicaProfile !== undefined)) {
+  if (custodyKeyProfiles !== undefined) args.push("--custody-key-profiles", custodyKeyProfiles);
+  if (paymentProbes && (trust.network === "mainnet" || sourceProfile !== undefined ||
+    replicaProfile !== undefined || custodyKeyProfiles !== undefined)) {
     args.push("--bootstrap-slots", JSON.stringify(paymentProbes.map(probe => probe.bootstrapSlots)));
   }
   const { stdout } = await run("python3", args, 60_000);
@@ -318,7 +322,7 @@ async function checkPublicationBuckets(
 
 export async function publish(
   trust: NitroTrust, name: string, text: string,
-  { custodyTrust, sourceProfile, replicaProfile, publicationProfiles, nextTrust, emergencyFrom,
+  { custodyTrust, sourceProfile, replicaProfile, custodyKeyProfiles, publicationProfiles, nextTrust, emergencyFrom,
     run = runCommand, probe = probeNitroTarget }: PublicationOptions = {},
 ): Promise<void> {
   validateNitroTrust(trust);
@@ -409,7 +413,7 @@ export async function publish(
     let probes: ReplicaProbe[] = [];
     if (custody) {
       const custodyPins = nextTrust ?? trust;
-      const inspection = { sourceProfile, replicaProfile };
+      const inspection = { sourceProfile, replicaProfile, custodyKeyProfiles };
       const { cutover, canaryDigest } = await checkActivationRoster(candidate, custody.path, custodyPins, run, inspection);
       requireCustodyWriteWindow(cutover, BigInt(Date.now()));
       // nextNitroPublication authenticated the exact predecessor above.
@@ -566,8 +570,10 @@ export async function restorePublication(trust: NitroTrust, name: string, retain
 /** Verify the exact current, witnessed revision before shipping a new pin file. */
 export async function verifyDistributionPins(
   trust: NitroTrust,
-  { custodyTrust, sourceProfile, replicaProfile, publicationProfiles, run = runCommand, probe = probeNitroTarget }:
-  Pick<PublicationOptions, "custodyTrust" | "sourceProfile" | "replicaProfile" | "publicationProfiles" | "run" | "probe"> = {},
+  { custodyTrust, sourceProfile, replicaProfile, custodyKeyProfiles, publicationProfiles,
+    run = runCommand, probe = probeNitroTarget }:
+  Pick<PublicationOptions,
+    "custodyTrust" | "sourceProfile" | "replicaProfile" | "custodyKeyProfiles" | "publicationProfiles" | "run" | "probe"> = {},
 ): Promise<NitroPolicyCheckpoint & { publicationVersions: readonly { bucket: string; versionId: string }[] }> {
   validateNitroTrust(trust);
   const published = await pinnedPublication(trust);
@@ -582,7 +588,7 @@ export async function verifyDistributionPins(
     const bucketChecks = paymentPublicationChecks(trust, published.policy, custody.text, publicationProfiles);
     const candidate = join(directory, "published.json");
     await writeFile(candidate, published.text, { mode: 0o600, flag: "wx" });
-    const inspection = { sourceProfile, replicaProfile };
+    const inspection = { sourceProfile, replicaProfile, custodyKeyProfiles };
     const { canaryDigest } = await checkActivationRoster(candidate, custody.path, trust, run, inspection);
     const probes = await probeActivationTargets(published.policy.targets, trust, probe, canaryDigest);
     const [{ cutover: nextCutover }] = await Promise.all([
@@ -610,11 +616,11 @@ export async function verifyDistributionPins(
 
 async function main() {
   const [trustPath, bucket, ...args] = process.argv.slice(2);
-  const activationOptions = "[--custody-trust <custody-trust.json>] [--source-profile <aws-profile>] [--replica-profile <aws-profile>] [--publication-profile <primary> --publication-profile <mirror>]";
+  const activationOptions = "[--custody-trust <custody-trust.json>] [--source-profile <aws-profile>] [--replica-profile <aws-profile>] [--custody-key-profiles <json>] [--publication-profile <primary> --publication-profile <mirror>]";
   const usage = `usage: nitro-publish.ts <wallet-trust.json> --check-wallet-trust ${activationOptions} | nitro-publish.ts <wallet-trust.json> <bucket> <signed-policy.json> ${activationOptions} [--next-trust <incoming.json> | --emergency-from <outgoing.json>] | <wallet-trust.json> <bucket> --bucket-policy <custody-trust.json> | <wallet-trust.json> <bucket> --restore-from <version-id>`;
   const activationFlags = {
     "custody-trust": { type: "string" }, "source-profile": { type: "string" }, "replica-profile": { type: "string" },
-    "publication-profile": { type: "string", multiple: true },
+    "custody-key-profiles": { type: "string" }, "publication-profile": { type: "string", multiple: true },
   } as const;
   if (!trustPath || !bucket) {
     throw new Error(usage);
@@ -626,10 +632,12 @@ async function main() {
     const {
       "custody-trust": custodyTrust, "source-profile": sourceProfile,
       "replica-profile": replicaProfile, "publication-profile": publicationProfiles,
+      "custody-key-profiles": custodyKeyProfiles,
     } = values;
     const checkpoint = await verifyDistributionPins(trust, {
       ...(custodyTrust ? { custodyTrust } : {}),
       ...(sourceProfile ? { sourceProfile } : {}), ...(replicaProfile ? { replicaProfile } : {}),
+      ...(custodyKeyProfiles ? { custodyKeyProfiles } : {}),
       ...(publicationProfiles ? { publicationProfiles } : {}),
     });
     const trustSha256 = createHash("sha256").update(trustText).digest("hex");
@@ -656,6 +664,7 @@ async function main() {
   const { values: {
     "custody-trust": custodyTrust, "source-profile": sourceProfile,
     "replica-profile": replicaProfile, "publication-profile": publicationProfiles,
+    "custody-key-profiles": custodyKeyProfiles,
     "next-trust": nextPath, "emergency-from": emergencyPath,
   } } = parseArgs({
     args: extra, options: { ...activationFlags, "next-trust": { type: "string" }, "emergency-from": { type: "string" } },
@@ -665,6 +674,7 @@ async function main() {
   await publish(trust, bucket, await readBoundedDocument(policyPath, MAX_BYTES), {
     ...(custodyTrust ? { custodyTrust } : {}),
     ...(sourceProfile ? { sourceProfile } : {}), ...(replicaProfile ? { replicaProfile } : {}),
+    ...(custodyKeyProfiles ? { custodyKeyProfiles } : {}),
     ...(publicationProfiles ? { publicationProfiles } : {}),
     ...(nextTrust ? { nextTrust } : {}),
     ...(emergencyFrom ? { emergencyFrom } : {}),

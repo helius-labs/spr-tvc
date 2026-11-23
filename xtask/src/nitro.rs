@@ -43,6 +43,9 @@ pub(crate) struct Args {
     /// Read-only AWS profile in the pinned custody replica's account.
     #[arg(long)]
     replica_profile: Option<String>,
+    /// JSON map from custody AWS account to read-only KMS inspection profile.
+    #[arg(long)]
+    custody_key_profiles: Option<PathBuf>,
     /// Sign as a custody approver.
     #[arg(long)]
     custody: bool,
@@ -258,6 +261,9 @@ fn sign_with_capture(
     }
     if let Some(profile) = args.replica_profile {
         check.args(["--replica-profile", &profile]);
+    }
+    if let Some(profiles) = args.custody_key_profiles {
+        check.arg("--custody-key-profiles").arg(profiles);
     }
     let reviewed = capture(&mut check)?;
     let qualification: serde_json::Value = serde_json::from_slice(&reviewed)?;
