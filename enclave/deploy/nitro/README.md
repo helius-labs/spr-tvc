@@ -262,8 +262,9 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    Acknowledgement, publication and online reads verify the same image, host
    role and successor roster. The seed commitment stays stable.
 
-   Export the custody history through the committed epoch and record the
-   SHA-256 of the complete file in an independently retained audit record.
+   Export the custody history through the committed epoch to a new file.
+   The exporter publishes the file only after the full history is written
+   and synced. Record its SHA-256 in an independently retained audit record.
    Keep the pinned custody trust schedule and the reviewed build artifacts
    with the archive. The verifier opens no AWS connection. It checks the
    genesis receipt, each rotation link, custodian signatures and Nitro evidence
@@ -273,7 +274,7 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    each receipt and rotation approval.
 
    ```sh
-   python3 "$nitro/custody_archive.py" trust.json export "$epoch" > custody.jsonl
+   python3 "$nitro/custody_archive.py" trust.json export "$epoch" custody.jsonl
    shasum -a 256 custody.jsonl
    python3 "$nitro/custody_archive.py" trust.json verify "$epoch" custody.jsonl "$pinned_sha256"
    ```

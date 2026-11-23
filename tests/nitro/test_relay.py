@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import os
 import pathlib
 import sys
 import tempfile
@@ -39,7 +40,7 @@ class RelayTests(unittest.TestCase):
         args = ["relay_wrap.py", str(trust), str(target), str(directory), "1", "--relay-port", "7443",
                 "wrap", str(authorization), str(output), "--review", str(directory / "review.json")]
         ciphertext = b"x" * 256
-        write_bytes = pathlib.Path.write_bytes
+        fsync = os.fsync
         with (patch("sys.argv", args),
               patch("relay_wrap.prepare", return_value=(statement, KEYS, RECEIPT, CUSTODIAN, b"evidence", TARGET_VERSION)),
               patch("relay_wrap.require_reviewed_target"), patch("relay_wrap.recover_to_relay", return_value=b"envelope"),
@@ -53,18 +54,15 @@ class RelayTests(unittest.TestCase):
                 (registered, ValueError("registered target object missing"), "registered target object missing"),
                 (approved, ValueError("target approval roster changed"), "target approval roster changed"),
             ):
-                def revoke_while_staging(path, payload):
-                    if path.name != output.name:
-                        return write_bytes(path, payload)
+                def revoke_while_staging(fd):
                     self.assertFalse(output.exists())
-                    written = write_bytes(path, payload)
+                    fsync(fd)
                     if isinstance(result, ValueError):
                         check.side_effect = result
                     else:
                         check.return_value = result
-                    return written
 
-                with (self.subTest(message=message), patch.object(pathlib.Path, "write_bytes", revoke_while_staging)):
+                with (self.subTest(message=message), patch("approval.os.fsync", side_effect=revoke_while_staging)):
                     with self.assertRaisesRegex(SystemExit, message):
                         relay_wrap_main()
                     self.assertFalse(output.exists())

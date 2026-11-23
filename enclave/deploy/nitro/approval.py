@@ -57,13 +57,28 @@ def read_json(path):
     return parse_json(read_document(path))
 
 
-def publish_new_file(path, payload, *, before_publish=None):
+@contextmanager
+def new_output_file(path, *, before_publish=None):
+    """Stage a file, then install and sync a new directory entry."""
     with tempfile.TemporaryDirectory(dir=path.parent) as directory:
         staged = Path(directory) / path.name
-        staged.write_bytes(payload)
-        if before_publish is not None:
-            before_publish()
-        path.hardlink_to(staged)
+        with staged.open("xb") as output:
+            yield output
+            output.flush()
+            os.fsync(output.fileno())
+        parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            if before_publish is not None:
+                before_publish()
+            os.link(staged, path.name, dst_dir_fd=parent)
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+
+
+def publish_new_file(path, payload, *, before_publish=None):
+    with new_output_file(path, before_publish=before_publish) as output:
+        output.write(payload)
 
 
 def canonical(value):

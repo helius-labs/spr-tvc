@@ -2,7 +2,9 @@ import base64
 import copy
 import hashlib
 import json
+import os
 import pathlib
+import stat
 import sys
 import tempfile
 import time
@@ -18,7 +20,7 @@ from unittest.mock import ANY, call, patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import MAX_DOCUMENT_BYTES, ApprovalVerificationUnavailable, approval_keys, approval_roster, canonical, sha256
 from custody_archive import (
-    MAX_ARCHIVE_ENTRY_BYTES, archive, draft_repair, ledger_checkpoint, repair_transfer,
+    MAX_ARCHIVE_ENTRY_BYTES, archive, draft_repair, ledger_checkpoint, main as archive_main, repair_transfer,
     require_uncommitted_record, sign_repair, verify_archive, verify_ledger_records, verify_promotion,
 )
 from custody_ledger import (
@@ -3110,6 +3112,48 @@ class CustodyLedgerTests(unittest.TestCase):
                 with self.subTest(stage="registration refresh reaches the original deadline"):
                     query.assert_called_once()
                     self.assertEqual(read.call_args.args[-1], target_object_name(standby))
+
+    def test_archive_cli_publishes_only_a_complete_synced_new_file(self):
+        directory = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        trust, destination = directory / "trust.json", directory / "custody.jsonl"
+        trust.write_bytes(canonical(self.trust))
+        argv = ["custody_archive.py", str(trust), "export", "2", str(destination)]
+        records = [("1", {"epoch": "1"}, None), ("2", {"epoch": "2"}, None)]
+        fsync = os.fsync
+        sync_order = []
+
+        def interrupted(*_args):
+            yield records[0]
+            raise ValueError("could not read the second receipt")
+
+        def sync(fd):
+            is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+            self.assertEqual(destination.exists(), is_directory)
+            sync_order.append(is_directory)
+            fsync(fd)
+
+        with patch("sys.argv", argv), patch("custody_archive.custody_history", side_effect=interrupted) as history:
+            with self.assertRaisesRegex(SystemExit, "could not read the second receipt"):
+                archive_main()
+            self.assertFalse(destination.exists())
+
+            history.side_effect = lambda *_args: iter(records)
+            with patch("approval.os.fsync", side_effect=OSError("cannot sync data")):
+                with self.assertRaisesRegex(SystemExit, "cannot sync data"):
+                    archive_main()
+            self.assertFalse(destination.exists())
+
+            with patch("approval.os.fsync", side_effect=sync):
+                archive_main()
+            self.assertEqual(sync_order, [False, True])
+            full = b"".join(canonical(entry) + b"\n" for _, entry, _ in records)
+            self.assertEqual(destination.read_bytes(), full)
+
+            history.reset_mock()
+            with self.assertRaisesRegex(SystemExit, "custody archive already exists"):
+                archive_main()
+            history.assert_not_called()
+            self.assertEqual(destination.read_bytes(), full)
 
     def test_retirement_cli_publishes_the_completed_report_without_overwriting(self):
         directory = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))

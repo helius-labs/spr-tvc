@@ -14,7 +14,7 @@ from urllib.parse import quote
 from approval import (
     MAX_DOCUMENT_BYTES, ApprovalVerificationUnavailable, add_approval, approval_keys, approval_roster,
     canonical, check_approvals, epoch_number,
-    fields, hex_digest, open_regular, parse_json, read_json, require_profile_account, sha256, unique_object,
+    fields, hex_digest, new_output_file, open_regular, parse_json, read_json, require_profile_account, sha256, unique_object,
 )
 from custody_ledger import (
     LABEL, RETIREMENT, TARGET_APPROVAL, check_commit, check_custody_history_entry, check_recovery_bucket, ledger_object,
@@ -373,6 +373,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     export = commands.add_parser("export")
     export.add_argument("epoch")
+    export.add_argument("output", type=Path, help="new archive path")
     verify = commands.add_parser("verify")
     verify.add_argument("epoch")
     verify.add_argument("archive", type=Path)
@@ -399,7 +400,10 @@ def main():
     try:
         trust = read_json(args.trust)
         if args.command == "export":
-            archive(trust, args.epoch, sys.stdout.buffer)
+            if args.output.exists():
+                raise ValueError("custody archive already exists")
+            with new_output_file(args.output) as output:
+                archive(trust, args.epoch, output)
         elif args.command == "ledger-checkpoint":
             print(ledger_checkpoint(trust, args.expect))
         elif args.command == "verify-promotion":

@@ -180,6 +180,8 @@ fn store_signed_policy(
             "policy changed during signing. Review the updated file and retry"
         );
         output.persist(path)?;
+        #[cfg(unix)]
+        std::fs::File::open(parent)?.sync_all()?;
         Ok(())
     })();
     // A concurrent child process can briefly inherit the descriptor.
