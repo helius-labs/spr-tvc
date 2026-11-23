@@ -590,10 +590,12 @@ pinned history and excluded versions.
    its six recovery and wrapping keys. The replacement epoch must remain
    open and the boot must use the three proved slots after the marker's S3
    write second. Inspection and the final report check the replica's bucket
-   protections after confirming the live replacement. If a candidate fails a
-   key, replication or repeated attestation check, both commands try another boot
-   from the same observation. After the AWS checks, both commands read the two
-   signed policy heads again, then recheck that the replacement epoch is open.
+   protections after confirming the live replacement. They then match both
+   buckets to the receipt and registration used by that boot. During candidate
+   qualification, both commands can try another observed boot after a key,
+   replication or repeated attestation check fails. After the AWS checks,
+   both commands read the two signed policy heads again, then recheck that
+   the replacement epoch is open.
    A changed digest, revocation, disagreement, failed read, closed epoch or
    expired boot evidence stops the command. `inspect` reports the
    boot evidence deadline as `validUntilMs` in Unix milliseconds. Rerun

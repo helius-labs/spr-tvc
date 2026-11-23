@@ -23,7 +23,8 @@ from custody_archive import (
 )
 from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
-    check_custody_roster, check_installed_ledger, check_release_policy, draft, ledger_policy, ledger_reader_policy, ledger_replica_plan,
+    check_custody_roster, check_installed_ledger, check_release_policy, draft, ledger_policy, ledger_reader_policy,
+    ledger_record_fingerprint, ledger_replica_plan,
     list_ledger_versions, list_objects, load_epoch, publish, read_registered_target, read_stored_object, read_stored_payload,
     record, replication_configuration, require_active_epoch,
     sign_epoch, storage, target_attestation,
@@ -33,8 +34,8 @@ from deployment import register_target, require_registered_target
 from kms_policy import acknowledgement_policy, boot_pins
 from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, schedule, sign
 from provenance import describe
-from retirement import (LiveBoot, commit_retirement, inspect_keys, prove_recovery, qualified_manifest, qualified_policy,
-                        qualify_key_retirement, main as retirement_main, replacement_targets,
+from retirement import (LiveBoot, commit_retirement, confirm_retirement_policy, inspect_keys, prove_recovery, qualified_manifest,
+                        qualified_policy, qualify_key_retirement, main as retirement_main, replacement_targets,
                         require_observed_target_replication, retirement_inventory, retirement_scope, sign_retirement,
                         slot_inventory, verify_retired)
 
@@ -222,6 +223,10 @@ class CustodyLedgerTests(unittest.TestCase):
             else:
                 raise ValueError("object missing")
         return {}
+
+    def replicated_record(self, trust, _destination, name, **options):
+        payload, metadata = read_stored_payload(trust, name, **options)
+        return payload, ledger_record_fingerprint(name, payload, metadata)
 
     def test_one_concurrent_commit_wins_and_retry_reads_winner(self):
         left, right = [self.sign(self.document(1, variant=variant)) for variant in ("ab", "fe")]
@@ -1793,6 +1798,32 @@ class CustodyLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "registration changed during verification"):
             require_observed_target_replication(self.trust, qualified, changed)
 
+    def test_retirement_rechecks_replica_records_after_inspecting_bucket_protections(self):
+        replica = {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1",
+                   **RECOVERY_ROLES, "role": "arn:aws:iam::000000000008:role/replication"}
+        qualification = {"network": "devnet", "securityDomainId": DOMAIN, "replacementEpoch": "2",
+                         "replacementCustodyDigest": "ab" * 32, "replacementTargetIdentity": "bc" * 32}
+        boot = LiveBoot({"walletPolicyDigest": "cd" * 32, "replacementTargetIdentity": "de" * 32},
+                        (self.now + 60) * 1000)
+        with (patch("retirement.check_recovery_bucket") as check, patch("retirement.read_replicated_record") as read,
+              patch("retirement.pinned_wallet_trust", return_value=self.wallet_pins), patch("retirement.run_command") as query):
+            receipt, selected = "2.json", f"targets/2/{boot.evidence['replacementTargetIdentity']}.json"
+            recorded = {name: ("version", "2026-11-01T00:00:00+00:00", "ab" * 32) for name in (receipt, selected)}
+
+            def missing_registration(_trust, _destination, name, *, checkpoint_records):
+                check.assert_called_once_with(self.trust, replica, "replica-read")
+                self.assertIs(checkpoint_records, recorded)
+                if name == receipt:
+                    return b"{}", recorded[receipt]
+                self.assertEqual(name, selected)
+                raise ValueError("selected replacement has disappeared from the pinned replica")
+
+            read.side_effect = missing_registration
+            with self.assertRaisesRegex(ValueError, "selected replacement has disappeared"):
+                confirm_retirement_policy(self.trust, None, qualification, boot, replica, "replica-read", observed_records=recorded)
+            self.assertCountEqual([entry.args[2] for entry in read.call_args_list], [receipt, selected])
+            query.assert_not_called()
+
     @patch("retirement.require_recovery_quorum")
     def test_retirement_checks_the_signed_replacement_after_the_write_inventory(self, quorum):
         publish(self.trust, self.sign(self.document(1)))
@@ -2090,7 +2121,7 @@ class CustodyLedgerTests(unittest.TestCase):
                        "role": "arn:aws:iam::000000000008:role/replication"}
             with (patch.dict(self.trust, {"ledgerReplica": replica}), patch("retirement.require_retirement_replication"),
                   patch("retirement.check_recovery_bucket") as check_bucket,
-                  patch("retirement.read_replicated_record") as read_replica):
+                  patch("retirement.read_replicated_record", side_effect=self.replicated_record) as read_replica):
                 options = {"wallet_trust": wallet, "host_profiles": host_profiles, "replica_profile": "recovery-read"}
                 query.return_value.stdout = evidence(observed)
                 query.reset_mock()
@@ -2118,17 +2149,25 @@ class CustodyLedgerTests(unittest.TestCase):
                     inspect_keys(self.trust, "1", 1, False, **options)
                 query.side_effect = None
                 query.return_value.stdout = evidence(standby_observed)
-                read_replica.side_effect = ValueError("registered standby has not completed S3 replication")
+                standby_name = target_object_name(standby)
+
+                def unavailable_standby(trust, destination, name, **options):
+                    if name == standby_name:
+                        raise ValueError("registered standby has not completed S3 replication")
+                    return self.replicated_record(trust, destination, name, **options)
+
+                read_replica.side_effect = unavailable_standby
                 with self.assertRaisesRegex(ValueError, "standby has not completed S3 replication"):
                     inspect_keys(self.trust, "1", 1, False, **options)
                 query.return_value.stdout = evidence(standby_observed, observed)
                 self.assertEqual(inspect_keys(self.trust, "1", 1, False, **options)["replacement"], expected)
                 query.return_value.stdout = evidence(standby_observed)
-                read_replica.side_effect = None
-                timestamp = datetime.fromtimestamp(self.now, timezone.utc).isoformat()
-                read_replica.return_value = canonical(standby_approval), ("version", timestamp, "digest")
+                read_replica.side_effect = self.replicated_record
                 self.assertEqual(inspect_keys(self.trust, "1", 1, False, **options)["replacement"], standby_expected)
-                self.assertEqual(read_replica.call_args.args[-1], target_object_name(standby))
+                checked_standbys = [entry.kwargs["checkpoint_records"] for entry in read_replica.call_args_list
+                                    if entry.args[-1] == standby_name and "checkpoint_records" in entry.kwargs]
+                records, = checked_standbys
+                self.assertIn(standby_name, records)
 
     def test_retirement_qualifies_only_a_live_registered_serving_replica_on_a_new_parent(self):
         publish(self.trust, self.sign(self.document(1)))
@@ -2561,7 +2600,8 @@ class CustodyLedgerTests(unittest.TestCase):
             query.side_effect = None
             query.return_value.stdout = ready
             with (patch.dict(self.trust, {"ledgerReplica": replica}), patch("retirement.require_retirement_replication"),
-                  patch("retirement.check_recovery_bucket") as check_bucket):
+                  patch("retirement.check_recovery_bucket") as check_bucket,
+                  patch("retirement.read_replicated_record", side_effect=self.replicated_record)):
                 query.reset_mock()
                 with self.assertRaisesRegex(ValueError, "provide --replica-profile"):
                     verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
@@ -2578,6 +2618,17 @@ class CustodyLedgerTests(unittest.TestCase):
                 check_bucket.side_effect = None
                 verified = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5, replica_profile="recovery-read")
                 self.assertEqual(verified, report)
+
+                def replace_record_during_replica_check(*_args):
+                    name = target_object_name(replacement)
+                    self.versions[f"spr-custody/devnet/{DOMAIN}/{name}"] = "changed-version"
+
+                query.reset_mock()
+                check_bucket.side_effect = replace_record_during_replica_check
+                with patch.dict(self.versions), self.assertRaisesRegex(ValueError, "changed after checkpoint"):
+                    verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5, replica_profile="recovery-read")
+                self.assertEqual(query.call_count, 2)
+                check_bucket.side_effect = None
 
                 query.reset_mock()
                 check_bucket.reset_mock()
