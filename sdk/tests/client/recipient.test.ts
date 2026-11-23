@@ -1,14 +1,10 @@
-import { ShieldedAddress, ShieldedPublicKey, ViewingKey, type Bytes32 } from "@heliuslabs/spr";
-import { resolveRegisteredAddress } from "@heliuslabs/spr/wallet";
-import { address, getAddressEncoder, type Address } from "@solana/kit";
+import { ShieldedAddress, ShieldedPublicKey, USER_REGISTRY_PROGRAM_ID, ViewingKey, type Bytes32 } from "@heliuslabs/spr";
+import { address, getAddressEncoder, getProgramDerivedAddress, type Address } from "@solana/kit";
 import { beforeEach, expect, it, vi } from "vitest";
 import { createLocalDecryptionService } from "../../src/testing.js";
 import { genesisHashForNetwork } from "../../src/protocol/network.js";
 import { resolvePaymentAddress } from "../../src/client/recipient.js";
 
-vi.mock("@heliuslabs/spr/wallet", () => ({ resolveRegisteredAddress: vi.fn() }));
-
-const lookup = vi.mocked(resolveRegisteredAddress);
 const recipient = address("3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3");
 function shielded(owner: Address): ShieldedAddress {
   const viewing = ViewingKey.generate();
@@ -19,57 +15,86 @@ function shielded(owner: Address): ShieldedAddress {
 }
 const registryAddress = shielded(recipient);
 const fallbackAddress = shielded(recipient);
-const registered = { address: registryAddress } as NonNullable<Awaited<ReturnType<typeof lookup>>>;
+const [recordAddress, bump] = await getProgramDerivedAddress({
+  programAddress: USER_REGISTRY_PROGRAM_ID,
+  seeds: [new TextEncoder().encode("zolana/registry/v0"), getAddressEncoder().encode(recipient)],
+});
+const recordBytes = Uint8Array.of(
+  1, ...getAddressEncoder().encode(recipient), bump,
+  ...registryAddress.nullifierPublicKey, ...registryAddress.viewingPublicKey.toBytes(), 0,
+);
+const miss = { context: { slot: 10n }, value: null };
+const registered = {
+  context: { slot: 11n },
+  value: {
+    data: [Buffer.from(recordBytes).toString("base64"), "base64"] as const,
+    owner: USER_REGISTRY_PROGRAM_ID,
+    lamports: 1n,
+  },
+};
 const service = { address: vi.fn(async () => fallbackAddress), genesisHash: genesisHashForNetwork("devnet") };
 const genesis = vi.fn(async () => service.genesisHash);
-const rpc = { getAccount: vi.fn(), solanaRpc: { getGenesisHash: () => ({ send: genesis }) } };
+const read = vi.fn<() => Promise<typeof miss | typeof registered>>();
+const getAccountInfo = vi.fn(() => ({ send: read }));
+const rpc = {
+  commitment: "confirmed",
+  solanaRpc: { getAccountInfo, getGenesisHash: () => ({ send: genesis }) },
+} as unknown as Parameters<typeof resolvePaymentAddress>[0]["rpc"];
 const request = { rpc, owner: recipient, service };
 
 beforeEach(() => {
-  lookup.mockReset();
+  read.mockReset().mockResolvedValue(miss);
+  getAccountInfo.mockClear();
   genesis.mockReset().mockResolvedValue(service.genesisHash);
   service.address.mockReset().mockResolvedValue(fallbackAddress);
 });
 
 it("uses the registered address before asking the service", async () => {
-  lookup.mockResolvedValue(registered);
-  await expect(resolvePaymentAddress(request)).resolves.toBe(registryAddress);
-  expect(lookup).toHaveBeenCalledTimes(1);
-  expect(lookup).toHaveBeenCalledWith({ rpc, owner: recipient }, { signal: expect.any(AbortSignal) });
+  read.mockResolvedValue(registered);
+  await expect(resolvePaymentAddress(request)).resolves.toEqual(registryAddress);
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(getAccountInfo).toHaveBeenCalledWith(recordAddress, { commitment: "confirmed", encoding: "base64", minContextSlot: 0n });
   expect(service.address).not.toHaveBeenCalled();
   expect(genesis).toHaveBeenCalledOnce();
 });
 
 it("uses the service when both registry reads succeed with no record", async () => {
-  lookup.mockResolvedValue(undefined);
   await expect(resolvePaymentAddress(request)).resolves.toBe(fallbackAddress);
-  expect(lookup).toHaveBeenCalledTimes(2);
-  expect(lookup.mock.calls[1]).toEqual(lookup.mock.calls[0]);
-  expect(service.address).toHaveBeenCalledWith(recipient, lookup.mock.calls[0]?.[1]);
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(getAccountInfo).toHaveBeenLastCalledWith(recordAddress, { commitment: "confirmed", encoding: "base64", minContextSlot: 10n });
+  expect(service.address).toHaveBeenCalledWith(recipient, { signal: expect.any(AbortSignal) });
   expect(service.address).toHaveBeenCalledTimes(2);
   expect(service.address.mock.invocationCallOrder[1]).toBeGreaterThan(genesis.mock.invocationCallOrder[1]!);
 });
 
 it("uses a registration that appears during the service lookup", async () => {
-  lookup.mockResolvedValueOnce(undefined).mockResolvedValueOnce(registered);
-  await expect(resolvePaymentAddress(request)).resolves.toBe(registryAddress);
+  read.mockResolvedValueOnce(miss).mockResolvedValueOnce(registered);
+  await expect(resolvePaymentAddress(request)).resolves.toEqual(registryAddress);
   expect(service.address).toHaveBeenCalledOnce();
-  expect(lookup).toHaveBeenCalledTimes(2);
+  expect(read).toHaveBeenCalledTimes(2);
+});
+
+it.each([null, registered.value])("rejects a regressing registry response", async value => {
+  read.mockResolvedValueOnce(miss).mockResolvedValueOnce({ context: { slot: 9n }, value });
+  await expect(resolvePaymentAddress(request)).rejects.toMatchObject({
+    cause: { code: "PaymentRegistryContextStale" },
+  });
+  expect(service.address).toHaveBeenCalledOnce();
 });
 
 it("refuses the service address if the second registry read fails", async () => {
   const failure = new Error("registry unavailable after service lookup");
-  lookup.mockResolvedValueOnce(undefined).mockRejectedValueOnce(failure);
-  await expect(resolvePaymentAddress(request)).rejects.toBe(failure);
+  read.mockResolvedValueOnce(miss).mockRejectedValueOnce(failure);
+  await expect(resolvePaymentAddress(request)).rejects.toMatchObject({ cause: failure });
   expect(service.address).toHaveBeenCalledOnce();
 });
 
 it("refuses the service address if the payment is cancelled during the second registry read", async () => {
   const controller = new AbortController();
   const reason = new Error("payment cancelled");
-  lookup.mockResolvedValueOnce(undefined).mockImplementationOnce(async () => {
+  read.mockResolvedValueOnce(miss).mockImplementationOnce(async () => {
     controller.abort(reason);
-    return undefined;
+    return miss;
   });
   await expect(resolvePaymentAddress(request, { signal: controller.signal })).rejects.toBe(reason);
   expect(service.address).toHaveBeenCalledOnce();
@@ -77,30 +102,28 @@ it("refuses the service address if the payment is cancelled during the second re
 
 it("propagates a registry failure without redirecting the payment", async () => {
   const failure = new Error("registry unavailable");
-  lookup.mockRejectedValue(failure);
-  await expect(resolvePaymentAddress(request)).rejects.toBe(failure);
+  read.mockRejectedValue(failure);
+  await expect(resolvePaymentAddress(request)).rejects.toMatchObject({ cause: failure });
   expect(service.address).not.toHaveBeenCalled();
 });
 
 it("rejects a service address for another owner", async () => {
   const other = address("8NrtYowSfZ9AvdWf4GeTENbuGedACX4yTNxT1rAGnXWc");
-  lookup.mockResolvedValue(undefined);
   service.address.mockResolvedValueOnce(shielded(other));
   await expect(resolvePaymentAddress(request)).rejects.toThrow("ReleaseBindingMismatch");
 });
 
 it("does not fall back to the service after cancellation", async () => {
   const controller = new AbortController();
-  lookup.mockImplementation(async () => {
+  read.mockImplementation(async () => {
     controller.abort(new Error("payment cancelled"));
-    return undefined;
+    return miss;
   });
   await expect(resolvePaymentAddress(request, { signal: controller.signal })).rejects.toThrow("payment cancelled");
   expect(service.address).not.toHaveBeenCalled();
 });
 
 it("refuses another network or a malformed genesis before requesting recipient keys", async () => {
-  lookup.mockResolvedValue(undefined);
   for (const hash of [genesisHashForNetwork("mainnet"), "not-a-genesis"]) {
     genesis.mockResolvedValueOnce(hash);
     await expect(resolvePaymentAddress(request)).rejects.toMatchObject({ code: "PaymentNetworkMismatch" });
@@ -109,7 +132,6 @@ it("refuses another network or a malformed genesis before requesting recipient k
 });
 
 it("propagates a failed genesis RPC without requesting recipient keys", async () => {
-  lookup.mockResolvedValue(undefined);
   const failure = new Error("genesis unavailable");
   genesis.mockRejectedValueOnce(failure);
   await expect(resolvePaymentAddress(request)).rejects.toBe(failure);
@@ -118,9 +140,9 @@ it("propagates a failed genesis RPC without requesting recipient keys", async ()
 
 it.each(["first read", "after a miss"] as const)("rejects a registered address from the wrong chain at %s", async phase => {
   if (phase === "first read") {
-    lookup.mockResolvedValueOnce(registered);
+    read.mockResolvedValueOnce(registered);
   } else {
-    lookup.mockResolvedValueOnce(undefined).mockResolvedValueOnce(registered);
+    read.mockResolvedValueOnce(miss).mockResolvedValueOnce(registered);
     genesis.mockResolvedValueOnce(service.genesisHash);
   }
   genesis.mockResolvedValueOnce(genesisHashForNetwork("mainnet"));
@@ -129,7 +151,6 @@ it.each(["first read", "after a miss"] as const)("rejects a registered address f
 });
 
 it("refuses a fallback if the chain changes during the registry recheck", async () => {
-  lookup.mockResolvedValue(undefined);
   genesis.mockResolvedValueOnce(service.genesisHash).mockResolvedValueOnce(genesisHashForNetwork("mainnet"));
   await expect(resolvePaymentAddress(request)).rejects.toMatchObject({ code: "PaymentNetworkMismatch" });
   expect(service.address).toHaveBeenCalledOnce();
@@ -137,7 +158,6 @@ it("refuses a fallback if the chain changes during the registry recheck", async 
 
 it("refuses a fallback when payment policy changes during the final chain check", async () => {
   const recoveryOnly = new Error("recovery only");
-  lookup.mockResolvedValue(undefined);
   genesis.mockResolvedValueOnce(service.genesisHash).mockImplementationOnce(async () => {
     service.address.mockRejectedValueOnce(recoveryOnly);
     return service.genesisHash;
@@ -146,7 +166,6 @@ it("refuses a fallback when payment policy changes during the final chain check"
 });
 
 it("refuses a changed service address after the final chain check", async () => {
-  lookup.mockResolvedValue(undefined);
   service.address.mockResolvedValueOnce(fallbackAddress).mockResolvedValueOnce(registryAddress);
   await expect(resolvePaymentAddress(request)).rejects.toMatchObject({ code: "ReleaseBindingMismatch" });
 });
