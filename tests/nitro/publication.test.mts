@@ -115,7 +115,7 @@ test("restores an exact signed historical policy without replacing a different a
       }) };
     }
     if (args.includes("get-object")) {
-      const id = args[args.indexOf("--version-id") + 1]!;
+      const id = args.includes("--version-id") ? args[args.indexOf("--version-id") + 1]! : head;
       await writeFile(args.at(-1)!, held.get(id)!);
       return { stdout: JSON.stringify({ VersionId: id }) };
     }
@@ -126,7 +126,7 @@ test("restores an exact signed historical policy without replacing a different a
     held.set("restored", backup);
     head = "restored";
     if (failedResponse) throw new Error("lost response");
-    return { stdout: "{}" };
+    return { stdout: JSON.stringify({ VersionId: head }) };
   });
   await assert.rejects(restorePublication(restorePins, primary.bucket, "missing", options), /retained.*missing/);
   held.set("invalid", signed(next));
@@ -227,6 +227,62 @@ test("one conditional publisher wins and replaying the exact policy is idempoten
   assert.ok(candidates.includes(head));
   await publish(trust, trust.publications[0].bucket, head, awsOnly(aws));
   assert.equal(committed, 1);
+});
+
+test("confirms a restored head by its current S3 version and exact signed bytes", async context => {
+  const text = signed(first);
+  const [primary] = trust.publications;
+  const key = nitroPublication(trust, primary).key;
+  context.mock.method(globalThis, "fetch", async () => new Response(text));
+  const writeError = new Error("lost response");
+  const readError = new Error("readback unavailable");
+  for (const fault of ["missing write", "different version", "different bytes", "missing file", "lost response", "both failed", undefined]) {
+    let current = "damaged";
+    const objects = new Map([["damaged", "{}"], ["backup", text]]);
+    let writes = 0;
+    const options = awsOnly(async args => {
+      if (args.includes("head-object")) {
+        return { stdout: JSON.stringify({ VersionId: current, ContentLength: objects.get(current)!.length, ETag: '"etag"' }) };
+      }
+      if (args.includes("list-object-versions")) {
+        const Versions = [current, "backup"].map(VersionId => ({
+          Key: key, VersionId, IsLatest: VersionId === current, Size: objects.get(VersionId)!.length,
+        }));
+        return { stdout: JSON.stringify({ Versions, IsTruncated: false }) };
+      }
+      if (args.includes("get-object")) {
+        if (fault === "both failed" && !args.includes("--version-id")) throw readError;
+        const VersionId = args.includes("--version-id") ? args[args.indexOf("--version-id") + 1]! : current;
+        if (fault !== "missing file" || args.includes("--version-id")) {
+          await writeFile(args.at(-1)!, objects.get(VersionId)!);
+        }
+        return { stdout: JSON.stringify({ VersionId }) };
+      }
+      assert.ok(args.includes("put-object"));
+      writes++;
+      if (fault !== "missing write") {
+        current = fault === "different version" ? "other" : "written";
+        objects.set(current, fault === "different bytes" ? "{}" : text);
+      }
+      if (fault === "lost response" || fault === "both failed") throw writeError;
+      return { stdout: JSON.stringify({ VersionId: "written" }) };
+    });
+    const restore = restorePublication(trust, primary.bucket, "backup", options);
+    if (fault === "both failed") {
+      await assert.rejects(restore, error => {
+        assert.ok(error instanceof AggregateError);
+        assert.deepEqual(error.errors, [writeError, readError]);
+        return true;
+      });
+    } else if (fault === "missing file") {
+      await assert.rejects(restore, { code: "ENOENT" });
+    } else if (fault !== undefined && fault !== "lost response") {
+      await assert.rejects(restore, /restored policy.*(version|bytes)/);
+    } else {
+      await restore;
+    }
+    assert.equal(writes, 1);
+  }
 });
 
 test("confirms a lost write response only by exact bytes and reports both failures when readback fails", async context => {
@@ -1074,6 +1130,13 @@ test("mainnet checks both installed publication buckets before enabling payments
         const ObjectOwnership = hazard === "ownership" ? "ObjectWriter" : "BucketOwnerEnforced";
         return { stdout: JSON.stringify({ OwnershipControls: { Rules: [{ ObjectOwnership }] } }) };
       }
+      if (args.includes("get-bucket-cors")) {
+        return { stdout: JSON.stringify({ CORSRules: [{
+          AllowedOrigins: hazard === "cors-origin" ? [] : ["https://wallet.example"],
+          AllowedMethods: [hazard === "cors-method" ? "HEAD" : "GET"],
+          AllowedHeaders: [hazard === "cors-header" ? "content-type" : pin === primary ? "x-amz-*" : "x-amz-expected-bucket-owner"],
+        }] }) };
+      }
       assert.ok(args.includes("get-bucket-policy"));
       const policy = bucketPolicy(
         mainnet, pin.bucket,
@@ -1104,6 +1167,8 @@ test("mainnet checks both installed publication buckets before enabling payments
   for (const [hazard, message] of [
     ["lifecycle", /must have no lifecycle/], ["permission", /AccessDenied/], ["versioning", /requires versioning/],
     ["ownership", /requires bucket-owner-enforced ownership/],
+    ["cors-method", /requires CORS for wallet policy reads/], ["cors-header", /requires CORS for wallet policy reads/],
+    ["cors-origin", /requires CORS for wallet policy reads/],
     ["policy", /differs from the custody-pinned bucket policy/],
     ["administrator", /differs from the custody-pinned bucket policy/],
     ["publisher", /differs from the custody-pinned bucket policy/],

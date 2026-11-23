@@ -827,10 +827,13 @@ Also pass `--publication-profile "$primary_read_profile" --publication-profile
 "$mirror_read_profile"` to mainnet payment publication and
 `--check-wallet-trust`. Each read-only profile belongs to its bucket owner's
 account and needs `s3:GetBucketPolicy`, `s3:GetBucketVersioning`,
-`s3:GetBucketOwnershipControls` and `s3:GetLifecycleConfiguration`.
+`s3:GetBucketOwnershipControls`, `s3:GetLifecycleConfiguration` and
+`s3:GetBucketCORS`.
 Both checks compare the installed bucket policy with the policy generated
-from the exact roles in the independent custody trust file. They also
-require versioning so a damaged publication can be restored.
+from the exact roles in the independent custody trust file. They require
+versioning and an installed CORS rule allowing `GET` with
+`x-amz-expected-bucket-owner` for a wallet origin. Verify each supported
+wallet origin in the deployment rehearsal.
 Pass the same profiles on devnet to rehearse these checks.
 Recovery-only activation can proceed during a key or replica inspection outage
 while the required records remain readable.
@@ -883,8 +886,10 @@ multiple revisions, provided it preserves the mirror's custody floor and
 recovery-only flag. Copy the exact revocation to the mirror before publishing
 an activation.
 It checks the peer after rechecking the damaged head version, then restores
-the retained bytes against that head's ETag. Restoring an expired head keeps
-its expiry and lets the operator publish a successor. [S3 version listing](https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectVersions.html)
+the retained bytes against that head's ETag. It reads the current version
+and bytes together and checks the version against the write response when
+available. Restoring an expired head keeps its expiry and lets the operator
+publish a successor. [S3 version listing](https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectVersions.html)
 
 ```sh
 pnpm --dir example exec tsx ../xtask/nitro-publish.ts "$wallet_trust" "$bucket" --restore-from "$retained_version_id"

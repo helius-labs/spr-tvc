@@ -194,6 +194,14 @@ async function paymentPublicationChecks(
   }));
 }
 
+function allowsWalletPolicyHeader(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const header = "x-amz-expected-bucket-owner";
+  const [prefix = "", suffix, extra] = value.toLowerCase().split("*");
+  return suffix === undefined ? prefix === header : extra === undefined &&
+    header.length >= prefix.length + suffix.length && header.startsWith(prefix) && header.endsWith(suffix);
+}
+
 async function checkPublicationBuckets(
   checks: Awaited<ReturnType<typeof paymentPublicationChecks>>, run: Run,
 ) {
@@ -204,10 +212,15 @@ async function checkPublicationBuckets(
     async function read<T>(operation: string) {
       return parseStrictJson<T>((await storage(operation, [])).stdout);
     }
-    const [versioning, ownership, response] = await Promise.all([
+    const [versioning, ownership, response, cors] = await Promise.all([
       read<{ Status?: string }>("get-bucket-versioning"),
       read<{ OwnershipControls?: unknown }>("get-bucket-ownership-controls"),
       read<{ Policy: string }>("get-bucket-policy"),
+      read<{ CORSRules?: readonly {
+        AllowedOrigins?: readonly unknown[];
+        AllowedMethods?: readonly unknown[];
+        AllowedHeaders?: readonly unknown[];
+      }[] }>("get-bucket-cors"),
       storage("get-bucket-lifecycle-configuration", ["--cli-error-format", "json"]).then(() => {
         throw new Error(`publication bucket ${bucket} must have no lifecycle configuration`);
       }, error => {
@@ -231,6 +244,12 @@ async function checkPublicationBuckets(
     const installed = parseStrictJson(response.Policy);
     if (canonicalizeJsonValue(installed) !== canonicalizeJsonValue(policy)) {
       throw new Error(`publication bucket ${bucket} differs from the custody-pinned bucket policy`);
+    }
+    if (!Array.isArray(cors?.CORSRules) || !cors.CORSRules.some(rule =>
+      Array.isArray(rule?.AllowedOrigins) && rule.AllowedOrigins.some((origin: unknown) => typeof origin === "string" && origin.length > 0) &&
+      Array.isArray(rule.AllowedMethods) && rule.AllowedMethods.includes("GET") &&
+      Array.isArray(rule.AllowedHeaders) && rule.AllowedHeaders.some(allowsWalletPolicyHeader))) {
+      throw new Error(`publication bucket ${bucket} requires CORS for wallet policy reads`);
     }
   }));
 }
@@ -413,16 +432,17 @@ export async function restorePublication(trust: NitroTrust, name: string, retain
     return { VersionId: versionId(result.VersionId), Size: result.ContentLength, etag: etag(result.ETag) };
   }
   const directory = await mkdtemp(join(tmpdir(), "spr-policy-restore-"));
-  const path = join(directory, "policy.json");
+  const versionPath = join(directory, "version.json");
   async function readVersion(version: StoredVersion) {
     if (!Number.isSafeInteger(version.Size) || version.Size < 0) throw new Error("invalid S3 policy size");
     if (version.Size === 0 || version.Size > MAX_BYTES) return undefined;
+    await rm(versionPath, { force: true });
     const { stdout } = await call("get-object", [
-      "--key", key, "--version-id", versionId(version.VersionId), "--range", `bytes=0-${MAX_BYTES}`, path,
+      "--key", key, "--version-id", versionId(version.VersionId), "--range", `bytes=0-${MAX_BYTES}`, versionPath,
     ]);
     if (JSON.parse(stdout).VersionId !== version.VersionId) throw new Error("S3 returned a different policy version");
     try {
-      const text = await readBoundedDocument(path, MAX_BYTES);
+      const text = await readBoundedDocument(versionPath, MAX_BYTES);
       if (Buffer.byteLength(text) !== version.Size) throw new Error("S3 policy size differs from the retained version");
       return text;
     } catch (error) {
@@ -479,7 +499,8 @@ export async function restorePublication(trust: NitroTrust, name: string, retain
         throw new Error("a later S3 version contains a different signed policy");
       }
     }
-    if (!alreadyRestored) await writeFile(path, text, { mode: 0o600 });
+    const candidate = join(directory, "candidate.json");
+    if (!alreadyRestored) await writeFile(candidate, text, { mode: 0o600, flag: "wx" });
     const confirmed = await head();
     if (confirmed.VersionId !== damaged.VersionId || confirmed.etag !== damaged.etag) {
       throw new Error("policy head changed during restoration");
@@ -489,11 +510,28 @@ export async function restorePublication(trust: NitroTrust, name: string, retain
     const primaryPolicy = verifyStoredNitroPolicy(primaryText, trust, BigInt(Date.now()));
     nextNitroPublication(primaryPolicy, isPrimary ? witness : text, trust, trust, "primary");
     if (alreadyRestored) return;
+    let acknowledgedVersion: string | undefined;
+    let writeError: unknown;
     try {
-      await call("put-object", ["--key", key, "--if-match", damaged.etag, "--content-type", "application/json",
-        "--cache-control", "no-store", "--body", path]);
+      const { stdout } = await call("put-object", ["--key", key, "--if-match", damaged.etag, "--content-type", "application/json",
+        "--cache-control", "no-store", "--body", candidate]);
+      acknowledgedVersion = versionId(JSON.parse(stdout).VersionId);
     } catch (error) {
-      if (await head().then(readVersion).catch(() => undefined) !== text) throw error;
+      writeError = error;
+    }
+    try {
+      const current = join(directory, "current.json");
+      const { stdout } = await call("get-object", ["--key", key, "--range", `bytes=0-${MAX_BYTES}`, current]);
+      const currentVersion = versionId(JSON.parse(stdout).VersionId);
+      if (currentVersion === damaged.VersionId || (acknowledgedVersion !== undefined && currentVersion !== acknowledgedVersion)) {
+        throw new Error("restored policy does not match the current S3 version");
+      }
+      if (await readBoundedDocument(current, MAX_BYTES) !== text) throw new Error("restored policy does not match the retained bytes");
+    } catch (readError) {
+      if (writeError === undefined) throw readError;
+      throw new AggregateError([writeError, readError],
+        `policy restoration could not be confirmed. Write failed with ${writeError}. Readback failed with ${readError}`,
+        { cause: readError });
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
