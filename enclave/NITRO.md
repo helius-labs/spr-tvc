@@ -349,7 +349,10 @@ require the incoming replicas to match the original keys and ciphertexts.
 A planned transition matches the incoming
 pins. The publisher
 rechecks the peer's signed file, the registered targets, epoch closure and
-the active custody roster after probing. For mainnet payments, the publisher
+the active custody roster after probing. Policy signing, primary publication
+and wallet pin verification require the same S3 versions, write times and
+bytes for the serving registrations, receipts and their immediate rotation
+records across both custody checks. For mainnet payments, the publisher
 and wallet pin verifier require both keys to remain enabled in each slot
 named by that target's attested bootstrap. They also check the pinned replica's
 installed protections using a read-only identity in the replica account.

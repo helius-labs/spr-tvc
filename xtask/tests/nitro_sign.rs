@@ -176,13 +176,16 @@ fn activation_is_requalified_after_kms_before_installing_a_signature() {
                             }
                             Some("qualification changed") => {
                                 return Ok(
-                                    br#"{"nextCutover":null,"canaryDigest":"different"}"#.to_vec()
+                                    br#"{"nextCutover":null,"canaryDigest":"same","ledgerDigest":"different"}"#.to_vec()
                                 )
                             }
                             _ => {}
                         }
                     }
-                    Ok(br#"{"nextCutover":null,"canaryDigest":"initial"}"#.to_vec())
+                    Ok(
+                        br#"{"nextCutover":null,"canaryDigest":"same","ledgerDigest":"initial"}"#
+                            .to_vec(),
+                    )
                 }
                 "aws" => {
                     assert_eq!(checks, 1);

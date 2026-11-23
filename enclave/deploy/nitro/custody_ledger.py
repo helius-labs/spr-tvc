@@ -1019,11 +1019,11 @@ def check_release_policy(trust, document, custody_signer=None, *, source_profile
         canary_digests = {digest for _, _, digest in readiness}
         if len(canary_digests) != 1:
             raise ValueError("serving targets must match the same custody canary")
+        observed_records = {}
+        for observed, _, _ in readiness:
+            for name, fingerprint in observed.items():
+                observe_record(observed_records, name, fingerprint)
         if ledger_backup is not None:
-            observed_records = {}
-            for observed, _, _ in readiness:
-                for name, fingerprint in observed.items():
-                    observe_record(observed_records, name, fingerprint)
             require_replicated_custody(trust, ledger_backup, max(by_epoch, key=epoch_number), observed_records)
         if verify_payment_recovery:
             require_payment_recovery_quorums(trust, [target for _, targets, _ in readiness for target in targets], key_profiles)
@@ -1038,7 +1038,7 @@ def check_release_policy(trust, document, custody_signer=None, *, source_profile
         raise ValueError("custody policy signer must match a key in the active custody approval roster")
     next_cutover = next((str(entry["activeFrom"]) for entry in trust["approvalKeys"] if entry["activeFrom"] > now), None)
     return {"custodyKeys": [public for _, public in keys], "nextCutover": next_cutover,
-            "canaryDigest": canary_digests.pop()}
+            "canaryDigest": canary_digests.pop(), "ledgerDigest": sha256(observed_records)}
 
 
 def draft(trust, capture, build, host, roster):

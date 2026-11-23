@@ -848,7 +848,10 @@ Each signer supplies `--custody-trust` to verify the publication pair.
 For activation, `nitro-sign` checks the approved targets against the ledger
 before and after KMS signs, using the same policy and custody trust bytes.
 It requires matching custody qualification and checks policy expiry and the
-next custody roster cutover before saving. `.nitro-sign.lock` serializes the
+next custody roster cutover before saving. The two checks must use the same
+S3 versions, write times and bytes for the qualifying ledger records. Primary
+publication and wallet trust verification require the same match around
+the replica probes. `.nitro-sign.lock` serializes the
 final checks and replacement. If either input file changed, review it and rerun.
 For revocation, sign a target-free policy with both quorums using the local
 custody trust file. Publish the revocation without `--custody-trust` when the

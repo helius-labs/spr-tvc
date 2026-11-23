@@ -1564,6 +1564,18 @@ class CustodyLedgerTests(unittest.TestCase):
             check()
         del self.objects[name]
         register_target(self.trust, self.signed_subject(TARGET_APPROVAL, registered))
+        ledger_digest = check()["ledgerDigest"]
+        alternate = self.signed_subject(TARGET_APPROVAL, {
+            **registered, "wrappingKeys": [key(i, 23) for i in range(1, 7)],
+        })
+        for records, value in (
+            (self.versions, "different-version"),
+            (self.timestamps, datetime.fromtimestamp(self.now + 1, timezone.utc).isoformat()),
+            (self.objects, canonical(alternate)),
+        ):
+            with patch.dict(records, {name: value}):
+                self.assertNotEqual(check()["ledgerDigest"], ledger_digest)
+        self.assertEqual(check()["ledgerDigest"], ledger_digest)
         with self.assertRaisesRegex(ValueError, "requires both --source-profile and --replica-profile"):
             check(replica_profile="replica-read")
         with self.assertRaisesRegex(ValueError, "payment recovery verification requires a pinned custody ledger replica"):
@@ -1612,14 +1624,15 @@ class CustodyLedgerTests(unittest.TestCase):
         self.trust["approvalKeys"].append(incoming)
         self.assertEqual(check(), {"custodyKeys": [base64.b64decode(pin["publicKey"])[-65:].hex()
                                                    for pin in self.trust["approvalKeys"][0]["keys"]],
-                                   "nextCutover": str(incoming["activeFrom"]), "canaryDigest": "35" * 32})
+                                   "nextCutover": str(incoming["activeFrom"]), "canaryDigest": "35" * 32,
+                                   "ledgerDigest": ledger_digest})
         self.now = incoming["activeFrom"]
         with self.assertRaisesRegex(ValueError, "active custody approval roster"):
             check(custody_signer=signer)
         next_pin = approval_roster(self.trust)["keys"][0]
         self.assertEqual(check(custody_signer=(next_pin["keyArn"], base64.b64decode(next_pin["publicKey"])[-65:].hex())),
                          {"custodyKeys": [base64.b64decode(pin["publicKey"])[-65:].hex() for pin in incoming["keys"]],
-                          "nextCutover": None, "canaryDigest": "35" * 32})
+                          "nextCutover": None, "canaryDigest": "35" * 32, "ledgerDigest": ledger_digest})
         def close_during_target_read(*args, **options):
             subject = read_registered_target(*args, **options)
             if subject["mode"] == "serve":
