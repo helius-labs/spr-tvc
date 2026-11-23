@@ -43,8 +43,10 @@ signs the request.
    After a confirmed registry miss, the wallet checks that the payment RPC’s
    Solana genesis hash matches the service network before requesting
    `PublicKeys(address)`. Read the registry again before using the service
-   keys. A registration found on the second read takes precedence, and a
-   failed read stops resolution. Anyone can request the service viewing and
+   keys. The second read must reach the slot of the first. A registration
+   found on the second read takes precedence. An empty, system-owned record PDA
+   can hold lamports before registration and counts as absent. A failed read
+   stops resolution. Anyone can request the service viewing and
    nullifier public keys. The enclave requires the canonical Ed25519 encoding
    of a non-identity point in the prime-order subgroup.
    The SDK checks the returned X25519 key and the canonical BN254 nullifier
@@ -56,6 +58,10 @@ signs the request.
    salt, output position, and note commitment. The owner tag exposes the
    recipient's Solana address. The commitment binds that address and service
    nullifier public key through `owner_hash`.
+   Wallet rechecks and RPC preflight establish the recipient state before
+   submission. A registration or viewing-key update can still land ahead of
+   an already signed payment. The default ring needs the registry assertion
+   in the signed payment to enforce that state at execution.
 3. **Authorize the exact batch.** The recipient wallet uses the owner tag to
    find candidate outputs. The SDK checks each item's cipher label, 16-byte
    salt and slot before asking the owner to sign. Transfer slots are unsigned

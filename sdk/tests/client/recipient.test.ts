@@ -24,12 +24,16 @@ const recordBytes = Uint8Array.of(
   ...registryAddress.nullifierPublicKey, ...registryAddress.viewingPublicKey.toBytes(), 0,
 );
 const miss = { context: { slot: 10n }, value: null };
-const registered = {
+const registered: {
+  context: { slot: bigint };
+  value: { data: readonly [string, "base64"]; owner: Address; lamports: bigint; executable: boolean };
+} = {
   context: { slot: 11n },
   value: {
     data: [Buffer.from(recordBytes).toString("base64"), "base64"] as const,
     owner: USER_REGISTRY_PROGRAM_ID,
     lamports: 1n,
+    executable: false,
   },
 };
 const service = { address: vi.fn(async () => fallbackAddress), genesisHash: genesisHashForNetwork("devnet") };
@@ -74,12 +78,42 @@ it("uses a registration that appears during the service lookup", async () => {
   expect(read).toHaveBeenCalledTimes(2);
 });
 
+it("treats a prefunded system account at the record PDA as unregistered", async () => {
+  const prefunded = {
+    context: miss.context,
+    value: {
+      data: ["", "base64"] as const,
+      owner: address("11111111111111111111111111111111"),
+      lamports: 1_000_000n,
+      executable: false,
+    },
+  };
+  read.mockResolvedValue(prefunded);
+  await expect(resolvePaymentAddress(request)).resolves.toBe(fallbackAddress);
+  read.mockResolvedValue({ ...prefunded, value: { ...prefunded.value, owner: USER_REGISTRY_PROGRAM_ID } });
+  await expect(resolvePaymentAddress(request)).rejects.toMatchObject({
+    causeCode: "WALLET_INVALID_USER_RECORD",
+  });
+});
+
 it.each([null, registered.value])("rejects a regressing registry response", async value => {
   read.mockResolvedValueOnce(miss).mockResolvedValueOnce({ context: { slot: 9n }, value });
   await expect(resolvePaymentAddress(request)).rejects.toMatchObject({
     cause: { code: "PaymentRegistryContextStale" },
   });
   expect(service.address).toHaveBeenCalledOnce();
+});
+
+const noncanonicalRecord = registered.value.data[0].slice(0, -3) + "B==";
+it.each(["!", noncanonicalRecord])("rejects malformed or noncanonical registry account Base64", async encoded => {
+  read.mockResolvedValue({
+    ...registered,
+    value: { ...registered.value, data: [encoded, "base64"] },
+  });
+  await expect(resolvePaymentAddress(request)).rejects.toMatchObject({
+    cause: { code: "PaymentRegistryAccountInvalid" },
+  });
+  expect(service.address).not.toHaveBeenCalled();
 });
 
 it("refuses the service address if the second registry read fails", async () => {

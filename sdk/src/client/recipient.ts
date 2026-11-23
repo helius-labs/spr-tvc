@@ -1,10 +1,14 @@
 import { ShieldedAddress } from "@heliuslabs/spr";
 import { resolveRegisteredAddress } from "@heliuslabs/spr/wallet";
-import { getBase64Encoder, isAddress, type Address, type Commitment, type Rpc, type SolanaRpcApi } from "@solana/kit";
+import { getBase64Decoder, getBase64Encoder, isAddress, type Address, type Commitment, type Rpc, type SolanaRpcApi } from "@solana/kit";
 import { awaitWithSignal, requestScope, type DecryptionServiceRequestOptions } from "../connection/request.js";
 import { DecryptionServiceError } from "../protocol/error.js";
 import { bytesEqual } from "../protocol/hex.js";
 import type { DecryptionService } from "./decryption.js";
+
+const SYSTEM_PROGRAM = "11111111111111111111111111111111";
+const base64 = getBase64Encoder();
+const toBase64 = getBase64Decoder();
 
 type PaymentRpc = {
   readonly commitment: Commitment;
@@ -32,15 +36,27 @@ export async function resolvePaymentAddress(
         slotFloor = slot;
         const { value } = result;
         if (value === null) return undefined;
-        if (!isAddress(value?.owner) || typeof value.lamports !== "bigint" || value.lamports < 0n ||
+        if (!isAddress(value?.owner) || value.executable !== false ||
+            typeof value.lamports !== "bigint" || value.lamports < 0n ||
             value.lamports > 0xffff_ffff_ffff_ffffn || !Array.isArray(value.data) ||
             value.data.length !== 2 || value.data[1] !== "base64" || typeof value.data[0] !== "string") {
           throw new DecryptionServiceError("PaymentRegistryAccountInvalid");
         }
+        const encoded = value.data[0];
+        let data: Uint8Array;
+        try {
+          data = new Uint8Array(base64.encode(encoded));
+        } catch {
+          throw new DecryptionServiceError("PaymentRegistryAccountInvalid");
+        }
+        if (toBase64.decode(data) !== encoded) {
+          throw new DecryptionServiceError("PaymentRegistryAccountInvalid");
+        }
+        if (value.owner === SYSTEM_PROGRAM && data.length === 0) return undefined;
         return {
           owner: value.owner,
           lamports: value.lamports,
-          data: new Uint8Array(getBase64Encoder().encode(value.data[0])),
+          data,
         };
       },
     };
