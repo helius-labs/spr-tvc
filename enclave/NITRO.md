@@ -473,8 +473,9 @@ cached session and again after authenticating the key reply. The TypeScript
 wallet builders repeat the lookup after
 assembling a transfer or preparing a deposit and require the same recipient
 keys. A Rust Nitro payment submission requires at least one attached recipient
-and is consumed by a send attempt. It binds the resolved keys to the outputs,
-checks the signed blockhash, then repeats recipient checks before broadcast.
+and binds the resolved keys to its outputs. Signing returns the transaction ID
+and blockhash lifetime for the caller to record before broadcast. A send
+consumes the signed payment, checks its blockhash, and rechecks its recipients.
 A permissionless sender can still pay a previously published destination.
 Earlier ciphertexts retain
 their exposure, and owners must retain access to the old domain until recovery
