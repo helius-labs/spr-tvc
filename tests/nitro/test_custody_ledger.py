@@ -34,8 +34,9 @@ from kms_policy import acknowledgement_policy, boot_pins
 from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, schedule, sign
 from provenance import describe
 from retirement import (LiveBoot, commit_retirement, inspect_keys, prove_recovery, qualified_manifest, qualified_policy,
-                        main as retirement_main, replacement_targets, retirement_inventory, retirement_scope,
-                        sign_retirement, verify_retired)
+                        qualify_key_retirement, main as retirement_main, replacement_targets,
+                        require_observed_target_replication, retirement_inventory, retirement_scope, sign_retirement,
+                        slot_inventory, verify_retired)
 
 READ_ROLE = "arn:aws:iam::000000000001:role/custodian"
 PUBLISHER = "arn:aws:iam::000000000008:role/publisher"
@@ -1117,7 +1118,7 @@ class CustodyLedgerTests(unittest.TestCase):
                         commit_retirement(self.trust, None, retirement)
                     self.assertNotIn(marker_key, self.objects)
 
-                    def concurrent_commit(*_args):
+                    def concurrent_commit(*_args, **_options):
                         self.objects[marker_key] = saved
                         return LiveBoot({"boot": "replacement"}, (self.now + 60) * 1000)
 
@@ -1134,6 +1135,28 @@ class CustodyLedgerTests(unittest.TestCase):
             _, _, keys, _, _ = retirement_inventory(self.trust, "1", 1)
             self.assertIn(original_target["wrappingKeys"][0], keys)
             self.assertEqual(copied, set(self.objects))
+            old_path = prefix + target_object_name(original_target)
+            changed_target = {**original_target, "wrappingKeys": [key(slot, 32) for slot in range(1, 7)]}
+            changed_body = canonical(self.signed_subject(TARGET_APPROVAL, changed_target))
+            old_source_reads = 0
+
+            def changed_inventory(region, service, operation, args, **options):
+                nonlocal old_source_reads
+                reply = aws(region, service, operation, args, **options)
+                if operation != "get-object" or old_path not in args:
+                    return reply
+                if region == "eu-north-1":
+                    old_source_reads += 1
+                    if old_source_reads == 1:
+                        return reply
+                pathlib.Path(args[-1]).write_bytes(changed_body)
+                return {**reply, "VersionId": "changed-target-version"}
+
+            with (patch("custody_ledger.aws", side_effect=changed_inventory),
+                  patch("retirement.slot_inventory", wraps=slot_inventory) as inventory):
+                with self.assertRaisesRegex(ValueError, "changed during verification"):
+                    retirement_inventory(self.trust, "1", 1)
+                inventory.assert_not_called()
             source_status[prefix + "1.json"] = "REPLICA"
             self.assertEqual(retirement_inventory(self.trust, "1", 1)[2], keys)
             for name in self.objects:
@@ -1585,13 +1608,33 @@ class CustodyLedgerTests(unittest.TestCase):
                     check_release_policy(self.trust, document, **inspection)
 
         with (patch("custody_ledger.read_stored_payload", side_effect=read),
-              patch("custody_ledger.require_payment_recovery_quorums"),
+              patch("custody_ledger.require_payment_recovery_quorums") as quorums,
               patch("custody_ledger.check_source_ledger") as inspect_source,
               patch("custody_ledger.check_recovery_bucket") as inspect_replica):
             check_release_policy(self.trust, document, **PAYMENT_PROFILES)
             self.assertEqual(copied, expected)
             inspect_source.assert_called_once_with(self.trust, "source-read")
             inspect_replica.assert_called_once_with(self.trust, replica, "replica-read")
+            selected = target_object_name(registered)
+            substituted = {**registered, "wrappingKeys": [key(slot, 55) for slot in range(1, 7)]}
+            substituted_body = canonical(self.signed_subject(TARGET_APPROVAL, substituted))
+            selected_reads = 0
+
+            def changed_registration(trust, name):
+                nonlocal selected_reads
+                payload, metadata = read(trust, name)
+                if name != selected:
+                    return payload, metadata
+                selected_reads += 1
+                if selected_reads == 1:
+                    return payload, metadata
+                return substituted_body, {**metadata, "VersionId": "changed-target-version"}
+
+            quorums.reset_mock()
+            with patch("custody_ledger.read_stored_payload", side_effect=changed_registration):
+                with self.assertRaisesRegex(ValueError, "changed during verification"):
+                    check_release_policy(self.trust, document, **PAYMENT_PROFILES)
+                quorums.assert_not_called()
             prefix = f"spr-custody/mainnet/{DOMAIN}/"
             with patch.dict(self.replica_objects, {prefix + "retired/3.json": b"{}"}):
                 with self.assertRaisesRegex(ValueError, "retirement record in the pinned replica"):
@@ -1729,6 +1772,26 @@ class CustodyLedgerTests(unittest.TestCase):
             for alternate in (None, self.trust["publications"][::-1]):
                 with self.assertRaisesRegex(ValueError, "pinned primary and mirror"):
                     check_release_policy(self.trust, {**document, "policy": {**policy, "publications": alternate}})
+
+    def test_key_deletion_rechecks_the_pinned_replacement_receipt(self):
+        receipt = record(self.trust, self.document(1))[0]
+        other = record(self.trust, self.document(1, variant="cd"))[0]
+        qualification = {"replacementEpoch": "1", "replacementReceiptSha256": sha256(receipt),
+                         "replacementBootstrap": {"bootKeyId": "de" * 32, "bootedAtMs": str(self.booted_at_ms),
+                                                  "slots": [1, 2, 3]}}
+        with (patch("retirement.pinned_wallet_trust", return_value=self.wallet_pins),
+              patch("retirement.load_epoch", return_value=(None, other, [])),
+              patch("retirement.replacement_targets") as targets, patch("retirement.attested_boots"),
+              patch("retirement.ready_boot")):
+            with self.assertRaisesRegex(ValueError, "replacement custody receipt changed"):
+                qualify_key_retirement(self.trust, None, qualification, 0)
+            targets.assert_not_called()
+
+    def test_later_boot_cannot_change_an_already_qualified_registration(self):
+        qualified = {"replacementTargetIdentity": "ab" * 32, "replacementTargetSha256": "cd" * 32}
+        changed = {**qualified, "replacementTargetSha256": "ef" * 32}
+        with self.assertRaisesRegex(ValueError, "registration changed during verification"):
+            require_observed_target_replication(self.trust, qualified, changed)
 
     @patch("retirement.require_recovery_quorum")
     def test_retirement_checks_the_signed_replacement_after_the_write_inventory(self, quorum):

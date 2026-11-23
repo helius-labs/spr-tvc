@@ -559,9 +559,9 @@ pinned history and excluded versions.
 
    Mainnet signing, publication, pre-deletion inspection and final retirement
    verification require a pinned ledger replica. Before signing or publishing,
-   confirm that both copies contain the receipt chain, old target registrations
-   and the selected replacement registration. This check also runs on devnet
-   with a pinned replica. Devnet without a replica omits `--replica-profile`.
+   match both buckets to the exact receipts and registrations used to qualify
+   the retirement. This check also runs on devnet with a pinned replica.
+   Devnet without a replica omits `--replica-profile`.
    Use a read-only profile in the recovery bucket owner's account with the
    S3 inspection permissions listed under
    the ledger installation check, excluding `s3:GetReplicationConfiguration`.
@@ -580,8 +580,10 @@ pinned history and excluded versions.
    cold-boot a registered serving target for the replacement receipt with the
    three proved slots. Use another registered target on that receipt if the
    original parent fails. Its registration must also be present on the pinned
-   ledger replica when configured. Open a note from before rotation. Each
-   retirement role runs `inspect --wallet-trust` immediately before scheduling
+   ledger replica when configured. The later boot must use the approved
+   replacement receipt. Reusing the same target requires the same signed
+   registration. Open a note from before rotation. Each retirement role
+   runs `inspect --wallet-trust` immediately before scheduling
    deletion. Supply a read-only inspection profile for each old parent account.
    The command verifies termination of every registered old parent and attests
    the replacement under the current wallet policy before and after checking
@@ -756,8 +758,10 @@ publication tools match its executable, release ID and PCR0–PCR4 to the
 registered serving image and verify its committed, active custody epoch.
 For mainnet and any devnet with a pinned replica, signers and publishers
 also check both copies of the receipt chain, its rotation approvals and
-the serving registrations. They verify every epoch and rotation approval
-from genesis under its historical roster. Renewals run the same checks.
+the serving registrations. Both buckets must match the versions, write times
+and bytes used to identify the recovery keys. The tools verify every epoch
+and rotation approval from genesis under its historical roster. Renewals run
+the same checks.
 Resolve missing or failed replication before retrying activation.
 [S3 replication status](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication-status.html)
 The primary publisher requires the activation's wallet custody pins to match

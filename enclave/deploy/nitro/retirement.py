@@ -25,18 +25,18 @@ from custody_ledger import (
     require_active_epoch, require_pinned_publications,
     require_publication_roster, require_replicated_custody, retirement_approval, retirement_bootstrap,
     retirement_object_name, retirement_recovery, retirement_target, sign_share_recovery,
-    target_attestation, target_object_name, target_path, verify_retirement, write_once,
+    target_attestation, target_path, verify_retirement, write_once,
 )
 from deployment import HostUnobserved, require_host_state
 from kms_policy import RSA_KEYS, key_policy
 from relay import custody_recovery_policy
 
 
-def retirement_scope(trust, epoch, replacement):
+def retirement_scope(trust, epoch, replacement, **options):
     if epoch_number(replacement) <= epoch_number(epoch):
         raise ValueError("retirement requires a newer custody epoch")
-    _, old, _, old_at = load_epoch_with_time(trust, epoch)
-    _, new, custodians, new_at = load_epoch_with_time(trust, replacement)
+    _, old, _, old_at = load_epoch_with_time(trust, epoch, **options)
+    _, new, custodians, new_at = load_epoch_with_time(trust, replacement, **options)
     if time.time() < max(old_at, new_at):
         raise ValueError("retirement cannot precede a committed custody receipt")
     if note_identity(old["custody"]) != note_identity(new["custody"]):
@@ -49,8 +49,8 @@ def retirement_scope(trust, epoch, replacement):
     }, new, custodians, new_at
 
 
-def require_recovery_quorum(trust, manifest, custodians, *, receipt_at=None):
-    target = retirement_target(trust, manifest, receipt_at=receipt_at, retired_at=time.time())
+def require_recovery_quorum(trust, manifest, custodians, *, receipt_at=None, **options):
+    target = retirement_target(trust, manifest, receipt_at=receipt_at, retired_at=time.time(), **options)
     slots = retirement_bootstrap(manifest["replacementBootstrap"])
     keys = [member["recoveryKeyArn"] for member in custodians] + [target["wrappingKeys"][slot - 1] for slot in slots]
 
@@ -65,12 +65,12 @@ def require_recovery_quorum(trust, manifest, custodians, *, receipt_at=None):
         list(workers.map(require_enabled, keys))
 
 
-def registered_targets(trust, epoch, receipt_digest):
-    _, receipt, _, receipt_at = load_epoch_with_time(trust, epoch)
+def registered_targets(trust, epoch, receipt_digest, **options):
+    _, receipt, _, receipt_at = load_epoch_with_time(trust, epoch, **options)
     if sha256(receipt) != receipt_digest:
         raise ValueError("target inventory does not match the committed custody receipt")
     for name in list_objects(trust, f"targets/{epoch}/"):
-        yield read_registered_target(trust, name, epoch, receipt_digest, receipt_at=receipt_at)
+        yield read_registered_target(trust, name, epoch, receipt_digest, receipt_at=receipt_at, **options)
 
 
 class ReplacementNotReady(ValueError):
@@ -206,14 +206,14 @@ def require_recovery_window(manifest, remaining=0):
         raise ValueError("retirement recovery window is closed or has insufficient time remaining")
 
 
-def checked_scope(trust, manifest, *, committed=None):
+def checked_scope(trust, manifest, *, committed=None, **options):
     require_recovery_window(manifest)
-    scope, receipt, custodians, receipt_at = retirement_scope(trust, manifest["epoch"], manifest["replacementEpoch"])
+    scope, receipt, custodians, receipt_at = retirement_scope(trust, manifest["epoch"], manifest["replacementEpoch"], **options)
     if any(manifest.get(field) != value for field, value in scope.items()):
         raise ValueError("retirement no longer matches the committed receipts or approval roster")
     if "priorRetirementSha256" in manifest:
         if committed is None:
-            closure, _, published_at = load_retirement(trust, manifest["epoch"])
+            closure, _, published_at = load_retirement(trust, manifest["epoch"], **options)
         else:
             closure, published_at = committed
         check_requalification_anchor(closure, published_at, manifest)
@@ -221,13 +221,13 @@ def checked_scope(trust, manifest, *, committed=None):
     return scope, receipt, custodians, receipt_at
 
 
-def retirement_qualification(trust, closure, published_at, requalification):
+def retirement_qualification(trust, closure, published_at, requalification, **options):
     if requalification is None:
         return closure["manifest"]
     manifest = verify_retirement(trust, requalification, closure["manifest"]["epoch"], time.time(), requalification=True)
-    _, _, custodians, receipt_at = checked_scope(trust, manifest, committed=(closure, published_at))
+    _, _, custodians, receipt_at = checked_scope(trust, manifest, committed=(closure, published_at), **options)
     retirement_recovery(requalification, custodians)
-    retirement_target(trust, manifest, receipt_at=receipt_at, retired_at=time.time())
+    retirement_target(trust, manifest, receipt_at=receipt_at, retired_at=time.time(), **options)
     return manifest
 
 
@@ -249,17 +249,22 @@ def prove_recovery(trust, document, index, relay_port):
     return {**document, "recoveryProofs": signatures}
 
 
-def verify_qualification(trust, wallet_trust, document):
+def verify_qualification(trust, wallet_trust, document, *, observed_records=None):
     manifest = document["manifest"]
-    scope, receipt, custodians, receipt_at = checked_scope(trust, manifest)
+    observed = {} if observed_records is None else observed_records
+    scope, receipt, custodians, receipt_at = checked_scope(trust, manifest, observed_records=observed)
     proven = retirement_recovery(document, custodians)
     boot = qualified_policy(trust, wallet_trust, scope, receipt["custody"], expected=manifest)
     policy = boot.evidence
     if manifest != {**scope, **policy, "recoveryDeadline": manifest["recoveryDeadline"]}:
         raise ValueError("retirement no longer matches the qualified replacement and wallet policy")
-    targets = registered_targets(trust, scope["epoch"], scope["receiptSha256"])
-    require_retirement_replication(trust, manifest, targets)
-    require_recovery_quorum(trust, manifest, proven, receipt_at=receipt_at)
+    if ledger_replica(trust) is not None:
+        # Record every old registration and the selected replacement.
+        for _ in registered_targets(trust, scope["epoch"], scope["receiptSha256"], observed_records=observed):
+            pass
+        retirement_target(trust, manifest, receipt_at=receipt_at, retired_at=time.time(), observed_records=observed)
+    require_retirement_replication(trust, manifest, observed)
+    require_recovery_quorum(trust, manifest, proven, receipt_at=receipt_at, observed_records=observed)
     require_active_epoch(trust, scope["replacementEpoch"])
     boot.require_current()
     return boot
@@ -293,16 +298,18 @@ def commit_retirement(trust, wallet_trust, document):
         require_same_record(stored)
         return
     check_approvals(approval_keys(trust), RETIREMENT, approval)
-    boot = verify_qualification(trust, wallet_trust, document)
+    observed = {}
+    boot = verify_qualification(trust, wallet_trust, document, observed_records=observed)
 
     def before_write():
         require_recovery_window(manifest, remaining=LEDGER_WRITE_MARGIN_SECONDS)
         boot.require_current(remaining=LEDGER_WRITE_MARGIN_SECONDS)
-        _, receipt, custodians, receipt_at = load_epoch_with_time(trust, manifest["replacementEpoch"])
+        _, receipt, custodians, receipt_at = load_epoch_with_time(trust, manifest["replacementEpoch"],
+                                                                 observed_records=observed)
         if sha256(receipt) != manifest["replacementReceiptSha256"]:
             raise ValueError("replacement custody receipt changed before retirement")
         proven = retirement_recovery(document, custodians)
-        require_recovery_quorum(trust, manifest, proven, receipt_at=receipt_at)
+        require_recovery_quorum(trust, manifest, proven, receipt_at=receipt_at, observed_records=observed)
         # The ledger and key checks can outlast a policy. Reattest the signed replacement after them.
         confirmed = qualified_policy(trust, wallet_trust, manifest, receipt["custody"], expected=boot.evidence)
         if confirmed.evidence != boot.evidence:
@@ -322,36 +329,32 @@ def commit_retirement(trust, wallet_trust, document):
 def retirement_inventory(trust, epoch, index, *, requalification=None):
     if index not in range(1, 7):
         raise ValueError("invalid custody slot")
-    document, custodians, published_at = load_retirement(trust, epoch)
+    observed = {}
+    document, custodians, published_at = load_retirement(trust, epoch, observed_records=observed)
     marker = document["manifest"]
-    qualification = retirement_qualification(trust, document, published_at, requalification)
-    targets = list(registered_targets(trust, epoch, marker["receiptSha256"]))
-    require_retirement_replication(trust, qualification, targets, marker=marker)
+    qualification = retirement_qualification(trust, document, published_at, requalification, observed_records=observed)
+    targets = list(registered_targets(trust, epoch, marker["receiptSha256"], observed_records=observed))
+    require_retirement_replication(trust, qualification, observed, committed=True)
     role, keys = slot_inventory(trust, epoch, custodians[index - 1], targets, index)
     return qualification, role, keys, published_at, targets
 
 
-def require_retirement_replication(trust, qualification, targets, *, marker=None):
+def require_retirement_replication(trust, qualification, observed_records, *, committed=False):
     replica = ledger_replica(trust)
     if replica is None:
-        if marker is None and trust["network"] == "mainnet":
+        if not committed and trust["network"] == "mainnet":
             raise ValueError("mainnet retirement requires a pinned custody ledger replica")
         return
-    registrations = {
-        target_path(qualification["replacementEpoch"], qualification["replacementTargetIdentity"]),
-        *(target_object_name(target) for target in targets),
-    }
-    if marker is not None:
-        registrations.update((
-            retirement_object_name(marker["epoch"]),
-            target_path(marker["replacementEpoch"], marker["replacementTargetIdentity"]),
-        ))
-    require_replicated_custody(trust, replica, qualification["replacementEpoch"], registrations)
+    require_replicated_custody(trust, replica, qualification["replacementEpoch"], observed_records)
 
 
 def require_observed_target_replication(trust, qualification, evidence):
     replica = ledger_replica(trust)
-    if replica is None or evidence["replacementTargetIdentity"] == qualification.get("replacementTargetIdentity"):
+    if evidence["replacementTargetIdentity"] == qualification.get("replacementTargetIdentity"):
+        if evidence["replacementTargetSha256"] != qualification["replacementTargetSha256"]:
+            raise ValueError("attested replacement registration changed during verification")
+        return
+    if replica is None:
         return
     epoch = qualification["replacementEpoch"]
     name = target_path(epoch, evidence["replacementTargetIdentity"])
@@ -395,6 +398,8 @@ def qualify_key_retirement(trust, wallet_trust, qualification, published_at):
     pinned_trust = pinned_wallet_trust(trust, wallet_trust)
     replacement = qualification["replacementEpoch"]
     _, receipt, custodians = load_epoch(trust, replacement)
+    if sha256(receipt) != qualification["replacementReceiptSha256"]:
+        raise ValueError("replacement custody receipt changed during verification")
     candidates = replacement_targets(trust, qualification)
     custody = receipt["custody"]
     bootstrap = qualification["replacementBootstrap"]
@@ -560,17 +565,18 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
     if wait_seconds <= 0:
         raise ValueError("provide a positive replacement boot wait time")
     replica = retirement_replica(trust, replica_profile)
-    document, custodians, published_at = load_retirement(trust, epoch)
+    observed = {}
+    document, custodians, published_at = load_retirement(trust, epoch, observed_records=observed)
     marker = document["manifest"]
-    _, retired, _ = load_epoch(trust, epoch)
+    _, retired, _ = load_epoch(trust, epoch, observed_records=observed)
     if sha256(retired) != marker["receiptSha256"]:
         raise ValueError("retired custody receipt changed during verification")
-    qualification = retirement_qualification(trust, document, published_at, requalification)
-    _, replacement, replacement_custodians = load_epoch(trust, qualification["replacementEpoch"])
+    qualification = retirement_qualification(trust, document, published_at, requalification, observed_records=observed)
+    _, replacement, replacement_custodians = load_epoch(trust, qualification["replacementEpoch"], observed_records=observed)
 
     def inspect_all(*, check_profiles=False):
-        targets = list(registered_targets(trust, epoch, marker["receiptSha256"]))
-        require_retirement_replication(trust, qualification, targets, marker=marker)
+        targets = list(registered_targets(trust, epoch, marker["receiptSha256"], observed_records=observed))
+        require_retirement_replication(trust, qualification, observed, committed=True)
         with ThreadPoolExecutor(max_workers=6) as workers:
             if check_profiles:
                 accounts = [arn(KEY_ARN, member["recoveryKeyArn"]) for member in custodians]

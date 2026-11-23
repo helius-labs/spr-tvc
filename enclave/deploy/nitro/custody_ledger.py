@@ -160,11 +160,13 @@ def storage(trust, operation, args=(), **options):
     ], **options)
 
 
-def read_stored_object(trust, name, *, expected_version=None, **options):
+def read_stored_object(trust, name, *, expected_version=None, observed_records=None, **options):
     payload, metadata = read_stored_payload(trust, name, **options)
     version = ledger_record_version(name, metadata)
     if expected_version is not None and version != expected_version:
         raise ValueError(f"custody ledger record {name} differs from its listed version")
+    if observed_records is not None:
+        observe_record(observed_records, name, ledger_record_fingerprint(name, payload, metadata))
     return parse_json(payload), metadata
 
 
@@ -206,6 +208,11 @@ def ledger_record_fingerprint(name, payload, metadata):
     return version, published_at, hashlib.sha256(payload).hexdigest()
 
 
+def observe_record(records, name, fingerprint):
+    if records.setdefault(name, fingerprint) != fingerprint:
+        raise ValueError(f"custody ledger record {name} changed during verification")
+
+
 def read_replicated_record(trust, destination, name, **options):
     original, source_metadata = read_stored_payload(trust, name, **options)
     # Records inherited during promotion can still be marked REPLICA at the source.
@@ -222,32 +229,38 @@ def read_replicated_record(trust, destination, name, **options):
     return original, fingerprint
 
 
-def require_replicated_custody(trust, replica, epoch, registrations):
+def require_replicated_custody(trust, replica, epoch, observed_records):
     destination = replica_trust(trust, replica)
 
     def read(name):
-        payload, (_, published_at, _) = read_replicated_record(trust, destination, name)
-        return parse_json(payload), published_at
+        payload, fingerprint = read_replicated_record(trust, destination, name)
+        if name in observed_records and observed_records[name] != fingerprint:
+            raise ValueError(f"custody ledger record {name} changed during verification")
+        return parse_json(payload), fingerprint[1]
 
     def read_entry(number):
-        document, receipt_time = read(ledger_object(trust, str(number)))
+        names = [ledger_object(trust, str(number))]
+        document, receipt_time = read(names[0])
         rotation = None
         if number > 1:
             manifest = document["authorization"]["manifest"]
-            approval, published_at = read(rotation_target_name(manifest, str(number - 1)))
+            names.append(rotation_target_name(manifest, str(number - 1)))
+            approval, published_at = read(names[1])
             rotation = {"approval": approval, "publishedAt": published_at}
-        return {"document": document, "publishedAt": receipt_time, "rotation": rotation}
+        return {"document": document, "publishedAt": receipt_time, "rotation": rotation}, names
 
     # Schedule bounded batches even when a signed epoch number is very large.
     last = epoch_number(epoch)
     batch_size = 8
     previous = None
+    remaining = set(observed_records)
     with ThreadPoolExecutor(max_workers=batch_size) as workers:
         for start in range(1, last + 1, batch_size):
             batch = range(start, min(start + batch_size, last + 1))
-            for number, entry in zip(batch, workers.map(read_entry, batch), strict=True):
+            for number, (entry, names) in zip(batch, workers.map(read_entry, batch), strict=True):
                 previous = check_custody_history_entry(trust, str(number), entry, previous)
-        list(workers.map(read, sorted(registrations)))
+                remaining.difference_update(names)
+        list(workers.map(read, sorted(remaining)))
 
 
 def require_publication_roster(trust, start):
@@ -924,35 +937,38 @@ def check_release_policy(trust, document, custody_signer=None, *, source_profile
 
     def check_epoch(item):
         epoch, replicas = item
-        _, receipt, custodians, receipt_at = load_epoch_with_time(trust, epoch)
+        observed = {}
+        _, receipt, custodians, receipt_at = load_epoch_with_time(trust, epoch, observed_records=observed)
         custody = receipt["custody"]
         if policy["noteSeedCommitment"] != custody["noteSeedCommitment"]:
             raise ValueError("wallet policy does not match the committed note seed")
         custody_digest, receipt_digest = sha256(custody), sha256(receipt)
-        registrations = set()
         target_slots = []
         for replica, slots in replicas:
             if replica["custodyDigest"] != custody_digest:
                 raise ValueError("serving target does not match the committed custody record")
             identity = {"releaseId": replica["releaseId"], "pcrs": replica["pcrs"]}
             name = target_path(epoch, sha256(identity))
-            registered = read_registered_target(trust, name, epoch, receipt_digest, receipt_at=receipt_at)
+            registered = read_registered_target(trust, name, epoch, receipt_digest, receipt_at=receipt_at,
+                                                observed_records=observed)
             if (registered["mode"] != "serve" or
                     hex_digest(registered["executableSha256"]) != replica["executableSha256"]):
                 raise ValueError("serving executable does not match the custody-approved target")
-            registrations.add(name)
             pairs = wrapping_pairs(registered, custodians)
             target_slots.append((epoch, registered["releaseId"], pairs, slots))
-        return registrations, target_slots, custody["canaryDigest"]
+        return observed, target_slots, custody["canaryDigest"]
 
     with ThreadPoolExecutor(max_workers=len(by_epoch)) as workers:
         readiness = list(workers.map(check_epoch, by_epoch.items()))
         canary_digests = {digest for _, _, digest in readiness}
         if len(canary_digests) != 1:
             raise ValueError("serving targets must match the same custody canary")
-        registrations = set().union(*(names for names, _, _ in readiness))
         if ledger_backup is not None:
-            require_replicated_custody(trust, ledger_backup, max(by_epoch, key=epoch_number), registrations)
+            observed_records = {}
+            for observed, _, _ in readiness:
+                for name, fingerprint in observed.items():
+                    observe_record(observed_records, name, fingerprint)
+            require_replicated_custody(trust, ledger_backup, max(by_epoch, key=epoch_number), observed_records)
         if verify_payment_recovery:
             require_payment_recovery_quorums([target for _, targets, _ in readiness for target in targets])
             check_source_ledger(trust, source_profile)
