@@ -39,6 +39,15 @@ export type DecryptionService = {
   /** The shielded address a sender pays `owner` at before `owner` registers a wallet. */
   address(owner: Address, options?: DecryptionServiceRequestOptions): Promise<ShieldedAddress>;
   /**
+   * Confirms `expected` is still the payment address for `owner`.
+   * A published policy is checked in place of another key download.
+   */
+  confirmAddress(
+    owner: Address,
+    expected: ShieldedAddress,
+    options?: DecryptionServiceRequestOptions,
+  ): Promise<void>;
+  /**
    * The keys of that address, for its owner. `owner` signs once here and once
    * for every batch of outputs a sync opens.
    */
@@ -126,6 +135,23 @@ export function decryptionServiceFromSession(
     genesisHash,
     address(owner, options) {
       return withinRequest(options, (signal) => address(owner, signal, "payment"));
+    },
+    confirmAddress(owner, expected, options) {
+      return withinRequest(options, async (signal) => {
+        if (expected.solanaAddress() !== owner) {
+          throw new DecryptionServiceError("ReleaseBindingMismatch");
+        }
+        const context = await session.context(signal);
+        if (context.requirePublishedPolicy) {
+          await awaitWithSignal(context.requirePublishedPolicy(signal, true), signal);
+          signal.throwIfAborted();
+          return;
+        }
+        const current = await address(owner, signal, "payment");
+        if (!bytesEqual(current.toBytes(), expected.toBytes())) {
+          throw new DecryptionServiceError("ReleaseBindingMismatch");
+        }
+      });
     },
     open(owner, proofs, options) {
       return withinRequest(options, async (signal) => {

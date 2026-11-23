@@ -1,7 +1,7 @@
 import { address, getAddressEncoder, signatureBytes, type Address, type MessagePartialSigner } from "@solana/kit";
 import { p256 } from "@noble/curves/p256";
 import { ed25519 } from "@noble/curves/ed25519";
-import { NullifierKey, ViewingKey, initializePoseidon } from "@heliuslabs/spr";
+import { NullifierKey, ShieldedAddress, ShieldedPublicKey, ViewingKey, initializePoseidon, type Bytes32 } from "@heliuslabs/spr";
 import type { Bytes16, Bytes31 } from "@heliuslabs/spr/keypair";
 import { expect, it, vi } from "vitest";
 
@@ -40,6 +40,50 @@ function fixture() {
   };
   return { context, fetch, quorum, info };
 }
+
+function paymentAddress(owner: Address): ShieldedAddress {
+  const viewing = ViewingKey.generate();
+  try {
+    return ShieldedAddress.fromPublicKeys(
+      ShieldedPublicKey.fromEd25519(getAddressEncoder().encode(owner) as Bytes32),
+      new Uint8Array(32).fill(1) as Bytes32,
+      viewing.publicKey(),
+    );
+  } finally {
+    viewing.destroy();
+  }
+}
+
+it("confirms a published payment policy without downloading keys again", async () => {
+  await initializePoseidon();
+  const { context, fetch } = fixture();
+  const requirePublishedPolicy = vi.fn(async (_signal?: AbortSignal, forPayment?: boolean) => {
+    expect(forPayment).toBe(true);
+  });
+  const service = decryptionServiceFromSession(
+    { context: async () => ({ ...context, requirePublishedPolicy }), forget: () => {} },
+    genesisHashForNetwork("devnet"),
+  );
+  const expected = paymentAddress(ownerAddress);
+  await service.confirmAddress(ownerAddress, expected);
+  expect(requirePublishedPolicy).toHaveBeenCalledOnce();
+  expect(fetch).not.toHaveBeenCalled();
+  await expect(service.confirmAddress(address("11111111111111111111111111111111"), expected))
+    .rejects.toMatchObject({ code: "ReleaseBindingMismatch" });
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it("downloads keys to confirm an address when the release has no published policy", async () => {
+  await initializePoseidon();
+  const { context, fetch } = fixture();
+  const service = decryptionServiceFromSession(
+    { context: async () => context, forget: () => {} },
+    genesisHashForNetwork("devnet"),
+  );
+  await expect(service.confirmAddress(ownerAddress, paymentAddress(ownerAddress)))
+    .rejects.toMatchObject({ code: "OperationUnavailable" });
+  expect(fetch).toHaveBeenCalledOnce();
+});
 
 it("asks for an address's keys from the release it verified", async () => {
   const { context, fetch, quorum, info } = fixture();
