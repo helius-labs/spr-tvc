@@ -5,33 +5,20 @@ loopback test. Run `just decryption-e2e` to repeat that test on its own.
 Rust and TypeScript tests live under each component's `tests/`.
 See the [invariants](INVARIANTS.md) and [internal audit](AUDIT.md).
 
-`just headless-e2e` adds the local Solana validator, indexer, and prover.
-Use a sibling `../zolana` checkout, or set `ZOLANA_DIR`. CI builds
-`c5297afa13e8bfb6edadf6408304ef3fc2f8c676`, which includes the process
-ownership support used for cleanup. The run owns its ledger and service
-processes. The loopback enclave binds an ephemeral port and publishes it to
-the test. The sender registers before paying an unregistered recipient. The
-recipient then registers wallet-local keys, opens the earlier note with the
-service, and sweeps it. The payer funds the transactions and the recipient
-keeps no public SOL. Pass a port offset to run another Solana localnet.
-
 ## Guarded payments with packed SDKs
 
-Set `wallet` to a Privacy Rings checkout with the guarded payment SDK and
-registry program. Install its npm dependencies and run `just setup` here.
+Run `just headless-e2e` with a sibling `../zolana` checkout, or set
+`ZOLANA_DIR`. Install npm dependencies in that checkout with `npm ci`.
+The [CI workflow](../.github/workflows/headless-local-e2e.yml) pins the
+Privacy Rings revision and shows the required toolchain. Pass a port offset
+to run a second localnet.
 
-```sh
-wallet="$(cd ../zolana && pwd)"
-artifacts="$(mktemp -d)"
-(cd "$wallet/sdk-libs/ts" && npm pack --workspaces=false --pack-destination "$artifacts")
-ZOLANA_DIR="$wallet" bash tests/guarded-payment.sh "$artifacts"/heliuslabs-spr-*.tgz
-```
-
-The test installs both tarballs together, type-checks the consumer, and
-starts a local validator and the standalone loopback service. It checks the
-signed registry assertion, pays an unfunded recipient, rejects a second
-payment when the recipient registers during signing, then recovers and
-sweeps the first note. Both sides of the sweep are checked at its finalized slot.
+The job packs both SDKs and type-checks a consumer that installs them together.
+It builds the on-chain programs from the same Privacy Rings checkout as the
+wallet SDK. The test checks the signed registry assertion, pays an unfunded
+recipient, rejects a second payment when the recipient registers during signing,
+then uses the standalone loopback service to recover and sweep the first note.
+It checks both wallet balances at the finalized sweep slot.
 
 ## Live Nitro upgrade
 

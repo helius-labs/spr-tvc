@@ -44,13 +44,8 @@ cleanup() {
 trap cleanup EXIT
 mkdir "$ZOLANA_CONFIG_DIR"
 
-if [[ -z "${TVC_SOLANA_KEYPAIR_PATH:-}" ]]; then
-    export TVC_SOLANA_KEYPAIR_PATH="$run_dir/wallet.json"
-    solana-keygen new --no-bip39-passphrase --silent --outfile "$TVC_SOLANA_KEYPAIR_PATH"
-elif [[ ! -f "$TVC_SOLANA_KEYPAIR_PATH" ]]; then
-    echo "missing TVC_SOLANA_KEYPAIR_PATH" >&2
-    exit 2
-fi
+export TVC_SOLANA_KEYPAIR_PATH="$run_dir/wallet.json"
+solana-keygen new --no-bip39-passphrase --silent --outfile "$TVC_SOLANA_KEYPAIR_PATH"
 
 (
     cd "$zolana_root"

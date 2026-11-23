@@ -302,13 +302,17 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 On 2026-11-23, the release preflight rejected the live `image-publish`
 environment because it allowed administrator bypass. GitHub listed one
 individual reviewer. Devnet still reported deployment slot `520179445` for
-the registry. The wallet's live Nitro prover proof passed, and the Rust and
-TypeScript TDX verifiers passed their recorded quote tests.
+the registry. Program dumps from both devnet and mainnet matched the locked
+`user-registry-v1.0.0` ELF plus zero padding. The wallet's live Nitro prover
+proof passed, and the Rust and TypeScript TDX verifiers passed their recorded
+quote tests. [Registry release pin](https://github.com/helius-labs/privacy-rings/blob/95cdbc883536e4fc16b3da8fba8c470d1615bf93/cli/release-artifacts.lock)
 
 The packed SDK lifecycle ran on Agave 4.2.2 with the wallet built at
 [`95cdbc883`](https://github.com/helius-labs/privacy-rings/commit/95cdbc883536e4fc16b3da8fba8c470d1615bf93)
 and the standalone loopback service at `2f7aa34`. The test passed through
-finalized recovery and sweep. Live Nitro qualification remains in Q-09.
+finalized recovery and sweep. The lifecycle workflow runs the same packed
+consumer against the registry built from its pinned wallet checkout.
+Live Nitro qualification remains in Q-09.
 
 ## Browser checkpoint rehearsal
 

@@ -32,13 +32,15 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: helius-labs/zolana
-          ref: c5297afa13e8bfb6edadf6408304ef3fc2f8c676
+          repository: helius-labs/privacy-rings
+          ref: 95cdbc883536e4fc16b3da8fba8c470d1615bf93
           path: zolana
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
+          cache: npm
+          cache-dependency-path: zolana/package-lock.json
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: zolana/prover/server/go.mod
@@ -65,5 +67,8 @@ jobs:
         with:
           path: zolana/prover/server/proving-keys
           key: proving-keys-${{ hashFiles('zolana/prover/server/prover/provingkeys/proving-keys.lock') }}
-      - name: Send, claim and sweep on localnet
+      - name: Install wallet SDK dependencies
+        working-directory: zolana
+        run: npm ci
+      - name: Test guarded payments with packed SDKs
         run: just headless-e2e
