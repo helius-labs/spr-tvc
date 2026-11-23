@@ -3,7 +3,7 @@ import { createECDH, createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import {
   nitroCustodySigningDigest, nitroPolicySigningDigest, nitroPublication, verifyPublishedNitroPolicy,
   type NitroPolicy, type NitroTrust,
@@ -65,6 +65,14 @@ function awsOnly(aws: (args: string[]) => Promise<{ stdout: string }>) {
     assert.equal(command, "aws");
     return aws(args);
   } };
+}
+
+async function custodyFixture(context: TestContext): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "spr-publication-custody-"));
+  context.after(() => rm(directory, { force: true, recursive: true }));
+  const path = join(directory, "trust.json");
+  await writeFile(path, "{}");
+  return path;
 }
 
 function policyMetadata(text: string, ETag = '"current"') {
@@ -371,7 +379,7 @@ test("the primary leaves time for the conditional write before policy expiry", a
   const next = { ...first, sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest };
   const activation = signed({ ...next, action: "activate", targets: [target] });
   await assert.rejects(publish(trust, primary.bucket, activation, {
-    custodyTrust: "custody.json",
+    custodyTrust: await custodyFixture(context),
     async run(command, args) {
       if (command === "python3") return { stdout: JSON.stringify({ custodyKeys: trust.custodyKeys, nextCutover: null, canaryDigest }) };
       return read.run(command, args);
@@ -387,7 +395,7 @@ test("requires custody registration, the active roster and live attestation befo
   const text = signed(activate);
   const bucket = trust.publications[0].bucket;
   await assert.rejects(publish(pins(activate), bucket, text), /requires --custody-trust/);
-  const custodyTrust = "/pinned/custody.json";
+  const custodyTrust = await custodyFixture(context);
   let checked = 0;
   let approved = false;
   let roster: { custodyKeys: readonly string[]; nextCutover: string | null; canaryDigest: string } = {
@@ -396,7 +404,9 @@ test("requires custody registration, the active roster and live attestation befo
   const run = async (command: string, args: string[]) => {
     assert.equal(command, "python3");
     assert.ok(args[1]?.endsWith("/custody_ledger.py"));
-    assert.deepEqual(args.slice(2, 4), [custodyTrust, "check-release-policy"]);
+    assert.notEqual(args[2], custodyTrust);
+    assert.equal(await readFile(args[2]!, "utf8"), "{}");
+    assert.equal(args[3], "check-release-policy");
     assert.equal(await readFile(args.at(-1)!, "utf8"), text);
     assert.equal(fetch.mock.callCount(), 0);
     checked += 1;
@@ -436,7 +446,7 @@ test("qualifies a planned custody transition only after the incoming roster acti
     assert.ok(args.includes("get-object"));
     return readPolicy(args, signed(first), '"predecessor"');
   };
-  const options = { run, custodyTrust: "/pinned/custody.json", nextTrust: incoming };
+  const options = { run, custodyTrust: await custodyFixture(context), nextTrust: incoming };
   await assert.rejects(publish(trust, trust.publications[0].bucket, text, options), /active custody approval roster/);
   assert.equal(attestationRequests, 0);
   activeKeys = [...incoming.custodyKeys].reverse();
@@ -444,7 +454,7 @@ test("qualifies a planned custody transition only after the incoming roster acti
   assert.equal(attestationRequests, 1);
 });
 
-test("requires a successful operation probe on every target before writing an activation", async () => {
+test("requires a successful operation probe on every target before writing an activation", async context => {
   const other = { ...target, endpoint: "https://other.example.com/" };
   const activate: NitroPolicy = { ...first, action: "activate", targets: [target, other] };
   const text = signed(activate);
@@ -472,7 +482,7 @@ test("requires a successful operation probe on every target before writing an ac
     writes += 1;
     return policyMetadata(text);
   };
-  const options = { run, probe, custodyTrust: "/pinned/custody.json" };
+  const options = { run, probe, custodyTrust: await custodyFixture(context) };
   await assert.rejects(publish(pinned, trust.publications[0].bucket, text, options), /operation probe failed/);
   assert.equal(writes, 0);
   failing = false;
@@ -498,7 +508,7 @@ test("checks the outgoing boot during fleet replacement and can recover from its
   let writes = 0;
   const checked: { endpoint: string; canary: DecryptionCanary }[] = [];
   const options = {
-    custodyTrust: "/pinned/custody.json",
+    custodyTrust: await custodyFixture(context),
     async run(command: string, args: string[]) {
       if (command === "python3") {
         return { stdout: JSON.stringify({ custodyKeys: pinned.custodyKeys, nextCutover: null, canaryDigest }) };
@@ -566,7 +576,7 @@ test("activation rejects an incompatible peer or invalid custody state observed 
     writes += 1;
     return policyMetadata(text);
   };
-  const options = { run, custodyTrust: "/pinned/custody.json" };
+  const options = { run, custodyTrust: await custodyFixture(context) };
   const bucket = trust.publications[0].bucket;
   await assert.rejects(publish(trust, bucket, text, {
     ...options, async probe() { retired = true; return freshProbe(); },
@@ -621,7 +631,7 @@ test("rechecks live replica evidence after the final custody read", async contex
   let remainingAfterCustody = 30_000;
   let unavailableBootstrap = false;
   const options = {
-    custodyTrust: "custody.json",
+    custodyTrust: await custodyFixture(context),
     sourceProfile: "source-read",
     replicaProfile: "replica-read",
     async run(command: string, args: string[]) {
@@ -797,7 +807,7 @@ test("records emergency revocation during a mirror outage and repairs a lagging 
     }),
     probe: async () => assert.fail("a revocation does not contact any enclave"),
   };
-  await assert.rejects(publish(trust, primary.bucket, activation, { ...options, custodyTrust: "custody.json" }), /HTTP 503/);
+  await assert.rejects(publish(trust, primary.bucket, activation, { ...options, custodyTrust: await custodyFixture(context) }), /HTTP 503/);
   await publish(trust, primary.bucket, revoked, options);
   await publish(trust, primary.bucket, revoked, options);
   assert.deepEqual(writes, [primary.bucket]);
@@ -853,7 +863,7 @@ test("records a revocation on the mirror during a primary outage only with its i
   assert.deepEqual(writes, [mirror.bucket]);
   primaryOffline = false;
   assert.throws(() => verifyPublishedNitroPolicy([predecessor, revoked], trust, BigInt(now)), /ReleasePolicyInvalid/);
-  await assert.rejects(publish(trust, primary.bucket, activation, { ...options, custodyTrust: "custody.json" }), /same signed predecessor/);
+  await assert.rejects(publish(trust, primary.bucket, activation, { ...options, custodyTrust: await custodyFixture(context) }), /same signed predecessor/);
   await publish(trust, primary.bucket, revoked, options);
   assert.deepEqual(writes, [mirror.bucket, primary.bucket]);
   assert.equal(verifyPublishedNitroPolicy([revoked, revoked], trust, BigInt(now)).policy.action, "revoke");
@@ -927,7 +937,7 @@ for (const [primarySequence, mirrorSequence] of [[2, 2], [2, 4], [4, 2]] as cons
   const reactivation = signed({
     ...revocation, sequence: String(primarySequence + 1), action: "activate", targets: [{ ...target, custodyEpoch: "2" }],
   });
-  await assert.rejects(publish(trust, primary.bucket, reactivation, { ...options, custodyTrust: "custody.json" }),
+  await assert.rejects(publish(trust, primary.bucket, reactivation, { ...options, custodyTrust: await custodyFixture(context) }),
     /same signed predecessor/);
   for (const invalid of [
     signed({ ...revocation, minimumCustodyEpoch: "1" }),
@@ -1044,7 +1054,7 @@ test("revokes from the same authenticated predecessor when the mirror has extra 
     return policyMetadata(heads.get(bucket)!);
   });
   await assert.rejects(publish(trust, mirror.bucket, prior, runner), /preserve the existing signers/);
-  await assert.rejects(publish(trust, primary.bucket, activation, { ...runner, custodyTrust: "custody.json" }), /same signed predecessor/);
+  await assert.rejects(publish(trust, primary.bucket, activation, { ...runner, custodyTrust: await custodyFixture(context) }), /same signed predecessor/);
   const fork = signed({ ...active, targets: [{ ...target, releaseId: "fork" }] });
   for (const invalid of [signed(active, [0]), fork]) {
     heads.set(mirror.bucket, invalid);
@@ -1229,6 +1239,37 @@ test("mainnet checks both installed publication buckets before enabling payments
   versions.set(mirror.bucket, "null");
   await assert.rejects(verifyDistributionPins(mainnet, options), /expected an original S3 policy version/);
   versions.set(mirror.bucket, `version-${mirror.account}`);
+  const changedCustody = {
+    ...custody,
+    publicationRoles: {
+      ...publicationRoles,
+      [primary.bucket]: { ...publicationRoles[primary.bucket], administratorRole: role(primary.account, "new-admin") },
+    },
+  };
+  let snapshotChecks = 0;
+  const reviewedCustody = JSON.stringify(custody);
+  const changedDuringProbe = {
+    ...options,
+    async run(command: string, args: string[]) {
+      if (command === "python3") {
+        assert.notEqual(args[2], custodyTrust);
+        assert.equal(await readFile(args[2]!, "utf8"), reviewedCustody);
+        snapshotChecks++;
+      }
+      return options.run(command, args);
+    },
+    async probe() {
+      await writeFile(custodyTrust, JSON.stringify(changedCustody));
+      return options.probe();
+    },
+  };
+  await assert.rejects(verifyDistributionPins(mainnet, changedDuringProbe), /custody trust changed/);
+  assert.equal(snapshotChecks, 2);
+  await writeFile(custodyTrust, reviewedCustody);
+  await assert.rejects(publish(mainnet, primary.bucket, text, changedDuringProbe), /custody trust changed/);
+  assert.equal(snapshotChecks, 4);
+  assert.equal(writes, 0);
+  await writeFile(custodyTrust, reviewedCustody);
   for (const { bucket, account } of mainnet.publications) {
     await assert.rejects(verifyDistributionPins(mainnet, {
       ...options, async probe() {
@@ -1314,13 +1355,15 @@ test("wallet activation pins require the active custody roster and a stable publ
   context.mock.method(globalThis, "fetch", async (url: URL) => new Response(head, {
     headers: { "x-amz-version-id": url.hostname },
   }));
-  const custodyTrust = "/pinned/custody.json";
+  const custodyTrust = await custodyFixture(context);
   let nextCutover: string | null = null;
   let changedEnvelope: string | undefined;
   let retired = false;
   const run = async (command: string, args: string[]) => {
     assert.equal(command, "python3");
-    assert.deepEqual(args.slice(2, 4), [custodyTrust, "check-release-policy"]);
+    assert.notEqual(args[2], custodyTrust);
+    assert.equal(await readFile(args[2]!, "utf8"), "{}");
+    assert.equal(args[3], "check-release-policy");
     assert.equal(await readFile(args.at(-1)!, "utf8"), text);
     if (retired) throw new Error("custody epoch is retired");
     if (changedEnvelope) head = changedEnvelope;

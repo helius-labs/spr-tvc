@@ -203,10 +203,25 @@ export function bucketPolicy(trust: NitroTrust, name: string, administrator: str
   ] };
 }
 
-async function pinnedPublicationPolicies(trust: NitroTrust, custodyTrust: string) {
+async function snapshotCustodyTrust(directory: string, original: string) {
+  const text = await readBoundedDocument(original, MAX_CUSTODY_TRUST_BYTES);
+  const path = join(directory, "custody.json");
+  await writeFile(path, text, { mode: 0o600, flag: "wx" });
+  return {
+    text,
+    path,
+    async verifyUnchanged() {
+      if (await readBoundedDocument(original, MAX_CUSTODY_TRUST_BYTES) !== text) {
+        throw new Error("custody trust changed during qualification. Review the updated file and retry");
+      }
+    },
+  };
+}
+
+function pinnedPublicationPolicies(trust: NitroTrust, custodyText: string) {
   const custody = parseStrictJson<Pick<NitroTrust, "network" | "securityDomainId" | "publications"> & {
     publicationRoles: Record<string, { administratorRole: string; publisherRole: string }>;
-  }>(await readBoundedDocument(custodyTrust, MAX_CUSTODY_TRUST_BYTES));
+  }>(custodyText);
   if (custody?.network !== trust.network || custody.securityDomainId !== trust.securityDomainId ||
       canonicalizeJsonValue(custody.publications ?? null) !== canonicalizeJsonValue(trust.publications)) {
     throw new Error("custody trust must pin the wallet's publication domain and buckets");
@@ -228,15 +243,15 @@ async function pinnedPublicationPolicies(trust: NitroTrust, custodyTrust: string
   });
 }
 
-async function paymentPublicationChecks(
-  trust: NitroTrust, policy: NitroPolicy, custodyTrust: string, profiles?: readonly string[],
+function paymentPublicationChecks(
+  trust: NitroTrust, policy: NitroPolicy, custodyText: string, profiles?: readonly string[],
 ) {
   if (policy.action !== "activate" || policy.recoveryOnly || (trust.network !== "mainnet" && profiles === undefined)) return;
   const [primary, mirror] = profiles ?? [];
   if (profiles?.length !== 2 || !primary || !mirror || primary === mirror) {
     throw new Error("provide --publication-profile twice in primary and mirror order");
   }
-  return (await pinnedPublicationPolicies(trust, custodyTrust)).map((pin, index) => ({
+  return pinnedPublicationPolicies(trust, custodyText).map((pin, index) => ({
     ...pin, profile: index === 0 ? primary : mirror,
   }));
 }
@@ -333,9 +348,6 @@ export async function publish(
   }
   const activatesPrimary = !isSecond && policy.action === "activate";
   if (activatesPrimary && !custodyTrust) throw new Error("activation requires --custody-trust");
-  const bucketChecks = activatesPrimary && custodyTrust
-    ? await paymentPublicationChecks(trust, policy, custodyTrust, publicationProfiles)
-    : undefined;
   if (nextTrust && emergencyFrom) throw new Error("choose one signer transition");
   if (nextTrust) {
     validateNitroTrust(nextTrust);
@@ -361,6 +373,8 @@ export async function publish(
 
   try {
     await writeFile(candidate, text, { mode: 0o600, flag: "wx" });
+    const custody = activatesPrimary && custodyTrust ? await snapshotCustodyTrust(directory, custodyTrust) : undefined;
+    const bucketChecks = custody && paymentPublicationChecks(trust, policy, custody.text, publicationProfiles);
     let head: Awaited<ReturnType<typeof readHead>> | undefined;
     if (policy.sequence !== "1") head = await readHead();
     else if (isSecond) {
@@ -369,6 +383,7 @@ export async function publish(
     }
     if (head?.text === text) {
       versionId(head.version);
+      await custody?.verifyUnchanged();
       return;
     }
     const mirror = !isSecond && head && policy.action === "revoke" ? await readPeer(true) : undefined;
@@ -392,16 +407,16 @@ export async function publish(
     await checkMirror();
     let confirmedCutover: bigint | undefined;
     let probes: ReplicaProbe[] = [];
-    if (activatesPrimary && custodyTrust) {
+    if (custody) {
       const custodyPins = nextTrust ?? trust;
       const inspection = { sourceProfile, replicaProfile };
-      const { cutover, canaryDigest } = await checkActivationRoster(candidate, custodyTrust, custodyPins, run, inspection);
+      const { cutover, canaryDigest } = await checkActivationRoster(candidate, custody.path, custodyPins, run, inspection);
       requireCustodyWriteWindow(cutover, BigInt(Date.now()));
       // nextNitroPublication authenticated the exact predecessor above.
       const previous = head && parseStrictJson<{ policy: NitroPolicy }>(head.text).policy;
       probes = await probeActivationTargets(policy.targets, trust, probe, canaryDigest, previous?.targets);
       const [confirmed] = await Promise.all([
-        checkActivationRoster(candidate, custodyTrust, custodyPins, run, inspection,
+        checkActivationRoster(candidate, custody.path, custodyPins, run, inspection,
           policy.recoveryOnly ? undefined : probes, canaryDigest),
         checkPublicationBuckets(bucketChecks, run),
       ]);
@@ -409,6 +424,7 @@ export async function publish(
       await checkMirror();
     }
     const latestPrimary = isSecond ? await readPeer(mirrorDuringOutage) : undefined;
+    await custody?.verifyUnchanged();
     const beforeWrite = BigInt(Date.now());
     verify(trust, beforeWrite, latestPrimary);
     if ((!isSecond || mirrorDuringOutage) && verified.expiresAt <= beforeWrite + WRITE_MARGIN_MS) {
@@ -559,17 +575,18 @@ export async function verifyDistributionPins(
     return { ...published.checkpoint, publicationVersions: published.publicationVersions };
   }
   if (!custodyTrust) throw new Error("activation requires --custody-trust");
-  const bucketChecks = await paymentPublicationChecks(trust, published.policy, custodyTrust, publicationProfiles);
 
   const directory = await mkdtemp(join(tmpdir(), "spr-wallet-trust-"));
   try {
+    const custody = await snapshotCustodyTrust(directory, custodyTrust);
+    const bucketChecks = paymentPublicationChecks(trust, published.policy, custody.text, publicationProfiles);
     const candidate = join(directory, "published.json");
     await writeFile(candidate, published.text, { mode: 0o600, flag: "wx" });
     const inspection = { sourceProfile, replicaProfile };
-    const { canaryDigest } = await checkActivationRoster(candidate, custodyTrust, trust, run, inspection);
+    const { canaryDigest } = await checkActivationRoster(candidate, custody.path, trust, run, inspection);
     const probes = await probeActivationTargets(published.policy.targets, trust, probe, canaryDigest);
     const [{ cutover: nextCutover }] = await Promise.all([
-      checkActivationRoster(candidate, custodyTrust, trust, run, inspection,
+      checkActivationRoster(candidate, custody.path, trust, run, inspection,
         published.policy.recoveryOnly ? undefined : probes, canaryDigest),
       checkPublicationBuckets(bucketChecks, run),
     ]);
@@ -578,7 +595,9 @@ export async function verifyDistributionPins(
     if (published.publicationVersions.some(({ versionId }, index) => confirmed.publicationVersions[index]?.versionId !== versionId)) {
       throw new Error("S3 policy version changed during wallet trust verification");
     }
+    await custody.verifyUnchanged();
     const now = BigInt(Date.now());
+    if (now >= confirmed.expiresAt) throw new Error("policy expired during wallet trust verification");
     if (nextCutover !== undefined && now >= nextCutover) {
       throw new Error("custody approval roster changed during wallet trust verification");
     }
@@ -623,7 +642,7 @@ async function main() {
   if (policyPath === "--bucket-policy") {
     const [custodyTrust] = extra;
     if (!custodyTrust || extra.length !== 1) throw new Error(usage);
-    const policies = await pinnedPublicationPolicies(trust, custodyTrust);
+    const policies = pinnedPublicationPolicies(trust, await readBoundedDocument(custodyTrust, MAX_CUSTODY_TRUST_BYTES));
     const pinned = policies.find(({ publication }) => publication.bucket === bucket);
     if (!pinned) throw new Error("expected one of the pinned publication buckets");
     console.log(JSON.stringify(pinned.policy, null, 2));

@@ -811,6 +811,9 @@ policies need more than 30 seconds before expiry to submit the write.
 For activation, each replica probe must also retain that margin after the
 final custody check. Wallet trust verification requires each probe to remain
 current through the last read of both policy buckets.
+Primary activation and wallet trust verification use one private snapshot of
+the custody trust file for all ledger and publication bucket checks. If the
+original changes, review it and retry.
 An activation with `recoveryOnly: false` lets wallets use the listed targets to
 resolve new payment destinations. On mainnet, even a running enclave must
 retain three recoverable slots per target. Each slot needs its recovery and
