@@ -13,6 +13,15 @@ INSTANCE = "i-1234567890abcdef0"
 REGION = "eu-north-1"
 
 
+def replication_role_responses(role, plan):
+    return {
+        "get-role": {"Role": {"Arn": role, "AssumeRolePolicyDocument": plan["roleTrust"]}},
+        "list-role-policies": {"PolicyNames": ["replicate-custody"]},
+        "list-attached-role-policies": {"AttachedPolicies": []},
+        "get-role-policy": {"PolicyDocument": plan["rolePermissions"]},
+    }
+
+
 def key(account, slot=1):
     return f"arn:aws:kms:eu-north-1:{account:012}:key/12345678-1234-1234-1234-{slot:012}"
 

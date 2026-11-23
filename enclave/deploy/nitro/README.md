@@ -130,10 +130,16 @@ The source uses SSE-S3 for custody records. [S3 replication](https://docs.aws.am
 python3 "$nitro/custody_ledger.py" trust.json replica-plan > replica-plan.json
 ```
 
-Create the source role with `roleTrust` and `rolePermissions`. Install
-`destinationPolicy` as the recovery bucket policy. Render the source policy
+Create the source role with `roleTrust` and install `rolePermissions` as
+its only inline policy. Leave the role free of managed policy attachments.
+Install `destinationPolicy` as the recovery bucket policy. Render the source policy
 from the updated trust file and install `replication` as the S3 replication
 configuration on the source. Run `policy --check-installed` on the source.
+The check inspects the installed role and compares its trust and permissions
+with the generated policies. Grant `iam:GetRole`, `iam:ListRolePolicies`,
+`iam:ListAttachedRolePolicies`, and `iam:GetRolePolicy` on the pinned role to
+source inspection profiles used for installation, payment activation, and
+repair. [IAM role inspection](https://docs.aws.amazon.com/cli/latest/reference/iam/get-role.html)
 The recovery account administers the destination. Only the pinned S3 role can
 replicate records there, and the destination denies publisher writes and
 replicated deletions. Payment activation, retirement inspection and promotion
@@ -311,8 +317,9 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
 
    Use read-only profiles in the original and recovered bucket accounts with
    the checkpoint permissions above. The recovery profile also needs
-   `s3:GetReplicationConfiguration` on the recovered bucket and list and read
-   access to the new replica. Supply `--replica-profile` from the new replica
+   `s3:GetReplicationConfiguration` on the recovered bucket, the IAM reads
+   listed above on its new outbound replication role, and list and read access
+   to the new replica. Supply `--replica-profile` from the new replica
    owner's account with the S3 bucket inspection permissions above, excluding
    `s3:GetReplicationConfiguration`. Omit it for devnet promotion without a
    new replica. [S3 bucket policy permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketPolicy.html)

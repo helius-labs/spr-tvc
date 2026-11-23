@@ -606,14 +606,38 @@ def check_source_ledger(trust, profile):
     check_installed_ledger(trust, ledger_policy(trust), profile=profile)
 
 
+def require_replication_role(trust, replica, *, profile=None):
+    source, _ = ledger_prefix(trust)
+    name = replica["role"].rsplit("/", 1)[-1]
+    plan = ledger_replica_plan(trust)
+
+    def inspect(operation, *args):
+        return aws(source["region"], "iam", operation, ["--role-name", name, *args], profile=profile)
+
+    role = inspect("get-role").get("Role")
+    if not isinstance(role, dict) or role.get("Arn") != replica["role"]:
+        raise ValueError("installed replication role is not the pinned ARN")
+    if role.get("AssumeRolePolicyDocument") != plan["roleTrust"]:
+        raise ValueError("installed replication role trust policy differs from the pinned policy")
+    policies = inspect("list-role-policies").get("PolicyNames")
+    if not isinstance(policies, list) or len(policies) != 1 or not isinstance(policies[0], str) or not policies[0]:
+        raise ValueError("installed replication role requires one inline policy")
+    if inspect("list-attached-role-policies").get("AttachedPolicies") != []:
+        raise ValueError("installed replication role has managed policies or an invalid policy listing")
+    if inspect("get-role-policy", "--policy-name", policies[0]).get("PolicyDocument") != plan["rolePermissions"]:
+        raise ValueError("installed replication role permissions differ from the pinned policy")
+
+
 def require_pinned_replication(trust, **options):
     replication = storage(trust, "get-bucket-replication", absent="ReplicationConfigurationNotFoundError", **options)
     replica = ledger_replica(trust)
     if replica is None:
         if replication is not None:
             raise ValueError("custody ledger bucket must have no replication configuration")
-    elif replication is None or replication.get("ReplicationConfiguration") != replication_configuration(trust, replica):
+        return
+    if replication is None or replication.get("ReplicationConfiguration") != replication_configuration(trust, replica):
         raise ValueError("installed S3 replication does not match the pinned ledger replica")
+    require_replication_role(trust, replica, **options)
 
 
 def check_recovery_bucket(trust, replica, profile):

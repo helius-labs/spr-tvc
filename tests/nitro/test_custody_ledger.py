@@ -32,7 +32,7 @@ from custody_ledger import (
 )
 from deployment import register_target, require_registered_target
 from kms_policy import acknowledgement_policy, boot_pins
-from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, schedule, sign
+from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, replication_role_responses, schedule, sign
 from provenance import describe
 from retirement import (LiveBoot, commit_retirement, confirm_retirement_policy, inspect_keys, prove_recovery, qualified_manifest,
                         qualified_policy, qualify_key_retirement, main as retirement_main, replacement_targets,
@@ -917,12 +917,17 @@ class CustodyLedgerTests(unittest.TestCase):
         recovered_policy = ledger_policy(recovered, frozen=True)
         transfer = {**recovered["ledger"], "role": original["ledgerReplica"]["role"]}
         transfer_rule = replication_configuration(original, transfer)
-        receiving = ledger_replica_plan({**original, "ledgerReplica": transfer})["destinationPolicy"]
+        transfer_plan = ledger_replica_plan({**original, "ledgerReplica": transfer})
+        receiving = transfer_plan["destinationPolicy"]
+        iam_responses = replication_role_responses(transfer["role"], transfer_plan)
         recovery_policy = recovered_policy
 
         def aws(region, service, operation, args, *, profile, **options):
             if region == "eu-north-1":
                 self.assertEqual(profile, "source-read")
+                if service == "iam":
+                    self.assertEqual(args[:2], ["--role-name", "replication"])
+                    return iam_responses[operation]
                 if operation == "get-bucket-replication":
                     return {"ReplicationConfiguration": transfer_rule}
                 return self.aws(region, service, operation, args, **options)
@@ -960,6 +965,10 @@ class CustodyLedgerTests(unittest.TestCase):
                 repair_transfer(original, recovered, pin, plan, "source-read", "recovery-read", csv)
             self.assertEqual(csv.getvalue(), "")
             recovery_policy = receiving
+            with patch.dict(iam_responses, {"get-role-policy": {"PolicyDocument": {}}}):
+                with self.assertRaisesRegex(ValueError, "replication role permissions differ"):
+                    repair_transfer(original, recovered, pin, plan, "source-read", "recovery-read", csv)
+            self.assertEqual(csv.getvalue(), "")
 
             def source_changes(*_args, **_options):
                 self.objects[prefix + "late.json"] = b"{}"

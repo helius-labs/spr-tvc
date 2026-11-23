@@ -13,7 +13,7 @@ from custody_ledger import (
     ledger_policy, ledger_replica_plan,
     list_ledger_versions, replica_trust, replication_configuration, require_frozen_ledger, write_once,
 )
-from nitro_fixtures import DOMAIN
+from nitro_fixtures import DOMAIN, replication_role_responses
 
 SOURCE_ACCOUNT = "000000000008"
 DESTINATION_ACCOUNT = "000000000010"
@@ -181,7 +181,8 @@ class LedgerReplicationTests(unittest.TestCase):
 
     def test_active_source_uses_the_pinned_policy_roles_and_replication(self):
         expected = ledger_policy(TRUST)
-        replication = ledger_replica_plan(TRUST)["replication"]
+        plan = ledger_replica_plan(TRUST)
+        replication = plan["replication"]
         responses = {
             **BUCKET_CONTROLS,
             "get-bucket-policy": {"Policy": json.dumps(expected)},
@@ -192,10 +193,34 @@ class LedgerReplicationTests(unittest.TestCase):
             self.assertEqual(profile, "source-read")
             return responses[operation]
 
+        iam_responses = replication_role_responses(ROLE, plan)
+        role = iam_responses["get-role"]["Role"]
+
+        def inspect_role(region, service, operation, args, *, profile):
+            self.assertEqual((region, service, profile), ("eu-north-1", "iam", "source-read"))
+            self.assertEqual(args, ["--role-name", "replication"] + (
+                ["--policy-name", "replicate-custody"] if operation == "get-role-policy" else []
+            ))
+            return iam_responses[operation]
+
         with (patch("custody_ledger.storage", side_effect=storage) as inspect,
+              patch("custody_ledger.aws", side_effect=inspect_role),
               patch("custody_ledger.require_profile_account") as account):
             check_source_ledger(TRUST, "source-read")
             account.assert_called_once_with("source-read", "eu-north-1", SOURCE_ACCOUNT)
+            extra_principal = {"Effect": "Allow", "Principal": {"AWS": SOURCE_PUBLISHER}, "Action": "sts:AssumeRole"}
+            broad_trust = {**plan["roleTrust"], "Statement": [*plan["roleTrust"]["Statement"], extra_principal]}
+            for operation, changed, error in (
+                ("get-role", {"Role": {**role, "Arn": SOURCE_PUBLISHER}}, "not the pinned ARN"),
+                ("get-role", {"Role": {**role, "AssumeRolePolicyDocument": broad_trust}}, "trust policy differs"),
+                ("list-role-policies", {"PolicyNames": []}, "requires one inline policy"),
+                ("list-role-policies", {"PolicyNames": ["replicate-custody", "extra"]}, "requires one inline policy"),
+                ("list-attached-role-policies", {"AttachedPolicies": [{"PolicyName": "extra"}]}, "has managed policies"),
+                ("get-role-policy", {"PolicyDocument": {}}, "permissions differ"),
+            ):
+                with (self.subTest(operation=operation, changed=changed), patch.dict(iam_responses, {operation: changed}),
+                      self.assertRaisesRegex(ValueError, error)):
+                    check_source_ledger(TRUST, "source-read")
             without_write_once = {**expected, "Statement": [rule for rule in expected["Statement"]
                                                               if rule["Sid"] != "RequireWriteOnce"]}
             for bad in (
@@ -382,7 +407,9 @@ class LedgerReplicationTests(unittest.TestCase):
         names = {bucket: ["1.json", "retired/1.json"] for bucket in (SOURCE_BUCKET, DESTINATION_BUCKET, new_replica["bucket"])}
         profiles = {SOURCE_BUCKET: "source-read", DESTINATION_BUCKET: "recovery-read", new_replica["bucket"]: "recovery-read"}
         replication = replication_configuration(promoted, new_replica)
-        replica_policy = ledger_replica_plan(promoted)["destinationPolicy"]
+        plan = ledger_replica_plan(promoted)
+        replica_policy = plan["destinationPolicy"]
+        iam_responses = replication_role_responses(new_replica["role"], plan)
         replica_controls = BUCKET_CONTROLS.copy()
         freeze_controls = {bucket: BUCKET_CONTROLS.copy() for bucket in policies}
 
@@ -419,8 +446,14 @@ class LedgerReplicationTests(unittest.TestCase):
             return name.encode(), {"LastModified": "2026-11-01T00:00:00Z", "VersionId": f"version-{name}",
                                    "ReplicationStatus": "COMPLETED" if bucket == SOURCE_BUCKET else "REPLICA"}
 
+        def inspect_role(region, service, operation, args, *, profile):
+            self.assertEqual((region, service, profile), (REPLICA["region"], "iam", "recovery-read"))
+            self.assertEqual(args[:2], ["--role-name", "replication"])
+            return iam_responses[operation]
+
         with (patch("custody_ledger.installed_ledger_policy", side_effect=policy),
               patch("custody_ledger.storage", side_effect=bucket_controls),
+              patch("custody_ledger.aws", side_effect=inspect_role),
               patch("custody_archive.list_ledger_versions", side_effect=versions),
               patch("custody_archive.read_stored_payload", side_effect=read),
               patch("custody_ledger.read_stored_payload", side_effect=read),
@@ -451,6 +484,9 @@ class LedgerReplicationTests(unittest.TestCase):
                     verify()
             with patch.dict(replica_policy, {"Statement": []}):
                 with self.assertRaisesRegex(ValueError, "custody recovery bucket policy differs from the pinned policy"):
+                    verify()
+            with patch.dict(iam_responses, {"get-role-policy": {"PolicyDocument": {}}}):
+                with self.assertRaisesRegex(ValueError, "replication role permissions differ"):
                     verify()
             for ledger in (trust, promoted):
                 bucket = ledger["ledger"]["bucket"]
