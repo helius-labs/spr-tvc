@@ -451,15 +451,19 @@ pinned history and excluded versions.
      target-signed.json --review target-review.json \
      --host-inspection-profile "$host_read_profile" \
      --inspection-profiles "${inspection_profiles[@]}"
-   python3 "$nitro/deployment.py" trust.json "$build_dir" register target-signed.json
+   python3 "$nitro/deployment.py" trust.json "$build_dir" register target-signed.json \
+     --host-inspection-profile "$host_read_profile" --custody-key-profiles "$custody_key_profiles"
    python3 "$nitro/deployment.py" trust.json "$build_dir" host-policy target-signed.json > host-kms-policy.json
    python3 "$nitro/deployment.py" trust.json "$build_dir" attestation-pins target-signed.json > pcrs.json
    ```
 
    Register with the dedicated ledger publisher more than 30 seconds before
-   the approval deadline. The ledger verifies that S3 recorded the first
-   registration before expiry. It keeps the signed target and all six
-   wrapping-key ARNs. Within an epoch, a release ID
+   the approval deadline. Before the first write, the publisher checks that
+   the exact EC2 parent still runs with the approved role and that all six
+   wrapping keys are enabled with their approved policies. Use the same
+   read-only AWS profiles used for signing. The ledger verifies that S3
+   recorded the first registration before expiry. It keeps the signed target
+   and all six wrapping-key ARNs. Within an epoch, a release ID
    and PCR0–PCR4 identify one wrapping-key set. Each parent needs its own set.
    Use a fresh release identity to replace keys for the same image and parent.
    A fresh approval can renew the wrapping deadline
@@ -775,9 +779,11 @@ finalized transactions and wallet sync under the original shielded identities.
 Gateway logs can identify enrollment activity. A wallet must open its notes
 to establish what it can still spend.
 
-1. Keep an approved Turnkey recovery deployment available. Verify and pin its
-   release for the recovery client. The original Turnkey account must authorize
-   the bootstrap signature under a policy that names the recovery enclave's key.
+1. Confirm that the original Turnkey organization and wallet can still sign
+   the bootstrap message. If the original TVC app was deleted, use the archived
+   wallet implementation for a replacement recovery deployment. Verify and pin
+   that release. The original wallet's policy must authorize the recovery
+   enclave's signing key and require the owner's approval.
 2. Reopen each affected wallet with `tvc.open({ identity: originalIdentity },
    { approve })`. This rederives the identity, checks it against the saved one,
    and seals the seed to the recovery deployment. Sync with the recovered keys.

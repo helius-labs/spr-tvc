@@ -140,8 +140,12 @@ verify under the roster active at the original S3 write. A rotation registration
 must fall between its predecessor and successor receipts. A serving registration
 must follow its receipt, and a retirement marker must follow both receipts and
 the replacement registration. The verifier allows equal S3 timestamps.
-An exact target registration retry verifies the stored record at its original
-write time and confirms the epoch is open. Retiring an approval or
+Before writing a new target registration, the publisher verifies the running
+parent's approved role and the enabled state and sealed policies of all six
+wrapping keys. It checks that the epoch is still open and that the approval
+and its roster will remain valid through the write window. An exact retry
+verifies the stored record at its original write time and confirms the epoch
+is open. Retiring an approval or
 acknowledgement signing key leaves custody receipts verifiable offline.
 Repair can exclude an incomplete record from the recovered ledger if the frozen
 source retains it and every retained version matches the independent checkpoint.

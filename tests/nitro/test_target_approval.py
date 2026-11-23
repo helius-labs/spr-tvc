@@ -13,7 +13,7 @@ from unittest.mock import call, patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import P256_ORDER, is_p256_der_signature, sha256
 from custody_ledger import TARGET_APPROVAL, target_object_name
-from deployment import HostUnobserved, file_digest, main, require_host_state, target
+from deployment import HostUnobserved, file_digest, main, register_target, require_host_state, target
 from kms_policy import RSA_OAEP, recovery_policy
 from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, schedule, sign
 from provenance import describe
@@ -388,6 +388,7 @@ class TargetApprovalTests(unittest.TestCase):
               patch("deployment.read_stored_object", return_value=(self.approval, metadata)),
               patch("deployment.ledger_slot_version", return_value="original") as slot,
               patch("deployment.require_active_epoch") as active, patch("deployment.write_once") as write,
+              patch("deployment.require_live_registration") as live,
               patch("deployment.time.time", return_value=expiry)):
             main()
             active.assert_called_once_with(self.trust, "5")
@@ -400,6 +401,86 @@ class TargetApprovalTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "target artifacts do not match"):
                 main()
             write.assert_not_called()
+            live.assert_not_called()
+
+    def test_first_registration_rechecks_the_host_keys_and_approval_window(self):
+        _, policies, _ = target(self.trust, self.approval, self.receipt, self.custodians, self.build)
+        installed = dict(zip(self.manifest["wrappingKeys"], policies, strict=True))
+        profiles = {f"{slot:012d}": f"key-read-{slot}" for slot in range(1, 7)}
+        now = self.manifest["expiresAt"] - 60
+        writes = []
+
+        def write(_trust, name, _document, confirm, *, before_write):
+            before_write()
+            writes.append(name)
+            confirm("written")
+
+        def inspect(key, *, profile):
+            self.assertEqual(profile, profiles[key.split(":")[4]])
+            return {}, installed[key]
+
+        def register(**inspection):
+            register_target(self.trust, self.approval, build=self.build, **inspection)
+
+        options = {"key_profiles": profiles, "host_profile": "host-read"}
+
+        with (patch("deployment.load_epoch_with_time", side_effect=self.load_epoch),
+              patch("deployment.list_objects", return_value=[]),
+              patch("deployment.require_active_epoch") as active,
+              patch("deployment.require_profile_account") as identity,
+              patch("deployment.inspect_rsa_key", side_effect=inspect) as keys,
+              patch("deployment.require_host_state") as host,
+              patch("deployment.require_registered_target") as registered,
+              patch("deployment.time.time", side_effect=lambda: now),
+              patch("deployment.write_once", side_effect=write)):
+            with self.assertRaisesRegex(ValueError, "provide --custody-key-profiles"):
+                register()
+            with self.assertRaisesRegex(ValueError, "provide --host-inspection-profile"):
+                register(key_profiles=profiles)
+            keys.assert_not_called()
+            account = f"{1:012d}"
+            with self.assertRaisesRegex(ValueError, "missing read-only inspection profile"):
+                register(key_profiles={name: profile for name, profile in profiles.items() if name != account},
+                         host_profile="host-read")
+            identity.side_effect = ValueError("wrong inspection account")
+            with self.assertRaisesRegex(ValueError, "wrong inspection account"):
+                register(**options)
+            identity.side_effect = None
+            with patch.dict(installed, {self.manifest["wrappingKeys"][0]: {}}):
+                with self.assertRaisesRegex(ValueError, "installed wrapping key policy"):
+                    register(**options)
+            host.side_effect = ValueError("parent lost the approved role")
+            with self.assertRaisesRegex(ValueError, "parent lost the approved role"):
+                register(**options)
+            host.side_effect = None
+            active.side_effect = ValueError("epoch is retired")
+            with self.assertRaisesRegex(ValueError, "epoch is retired"):
+                register(**options)
+            active.side_effect = None
+
+            def late(*_args):
+                nonlocal now
+                now = self.manifest["expiresAt"]
+
+            host.side_effect = late
+            with self.assertRaisesRegex(ValueError, "approval has expired"):
+                register(**options)
+            self.assertEqual(writes, [])
+            registered.assert_not_called()
+            now -= 60
+            host.side_effect = None
+            keys.reset_mock()
+            identity.reset_mock()
+            trust_path, target_path, profiles_path = (self.build / name for name in ("trust.json", "target.json", "profiles.json"))
+            for path, contents in ((trust_path, self.trust), (target_path, self.approval), (profiles_path, profiles)):
+                path.write_text(json.dumps(contents))
+            with patch("sys.argv", ["deployment.py", str(trust_path), str(self.build), "register", str(target_path),
+                                    "--host-inspection-profile", "host-read", "--custody-key-profiles", str(profiles_path)]):
+                main()
+            self.assertEqual(writes, [target_object_name(self.manifest)])
+            self.assertCountEqual([request.args[0] for request in keys.call_args_list], self.manifest["wrappingKeys"])
+            self.assertCountEqual([request.args[2] for request in identity.call_args_list], [*profiles, HOST.split(":")[4]])
+            registered.assert_called_once_with(self.trust, self.manifest, receipt_at=1, expected_version="written")
 
     def test_rejects_receipt_and_eif_substitution(self):
         self.receipt["packages"][0]["ciphertext"] = "00" * 256

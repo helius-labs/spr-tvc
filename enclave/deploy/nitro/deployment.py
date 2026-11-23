@@ -5,11 +5,13 @@ import hashlib
 import re
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from approval import (
     KEY_ARN, ROLE_ARN, add_approval, approval_roster, arn, aws, canonical, fields, file_digest, hex_digest,
-    parse_json, publish_new_file, read_document, read_json, require_inspection_profiles, require_profile_account, sha256,
+    parse_json, publish_new_file, read_document, read_json, require_custody_key_profiles, require_inspection_profiles,
+    require_profile_account, sha256,
 )
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_custody_roster, ledger_slot_version, list_objects, load_epoch_with_time,
@@ -19,7 +21,7 @@ from custody_ledger import (
 )
 from kms_policy import decrypt_conditions, key_policy, target_boot_pins
 from provenance import verify as verify_build
-from relay import relay_pins, sealed_rsa_key
+from relay import inspect_rsa_key, relay_pins, sealed_rsa_key
 
 
 def host_policy(manifest):
@@ -86,7 +88,39 @@ def target_binding(manifest):
     return {name: value for name, value in manifest.items() if name not in {"expiresAt", "approvalFromEpoch"}}
 
 
-def register_target(trust, document, *, build=None):
+def wrapping_policies(manifest, custodians):
+    wrapping_pairs(manifest, custodians)
+    return [key_policy(manifest["hostRole"], member["custodianRole"], member["retirementRole"],
+                       manifest["pcrs"], manifest["instanceId"]) for member in custodians]
+
+
+def require_live_registration(manifest, custodians, key_profiles, host_profile):
+    require_custody_key_profiles(key_profiles)
+    if not host_profile:
+        raise ValueError("provide --host-inspection-profile for a new target registration")
+    policies = wrapping_policies(manifest, custodians)
+
+    def check_key(key, expected):
+        region, account = arn(KEY_ARN, key).groups()
+        profile = key_profiles.get(account)
+        if profile is None:
+            raise ValueError(f"missing read-only inspection profile for custody account {account}")
+        require_profile_account(profile, region, account)
+        try:
+            _, installed = inspect_rsa_key(key, profile=profile)
+            if installed != expected:
+                raise ValueError("installed wrapping key policy does not match the approved target")
+        except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+            raise ValueError(f"cannot verify target wrapping key {key}: {error}") from error
+
+    with ThreadPoolExecutor(max_workers=len(policies)) as workers:
+        list(workers.map(lambda pair: check_key(*pair), zip(manifest["wrappingKeys"], policies, strict=True)))
+    host_account = arn(ROLE_ARN, manifest["hostRole"])[1]
+    require_profile_account(host_profile, manifest["hostRegion"], host_account)
+    require_host_state(manifest, "running", host_profile)
+
+
+def register_target(trust, document, *, build=None, key_profiles=None, host_profile=None):
     fields(document, "manifest", "signatures")
     manifest = document["manifest"]
     validate_target(trust, manifest)
@@ -114,6 +148,7 @@ def register_target(trust, document, *, build=None):
         return
 
     def before_write():
+        require_live_registration(manifest, custodians, key_profiles, host_profile)
         require_active_epoch(trust, epoch)
         require_target_approval_window(manifest, time.time(), remaining=LEDGER_WRITE_MARGIN_SECONDS)
         require_publication_roster(trust, manifest["approvalFromEpoch"])
@@ -167,7 +202,7 @@ def target(trust, document, receipt, custodians, build, *, at=None):
         raise ValueError("target configuration does not match the approved release and domain")
     deployment = config["deployment"]
     mode = manifest["mode"]
-    next_custodians, host = manifest["nextCustodians"], manifest["hostRole"]
+    next_custodians = manifest["nextCustodians"]
     next_keys = []
     if mode == "serve" and next_custodians is None:
         fields(deployment, "mode", "custody")
@@ -197,10 +232,7 @@ def target(trust, document, receipt, custodians, build, *, at=None):
     if any(hex_digest(pin, 48) != measured[name] for name, pin in pins.items()):
         raise ValueError("target measurements do not match the approval")
 
-    wrapping_pairs(manifest, custodians)
-    policies = [key_policy(host, member["custodianRole"], member["retirementRole"], pins, manifest["instanceId"])
-                for member in custodians]
-    return roster["keys"], policies, next_keys
+    return roster["keys"], wrapping_policies(manifest, custodians), next_keys
 
 
 def require_reviewed_target(build, manifest, review):
@@ -234,6 +266,8 @@ def main():
     sign.add_argument("--next-relay-build", nargs=2, type=Path, metavar=("BUILD", "REVIEW"))
     register = commands.add_parser("register")
     register.add_argument("target", type=Path)
+    register.add_argument("--host-inspection-profile")
+    register.add_argument("--custody-key-profiles", type=Path, help="JSON map from custody AWS account to read-only profile")
     identity = commands.add_parser("host-policy")
     identity.add_argument("target", type=Path)
     commands.add_parser("attestation-pins").add_argument("target", type=Path)
@@ -265,7 +299,8 @@ def main():
             return
         document = read_json(args.target)
         if args.command == "register":
-            register_target(trust, document, build=args.build)
+            profiles = read_json(args.custody_key_profiles) if args.custody_key_profiles else None
+            register_target(trust, document, build=args.build, key_profiles=profiles, host_profile=args.host_inspection_profile)
             return
         _, receipt, custodians, receipt_at = load_epoch_with_time(trust, document["manifest"]["custodyEpoch"])
         keys, policies, next_keys = target(trust, document, receipt, custodians, args.build)

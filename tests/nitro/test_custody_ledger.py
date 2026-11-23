@@ -94,6 +94,7 @@ class CustodyLedgerTests(unittest.TestCase):
         self.booted_at_ms = self.now * 1000
         self.enterContext(patch("time.time", side_effect=lambda: self.now))
         self.enterContext(patch("custody_ledger.aws", side_effect=self.aws))
+        self.enterContext(patch("deployment.require_live_registration"))
         self.enterContext(patch("approval.kms", side_effect=AssertionError("receipt verification must not call KMS")))
         self.key_metadata = {}
         self.key_policies = {}
