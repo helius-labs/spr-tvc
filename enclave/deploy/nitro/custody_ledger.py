@@ -1023,12 +1023,12 @@ def check_release_policy(trust, document, custody_signer=None, *, source_profile
         for observed, _, _ in readiness:
             for name, fingerprint in observed.items():
                 observe_record(observed_records, name, fingerprint)
-        if ledger_backup is not None:
-            require_replicated_custody(trust, ledger_backup, max(by_epoch, key=epoch_number), observed_records)
         if verify_payment_recovery:
             require_payment_recovery_quorums(trust, [target for _, targets, _ in readiness for target in targets], key_profiles)
             check_source_ledger(trust, source_profile)
             check_recovery_bucket(trust, ledger_backup, replica_profile)
+        if ledger_backup is not None:
+            require_replicated_custody(trust, ledger_backup, max(by_epoch, key=epoch_number), observed_records)
         # Check retirement after reading receipts, targets and key state.
         list(workers.map(lambda epoch: require_active_epoch(trust, epoch), by_epoch))
     now = time.time()

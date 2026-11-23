@@ -1690,7 +1690,7 @@ class CustodyLedgerTests(unittest.TestCase):
                     check_release_policy(self.trust, document, **inspection)
 
         with (patch("custody_ledger.read_stored_payload", side_effect=read),
-              patch("custody_ledger.require_payment_recovery_quorums") as quorums,
+              patch("custody_ledger.require_payment_recovery_quorums"),
               patch("custody_ledger.check_source_ledger") as inspect_source,
               patch("custody_ledger.check_recovery_bucket") as inspect_replica):
             check_release_policy(self.trust, document, **PAYMENT_PROFILES)
@@ -1712,12 +1712,19 @@ class CustodyLedgerTests(unittest.TestCase):
                     return payload, metadata
                 return substituted_body, {**metadata, "VersionId": "changed-target-version"}
 
-            quorums.reset_mock()
             with patch("custody_ledger.read_stored_payload", side_effect=changed_registration):
                 with self.assertRaisesRegex(ValueError, "changed during verification"):
                     check_release_policy(self.trust, document, **PAYMENT_PROFILES)
-                quorums.assert_not_called()
             prefix = f"spr-custody/mainnet/{DOMAIN}/"
+            registration_path = prefix + selected
+            with patch.dict(self.versions):
+                def replace_during_bucket_inspection(*_):
+                    self.versions[registration_path] = "changed-target-version"
+
+                inspect_replica.side_effect = replace_during_bucket_inspection
+                with self.assertRaisesRegex(ValueError, "changed during verification"):
+                    check_release_policy(self.trust, document, **PAYMENT_PROFILES)
+                inspect_replica.side_effect = None
             with patch.dict(self.replica_objects, {prefix + "retired/3.json": b"{}"}):
                 with self.assertRaisesRegex(ValueError, "retirement record in the pinned replica"):
                     check_release_policy(self.trust, document, **PAYMENT_PROFILES)
