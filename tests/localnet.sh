@@ -49,7 +49,11 @@ solana-keygen new --no-bip39-passphrase --silent --outfile "$TVC_SOLANA_KEYPAIR_
 
 (
     cd "$zolana_root"
-    ZOLANA_PORT_OFFSET="$offset" just build-programs build-prover-server build-cli ensure-photon
+    if [[ -z "${ZOLANA_PREBUILT:-}" ]]; then
+        ./tools/build-programs.sh --manifest-path programs/user-registry/Cargo.toml -- --locked --features bpf-entrypoint
+        ./tools/build-programs.sh --manifest-path programs/shielded-pool/Cargo.toml -- --locked --features bpf-entrypoint
+    fi
+    ZOLANA_PORT_OFFSET="$offset" just build-prover-server build-cli ensure-photon
     ids="$(cargo run -q -p xtask -- program-ids)"
     pool="$(sed -n 's/^SHIELDED_POOL_PROGRAM_ID=//p' <<< "$ids")"
     registry="$(sed -n 's/^USER_REGISTRY_PROGRAM_ID=//p' <<< "$ids")"

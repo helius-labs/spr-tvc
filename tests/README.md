@@ -14,9 +14,9 @@ Privacy Rings revision and shows the required toolchain. Pass a port offset
 to run a second localnet.
 
 The job packs both SDKs and type-checks a consumer that installs them together.
-It builds the on-chain programs from the same Privacy Rings checkout as the
-wallet SDK. The test checks the signed registry assertion, pays an unfunded
-recipient, rejects a second payment when the recipient registers during signing,
+It builds the shielded pool and user registry from the same Privacy Rings
+checkout as the wallet SDK. The test checks the signed registry assertion,
+pays an unfunded recipient, rejects a second payment when they register during signing,
 then uses the standalone loopback service to recover and sweep the first note.
 It checks both wallet balances at the finalized sweep slot.
 
