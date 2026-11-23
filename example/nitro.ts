@@ -6,7 +6,7 @@ import { DecryptionServiceError } from "@heliuslabs/spr-decryption-service";
 import {
   advancesNitroPolicy, createNitroDecryptionService, type NitroPolicyCheckpoint, type NitroPolicyStore, type NitroTrust,
 } from "@heliuslabs/spr-decryption-service/nitro";
-import { isValidNitroPolicyCheckpoint, validateNitroTrust } from "../sdk/src/attestation/nitro-policy.js";
+import { isValidNitroPolicyCheckpoint, sameNitroCheckpoint, validateNitroTrust } from "../sdk/src/attestation/nitro-policy.js";
 import { readPublishedNitroPolicy } from "../sdk/src/attestation/nitro-publication.js";
 import { decodeDecimalU64 } from "../sdk/src/protocol/decimal.js";
 import { DecryptionServiceError as PolicyReadError } from "../sdk/src/protocol/error.js";
@@ -18,23 +18,35 @@ export function checkpointStore(path: string, trust: Pick<NitroTrust, "network" 
   if (!path || path === ":memory:") throw new Error("use a persistent checkpoint file");
   const db = new DatabaseSync(path, { timeout: 1_000 });
   const scope = `${trust.network}/${trust.securityDomainId}`;
-  db.exec(`PRAGMA synchronous = FULL;
+  try {
+    db.exec(`PRAGMA synchronous = FULL;
+    BEGIN IMMEDIATE;
     CREATE TABLE IF NOT EXISTS checkpoints (
       scope TEXT PRIMARY KEY,
       sequence TEXT NOT NULL,
       digest TEXT NOT NULL,
       minimumCustodyEpoch TEXT NOT NULL,
-      recoveryOnly INTEGER NOT NULL CHECK (recoveryOnly IN (0, 1))
+      recoveryOnly INTEGER NOT NULL CHECK (recoveryOnly IN (0, 1)),
+      revoked INTEGER NOT NULL DEFAULT 0 CHECK (revoked IN (0, 1))
     ) STRICT;`);
-  const read = db.prepare("SELECT sequence, digest, minimumCustodyEpoch, recoveryOnly FROM checkpoints WHERE scope = ?");
-  const save = db.prepare(`INSERT INTO checkpoints VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(scope) DO UPDATE SET sequence = excluded.sequence, digest = excluded.digest,
-      minimumCustodyEpoch = excluded.minimumCustodyEpoch, recoveryOnly = excluded.recoveryOnly`);
+    if (!db.prepare("PRAGMA table_info(checkpoints)").all().some(column => column.name === "revoked")) {
+      db.exec("ALTER TABLE checkpoints ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0 CHECK (revoked IN (0, 1))");
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+  const read = db.prepare("SELECT sequence, digest, minimumCustodyEpoch, recoveryOnly, revoked FROM checkpoints WHERE scope = ?");
+  const save = db.prepare(`INSERT INTO checkpoints (scope, sequence, digest, minimumCustodyEpoch, recoveryOnly, revoked)
+    VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(scope) DO UPDATE SET sequence = excluded.sequence, digest = excluded.digest,
+      minimumCustodyEpoch = excluded.minimumCustodyEpoch, recoveryOnly = excluded.recoveryOnly, revoked = excluded.revoked`);
   function current(): NitroPolicyCheckpoint | undefined {
     const row = read.get(scope);
     if (row === undefined) return undefined;
-    const checkpoint = { ...row, recoveryOnly: row.recoveryOnly === 1 };
-    if ((row.recoveryOnly !== 0 && row.recoveryOnly !== 1) || !isValidNitroPolicyCheckpoint(checkpoint)) {
+    const { revoked, recoveryOnly, ...fields } = row;
+    const checkpoint = { ...fields, recoveryOnly: recoveryOnly === 1, ...(revoked === 1 ? { revoked: true } : {}) };
+    if ((recoveryOnly !== 0 && recoveryOnly !== 1) || (revoked !== 0 && revoked !== 1) || !isValidNitroPolicyCheckpoint(checkpoint)) {
       throw new DecryptionServiceError("ReleasePolicyInvalid", "checkpoint storage unavailable");
     }
     return checkpoint;
@@ -47,8 +59,8 @@ export function checkpointStore(path: string, trust: Pick<NitroTrust, "network" 
       try {
         const previous = current();
         const accepted = advancesNitroPolicy(previous, update);
-        if (accepted && previous?.sequence !== next.sequence) {
-          save.run(scope, next.sequence, next.digest, next.minimumCustodyEpoch, Number(next.recoveryOnly));
+        if (accepted && !sameNitroCheckpoint(previous, next)) {
+          save.run(scope, next.sequence, next.digest, next.minimumCustodyEpoch, Number(next.recoveryOnly), Number(next.revoked === true));
         }
         db.exec("COMMIT");
         return accepted;
@@ -69,12 +81,7 @@ function acceptedPolicy(
   published: VerifiedPublication,
   accepted: NitroPolicyCheckpoint | undefined,
 ): boolean {
-  return published.sameEnvelope && sameCheckpoint(accepted, published.checkpoint);
-}
-
-function sameCheckpoint(accepted: NitroPolicyCheckpoint | undefined, checkpoint: NitroPolicyCheckpoint): boolean {
-  return accepted?.sequence === checkpoint.sequence && accepted.digest === checkpoint.digest &&
-    accepted.minimumCustodyEpoch === checkpoint.minimumCustodyEpoch && accepted.recoveryOnly === checkpoint.recoveryOnly;
+  return published.sameEnvelope && sameNitroCheckpoint(accepted, published.checkpoint);
 }
 
 type Custody = { custodyEpoch: string; custodyDigest: string };
@@ -175,7 +182,7 @@ export function requireCurrentPolicy(
   current: NitroPolicyCheckpoint | undefined,
   expected: NitroPolicyCheckpoint,
 ) {
-  if (!acceptedPolicy(published, expected) || !sameCheckpoint(current, expected)) {
+  if (!acceptedPolicy(published, expected) || !sameNitroCheckpoint(current, expected)) {
     throw new Error("wallet policy changed during the rehearsal");
   }
 }

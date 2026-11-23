@@ -61,10 +61,14 @@ requires that pair to match its pins in both heads. Browsers store the
 checkpoint in IndexedDB.
 Other runtimes supply a durable `policyStore` scoped to network and domain.
 Its `current()` method rejects malformed records and returns `undefined` for an empty store.
-Its `accept(update)` method applies `advancesNitroPolicy` to both authenticated
-heads inside the write transaction and saves `update[0].checkpoint`.
-The wallet requires an exact match at the checkpoint sequence and an exact
-predecessor link at the next sequence. It checks the saved revision before
+Its `accept(update)` method calls `advancesNitroPolicy` inside the write
+transaction and saves the complete `update[0].checkpoint`. An activation
+update contains two heads. A current revocation signed by both quorums can
+arrive from either pinned bucket and can replace a conflicting activation
+at the same sequence. The store must persist that change even when the
+sequence stays the same. Activation requires an exact checkpoint match at
+the same sequence and an exact predecessor link at the next sequence.
+The wallet checks the saved revision before
 sending, after owner approval, and before opening a reply. Policy acceptance
 commits before replica attestation.
 The SDK rechecks the checkpoint before probing each target and before caching

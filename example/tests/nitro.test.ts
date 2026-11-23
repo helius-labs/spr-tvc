@@ -153,6 +153,45 @@ test("native rehearsal checkpoints survive closing the database and exclude earl
   }
 });
 
+test("native rehearsal persists an emergency stop over an activation at the same sequence", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "spr-nitro-checkpoint-"));
+  const path = join(directory, "wallet.sqlite");
+  const trust = { network: "devnet" as const, securityDomainId: "11".repeat(32) };
+  const active = { sequence: "3", digest: "33".repeat(32), recoveryOnly: true, minimumCustodyEpoch: "2" };
+  const previous = "22".repeat(32);
+  const revoked = { ...active, digest: "44".repeat(32), revoked: true as const };
+  try {
+    const database = new DatabaseSync(path);
+    try {
+      database.exec(`CREATE TABLE checkpoints (
+        scope TEXT PRIMARY KEY, sequence TEXT NOT NULL, digest TEXT NOT NULL,
+        minimumCustodyEpoch TEXT NOT NULL, recoveryOnly INTEGER NOT NULL CHECK (recoveryOnly IN (0, 1))
+      ) STRICT;`);
+      database.prepare("INSERT INTO checkpoints VALUES (?, ?, ?, ?, ?)").run(
+        `${trust.network}/${trust.securityDomainId}`, active.sequence, active.digest, active.minimumCustodyEpoch, 1,
+      );
+    } finally {
+      database.close();
+    }
+    const writer = checkpointStore(path, trust);
+    try {
+      assert.deepEqual(await writer.store.current(), active);
+      assert.equal(await writer.store.accept([{ checkpoint: revoked, previousPolicyDigest: previous }]), true);
+    } finally {
+      writer.close();
+    }
+    const reopened = checkpointStore(path, trust);
+    try {
+      assert.deepEqual(await reopened.store.current(), revoked);
+      assert.equal(await reopened.store.accept(agreed(active, previous)), false);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true });
+  }
+});
+
 test("native rehearsal refuses to replace a corrupt checkpoint", async () => {
   const directory = await mkdtemp(join(tmpdir(), "spr-nitro-checkpoint-"));
   const path = join(directory, "wallet.sqlite");

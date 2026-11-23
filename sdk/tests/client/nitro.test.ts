@@ -919,7 +919,7 @@ describe("native client trust gate", () => {
     expect(signMessages).not.toHaveBeenCalled();
   });
 
-  it("persists only a primary revocation and refuses rollback before attestation after reopening the client", async () => {
+  it("persists the same revocation from either bucket and refuses rollback before attestation after restart", async () => {
     const old = signedPolicy();
     const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(old).policy));
     const revoked = signedPolicy({ action: "revoke", sequence: "3", previousPolicyDigest, minimumCustodyEpoch: "2", targets: [] });
@@ -931,11 +931,11 @@ describe("native client trust gate", () => {
     vi.stubGlobal("indexedDB", new IDBFactory());
     const client = createNitroDecryptionService({ trust });
     const stored = indexedDbNitroPolicyStore(trust);
-    await expect(client.open(signer, proofs)).rejects.toThrow("ReleasePolicyInvalid");
-    expect(await stored.current()).toBeUndefined();
     await expect(client.open(signer, proofs)).rejects.toThrow("ReleasePolicyRevoked");
     const checkpoint = await stored.current();
-    expect(checkpoint).toMatchObject({ sequence: "3", minimumCustodyEpoch: "2" });
+    expect(checkpoint).toMatchObject({ sequence: "3", minimumCustodyEpoch: "2", revoked: true });
+    await expect(client.open(signer, proofs)).rejects.toThrow("ReleasePolicyRevoked");
+    expect(await stored.current()).toEqual(checkpoint);
 
     const reopened = createNitroDecryptionService({ trust });
     await expect(reopened.open(signer, proofs)).rejects.toThrow("policy rollback");
@@ -1228,6 +1228,112 @@ it("refuses a fully signed direct successor of another bootstrap revision before
   await expect(client.open(signer, proofs)).rejects.toMatchObject({ code: "ReleasePolicyInvalid" });
   expect(fetch).toHaveBeenCalledTimes(2);
   expect(accept).not.toHaveBeenCalled();
+  expect(signMessages).not.toHaveBeenCalled();
+});
+
+it.each(["mirror is ahead", "primary is unavailable", "mirror is unavailable"] as const)(
+  "remembers an authenticated emergency revocation when the %s",
+  async (failure) => {
+    const active = signedPolicy();
+    const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(active).policy));
+    const revoked = signedPolicy({ action: "revoke", sequence: "3", previousPolicyDigest, targets: [] });
+    const fetch = policyHeads(vi.fn(), active).mockResolvedValueOnce(new Response(null, { status: 503 }));
+    fetch.mockResolvedValueOnce(failure === "primary is unavailable" ? new Response(null, { status: 503 })
+      : new Response(failure === "mirror is ahead" ? active : revoked));
+    fetch.mockResolvedValueOnce(failure === "mirror is unavailable" ? new Response(null, { status: 503 })
+      : new Response(revoked));
+    policyHeads(fetch, active);
+    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const wallet = createNitroDecryptionService({ trust });
+    await expect(wallet.address(signer.address)).rejects.toThrow("no authorized Nitro replica");
+    await expect(wallet.open(signer, proofs)).rejects.toMatchObject({ code: "ReleasePolicyRevoked" });
+    expect(await indexedDbNitroPolicyStore(trust).current()).toMatchObject({ sequence: "3", revoked: true });
+    await expect(createNitroDecryptionService({ trust }).open(signer, proofs)).rejects.toThrow("policy rollback");
+    expect(fetch.mock.calls.filter(([url]) => !url.pathname.endsWith("/policy.json"))).toHaveLength(1);
+    expect(signMessages).not.toHaveBeenCalled();
+  },
+);
+
+it("keeps a same-sequence emergency revocation and accepts a later agreed reconciliation", async () => {
+  const active = signedPolicy();
+  const revocation = signedPolicy({ action: "revoke", targets: [] });
+  const activeDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(active).policy));
+  const reconcile = signedPolicy({ action: "revoke", sequence: "3", previousPolicyDigest: activeDigest, targets: [] });
+  const reconcileDigest = encodeLowerHex(nitroPolicySigningDigest(JSON.parse(reconcile).policy));
+  const replacement = signedPolicy({ sequence: "4", previousPolicyDigest: reconcileDigest });
+  const fetch = policyHeads(vi.fn(), active).mockResolvedValueOnce(new Response(null, { status: 503 }));
+  policyHeads(fetch, active, revocation);
+  policyHeads(fetch, active);
+  policyHeads(fetch, reconcile);
+  policyHeads(fetch, replacement, reconcile).mockResolvedValueOnce(new Response(null, { status: 503 }));
+  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const open = () => createNitroDecryptionService({ trust }).open(signer, proofs);
+  const store = indexedDbNitroPolicyStore(trust);
+  await expect(open()).rejects.toThrow("no authorized Nitro replica");
+  await expect(open()).rejects.toMatchObject({ code: "ReleasePolicyRevoked" });
+  expect(await store.current()).toMatchObject({ sequence: "2", revoked: true });
+  expect((await store.current())?.digest).not.toBe(activeDigest);
+  await expect(open()).rejects.toThrow("policy rollback");
+  await expect(open()).rejects.toMatchObject({ code: "ReleasePolicyRevoked" });
+  expect(await store.current()).toMatchObject({ sequence: "3", digest: reconcileDigest, revoked: true });
+  await expect(open()).rejects.toThrow("no authorized Nitro replica");
+  expect(await store.current()).toMatchObject({ sequence: "4" });
+  expect((await store.current())?.revoked).toBeUndefined();
+  expect(signMessages).not.toHaveBeenCalled();
+});
+
+it.each(["conflicting stops", "locally rejected activation"] as const)(
+  "records the applicable revocation with %s",
+  async (scenario) => {
+    const { policy } = JSON.parse(signedPolicy()) as { policy: NitroPolicy };
+    const targets = policy.targets.map(target => ({ ...target, custodyEpoch: "2" }));
+    const active = signedPolicy({ minimumCustodyEpoch: "2", targets });
+    const digest = (text: string) => encodeLowerHex(nitroPolicySigningDigest(JSON.parse(text).policy));
+    const late = scenario === "conflicting stops";
+    const stop = signedPolicy({
+      sequence: late ? "3" : "2", previousPolicyDigest: late ? digest(active) : policy.previousPolicyDigest,
+      minimumCustodyEpoch: "2", action: "revoke", targets: [],
+    });
+    const alternate = late
+      ? signedPolicy({ sequence: "3", previousPolicyDigest: digest(active), action: "revoke", targets: [] })
+      : signedPolicy({ sequence: "3", previousPolicyDigest: digest(stop), minimumCustodyEpoch: "2", targets });
+    const fetch = policyHeads(vi.fn(), active).mockResolvedValueOnce(new Response(null, { status: 503 }));
+    policyHeads(fetch, alternate, stop);
+    policyHeads(fetch, active);
+    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const open = () => createNitroDecryptionService({ trust }).open(signer, proofs);
+    await expect(open()).rejects.toThrow("no authorized Nitro replica");
+    await expect(open()).rejects.toMatchObject({ code: "ReleasePolicyRevoked" });
+    expect(await indexedDbNitroPolicyStore(trust).current()).toMatchObject({ digest: digest(stop), revoked: true });
+    await expect(open()).rejects.toThrow("policy rollback");
+    expect(signMessages).not.toHaveBeenCalled();
+  },
+);
+
+it("does not checkpoint a one-sided revocation with incomplete approvals or an expired deadline", async () => {
+  const active = signedPolicy();
+  const { policy } = JSON.parse(active) as { policy: NitroPolicy };
+  const previousPolicyDigest = encodeLowerHex(nitroPolicySigningDigest(policy));
+  const next: Partial<NitroPolicy> = { action: "revoke", sequence: "3", previousPolicyDigest, targets: [] };
+  const unsigned = JSON.parse(signedPolicy(next));
+  unsigned.custodySignatures = [];
+  const expired = signedPolicy({ ...next, targets: [], validFromMs: String(Date.now() - 2_000), expiresAtMs: String(Date.now() - 1_000) });
+  const fetch = policyHeads(vi.fn(), active).mockResolvedValueOnce(new Response(null, { status: 503 }));
+  for (const head of [JSON.stringify(unsigned), expired]) {
+    fetch.mockResolvedValueOnce(new Response(null, { status: 503 })).mockResolvedValueOnce(new Response(head));
+  }
+  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const open = () => createNitroDecryptionService({ trust }).open(signer, proofs);
+  await expect(open()).rejects.toThrow("no authorized Nitro replica");
+  const store = indexedDbNitroPolicyStore(trust);
+  const checkpoint = await store.current();
+  await expect(open()).rejects.toMatchObject({ code: "ReleasePolicyInvalid", status: 503 });
+  await expect(open()).rejects.toMatchObject({ code: "ReleasePolicyInvalid", status: 503 });
+  expect(await store.current()).toEqual(checkpoint);
   expect(signMessages).not.toHaveBeenCalled();
 });
 

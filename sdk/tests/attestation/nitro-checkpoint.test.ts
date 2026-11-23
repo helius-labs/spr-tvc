@@ -53,6 +53,23 @@ describe("browser Nitro checkpoints", () => {
     expect(await a.current()).toEqual(await b.current());
   });
 
+  it("a one-sided revocation wins a same-sequence race without lowering either floor", async () => {
+    const a = indexedDbNitroPolicyStore(scope);
+    const b = indexedDbNitroPolicyStore(scope);
+    const revoked = { ...next, digest: "33".repeat(32), revoked: true as const };
+    function stop(checkpoint = revoked) {
+      return [{ checkpoint, previousPolicyDigest: first.digest }] as const;
+    }
+    expect(await a.accept([agreed()[0]])).toBe(false);
+    const [, stopped] = await Promise.all([a.accept(agreed()), b.accept(stop())]);
+    expect(stopped).toBe(true);
+    expect(await a.current()).toEqual(revoked);
+    expect(await a.accept(agreed())).toBe(false);
+    expect(await b.accept(stop({ ...revoked, sequence: "3", minimumCustodyEpoch: "1" }))).toBe(false);
+    expect(await b.accept(stop({ ...revoked, sequence: "3", recoveryOnly: false }))).toBe(false);
+    expect(await b.current()).toEqual(revoked);
+  });
+
   it("fails closed when persistence is unavailable", () => {
     vi.stubGlobal("indexedDB", undefined);
     expect(() => indexedDbNitroPolicyStore(scope)).toThrow("checkpoint storage unavailable");

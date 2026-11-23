@@ -1,7 +1,7 @@
 import { connectNitroTarget, nitroOperationBinding } from "../attestation/nitro-connection.js";
 import { indexedDbNitroPolicyStore } from "../attestation/nitro-checkpoint.js";
 import {
-  advancesNitroPolicy, validateNitroTrust,
+  advancesNitroPolicy, sameNitroCheckpoint, validateNitroTrust,
   type NitroPolicyCheckpoint, type NitroPolicyStore, type NitroPolicyUpdate, type NitroTrust,
 } from "../attestation/nitro-policy.js";
 import { readPublishedNitroPolicy } from "../attestation/nitro-publication.js";
@@ -42,29 +42,30 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
   let next = 0;
 
   // An already-started cancelled commit may still advance the durable checkpoint.
-  async function accept(update: NitroPolicyUpdate, signal?: AbortSignal): Promise<void> {
+  async function accept(update: NitroPolicyUpdate, signal?: AbortSignal): Promise<boolean> {
     signal?.throwIfAborted();
     if (!advancesNitroPolicy(latest, update) ||
         !advancesNitroPolicy(await awaitWithSignal(store.current(), signal), update) ||
         !await awaitWithSignal(store.accept(update), signal) ||
         !advancesNitroPolicy(latest, update)) {
-      throw new DecryptionServiceError("ReleasePolicyInvalid", "policy rollback or checkpoint unavailable");
+      return false;
     }
     latest = update[0].checkpoint;
+    return true;
   }
+
+  const readPolicy = (signal?: AbortSignal) =>
+    readPublishedNitroPolicy(trust, signal, update => accept(update, signal));
 
   const session = sessionFromConnector(async (signal): Promise<ConnectedTvcRuntime> => {
     const sessionExpiry = clock() + BigInt(CONNECTION_TTL_MS) - 1n;
     const freshnessDeadline = performance.now() + CONNECTION_TTL_MS;
     const policyFreshnessRemainingMs = () => freshnessDeadline - performance.now();
-    const { policy, checkpoint, validFrom, expiresAt, update } = await readPublishedNitroPolicy(trust, signal);
-    function matchesCheckpoint(current: NitroPolicyCheckpoint | undefined): boolean {
-      return current?.digest === checkpoint.digest && current.sequence === checkpoint.sequence &&
-        current.minimumCustodyEpoch === checkpoint.minimumCustodyEpoch && current.recoveryOnly === checkpoint.recoveryOnly;
-    }
+    // The policy advances trust even if every listed replica is offline.
+    const { policy, checkpoint, validFrom, expiresAt } = await readPolicy(signal);
     async function requireCurrentCheckpoint(signal?: AbortSignal): Promise<void> {
       const current = await awaitWithSignal(store.current(), signal);
-      if (!matchesCheckpoint(current) || !matchesCheckpoint(latest)) {
+      if (!sameNitroCheckpoint(current, checkpoint) || !sameNitroCheckpoint(latest, checkpoint)) {
         throw new DecryptionServiceError("ReleasePolicySuperseded");
       }
     }
@@ -74,8 +75,6 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
       if (now > sessionExpiry || policyFreshnessRemainingMs() <= 0) throw new DecryptionServiceError("ExpiredRequest");
       return now;
     }
-    // The signed policy advances trust even if every listed replica is offline.
-    await accept(update, signal);
     currentTime();
     if (policy.action === "revoke") throw new DecryptionServiceError("ReleasePolicyRevoked");
     const count = policy.targets.length;
@@ -141,8 +140,7 @@ export function createNitroDecryptionService(config: NitroDecryptionServiceConfi
       requireCurrentCheckpoint,
       async requirePublishedPolicy(signal, forPayment) {
         await requireCurrentCheckpoint(signal);
-        const { policy, update } = await readPublishedNitroPolicy(trust, signal);
-        await accept(update, signal);
+        const { policy } = await readPolicy(signal);
         if (policy.action === "revoke") throw new DecryptionServiceError("ReleasePolicyRevoked");
         if (forPayment && policy.recoveryOnly) throw new DecryptionServiceError("ReleasePolicyRecoveryOnly");
         await requireCurrentCheckpoint(signal);

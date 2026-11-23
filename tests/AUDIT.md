@@ -241,6 +241,7 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-233 | The SDK fell back to an unbounded body read when a custom response lacked a stream. It retained chunk buffers until the end of the read, so reused buffers could change earlier bytes. | Read only the response stream. Check the byte limit and copy each chunk before requesting more data. Cancel the stream on overflow or cancellation. [HTTP reader tests](../sdk/tests/connection/http.test.ts) · SPR-CORE-15 |
 | N-234 | A payment could use service keys from a policy that became recovery-only while a later Solana RPC was in flight. | Confirm the same keys under the current payment policy after the final Solana checks for unregistered recipients, including before wallet broadcast. [SDK recipient tests](../sdk/tests/client/recipient.test.ts) · [Wallet payment tests](https://github.com/helius-labs/privacy-rings/pull/652) · SPR-NITRO-103 |
 | N-235 | The retirement verifier polled the target registrations from the start of the wait. An approved standby registered during recovery could boot successfully and still be missed, forcing another cold boot after restarting verification. | Refresh signed registrations on retry and preserve the original observation time and deadline. Verify the standby against the same receipt, policy and proved slots. [Retirement tests](nitro/test_custody_ledger.py) · SPR-NITRO-41 |
+| N-236 | A wallet could observe a quorum-signed emergency revocation on one bucket, reject the current request and still reopen an older activation after restart. | Checkpoint a current revocation from either pinned bucket even if the peer is unavailable or conflicting. Keep both-head and predecessor checks for activation. [Browser wallet](../sdk/tests/client/nitro.test.ts) · [SQLite](../example/tests/nitro.test.ts) · [Rust wallet](https://github.com/helius-labs/privacy-rings/pull/652) · SPR-NITRO-104 |
 
 ## Remaining qualification and review
 
@@ -258,6 +259,8 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 ## Browser checkpoint rehearsal
 
 On 2026-11-22, two Chrome 157 tabs on macOS used the SDK at `d5ee887` to verify and store distinct quorum-signed successors from the same origin. One successor won the race and both tabs observed its digest. After the test browser was killed, a new process using the same profile retained the digest, custody floor and recovery-only flag. It rejected an older policy, the competing revision, a successor on the losing branch, a lower custody floor and payment reopening. The remaining wallet platform, restore and live publisher checks are listed in Q-02.
+
+On 2026-11-23, one Chrome 157 tab received an activation while a second tab received a same-sequence revocation from a simulated mirror with the primary offline. Both quorums signed the test policies. After killing Chrome, the SDK reopened the same IndexedDB profile and rejected the two replayed activation heads before contacting a replica.
 
 ## 3-of-6 custody rehearsal
 

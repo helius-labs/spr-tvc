@@ -1,6 +1,6 @@
 import { DecryptionServiceError } from "../protocol/error.js";
 import {
-  advancesNitroPolicy, isValidNitroPolicyCheckpoint, type NitroPolicyCheckpoint, type NitroPolicyStore, type NitroTrust,
+  advancesNitroPolicy, isValidNitroPolicyCheckpoint, sameNitroCheckpoint, type NitroPolicyCheckpoint, type NitroPolicyStore, type NitroTrust,
 } from "./nitro-policy.js";
 
 const DATABASE = "spr-nitro-policy";
@@ -61,7 +61,7 @@ export function indexedDbNitroPolicyStore(trust: Pick<NitroTrust, "network" | "s
       if (!isValidNitroPolicyCheckpoint(next)) throw storageError();
       return transact("readwrite", (current, records) => {
         if (!advancesNitroPolicy(current, update)) return false;
-        if (current?.sequence !== next.sequence) records.put(next, key);
+        if (!sameNitroCheckpoint(current, next)) records.put(next, key);
         return true;
       });
     },

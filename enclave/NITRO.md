@@ -372,9 +372,16 @@ reject a policy signed for a different pair or order. They read both heads
 directly without caching or redirects. During rollout the primary can advance
 by one signed revision with a nondecreasing custody floor while the mirror
 serves its exact predecessor.
-The primary's policy authorizes the connection. A mirror that is ahead, a
-missing or invalid head, a fork, a gap or an expired primary blocks new
-connections. For retirement, custodians verify the exact wallet trust file
+The primary's activation authorizes the connection when the mirror agrees
+or serves its exact predecessor. A missing or invalid head, a mirror ahead,
+a fork, a gap or an expired primary blocks new connections. Either bucket
+can supply a current target-free revocation signed by both quorums. The wallet
+commits it before reporting the stop, even when the peer head is missing or
+conflicting. The checkpoint preserves its custody and recovery floors. A
+revocation can replace a conflicting activation at its sequence. A later
+target-free reconciliation can advance the stop across a fork. Returning to
+service requires compatible signed heads that advance the stored checkpoint.
+For retirement, custodians verify the exact wallet trust file
 against its pinned hash and their own publication pins. Both buckets must
 agree before the verifier qualifies a replacement and again after attestation.
 An operator can restore the exact bytes of an independently recorded S3
