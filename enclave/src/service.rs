@@ -113,16 +113,35 @@ pub(crate) fn router(service: Arc<Service>) -> Router {
 }
 
 async fn dispatch(State(service): State<Arc<Service>>, request: Request<Body>) -> Response<Body> {
-    dispatch_with_crypto(service, request, |operation, service, body| async move {
-        match read_operation_body(&service, body).await {
-            Ok(body) => operation(&service, &body),
-            Err(error) => error.into_response(),
+    match (request.method().as_str(), request.uri().path()) {
+        ("GET", "/v1/info") => match jcs_serialize(&service.info) {
+            Ok(body) => http::ok(body),
+            Err(_) => PublicError::InvalidRequest.into_response(),
+        },
+        ("POST", "/v1/ping") if has_json_content_type(request.headers()) => {
+            run_hosted_operation(service, request.into_body(), handle_ping).await
         }
-    })
-    .await
+        ("POST", "/v1/ping") => PublicError::InvalidRequest.into_response(),
+        (_, "/v1/ping" | "/v1/info") => PublicError::MethodNotAllowed.into_response(),
+        _ => {
+            dispatch_operations(request, |body| {
+                run_hosted_operation(service, body, operations::handle)
+            })
+            .await
+        }
+    }
 }
 
-type Operation = fn(&Service, &[u8]) -> Response<Body>;
+async fn run_hosted_operation(
+    service: Arc<Service>,
+    body: Body,
+    operation: fn(&Service, &[u8]) -> Response<Body>,
+) -> Response<Body> {
+    match read_operation_body(&service, body).await {
+        Ok(body) => operation(&service, &body),
+        Err(error) => error.into_response(),
+    }
+}
 
 pub(crate) async fn read_operation_body(
     service: &Service,
@@ -140,34 +159,26 @@ pub(crate) async fn read_operation_body(
         .map_err(|_| PublicError::RequestTooLarge)
 }
 
-pub(crate) async fn dispatch_with_crypto<F>(
-    service: Arc<Service>,
+pub(crate) async fn dispatch_operations<F>(
     request: Request<Body>,
-    run: impl FnOnce(Operation, Arc<Service>, Body) -> F,
+    run: impl FnOnce(Body) -> F,
 ) -> Response<Body>
 where
     F: Future<Output = Response<Body>>,
 {
     let (parts, body) = request.into_parts();
     match (parts.method.as_str(), parts.uri.path()) {
-        ("POST", "/v1/ping" | "/v1/operations") if !has_json_content_type(&parts.headers) => {
+        ("POST", "/v1/operations") if !has_json_content_type(&parts.headers) => {
             PublicError::InvalidRequest.into_response()
         }
-        ("POST", "/v1/ping") => run(handle_ping, service, body).await,
-        ("POST", "/v1/operations") => run(operations::handle, service, body).await,
+        ("POST", "/v1/operations") => run(body).await,
         ("GET", "/health") => match jcs_serialize(&HealthResponse {
             status: HealthStatus::Healthy,
         }) {
             Ok(body) => http::ok(body),
             Err(_) => PublicError::Unavailable.into_response(),
         },
-        ("GET", "/v1/info") => match jcs_serialize(&service.info) {
-            Ok(body) => http::ok(body),
-            Err(_) => PublicError::InvalidRequest.into_response(),
-        },
-        (_, "/v1/ping" | "/v1/operations" | "/health" | "/v1/info") => {
-            PublicError::MethodNotAllowed.into_response()
-        }
+        (_, "/v1/operations" | "/health") => PublicError::MethodNotAllowed.into_response(),
         _ => PublicError::NotFound.into_response(),
     }
 }

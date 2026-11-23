@@ -33,6 +33,27 @@ async fn health_is_exact() {
 }
 
 #[tokio::test]
+async fn shared_dispatcher_serves_health_without_exposing_the_qos_routes() {
+    for (method, path, expected) in [
+        ("GET", "/health", StatusCode::OK),
+        ("GET", "/v1/info", StatusCode::NOT_FOUND),
+        ("POST", "/v1/ping", StatusCode::NOT_FOUND),
+    ] {
+        let request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::empty())
+            .unwrap();
+        let response = dispatch_operations(request, |_| async {
+            panic!("a public route ran crypto");
+        })
+        .await;
+        assert_eq!(response.status(), expected);
+    }
+}
+
+#[tokio::test]
 async fn info_is_untrusted_discovery_bound_to_runtime_public_keys() {
     let quorum = P256Pair::generate().unwrap();
     let ephemeral = P256Pair::generate().unwrap();

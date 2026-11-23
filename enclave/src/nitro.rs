@@ -43,9 +43,9 @@ use crate::{
     keys::NoteSeed,
     kms_recipient::{open_share, MAX_CMS_BYTES},
     native_crypto::NativePair,
-    nitro_http,
+    nitro_http, operations,
     release::NETWORK,
-    service::{dispatch_with_crypto, read_operation_body},
+    service::{dispatch_operations, read_operation_body},
     wire::KeyPair,
     Release, Service,
 };
@@ -200,19 +200,19 @@ fn serving_router(
 
 async fn serve_request(
     State(service): State<Arc<Service>>,
-    Extension(operations): Extension<Arc<OperationTraffic>>,
+    Extension(traffic): Extension<Arc<OperationTraffic>>,
     request: Request,
 ) -> Response {
-    dispatch_with_crypto(service, request, |operation, service, body| async move {
-        within_request_budget(&operations.requests, async {
+    dispatch_operations(request, |body| async move {
+        within_request_budget(&traffic.requests, async {
             let body = match read_operation_body(&service, body).await {
                 Ok(body) => body,
                 Err(error) => return error.into_response(),
             };
-            let Ok(permit) = operations.worker.clone().acquire_owned().await else {
+            let Ok(permit) = traffic.worker.clone().acquire_owned().await else {
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
             };
-            run_with_permit(permit, move || operation(&service, &body))
+            run_with_permit(permit, move || operations::handle(&service, &body))
                 .await
                 .unwrap_or_else(IntoResponse::into_response)
         })

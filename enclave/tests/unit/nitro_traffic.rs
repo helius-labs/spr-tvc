@@ -70,7 +70,7 @@ async fn wallet_preflight_allows_only_credential_free_json_and_attestation_posts
 }
 
 #[tokio::test]
-async fn operation_overload_leaves_metadata_available_without_reading_request_bodies() {
+async fn operation_overload_leaves_health_available_without_reading_request_bodies() {
     struct Unreadable;
     impl axum::body::HttpBody for Unreadable {
         type Data = Bytes;
@@ -92,9 +92,14 @@ async fn operation_overload_leaves_metadata_available_without_reading_request_bo
         .unwrap();
     for (method, path, content_type, expected) in [
         (Method::GET, "/health", "", StatusCode::OK),
-        (Method::GET, "/v1/info", "", StatusCode::OK),
+        (Method::GET, "/v1/info", "", StatusCode::NOT_FOUND),
         (Method::GET, "/v1/unknown", "", StatusCode::NOT_FOUND),
-        (Method::GET, "/v1/ping", "", StatusCode::METHOD_NOT_ALLOWED),
+        (
+            Method::POST,
+            "/v1/ping",
+            "application/json",
+            StatusCode::NOT_FOUND,
+        ),
         (
             Method::POST,
             "/v1/operations",
@@ -122,38 +127,34 @@ async fn operation_overload_leaves_metadata_available_without_reading_request_bo
 }
 
 #[tokio::test]
-async fn crypto_waits_for_capacity_without_blocking_health_or_discovery() {
+async fn crypto_waits_for_capacity_without_blocking_health() {
     let service = State(service());
     let operations = Extension(Arc::new(OperationTraffic::new()));
-    for path in ["/v1/ping", "/v1/operations"] {
-        let permit = operations.0.worker.try_acquire().unwrap();
-        let request = Request::post(path)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from("{}"))
-            .unwrap();
-        let response = serve_request(service.clone(), operations.clone(), request);
-        tokio::pin!(response);
-        tokio::select! {
-            biased;
-            result = &mut response => panic!("crypto ran with no capacity: {}", result.status()),
-            _ = std::future::ready(()) => {}
-        }
-        for public_path in ["/health", "/v1/info"] {
-            let request = Request::get(public_path).body(Body::empty()).unwrap();
-            let response = tokio::time::timeout(
-                SERVING_DEADLINE,
-                serve_request(service.clone(), operations.clone(), request),
-            )
-            .await
-            .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-        }
-        drop(permit);
-        let response = tokio::time::timeout(SERVING_DEADLINE, response)
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let permit = operations.0.worker.try_acquire().unwrap();
+    let request = Request::post("/v1/operations")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let response = serve_request(service.clone(), operations.clone(), request);
+    tokio::pin!(response);
+    tokio::select! {
+        biased;
+        result = &mut response => panic!("crypto ran with no capacity: {}", result.status()),
+        _ = std::future::ready(()) => {}
     }
+    let request = Request::get("/health").body(Body::empty()).unwrap();
+    let health = tokio::time::timeout(
+        SERVING_DEADLINE,
+        serve_request(service.clone(), operations.clone(), request),
+    )
+    .await
+    .unwrap();
+    assert_eq!(health.status(), StatusCode::OK);
+    drop(permit);
+    let response = tokio::time::timeout(SERVING_DEADLINE, response)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

@@ -101,7 +101,7 @@ starts with counter `nonce || 0x00000002`. See the
 
 ## Release policy and connection
 
-The policy pins the release, network, security domain, manifest and
+The hosted QOS policy pins the release, network, security domain, manifest and
 executable digests, Quorum key identity and public key, operations, and
 byte limits. A threshold of distinct trusted release authorities signs the
 policy digest with P-256. The client enforces the policy's validity window
@@ -112,7 +112,10 @@ and revocation floor. See the [trust and attestation flow](../enclave/SPEC.md#es
   JSON has `type = spr.tvc.qos_ping.v1`, `version`, and a random 32-byte
   `challenge`. The response contains `version` and an App Proof on the
   exact challenge JSON.
-- `GET /health` reports process readiness.
+
+Native Nitro returns discovery in its
+[nonce-bound attestation](../enclave/NITRO.md). Both listeners expose
+`GET /health` for process readiness.
 
 ## Fixtures
 
