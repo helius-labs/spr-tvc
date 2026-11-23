@@ -12,7 +12,7 @@ from approval import (
     parse_json, publish_new_file, read_document, read_json, require_inspection_profiles, require_profile_account, sha256,
 )
 from custody_ledger import (
-    LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_custody_roster, list_objects, load_epoch_with_time,
+    LEDGER_WRITE_MARGIN_SECONDS, TARGET_APPROVAL, check_custody_roster, ledger_slot_version, list_objects, load_epoch_with_time,
     publication_time, read_registered_target, read_stored_object, require_active_epoch, require_publication_roster,
     require_target_approval_window, target_attestation, target_object_name, validate_target, verify_target_approval,
     wrapping_pairs, write_once,
@@ -96,14 +96,18 @@ def register_target(trust, document, *, build=None):
         raise ValueError("target does not match the committed custody receipt")
     name = target_object_name(manifest)
     published_at = None
+    version = None
     if name in list_objects(trust, name):
         stored, metadata = read_stored_object(trust, name)
         if canonical(stored) == canonical(document):
             published_at = publication_time(metadata)
+            version = metadata["VersionId"]
     verify_target_approval(trust, document, at=published_at)
     if build is not None:
         target(trust, document, receipt, custodians, build, at=published_at)
     if published_at is not None:
+        if ledger_slot_version(trust, name) != version:
+            raise ValueError("target registration changed during retry")
         require_active_epoch(trust, epoch)
         if published_at < receipt_at:
             raise ValueError("target registration precedes its custody receipt")
@@ -121,8 +125,12 @@ def register_target(trust, document, *, build=None):
 def require_registered_target(trust, manifest, *, receipt_at=None):
     # Registration precedes the retirement check. Every wrap admitted before
     # the marker will appear in the subsequent inventory, even if it ends later.
-    recorded = read_registered_target(trust, target_object_name(manifest), manifest["custodyEpoch"], manifest["receiptSha256"],
-                                      receipt_at=receipt_at)
+    name = target_object_name(manifest)
+    version = ledger_slot_version(trust, name)
+    if version is None:
+        raise ValueError(f"registered target object missing: {name}")
+    recorded = read_registered_target(trust, name, manifest["custodyEpoch"], manifest["receiptSha256"],
+                                      receipt_at=receipt_at, expected_version=version)
     if target_binding(recorded) != target_binding(manifest):
         raise ValueError("target does not match the immutable deployment register")
     require_active_epoch(trust, manifest["custodyEpoch"])

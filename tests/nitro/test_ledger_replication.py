@@ -101,6 +101,8 @@ class LedgerReplicationTests(unittest.TestCase):
                 for different in (
                     OSError("missing source"),
                     [(record, source), (record, {**replica, "VersionId": "other-version"})],
+                    [(record, {**source, "VersionId": "other-version"}),
+                     (record, {**replica, "VersionId": "other-version"})],
                     [(record, source), (b'{"fixture":false}', replica)],
                 ):
                     read.side_effect = different
@@ -116,7 +118,8 @@ class LedgerReplicationTests(unittest.TestCase):
                 read.side_effect = [(record, source), (record, replica)]
                 confirm.reset_mock(side_effect=True)
                 write_once(TRUST, name, {"fixture": True}, confirm)
-                listing.assert_called_with(replica_trust(TRUST, REPLICA), exact=name)
+                listing.assert_any_call(replica_trust(TRUST, REPLICA), exact=name)
+                listing.assert_called_with(TRUST, exact=name)
                 confirm.assert_called_once_with()
                 write.assert_not_called()
 
@@ -141,6 +144,21 @@ class LedgerReplicationTests(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError, message):
                             write_once(TRUST, name, {"fixture": True}, confirm)
                     confirm.assert_not_called()
+
+    def test_existing_replica_cannot_hide_source_version_history(self):
+        name = "1.json"
+        key = PREFIX + name
+        current = {"Key": key, "IsLatest": True, "VersionId": "current"}
+        old = {"Key": key, "IsLatest": False, "VersionId": "old"}
+        replica = {"Name": DESTINATION_BUCKET, "Prefix": key, "Versions": [current], "IsTruncated": False}
+        source = {**replica, "Name": SOURCE_BUCKET, "Versions": [current, old]}
+        confirm = Mock()
+        with (patch("custody_ledger.storage", side_effect=[replica, source]) as storage,
+              patch("custody_ledger.read_replicated_record")):
+            with self.assertRaisesRegex(ValueError, "requires one current version per record"):
+                write_once(TRUST, name, {"fixture": True}, confirm)
+            self.assertEqual([call.args[1] for call in storage.call_args_list], ["list-object-versions"] * 2)
+        confirm.assert_not_called()
 
     def test_replication_needs_a_separate_bucket_account_region_and_role(self):
         for field in ("bucket", "account", "region"):

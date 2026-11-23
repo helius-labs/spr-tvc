@@ -382,13 +382,20 @@ class TargetApprovalTests(unittest.TestCase):
         argv = ["deployment.py", str(trust_path), str(self.build), "register", str(target_path)]
         expiry = self.manifest["expiresAt"]
         written = datetime.fromtimestamp(expiry - 60, timezone.utc).isoformat()
+        metadata = {"LastModified": written, "VersionId": "original"}
         with (patch("sys.argv", argv), patch("deployment.load_epoch_with_time", side_effect=self.load_epoch),
               patch("deployment.list_objects", return_value=[target_object_name(self.manifest)]),
-              patch("deployment.read_stored_object", return_value=(self.approval, {"LastModified": written})),
+              patch("deployment.read_stored_object", return_value=(self.approval, metadata)),
+              patch("deployment.ledger_slot_version", return_value="original") as slot,
               patch("deployment.require_active_epoch") as active, patch("deployment.write_once") as write,
               patch("deployment.time.time", return_value=expiry)):
             main()
             active.assert_called_once_with(self.trust, "5")
+            slot.assert_called_once_with(self.trust, target_object_name(self.manifest))
+            slot.return_value = "another-version"
+            with self.assertRaisesRegex(SystemExit, "registration changed during retry"):
+                main()
+            slot.return_value = "original"
             (self.build / "tvc_app").write_bytes(b"wrong executable")
             with self.assertRaisesRegex(SystemExit, "target artifacts do not match"):
                 main()

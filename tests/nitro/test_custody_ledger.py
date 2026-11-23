@@ -1070,6 +1070,13 @@ class CustodyLedgerTests(unittest.TestCase):
                     qualify.side_effect = concurrent_commit
                     commit_retirement(self.trust, None, retirement)
                     self.assertNotIn("put-object", [entry.args[1] for entry in access.call_args_list])
+            with patch.dict(self.replica_objects, {marker_key: self.objects[marker_key]}):
+                with patch("custody_ledger.storage", wraps=storage) as access:
+                    commit_retirement(self.trust, None, retirement)
+                    with patch.dict(replica_change, {"body": b"{}"}):
+                        with self.assertRaisesRegex(ValueError, "differs from the pinned replica"):
+                            commit_retirement(self.trust, None, retirement)
+                    self.assertNotIn("put-object", [entry.args[1] for entry in access.call_args_list])
             _, _, keys, _, _ = retirement_inventory(self.trust, "1", 1)
             self.assertIn(original_target["wrappingKeys"][0], keys)
             self.assertEqual(copied, set(self.objects))
@@ -2630,6 +2637,37 @@ class CustodyLedgerTests(unittest.TestCase):
             read_registered_target(self.trust, name, "2", old_target["receiptSha256"])
         register_target(self.trust, future)
         require_registered_target(self.trust, candidate)
+
+    def test_registered_target_retry_rejects_a_conflicting_replica(self):
+        publish(self.trust, self.sign(self.document(1)))
+        draft, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
+        publish(self.trust, self.sign(draft))
+        target = self.replacement_target()
+        approval = self.signed_subject(TARGET_APPROVAL, target)
+        register_target(self.trust, approval)
+        self.trust["ledgerReplica"] = {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1",
+                                      **RECOVERY_ROLES, "role": "arn:aws:iam::000000000008:role/replication"}
+        name = target_object_name(target)
+        path = f"spr-custody/devnet/{DOMAIN}/{name}"
+
+        def payload(trust, name, **options):
+            original, metadata = read_stored_payload(self.trust, name, **options)
+            if trust["ledger"]["bucket"] == "custody-recovery":
+                return self.replica_objects[path], {**metadata, "ReplicationStatus": "REPLICA"}
+            return original, {**metadata, "ReplicationStatus": "COMPLETED"}
+
+        with patch("custody_ledger.storage", wraps=storage) as access:
+            register_target(self.trust, approval)  # A source-only record can still be replicating.
+            with (patch.dict(self.replica_objects, {path: self.objects[path]}),
+                  patch("custody_ledger.read_stored_payload", side_effect=payload)):
+                register_target(self.trust, approval)
+                require_registered_target(self.trust, target)
+                self.replica_objects[path] = b"{}"
+                with self.assertRaisesRegex(ValueError, "differs from the pinned replica"):
+                    register_target(self.trust, approval)
+                with self.assertRaisesRegex(ValueError, "differs from the pinned replica"):
+                    require_registered_target(self.trust, target)
+            self.assertNotIn("put-object", [entry.args[1] for entry in access.call_args_list])
 
     def test_approval_schedule_rejects_ambiguous_activation_times(self):
         for entries in (

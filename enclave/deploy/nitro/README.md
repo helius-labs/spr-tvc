@@ -82,11 +82,14 @@ targets, sign or release shares, or activate policies permission to list
 versions under the retirement prefix in both buckets. Before a write, check
 the exact slot's version history in both buckets. A delete marker or an
 older version blocks admission. S3's create-only condition can succeed if
-a delete marker is current. If the replica holds a current record, confirm
-that both buckets hold the same original version and that the source
-authenticates the requested retry. Restore a missing source through ledger
-recovery. Give ledger publishers scoped version-list and record-read access
-in both buckets. [S3 conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html#conditional-write-behavior)
+a delete marker is current. Retries and target checks before share release
+also inspect both version histories. While the slot is absent from the
+replica, authenticate and reuse the source record. If the replica holds the
+record, require both buckets to agree on the listed version, original
+timestamp and bytes. Restore a missing source through ledger recovery.
+Give ledger publishers and target wrap operators scoped version-list and
+record-read access in both buckets.
+[S3 conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html#conditional-write-behavior)
 
 Listings must match the pinned bucket and prefix and account for every
 result page. The tools use AWS service endpoints and ignore CLI endpoint

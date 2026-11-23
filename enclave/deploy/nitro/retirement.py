@@ -19,7 +19,7 @@ from approval import (
 )
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
-    check_recovery_bucket, check_registered_target, find_retirement, ledger_replica, list_objects, load_epoch,
+    check_recovery_bucket, check_registered_target, find_retirement, ledger_replica, ledger_slot_version, list_objects, load_epoch,
     load_epoch_with_time, load_retirement, note_identity, publication_time, read_registered_target, read_replicated_record,
     recovery_deadline, replica_trust,
     require_active_epoch, require_pinned_publications,
@@ -287,7 +287,10 @@ def commit_retirement(trust, wallet_trust, document):
 
     existing = find_retirement(trust, epoch)
     if existing is not None:
-        require_same_record(existing[0])
+        stored, version = existing
+        if ledger_slot_version(trust, retirement_object_name(epoch)) != version:
+            raise ValueError("retirement record changed during retry")
+        require_same_record(stored)
         return
     check_approvals(approval_keys(trust), RETIREMENT, approval)
     boot = verify_qualification(trust, wallet_trust, document)

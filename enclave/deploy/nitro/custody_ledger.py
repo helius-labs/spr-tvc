@@ -160,9 +160,11 @@ def storage(trust, operation, args=(), **options):
     ], **options)
 
 
-def read_stored_object(trust, name, **options):
+def read_stored_object(trust, name, *, expected_version=None, **options):
     payload, metadata = read_stored_payload(trust, name, **options)
-    ledger_record_version(name, metadata)
+    version = ledger_record_version(name, metadata)
+    if expected_version is not None and version != expected_version:
+        raise ValueError(f"custody ledger record {name} differs from its listed version")
     return parse_json(payload), metadata
 
 
@@ -256,25 +258,32 @@ def require_publication_roster(trust, start):
         raise ValueError("custody approval cutover is too close for a ledger write")
 
 
+def ledger_slot_version(trust, name):
+    replica = ledger_replica(trust)
+    destination = replica_trust(trust, replica) if replica is not None else None
+    copied_version = list_ledger_versions(destination, exact=name).get(name) if destination is not None else None
+    version = list_ledger_versions(trust, exact=name).get(name)
+    if copied_version is not None:
+        try:
+            if version != copied_version:
+                raise ValueError("source and replica list different current versions")
+            _, fingerprint = read_replicated_record(trust, destination, name)
+            if fingerprint[0] != version:
+                raise ValueError("record differs from its listed version")
+        except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+            raise ValueError(f"custody ledger slot {name} exists in the pinned replica: {error}") from error
+    return version
+
+
 def write_once(trust, name, document, confirm, *, before_write=None):
     _, prefix = ledger_prefix(trust)
     payload = canonical(document) + b"\n"
     if len(payload) > MAX_DOCUMENT_BYTES:
         raise ValueError("record exceeds the ledger size limit")
-    replica = ledger_replica(trust)
-    if replica is not None:
-        destination = replica_with_record(trust, replica, name)
-        if destination is not None:
-            try:
-                read_replicated_record(trust, destination, name)
-                confirm()
-            except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
-                raise ValueError(f"custody ledger slot {name} exists in the pinned replica: {error}") from error
-            return
-    if name in list_ledger_versions(trust, exact=name):
+    if ledger_slot_version(trust, name) is not None:
         confirm()
         return
-    encryption = ["--server-side-encryption", "AES256"] if replica is not None else []
+    encryption = ["--server-side-encryption", "AES256"] if "ledgerReplica" in trust else []
     write_error = None
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "record.json"
@@ -767,8 +776,8 @@ def retirement_target(trust, marker, *, receipt_at=None, retired_at=None, **opti
     return target
 
 
-def load_retirement(trust, epoch, **options):
-    document, metadata = read_stored_object(trust, retirement_object_name(epoch), **options)
+def load_retirement(trust, epoch, *, expected_version=None, **options):
+    document, metadata = read_stored_object(trust, retirement_object_name(epoch), expected_version=expected_version, **options)
     published_at = publication_time(metadata)
     marker = verify_retirement(trust, document, epoch, published_at)
     _, previous, custodians, previous_at = load_epoch_with_time(trust, epoch, **options)
@@ -787,10 +796,12 @@ def load_retirement(trust, epoch, **options):
 
 def find_retirement(trust, epoch):
     name = retirement_object_name(epoch)
-    if name not in list_ledger_versions(trust, exact=name):
+    version = list_ledger_versions(trust, exact=name).get(name)
+    if version is None:
         return None
     try:
-        return load_retirement(trust, epoch)
+        document, _, _ = load_retirement(trust, epoch, expected_version=version)
+        return document, version
     except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError) as error:
         raise ValueError(f"cannot verify retirement record for epoch {epoch}: {error}") from error
 
