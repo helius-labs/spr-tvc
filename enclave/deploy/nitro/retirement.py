@@ -20,14 +20,14 @@ from approval import (
 )
 from custody_ledger import (
     LEDGER_WRITE_MARGIN_SECONDS, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY,
-    check_recovery_bucket, check_registered_target, find_retirement, ledger_object, ledger_replica, ledger_slot_version,
-    list_objects, load_epoch, load_epoch_with_time, load_retirement, note_identity, observe_record, publication_time,
-    read_registered_target, read_replicated_record,
+    check_recovery_bucket, check_registered_target, find_retirement, ledger_record_fingerprint, ledger_replica,
+    ledger_slot_version, list_objects, load_epoch, load_epoch_with_time, load_retirement, note_identity, observe_record,
+    publication_time, read_registered_target, read_replicated_record, read_stored_payload,
     recovery_deadline, replica_trust,
     require_active_epoch, require_pinned_publications,
     require_publication_roster, require_replicated_custody, retirement_approval, retirement_bootstrap,
     retirement_object_name, retirement_recovery, retirement_target, sign_share_recovery,
-    target_attestation, target_path, verify_retirement, write_once,
+    target_attestation, target_object_name, target_path, verify_retirement, write_once,
 )
 from host import HostUnobserved, require_bootstrap_access, require_host_state
 from kms_policy import key_policy
@@ -379,21 +379,23 @@ def require_retirement_replication(trust, qualification, observed_records, *, co
     require_replicated_custody(trust, replica, qualification["replacementEpoch"], observed_records)
 
 
-def require_observed_target_replication(trust, qualification, evidence):
-    replica = ledger_replica(trust)
+def verify_boot_registration(trust, qualification, evidence):
     if evidence["replacementTargetIdentity"] == qualification.get("replacementTargetIdentity"):
         if evidence["replacementTargetSha256"] != qualification["replacementTargetSha256"]:
             raise ValueError("attested replacement registration changed during verification")
         return
-    if replica is None:
-        return
     epoch = qualification["replacementEpoch"]
     name = target_path(epoch, evidence["replacementTargetIdentity"])
-    payload, fingerprint = read_replicated_record(trust, replica_trust(trust, replica), name)
+    replica = ledger_replica(trust)
+    if replica is None:
+        payload, metadata = read_stored_payload(trust, name)
+        fingerprint = ledger_record_fingerprint(name, payload, metadata)
+    else:
+        payload, fingerprint = read_replicated_record(trust, replica_trust(trust, replica), name)
     target = check_registered_target(trust, name, epoch, qualification["replacementReceiptSha256"], parse_json(payload),
                                      publication_time({"LastModified": fingerprint[1]}))
     if sha256(target) != evidence["replacementTargetSha256"]:
-        raise ValueError("replicated target does not match the attested replacement")
+        raise ValueError("registered target does not match the attested replacement")
     return fingerprint
 
 
@@ -402,7 +404,7 @@ def ready_boot(trust, scope, boots, custodians, replacement_profiles, *, confirm
     for boot in boots:
         evidence = boot.evidence
         try:
-            fingerprint = require_observed_target_replication(trust, scope, evidence)
+            fingerprint = verify_boot_registration(trust, scope, evidence)
             slots = retirement_bootstrap(evidence["replacementBootstrap"])
             require_recovery_quorum(trust, {**scope, **evidence}, [custodians[slot - 1] for slot in slots], replacement_profiles)
             if confirm is not None:
@@ -458,16 +460,24 @@ def retirement_replica(trust, profile):
     return replica
 
 
-def confirm_retirement_policy(trust, wallet_trust, qualification, boot, replica, replica_profile, *, observed_records):
+def confirm_retirement_policy(trust, wallet_trust, qualification, boot, replica, replica_profile, *, targets, observed_records):
+    destination = None
     if replica is not None:
         check_recovery_bucket(trust, replica, replica_profile)
-        boot.require_current()
         destination = replica_trust(trust, replica)
-        epoch = qualification["replacementEpoch"]
-        names = (ledger_object(trust, epoch), target_path(epoch, boot.evidence["replacementTargetIdentity"]))
-        with ThreadPoolExecutor(max_workers=len(names)) as workers:
-            list(workers.map(lambda name: read_replicated_record(trust, destination, name,
-                                                                  checkpoint_records=observed_records), names))
+
+    def recheck(name):
+        if destination is None:
+            read_stored_payload(trust, name, checkpoint_records=observed_records)
+        else:
+            read_replicated_record(trust, destination, name, checkpoint_records=observed_records)
+
+    boot.require_current()
+    with ThreadPoolExecutor(max_workers=8) as workers:
+        list(workers.map(recheck, observed_records))
+    names = set(list_objects(trust, f"targets/{qualification['epoch']}/"))
+    if names != {target_object_name(target) for target in targets}:
+        raise ValueError("retired target inventory changed during verification")
     boot.require_current()
     try:
         run_command([*retirement_command(qualification), "policy", boot.evidence["walletPolicyDigest"]],
@@ -497,7 +507,8 @@ def inspect_keys(trust, epoch, index, check_inactive, *, wallet_trust=None, repl
         result["terminatedParents"] = inspect_old_parents(targets, host_profiles or {})
         boot = qualify_key_retirement(trust, wallet_trust, qualification, published_at, observed_records=observed,
                                      replacement_profiles=replacement_profiles)
-        confirm_retirement_policy(trust, wallet_trust, qualification, boot, replica, replica_profile, observed_records=observed)
+        confirm_retirement_policy(trust, wallet_trust, qualification, boot, replica, replica_profile, targets=targets,
+                                  observed_records=observed)
         result["replacement"] = boot.evidence
         result["validUntilMs"] = str(boot.valid_until_ms)
         if requalification is not None:
@@ -632,7 +643,7 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
                     slot_inventory(trust, epoch, member, targets, index), True, profile=profile),
                 range(1, 7), custodians, profiles,
             ))
-        return slots, inspect_old_parents(targets, host_profiles, check_profiles=check_profiles)
+        return slots, inspect_old_parents(targets, host_profiles, check_profiles=check_profiles), targets
 
     inspect_all(check_profiles=True)
     pinned_trust = pinned_wallet_trust(trust, wallet_trust)
@@ -647,7 +658,7 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
             require_current_requalification(trust, qualification)
             boots = attested_boots(pinned_trust, candidates, qualification, custody, after_ms=after_ms,
                                    deadline=deadline, required_slots=proven_slots)
-            slots, parents = inspect_all()
+            slots, parents, targets = inspect_all()
             current_candidates = replacement_targets(trust, qualification)
 
             def confirm(boot):
@@ -667,7 +678,8 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
                         continue
             raise ValueError(f"no replacement boot observed after verifying the old keys: {error}") from error
 
-    confirm_retirement_policy(trust, wallet_trust, qualification, boot, replica, replica_profile, observed_records=observed)
+    confirm_retirement_policy(trust, wallet_trust, qualification, boot, replica, replica_profile, targets=targets,
+                              observed_records=observed)
     report = {
         "retirementSha256": sha256(document), "retirementObservedAtMs": str(after_ms),
         "retired": {

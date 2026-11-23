@@ -37,8 +37,8 @@ from provenance import describe
 from relay import custody_recovery_policy
 from retirement import (LiveBoot, commit_retirement, confirm_retirement_policy, inspect_keys, prove_recovery, qualified_manifest,
                         qualified_policy, qualify_key_retirement, main as retirement_main, replacement_targets,
-                        require_observed_target_replication, retirement_inventory, retirement_scope, sign_retirement,
-                        slot_inventory, verify_retired)
+                        retirement_inventory, retirement_scope, sign_retirement, slot_inventory, verify_boot_registration,
+                        verify_retired)
 
 READ_ROLE = "arn:aws:iam::000000000001:role/custodian"
 PUBLISHER = "arn:aws:iam::000000000008:role/publisher"
@@ -2066,12 +2066,12 @@ class CustodyLedgerTests(unittest.TestCase):
         qualified = {"replacementTargetIdentity": "ab" * 32, "replacementTargetSha256": "cd" * 32}
         changed = {**qualified, "replacementTargetSha256": "ef" * 32}
         with self.assertRaisesRegex(ValueError, "registration changed during verification"):
-            require_observed_target_replication(self.trust, qualified, changed)
+            verify_boot_registration(self.trust, qualified, changed)
 
     def test_retirement_rechecks_replica_records_after_inspecting_bucket_protections(self):
         replica = {"bucket": "custody-recovery", "account": "000000000010", "region": "eu-west-1",
                    **RECOVERY_ROLES, "role": "arn:aws:iam::000000000008:role/replication"}
-        qualification = {"network": "devnet", "securityDomainId": DOMAIN, "replacementEpoch": "2",
+        qualification = {"network": "devnet", "securityDomainId": DOMAIN, "epoch": "1", "replacementEpoch": "2",
                          "replacementCustodyDigest": "ab" * 32, "replacementTargetIdentity": "bc" * 32}
         boot = LiveBoot({"walletPolicyDigest": "cd" * 32, "replacementTargetIdentity": "de" * 32},
                         (self.now + 60) * 1000)
@@ -2090,7 +2090,8 @@ class CustodyLedgerTests(unittest.TestCase):
 
             read.side_effect = missing_registration
             with self.assertRaisesRegex(ValueError, "selected replacement has disappeared"):
-                confirm_retirement_policy(self.trust, None, qualification, boot, replica, "replica-read", observed_records=recorded)
+                confirm_retirement_policy(self.trust, None, qualification, boot, replica, "replica-read", targets=(),
+                                          observed_records=recorded)
             self.assertCountEqual([entry.args[2] for entry in read.call_args_list], [receipt, selected])
             query.assert_not_called()
 
@@ -2356,6 +2357,22 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertEqual(query.call_args.kwargs["input"], self.wallet_pins)
             _, _, members = load_epoch(self.trust, "2")
             quorum.assert_called_once_with(self.trust, {**marker, **expected}, [members[slot - 1] for slot in boot["slots"]], None)
+
+            prefix = f"spr-custody/devnet/{DOMAIN}/"
+            for ledger, name, value, error in (
+                (self.versions, "retired/1.json", "new-version", "retired/1.json changed after checkpoint"),
+                (self.objects, f"targets/1/{'cd' * 32}.json", b"{}", "retired target inventory changed"),
+            ):
+                with self.subTest(name=name), patch.dict(ledger):
+                    def change_ledger(*_args):
+                        ledger[prefix + name] = value
+
+                    quorum.side_effect = change_ledger
+                    query.reset_mock()
+                    with self.assertRaisesRegex(ValueError, error):
+                        inspect_slot()
+                    self.assertEqual(query.call_count, 2)
+            quorum.side_effect = None
 
             different_slots = [4, 5, 6] if boot["slots"] != [4, 5, 6] else [1, 2, 3]
             for other in (
@@ -2960,15 +2977,16 @@ class CustodyLedgerTests(unittest.TestCase):
                 verified = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5, replica_profile="recovery-read")
                 self.assertEqual(verified, report)
 
-                def replace_record_during_replica_check(*_args):
-                    name = target_object_name(replacement)
-                    self.versions[f"spr-custody/devnet/{DOMAIN}/{name}"] = "changed-version"
+                for name in (target_object_name(replacement), target_object_name(other_host), "1.json", "retired/1.json"):
+                    with self.subTest(name=name), patch.dict(self.versions):
+                        def replace_record_during_replica_check(*_args):
+                            self.versions[f"spr-custody/devnet/{DOMAIN}/{name}"] = "changed-version"
 
-                query.reset_mock()
-                check_bucket.side_effect = replace_record_during_replica_check
-                with patch.dict(self.versions), self.assertRaisesRegex(ValueError, "changed after checkpoint"):
-                    verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5, replica_profile="recovery-read")
-                self.assertEqual(query.call_count, 2)
+                        query.reset_mock()
+                        check_bucket.side_effect = replace_record_during_replica_check
+                        with self.assertRaisesRegex(ValueError, "changed after checkpoint"):
+                            verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5, replica_profile="recovery-read")
+                        self.assertEqual(query.call_count, 2)
                 check_bucket.side_effect = None
 
                 query.reset_mock()

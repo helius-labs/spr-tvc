@@ -631,8 +631,11 @@ pinned history and excluded versions.
    the state and sealed policies of its six recovery and wrapping keys. The
    replacement epoch must remain open and the boot must use the three proved slots after the marker's S3
    write second. Inspection and the final report check the replica's bucket
-   protections after confirming the live replacement. They then match both
-   buckets to the receipt and registration used by that boot. During candidate
+   protections after confirming the live replacement. They then match the
+   closure, receipts and registrations, including the selected boot's
+   registration, against the versions, write times and bytes already verified.
+   This check reads the source and any configured replica. They also relist the
+   old targets on the source and stop if the inspected set changed. During candidate
    qualification, both commands can try another observed boot after a key,
    replication or repeated attestation check fails. After the AWS checks,
    both commands read the two signed policy heads again, then recheck that
