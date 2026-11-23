@@ -28,10 +28,6 @@
       "types": "./dist/protocol.d.ts",
       "import": "./dist/protocol.js"
     },
-    "./nitro": {
-      "types": "./dist/nitro.d.ts",
-      "import": "./dist/nitro.js"
-    },
     "./testing": {
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"
@@ -66,7 +62,6 @@
     "@heliuslabs/spr": "0.9.0-alpha",
     "@solana/kit": "^8.3.0",
     "@types/node": "^24.0.0",
-    "fake-indexeddb": "6.2.8",
     "tsup": "^9.0.0",
     "typescript": "^5.7.2",
     "vite": "^8.3.8",

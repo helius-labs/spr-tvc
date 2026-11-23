@@ -8,5 +8,5 @@
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["*.ts", "../tests/nitro/publication.test.mts"]
+  "include": ["*.ts"]
 }

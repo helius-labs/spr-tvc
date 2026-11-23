@@ -1,24 +1,6 @@
 use super::*;
 
 #[test]
-fn canary_digest_matches_the_operator_probe_vector() {
-    let seed = NoteSeed(Zeroizing::new([0x88; 32]));
-    let digest = seed.canary_digest(&[0x55; 32], &[0x66; 32]).unwrap();
-    assert_eq!(
-        spr_tvc_protocol::encoding::encode_lower_hex(&digest),
-        "1b94ae1a401fa7ad8325ee93fa4ca43f99ac844689a5e52a4a74a95c848aa960"
-    );
-    assert_ne!(
-        seed.canary_digest(&[0xaa; 32], &[0x66; 32]).unwrap(),
-        digest
-    );
-    assert_ne!(
-        seed.canary_digest(&[0x55; 32], &[0xbb; 32]).unwrap(),
-        digest
-    );
-}
-
-#[test]
 fn keys_separate_addresses_and_seeds() {
     let keys = derive(&[7; 32], &[1; 32]);
     let other_address = derive(&[7; 32], &[2; 32]);

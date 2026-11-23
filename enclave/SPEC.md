@@ -1,8 +1,7 @@
 # Decryption service v1
 
-For the native Nitro deployment, see [its startup, custody and client-attestation
-specification](NITRO.md). This document describes the shared Solana
-authorization and decryption protocol and the Turnkey deployment's trust path.
+This document describes the Solana authorization and decryption protocol and
+the QuorumOS deployment's trust path.
 
 This service lets a sender encrypt a Solana Privacy Rings (SPR) note for a
 Solana address before its owner registers a shielded wallet. The owner

@@ -14,7 +14,7 @@ import { expectBalance, localWalletKeys, sendAndConfirmFactory, setup } from "./
 const AMOUNT = 3_000_000n;
 
 async function main(): Promise<void> {
-  const { zolana, service, sender, recipient, nitro, localnet } = await setup();
+  const { zolana, service, sender, recipient, localnet } = await setup();
   let serviceKeys: DecryptionServiceKeys | undefined;
   let keys: Awaited<ReturnType<typeof localWalletKeys>> | undefined;
   let ownKeys: typeof keys;
@@ -35,8 +35,6 @@ async function main(): Promise<void> {
       if (registration) await send(registration);
       if (!await isWalletRegistered({ rpc: zolana, owner: sender.address })) throw new Error("sender did not register");
     }
-    const requireOriginalPaymentPolicy = await nitro?.prepareTransfer();
-
     const wallet = new Wallet({ identity: keys.address() });
     const deposit = await buildDepositTransaction({
       client: zolana,
@@ -69,18 +67,13 @@ async function main(): Promise<void> {
     });
     if (paidTo === undefined) throw new Error("the transfer did not resolve a service address");
     const transferSignature = await transfer.send(async (transaction) => {
-      const signed = await signTransactionWithSigners([sender], transaction);
-      await requireOriginalPaymentPolicy?.();
-      return signed;
+      return signTransactionWithSigners([sender], transaction);
     });
     const transferTx = {
       signature: transferSignature,
       slot: await zolana.confirmTransaction(transferSignature),
     };
-    const finalizedAt = BigInt(Date.now());
-    if (nitro) console.log(`finalized transfer recipient=${recipient.address} tx=${transferTx.signature} awaiting ${nitro.seedChanged ? "the seed cutover" : "the replacement custody epoch"}`);
-    const replacement = await nitro?.afterTransfer(paidTo, finalizedAt);
-    const reader = replacement?.service ?? service;
+    const reader = service;
     await checkRecipient(false);
     ownKeys = sender.address === recipient.address
       ? keys
@@ -111,7 +104,6 @@ async function main(): Promise<void> {
       config: { requireSlot: transferTx.slot },
     });
     expectBalance("receive", received.balance(SOL_MINT), AMOUNT, 1);
-    await replacement?.requireSamePolicy();
 
     const sweep = await buildTransferTransaction({
       client: zolana,
@@ -121,7 +113,7 @@ async function main(): Promise<void> {
       recipient: localnet ? recipient.address : ownKeys.address(),
       amount: AMOUNT,
     });
-    const sweepTx = await sweepSend(sweep, replacement?.requireSamePolicy);
+    const sweepTx = await sweepSend(sweep);
     const own = new Wallet({ identity: ownKeys.address() });
     const sweepSlot = { requireSlot: sweepTx.slot };
     await Promise.all([
@@ -131,13 +123,11 @@ async function main(): Promise<void> {
     expectBalance("swept source", received.balance(SOL_MINT), 0n, 0);
     expectBalance("sweep", own.balance(SOL_MINT), AMOUNT, 1);
     await checkRecipient(localnet === true);
-    const boot = replacement?.bootKeyId ? ` transfer=${transferTx.signature} boot=${replacement.bootKeyId}` : "";
-    console.log(`sweep recipient=${recipient.address} private_balance=${AMOUNT} tx=${sweepTx.signature}${boot}`);
+    console.log(`sweep recipient=${recipient.address} private_balance=${AMOUNT} tx=${sweepTx.signature}`);
   } finally {
     serviceKeys?.destroy();
     if (ownKeys !== keys) ownKeys?.destroy();
     keys?.destroy();
-    nitro?.close();
   }
 }
 

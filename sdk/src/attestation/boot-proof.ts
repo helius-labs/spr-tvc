@@ -1,4 +1,3 @@
-import { sha256 } from "@noble/hashes/sha256";
 import { sha384 } from "@noble/hashes/sha512";
 import { DecryptionServiceError } from "../protocol/error.js";
 import {
@@ -17,9 +16,7 @@ import {
   verifyTurnkeyAwsAttestation,
 } from "./turnkey.js";
 
-import { verifyAwsNitroAttestation, type CoseSign1 } from "./aws-nitro.js";
-import { parseQosP256Public } from "../crypto/qos.js";
-import type { NitroPcrs, NitroTargetPcrs } from "./nitro-policy.js";
+import { type CoseSign1 } from "./aws-nitro.js";
 
 const QOS_LIVE_MANIFEST_PCR_COMMITMENT_DOMAIN = "qos-live-manifest-pcr-commitment-v1";
 const QOS_LIVE_MANIFEST_COMMITMENT_PCR_INDEX = 17;
@@ -84,79 +81,6 @@ export async function verifyBootProof(input: VerifyBootProofInput): Promise<void
     // code or leaking attestation material into application logs.
     throw new DecryptionServiceError("BootProofUnverified", stage);
   }
-}
-
-/** Verifies fresh native Nitro evidence with PCRs pinned independently of the endpoint. */
-export async function verifyNativeNitroEvidence(
-  document: Uint8Array,
-  nonce: Uint8Array,
-  discoveryBinding: Uint8Array,
-  expectedPcrs: NitroTargetPcrs,
-  nowMs: bigint,
-) {
-  try {
-    const { attestation, validity } = await verifyNativeBinding(document, nonce, discoveryBinding, expectedPcrs, nowMs);
-    verifyPcr(attestation, 4, expectedPcrs[4]);
-    const publicKey = asBytes(attestation.get("public_key"));
-    parseQosP256Public(publicKey);
-    return { proofKey: encodeLowerHex(publicKey), attestedAtMs: BigInt(attestation.get("timestamp") as number), ...validity };
-  } catch {
-    throw new DecryptionServiceError("BootProofUnverified");
-  }
-}
-
-export async function verifyNitroCustodyEvidence(
-  document: Uint8Array,
-  nonce: Uint8Array,
-  binding: Uint8Array,
-  expectedPcrs: NitroPcrs | NitroTargetPcrs,
-  nowMs: bigint,
-): Promise<void> {
-  try {
-    const { attestation } = await verifyNativeBinding(document, nonce, binding, expectedPcrs, nowMs);
-    if (4 in expectedPcrs) verifyPcr(attestation, 4, expectedPcrs[4]);
-    if (attestation.get("public_key") != null) throw new DecryptionServiceError("BootProofUnverified");
-  } catch {
-    throw new DecryptionServiceError("BootProofUnverified");
-  }
-}
-
-/** Binds an ephemeral relay recipient key to a fresh challenge and independent PCR pins. */
-export async function verifyNitroRelayRecipient(document: Uint8Array, nonce: Uint8Array, pcrs: NitroPcrs) {
-  try {
-    const binding = sha256(new TextEncoder().encode("SPR/native-nitro/relay-recipient/v1"));
-    const { attestation, validity } = await verifyNativeBinding(document, nonce, binding, pcrs, BigInt(Date.now()));
-    const now = BigInt(Date.now());
-    if (now < validity.certificateValidFromMs || now > validity.certificateValidThroughMs) {
-      throw new DecryptionServiceError("BootProofUnverified");
-    }
-    return asBytes(attestation.get("public_key"));
-  } catch {
-    throw new DecryptionServiceError("BootProofUnverified");
-  }
-}
-
-async function verifyNativeBinding(
-  document: Uint8Array,
-  nonce: Uint8Array,
-  binding: Uint8Array,
-  expectedPcrs: NitroPcrs,
-  nowMs: bigint,
-) {
-  const decoded = decodeAttestation(document);
-  const attestation = decoded.attestation;
-  validateAwsAttestationShape(attestation);
-  assertAttestationFreshness(attestation, nowMs);
-  const timestamp = BigInt(attestation.get("timestamp") as number);
-  if (!(decoded.unprotected instanceof Map) || decoded.unprotected.size !== 0 ||
-      nowMs - timestamp > MAX_CLOCK_SKEW_MS ||
-      !bytesEqual(nonce, asBytes(attestation.get("nonce"))) ||
-      !bytesEqual(binding, asBytes(attestation.get("user_data")))) {
-    throw new DecryptionServiceError("BootProofUnverified");
-  }
-  verifyIdentityPcrs(attestation, expectedPcrs);
-  const validity = await verifyAwsNitroAttestation(decoded.coseSign1, decoded.certificate, decoded.cabundle, Number(nowMs));
-  return { attestation, validity };
 }
 
 export function computeQosLiveManifestCommitmentPcr(

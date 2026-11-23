@@ -113,9 +113,7 @@ and revocation floor. See the [trust and attestation flow](../enclave/SPEC.md#es
   `challenge`. The response contains `version` and an App Proof on the
   exact challenge JSON.
 
-Native Nitro returns discovery in its
-[nonce-bound attestation](../enclave/NITRO.md). Both listeners expose
-`GET /health` for process readiness.
+`GET /health` reports process readiness.
 
 ## Fixtures
 

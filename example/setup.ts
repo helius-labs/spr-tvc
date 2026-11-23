@@ -39,7 +39,6 @@ type ExampleSetup = {
   readonly recipient: OwnerSigner;
   readonly service: DecryptionService;
   readonly localnet?: true;
-  readonly nitro?: Awaited<ReturnType<typeof import("./nitro.js")["nativeDevnet"]>>;
 };
 
 function env(name: string): string {
@@ -89,10 +88,6 @@ export async function setup(): Promise<ExampleSetup> {
   const network = process.env["SPR_NETWORK"]?.trim() || "devnet";
   if (network !== "devnet") throw new Error("the example is limited to devnet and localnet");
   const localEndpoint = process.env["DECRYPTION_SERVICE_LOCAL_ENDPOINT"]?.trim();
-  const nitroTrust = process.env["NITRO_WALLET_TRUST"]?.trim();
-  const retirementReport = process.env["NITRO_RETIREMENT_REPORT"]?.trim();
-  if (retirementReport && !nitroTrust) throw new Error("a retirement report requires NITRO_WALLET_TRUST");
-  if (localEndpoint && nitroTrust) throw new Error("choose one decryption service for the example");
   if (!localEndpoint && process.env["EXAMPLE_ACCEPT_PUBLIC_RECIPIENT"] !== "1") {
     throw new Error("this flow publishes the recipient's Solana owner tag. Set EXAMPLE_ACCEPT_PUBLIC_RECIPIENT=1 to proceed");
   }
@@ -101,7 +96,7 @@ export async function setup(): Promise<ExampleSetup> {
     throw new Error("the local example requires loopback RPC");
   }
   await initializePoseidon();
-  const zolana = await createSprClient(nitroTrust ? { ...config, commitment: "finalized" } : config);
+  const zolana = await createSprClient(config);
   const genesis = await zolana.solanaRpc.getGenesisHash().send();
   if (genesis === genesisHashForNetwork("mainnet") || (!localEndpoint && genesis !== genesisHashForNetwork(network))) {
     throw new Error("the example requires a Solana devnet or localnet RPC");
@@ -115,22 +110,6 @@ export async function setup(): Promise<ExampleSetup> {
       service: createLocalDecryptionService({ network, endpoint: new URL(localEndpoint), genesisHash: genesis }),
     };
   }
-  if (nitroTrust) {
-    const sender = await fileSigner("TVC_SOLANA_KEYPAIR_PATH");
-    const recipient = await fileSigner("NITRO_RECIPIENT_KEYPAIR_PATH");
-    if (sender.address === recipient.address) throw new Error("use a separate unfunded rehearsal recipient");
-    const { nativeDevnet } = await import("./nitro.js");
-    const nextTrust = process.env["NITRO_REPLACEMENT_TRUST"]?.trim();
-    const epoch = process.env["NITRO_REPLACEMENT_EPOCH"]?.trim();
-    if (nextTrust && epoch) throw new Error("choose a seed cutover or a custody rotation");
-    if (retirementReport && nextTrust) throw new Error("a retirement report requires a custody rotation");
-    const replacement = nextTrust ? { walletTrust: nextTrust } : {
-      epoch: env("NITRO_REPLACEMENT_EPOCH"), ...(retirementReport ? { retirementReport } : {}),
-    };
-    const nitro = await nativeDevnet(nitroTrust, env("NITRO_CHECKPOINT_PATH"), replacement);
-    return { zolana, sender, recipient, service: nitro.service, nitro };
-  }
-
   const signer = turnkeySigner(
     turnkeyClient(env("TURNKEY_ORGANIZATION_ID"), env("TURNKEY_API_PUBLIC_KEY"), env("TURNKEY_API_PRIVATE_KEY")),
     env("TURNKEY_SOLANA_ADDRESS"),

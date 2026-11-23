@@ -11,7 +11,6 @@ autobins = false
 [features]
 default = ["qos-runtime"]
 qos-runtime = ["dep:qos_core", "dep:qos_p256"]
-native-nitro = ["dep:spr-nitro-nsm", "dep:cms", "dep:openssl", "dep:pkcs1", "dep:serde", "dep:tokio-vsock", "dep:getrandom", "dep:rand_core", "dep:vsss-rs", "dep:tower-http", "dep:hyper", "dep:hyper-util"]
 # The unattested local testkit; the enclave binary never enables it.
 local-dev = ["dep:serde", "dep:qos_p256"]
 
@@ -20,8 +19,6 @@ axum = { version = "=0.8.8", default-features = false, features = ["http1", "tok
 clap = { version = "=4.5.53", features = ["derive"] }
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "zeroize"] }
 hkdf = "=0.12.4"
-hyper = { version = "1.11.1", default-features = false, features = ["http1", "server"], optional = true }
-hyper-util = { version = "0.1.20", default-features = false, features = ["service", "tokio"], optional = true }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
 qos_core = { version = "=0.16.3", default-features = false, optional = true }
 qos_p256 = { workspace = true, optional = true }
@@ -34,17 +31,6 @@ tokio = { version = "1.48.0", default-features = false, features = ["macros", "n
 zeroize = "=1.9.0"
 spr-keypair = "=0.10.0"
 spr-tvc-protocol = { path = "../protocol" }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-getrandom = { version = "=0.4.3", features = ["sys_rng"], optional = true }
-rand_core = { version = "=0.10.1", optional = true }
-vsss-rs = { version = "=6.0.1", default-features = false, features = ["alloc", "zeroize"], optional = true }
-spr-nitro-nsm = { path = "nsm", optional = true }
-cms = { version = "=0.2.3", features = ["std"], optional = true }
-openssl = { version = "=0.10.82", optional = true }
-pkcs1 = { version = "=0.7.5", optional = true }
-tokio-vsock = { version = "0.7.2", optional = true }
-tower-http = { version = "=0.7.1", default-features = false, features = ["cors"], optional = true }
 
 [dev-dependencies]
 qos_p256.workspace = true

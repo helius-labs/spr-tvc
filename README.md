@@ -9,11 +9,11 @@ owner tag.
 
 | Start here | |
 | --- | --- |
-| [Architecture decisions](enclave/ARCHITECTURE.md) | Why the service uses native Nitro and how upgrades preserve note access |
-| [Security specification](enclave/SPEC.md) · [Native Nitro](enclave/NITRO.md) | Data flow, key custody, and trust assumptions |
+| [Architecture](enclave/ARCHITECTURE.md) | QuorumOS boots the enclave and forwards its key across upgrades |
+| [Security specification](enclave/SPEC.md) | Data flow, key custody, and trust assumptions |
 | [Decryption enclave](enclave) · [Wire protocol](protocol) | Implementation and exact cryptographic inputs |
 | [TypeScript client](sdk) · [Turnkey example](example) | Connect, send, claim, and sweep |
-| [Test invariants](tests/INVARIANTS.md) · [Internal audit](tests/AUDIT.md) · [Native deployment](enclave/deploy/nitro/README.md) | Audit coverage and deployment |
+| [Test invariants](tests/INVARIANTS.md) | What the automated tests pin |
 
 Run `just ci` for Rust and TypeScript checks, including the SDK-to-enclave
 loopback test. Run `just headless-e2e` for send, claim, and sweep on localnet.
