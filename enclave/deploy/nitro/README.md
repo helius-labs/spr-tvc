@@ -744,6 +744,20 @@ to its KMS policy. [Nitro attestation](https://docs.aws.amazon.com/enclaves/late
    Retain the old recovery capability until affected owners have a recovery
    path. Treat previously exposed note data as compromised.
 
+### Migrate from the Turnkey embedded wallet
+
+The embedded wallet had a mainnet release. Its shielded identity comes from
+a deterministic Turnkey signature for each wallet. Native Nitro derives
+service keys from its own custody seed, so it cannot open those notes with
+the new keys. [Archived mainnet release](https://github.com/helius-labs/spr-tvc/commit/400c803e73457902676fe28bde65648b2a3a0d5f) · [Embedded wallet recovery](https://github.com/helius-labs/spr-tvc/blob/6cac352eb7020f82b7aa1d1ce58ca85677f265d5/packages/tvc-wallet/README.md)
+
+Before switching mainnet routes, establish which wallets received notes
+under the embedded release. For any affected wallet, keep an approved
+Turnkey recovery route available, rederive and verify its original shielded
+identity, then use an owner-authorized sweep to wallet-local keys. Rehearse
+that recovery and confirm the sweep before retiring the old route. If the
+payment history is incomplete, retain the recovery path.
+
 ## Publish wallet policy
 
 Use two versioned S3 publication buckets in independently administered AWS
