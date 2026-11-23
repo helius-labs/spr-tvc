@@ -12,7 +12,13 @@ fn a_decrypt_needs_the_owner_signature_over_this_request_and_network() {
     refused(&service, &decrypt(&service, &owner, other(NETWORK), items));
 
     type Edit = fn(&mut ServiceRequest);
-    let edits: [(&str, Edit); 8] = [
+    let edits: [(&str, Edit); 9] = [
+        ("derivation", |request| {
+            let ServiceOperation::Decrypt { derivation, .. } = &mut request.operation else {
+                unreachable!()
+            };
+            *derivation = base58(&SigningKey::from_bytes(&[9; 32]));
+        }),
         ("signer", |request| {
             let ServiceOperation::Decrypt { signer, .. } = &mut request.operation else {
                 unreachable!()
@@ -130,7 +136,9 @@ fn only_an_address_a_key_can_sign_for_has_service_keys() {
                 address: address.clone(),
             },
             ServiceOperation::Decrypt {
+                derivation: address.clone(),
                 signer: address,
+                grant: None,
                 signature: [0; 64],
                 items: Vec::new(),
             },

@@ -47,13 +47,28 @@ and `ciphertext`. Its envelope contains canonical JSON with `version`,
 | Operation | Result |
 | --- | --- |
 | `PublicKeys { address }` | `viewing_public_key` and `nullifier_public_key` (32 bytes for the nullifier key) |
-| `Decrypt { signer, signature, items }` | `plaintexts` (one per item in order) and `nullifier_secret` (31 bytes). Accepts 0–256 items. |
+| `Decrypt { derivation, signer, signature, items, grant? }` | `plaintexts` (one per item in order) and `nullifier_secret` (31 bytes). Accepts 0–256 items. |
 
-The operation and its result each carry a `type` tag. `Decrypt` requires the
-signer's 64-byte Ed25519 signature over a Solana off-chain message v0, format
-0, with one signer. Its application domain is
+The operation and its result each carry a `type` tag. `Decrypt` opens items
+with `derivation`'s service keys. `signer` is that address, or the grantee
+named by `grant`. The signer puts a 64-byte Ed25519 signature over a Solana
+off-chain message v0, format 0, with one signer. Its application domain is
 `SHA256("TSPP/decryption-service/decrypt/v1")`.
 The payload is `TSPP/decryption-service/decrypt/v1/<network>/<hex request digest>`.
+The request digest omits `signature` and keeps `grant`, including the grant
+signature.
+
+A view grant is a capability, not a stored record. The derivation owner signs
+`H(SPR_TVC_VIEW_GRANT_V1, JCS(grant))` with
+`signature` removed. The off-chain message domain is
+`SHA256("TSPP/decryption-service/view-grant/v1")` and the payload is
+`TSPP/decryption-service/view-grant/v1/<hex grant digest>`. The signed fields
+are `derivation`, `grantee`, `network`, `quorum_key_id`, `quorum_key_epoch`,
+`not_before`, and `expiry` (both millisecond decimal strings). The enclave
+accepts the grant when those fields match this request and this release, and
+when `now` is inside a window of at most 30 minutes. The owner presents no
+grant. A grantee receives the same `nullifier_secret` as the owner. The
+window limits further decrypts. It does not erase a secret already returned.
 
 The response contains `version`, `request_id`, `encrypted_result`, and
 `tvc_app_proof`. The App Proof carries `scheme`
@@ -69,8 +84,8 @@ binary encrypted result each have a 262,144-byte limit.
 ## Key derivation and SPR note cipher
 
 The following derivations use HKDF-SHA256 with no salt. The address in
-`info` is the verified signer's raw 32-byte Ed25519 public key for
-`Decrypt` and the requested address for `PublicKeys`.
+`info` is the raw 32-byte Ed25519 public key of `Decrypt`'s `derivation`
+address and the requested address for `PublicKeys`.
 
 | Input key material | `info` | Output |
 | --- | --- | --- |
@@ -81,7 +96,7 @@ The following derivations use HKDF-SHA256 with no salt. The address in
 
 A decrypt item carries `ciphertext`, `ephemeral_viewing_public_key`, a
 16-byte `salt`, `slot_index`, and `label`. The enclave derives the
-recipient viewing key from the verified signer. SPR rejects an all-zero
+recipient viewing key from the `derivation` address. SPR rejects an all-zero
 X25519 shared secret and uses the following key schedule.
 
 ```text

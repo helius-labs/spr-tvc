@@ -37,7 +37,9 @@ fn an_encrypted_result_must_fit_the_response_ceiling() {
         quorum_key_epoch: 1,
         client_response_public_key: Vec::new(),
         operation: ServiceOperation::Decrypt {
+            derivation: "unused".into(),
             signer: "unused".into(),
+            grant: None,
             signature: [0; 64],
             items: Vec::new(),
         },

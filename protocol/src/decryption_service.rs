@@ -11,9 +11,15 @@ use crate::types::{DecryptItem, Network, OperationKind};
 
 pub const SERVICE_PROOF_TYPE: &str = "spr.tvc.decryption_service.v1";
 pub const SERVICE_REQUEST_DIGEST_DOMAIN: &[u8] = b"SPR_TVC_DECRYPTION_SERVICE_REQUEST_V1";
+pub const VIEW_GRANT_DIGEST_DOMAIN: &[u8] = b"SPR_TVC_VIEW_GRANT_V1";
 
 /// Label of the message that authorizes a `Decrypt`.
 pub const DECRYPT_LABEL: &str = "TSPP/decryption-service/decrypt/v1";
+/// Label of the message that authorizes a view grant.
+pub const VIEW_GRANT_LABEL: &str = "TSPP/decryption-service/view-grant/v1";
+
+/// Longest accepted view-grant window. The enclave stores nothing, so expiry is the only revocation.
+pub const MAX_VIEW_GRANT_WINDOW_MS: u64 = 30 * 60 * 1000;
 
 pub const ADDRESS_LEN: usize = 32;
 pub const X25519_PUBLIC_KEY_LEN: usize = 33;
@@ -46,13 +52,40 @@ pub struct ServiceRequest {
 pub enum ServiceOperation {
     /// The service public keys of a base58 address.
     PublicKeys { address: String },
-    /// Opens `items`; `signature` is the base58 `signer`'s, over [`decrypt_message`].
+    /// Opens `items` with `derivation`'s service keys.
+    ///
+    /// `signature` is the base58 `signer`'s, over [`decrypt_message`]. The signer
+    /// is `derivation`, or the grantee of `grant`. An owner presents no grant.
     Decrypt {
+        derivation: String,
         signer: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grant: Option<Box<ViewGrant>>,
         #[serde(with = "hex")]
         signature: [u8; 64],
         items: Vec<DecryptItem>,
     },
+}
+
+/// A capability the derivation owner signs. The grantee attaches it to `Decrypt`.
+///
+/// The enclave does not store it. A later `Decrypt` accepts it while `now` is
+/// inside the window and the window is at most [`MAX_VIEW_GRANT_WINDOW_MS`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewGrant {
+    pub derivation: String,
+    pub grantee: String,
+    pub network: Network,
+    pub quorum_key_id: String,
+    #[serde(with = "decimal_u64")]
+    pub quorum_key_epoch: u64,
+    #[serde(with = "decimal_u64")]
+    pub not_before: u64,
+    #[serde(with = "decimal_u64")]
+    pub expiry: u64,
+    #[serde(with = "hex")]
+    pub signature: [u8; 64],
 }
 
 impl ServiceOperation {
@@ -111,7 +144,7 @@ pub fn service_request_digest(request: &ServiceRequest) -> Result<[u8; 32], TvcE
     ))
 }
 
-/// What an owner signs for one `Decrypt`: a Solana off-chain message v0 with one signer.
+/// What `signer` signs for one `Decrypt`: a Solana off-chain message v0 with one signer.
 pub fn decrypt_message(
     signer: &[u8; ADDRESS_LEN],
     network: Network,
@@ -121,11 +154,46 @@ pub fn decrypt_message(
         "{DECRYPT_LABEL}/{network}/{}",
         encode_lower_hex(request_digest)
     );
+    offchain_message(DECRYPT_LABEL, signer, &payload)
+}
+
+/// Digest of a view grant with its signature removed.
+pub fn view_grant_digest(grant: &ViewGrant) -> Result<[u8; 32], TvcError> {
+    let mut value = encoding::to_canonical_value(grant)?;
+    value
+        .as_object_mut()
+        .ok_or_else(|| TvcError::new(ErrorCode::InvalidCanonicalJson))?
+        .remove("signature");
+    let canonical = canonicalize_json_value(&value)?;
+    Ok(domain_separated_hash(
+        VIEW_GRANT_DIGEST_DOMAIN,
+        canonical.as_bytes(),
+    ))
+}
+
+/// What the derivation owner signs for one view grant.
+pub fn view_grant_message(owner: &[u8; ADDRESS_LEN], grant_digest: &[u8; 32]) -> Vec<u8> {
+    let payload = format!("{VIEW_GRANT_LABEL}/{}", encode_lower_hex(grant_digest));
+    offchain_message(VIEW_GRANT_LABEL, owner, &payload)
+}
+
+/// Accept a grant window of at most [`MAX_VIEW_GRANT_WINDOW_MS`] that contains `now`.
+pub fn accept_view_grant_window(not_before: u64, expiry: u64, now: u64) -> Result<(), TvcError> {
+    let Some(span) = expiry.checked_sub(not_before) else {
+        return Err(TvcError::new(ErrorCode::ExpiredRequest));
+    };
+    if span == 0 || span > MAX_VIEW_GRANT_WINDOW_MS || now < not_before || now > expiry {
+        return Err(TvcError::new(ErrorCode::ExpiredRequest));
+    }
+    Ok(())
+}
+
+fn offchain_message(label: &str, signer: &[u8; ADDRESS_LEN], payload: &str) -> Vec<u8> {
     let length = u16::try_from(payload.len()).expect("the payload is short");
     let mut message = Vec::with_capacity(85 + payload.len());
     message.extend_from_slice(OFFCHAIN_MESSAGE_MAGIC);
     message.push(0);
-    message.extend_from_slice(&Sha256::digest(DECRYPT_LABEL.as_bytes()));
+    message.extend_from_slice(&Sha256::digest(label.as_bytes()));
     message.push(0);
     message.push(1);
     message.extend_from_slice(signer);

@@ -5,6 +5,8 @@ use axum::http::Response;
 use axum::response::IntoResponse;
 use qos_p256::encrypt::P256EncryptPublic;
 use spr_tvc_protocol::constants::API_VERSION;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use spr_tvc_protocol::decryption_service::{
     parse_service_request, service_request_digest, DecryptedOutputs, ServiceOperation,
     ServiceRequest, ServiceResult,
@@ -42,12 +44,21 @@ fn execute(service: &Service, body: &[u8]) -> Result<String, Failure> {
             }
         }
         ServiceOperation::Decrypt {
+            derivation,
             signer,
+            grant,
             signature,
             items,
         } => {
-            let address =
-                owner::verify_decrypt(signer, signature, service.info.network, &request_digest)?;
+            let address = owner::authorize_decrypt(
+                &service.info,
+                derivation,
+                signer,
+                signature,
+                grant.as_deref(),
+                &request_digest,
+                now_ms()?,
+            )?;
             let keys = keys::for_address(&service.quorum, &address);
             let plaintexts = open_ciphertexts(&keys.viewing, items)?;
             ServiceResult::Decrypt(DecryptedOutputs {
@@ -63,6 +74,14 @@ fn execute(service: &Service, body: &[u8]) -> Result<String, Failure> {
         &response_key,
         &result,
     )
+}
+
+fn now_ms() -> Result<u64, Failure> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Failure::Unavailable)?
+        .as_millis();
+    u64::try_from(millis).map_err(|_| Failure::Unavailable)
 }
 
 fn targets_release(request: &ServiceRequest, info: &ServiceInfo) -> bool {

@@ -19,6 +19,7 @@ import {
   type ServiceOperation,
   type ServiceRequest,
   type ServiceResult,
+  type ViewGrant,
 } from "../protocol/decryption.js";
 
 const ED25519_SIGNATURE_BYTES = 64;
@@ -33,8 +34,11 @@ const addressEncoder = getAddressEncoder();
 
 type DecryptCall = {
   readonly type: "Decrypt";
+  /** Signs this request. The derivation owner, or the grantee named by `grant`. */
   readonly owner: MessagePartialSigner;
   readonly items: readonly DecryptItem[];
+  /** Present when `owner` is reading another address's service notes. */
+  readonly grant?: ViewGrant;
 };
 
 export type ServiceCall = Extract<ServiceOperation, { type: "PublicKeys" }> | DecryptCall;
@@ -56,9 +60,11 @@ export async function executeServiceCall<T extends ServiceCall>(
           owner: call.owner,
           operation: {
             type: "Decrypt" as const,
+            derivation: call.grant?.derivation ?? call.owner.address,
             signer: call.owner.address,
             signature: EMPTY_SIGNATURE,
             items: call.items,
+            ...(call.grant ? { grant: call.grant } : {}),
           },
         }
       : { owner: undefined, operation: call };

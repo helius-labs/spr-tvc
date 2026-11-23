@@ -141,7 +141,9 @@ fn decrypt(
     let mut request = request(
         service,
         ServiceOperation::Decrypt {
+            derivation: base58(owner),
             signer: base58(owner),
+            grant: None,
             signature: [0; 64],
             items,
         },
@@ -179,6 +181,9 @@ fn transfer_output(viewing_public_key: [u8; 33], plaintext: &[u8], slot: u32) ->
 
 #[path = "owner_authorization.rs"]
 mod owner_authorization;
+
+#[path = "view_grant.rs"]
+mod view_grant;
 
 #[path = "output_handling.rs"]
 mod output_handling;
