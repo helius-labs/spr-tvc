@@ -266,9 +266,10 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    The exporter publishes the file only after the full history is written
    and synced. Record its SHA-256 in an independently retained audit record.
    Keep the pinned custody trust schedule and the reviewed build artifacts
-   with the archive. The verifier opens no AWS connection. It checks the
-   genesis receipt, each rotation link, custodian signatures and Nitro evidence
-   at its recorded verification time. It checks that each rotation registration
+   with the archive. The offline verifier checks the pinned file digest before
+   parsing receipts from its verified copy. It checks the genesis receipt,
+   each rotation link, custodian signatures and Nitro evidence at its recorded
+   verification time. It checks that each rotation registration
    was published between the two receipts it connects. The independent archive
    pin authenticates the original S3 write time exported as `publishedAt` for
    each receipt and rotation approval.

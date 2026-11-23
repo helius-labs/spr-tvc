@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -55,19 +56,24 @@ def archive(trust, epoch, output):
 def verify_archive(trust, epoch, source, expected_digest):
     digest = hex_digest(expected_digest)
     count = epoch_number(epoch)
-    previous = None
     checksum = hashlib.sha256()
-    for index in range(1, count + 1):
-        payload = source.readline(MAX_ARCHIVE_ENTRY_BYTES + 1)
-        if len(payload) > MAX_ARCHIVE_ENTRY_BYTES or not payload.endswith(b"\n"):
-            raise ValueError("missing or oversized custody archive entry")
-        checksum.update(payload)
-        entry = json.loads(payload, object_pairs_hook=unique_object)
-        previous = check_custody_history_entry(trust, str(index), entry, previous)
-        verify_ceremony_capture(entry["document"]["authorization"]["manifest"]["capture"])
-    if source.read(1) or checksum.hexdigest() != digest:
-        raise ValueError("archive does not match the pinned custody archive digest")
-    return previous[0]
+    with tempfile.TemporaryFile() as snapshot:
+        for _ in range(count):
+            payload = source.readline(MAX_ARCHIVE_ENTRY_BYTES + 1)
+            if len(payload) > MAX_ARCHIVE_ENTRY_BYTES or not payload.endswith(b"\n"):
+                raise ValueError("missing or oversized custody archive entry")
+            checksum.update(payload)
+            snapshot.write(payload)
+        if source.read(1) or checksum.hexdigest() != digest:
+            raise ValueError("archive does not match the pinned custody archive digest")
+
+        snapshot.seek(0)
+        previous = None
+        for index, payload in enumerate(snapshot, 1):
+            entry = json.loads(payload, object_pairs_hook=unique_object)
+            previous = check_custody_history_entry(trust, str(index), entry, previous)
+            verify_ceremony_capture(entry["document"]["authorization"]["manifest"]["capture"])
+        return previous[0]
 
 
 def verify_ledger_records(trust, names, **options):

@@ -841,15 +841,28 @@ class CustodyLedgerTests(unittest.TestCase):
         def encode(entries):
             return b"".join(canonical(entry) + b"\n" for entry in entries)
 
+        class ChangingSource(BytesIO):
+            def read(self, size=-1):
+                result = super().read(size)
+                self.seek(0)
+                self.write(b"{\x00")
+                return result
+
         with (patch("custody_ledger.aws", side_effect=AssertionError("archive must verify offline")),
               patch("custody_archive.verify_ceremony_capture") as evidence):
             self.assertEqual(verify(payload), record(self.trust, second)[0])
             self.assertEqual([call.args[0] for call in evidence.call_args_list],
                              [document["authorization"]["manifest"]["capture"] for document in (first, second)])
-            with self.assertRaisesRegex(ValueError, "pinned custody archive digest"):
-                verify(payload, pin="ff" * 32)
-            with self.assertRaisesRegex(ValueError, "pinned custody archive digest"):
-                verify(payload, epoch="1")
+            evidence.reset_mock()
+            with patch("custody_archive.check_custody_history_entry", side_effect=AssertionError("unpinned archive parsed")):
+                for raw, epoch in ((payload.replace(b"{", b"!", 1), "2"), (payload, "1")):
+                    with self.assertRaisesRegex(ValueError, "pinned custody archive digest"):
+                        verify(raw, epoch=epoch, pin=hashlib.sha256(payload).hexdigest())
+            evidence.assert_not_called()
+            self.assertEqual(
+                verify_archive(self.trust, "2", ChangingSource(payload), hashlib.sha256(payload).hexdigest()),
+                record(self.trust, second)[0],
+            )
             with self.assertRaisesRegex(ValueError, "missing or oversized"):
                 verify(encode(entries[:1]))
             with self.assertRaisesRegex(ValueError, "missing or oversized"):
