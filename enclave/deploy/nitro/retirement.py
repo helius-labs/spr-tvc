@@ -255,13 +255,15 @@ def require_current_requalification(trust, manifest):
 
 def prove_recovery(trust, document, index, relay_port):
     manifest = retirement_approval(document)["manifest"]
-    _, receipt, custodians, _ = checked_scope(trust, manifest)
+    observed = {}
+    _, receipt, custodians, receipt_at = checked_scope(trust, manifest, observed_records=observed)
     if index not in retirement_bootstrap(manifest["replacementBootstrap"]):
         raise ValueError("custodian did not supply an attested bootstrap slot")
     proof = {"manifest": manifest, "signatures": document["recoveryProofs"]}
 
     def require_current():
-        require_recovery_window(manifest)
+        checked_scope(trust, manifest, observed_records=observed)
+        retirement_target(trust, manifest, receipt_at=receipt_at, retired_at=time.time(), observed_records=observed)
         require_active_epoch(trust, receipt["custody"]["epoch"])
         require_recovery_window(manifest)
 
@@ -293,10 +295,17 @@ def verify_qualification(trust, wallet_trust, document, *, observed_records=None
 
 def sign_retirement(trust, wallet_trust, document, key, *, replacement_profiles=None):
     approval = retirement_approval(document)
-    boot = verify_qualification(trust, wallet_trust, document, replacement_profiles=replacement_profiles)
-    require_recovery_window(approval["manifest"])
-    signed = add_approval(approval_keys(trust), RETIREMENT, approval, key)
+    manifest = approval["manifest"]
+    observed = {}
+    boot = verify_qualification(trust, wallet_trust, document, observed_records=observed, replacement_profiles=replacement_profiles)
+    require_recovery_window(manifest)
+    roster = approval_roster(trust)
+    if roster["fromEpoch"] != manifest["approvalFromEpoch"]:
+        raise ValueError("retirement requires the active approval roster")
+    signed = add_approval(roster["keys"], RETIREMENT, approval, key)
     boot.require_current()
+    verify_qualification(trust, wallet_trust, document, observed_records=observed, replacement_profiles=replacement_profiles)
+    require_recovery_window(manifest)
     return {**document, "signatures": signed["signatures"]}
 
 
@@ -331,6 +340,7 @@ def commit_retirement(trust, wallet_trust, document, *, replacement_profiles=Non
             raise ValueError("replacement custody receipt changed before retirement")
         proven = retirement_recovery(document, custodians)
         require_recovery_quorum(trust, manifest, proven, replacement_profiles, receipt_at=receipt_at, observed_records=observed)
+        checked_scope(trust, manifest, observed_records=observed)
         # The ledger and key checks can outlast a policy. Reattest the signed replacement after them.
         confirmed = qualified_policy(trust, wallet_trust, manifest, receipt["custody"], expected=boot.evidence)
         if confirmed.evidence != boot.evidence:
@@ -341,7 +351,7 @@ def commit_retirement(trust, wallet_trust, document, *, replacement_profiles=Non
         confirmed.require_current(remaining=LEDGER_WRITE_MARGIN_SECONDS)
 
     def confirm(version):
-        stored, _, _ = load_retirement(trust, epoch, expected_version=version)
+        stored, _, _ = load_retirement(trust, epoch, expected_version=version, observed_records=observed)
         require_same_record(stored)
 
     write_once(trust, retirement_object_name(epoch), document, confirm, before_write=before_write)

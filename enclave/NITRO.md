@@ -210,20 +210,24 @@ Those exact three custodians reopen their
 committed recovery packages and sign the retirement candidate with their
 acknowledgement keys. Their proofs bind the boot, both receipts, the wallet
 policy, the registered serving target and the deadline 24 hours after its
-bootstrap. Both publication buckets must serve the same signed policy file
+bootstrap. Custodians recheck the active roster, original receipts and
+replacement registration before and after share recovery and KMS signing.
+Both publication buckets must serve the same signed policy file
 before and after attestation. A draft selects a registered boot whose
 registration is replicated when configured. For its three slots, inspection
 profiles in the replacement custody accounts verify that each recovery and
 wrapping key is enabled and has the expected sealed policy. The replacement
 parent must still have its approved role and installed bootstrap policy. The
-signers and publisher reattest that boot and check the publication order of the replacement's receipt and
-registration, and recheck those keys. When a replica is pinned, they also
+signers and publisher reattest that boot, check the publication order of
+its receipt and registration, and recheck those keys. Signers repeat the
+qualification after KMS signs. When a replica is pinned, they also
 verify that the receipt chain and the relevant old and replacement target
 registrations are replicated before closing the epoch. Mainnet requires this
-replica. After inspecting the ledger slot, the publisher confirms the
-replacement's recovery and wrapping keys, boot identity and current wallet
-policy before writing the marker. Restarting the replacement before
-publication requires a new candidate.
+replica. Before writing the marker, the publisher checks the replacement
+keys, rechecks the receipts and reattests the replacement under the current
+wallet policy. Readback compares the records with the same S3 versions,
+write times and bytes. Restarting the replacement before publication
+requires a new candidate.
 The ledger checks the S3 write time against the proof window and verifies
 both receipts, the signatures and the target before producing the key
 inventory. An unverifiable record halts new wraps and requires ledger recovery.

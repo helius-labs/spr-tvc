@@ -2111,10 +2111,11 @@ class CustodyLedgerTests(unittest.TestCase):
             ("policy", "wallet policy changed before retirement"),
             ("new boot", "wallet policy changed before retirement"),
             ("key loss", "key is unavailable"),
+            ("predecessor changed", "changed during verification"),
             ("replacement closure", "cannot verify retirement record for epoch 2"),
             ("stable", None),
         ):
-            with self.subTest(change=change):
+            with self.subTest(change=change), patch.dict(self.versions), patch.dict(self.objects):
                 after_inventory = False
 
                 def inspect_then_publish(trust, name, record, confirm, *, before_write):
@@ -2125,7 +2126,7 @@ class CustodyLedgerTests(unittest.TestCase):
                     return write_once(trust, name, record, confirm, before_write=checked_write)
 
                 def qualified(*_args, **_kwargs):
-                    if not after_inventory or change == "stable":
+                    if not after_inventory or change in ("stable", "predecessor changed"):
                         return old
                     if change == "revocation":
                         raise ValueError("wallet policy revoked")
@@ -2143,6 +2144,8 @@ class CustodyLedgerTests(unittest.TestCase):
                 def check_keys(*_args, **_kwargs):
                     if after_inventory and change == "key loss":
                         raise ValueError("proven replacement key is unavailable")
+                    if after_inventory and change == "predecessor changed":
+                        self.versions[f"spr-custody/devnet/{DOMAIN}/1.json"] = "changed-version"
 
                 quorum.side_effect = check_keys
 
@@ -2157,7 +2160,29 @@ class CustodyLedgerTests(unittest.TestCase):
                             commit_retirement(self.trust, None, document)
                         self.assertNotIn("put-object", [entry.args[1] for entry in storage_call.call_args_list])
                         self.assertNotIn(marker, self.objects)
-                self.objects.pop(f"spr-custody/devnet/{DOMAIN}/retired/2.json", None)
+    @patch("retirement.require_recovery_quorum")
+    @patch("retirement.qualified_policy")
+    def test_retirement_readback_rejects_a_changed_predecessor_version(self, qualification, _keys):
+        publish(self.trust, self.sign(self.document(1)))
+        rotation, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
+        publish(self.trust, self.sign(rotation))
+        target = self.replacement_target()
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, target))
+        qualification.return_value = self.live_qualification(target)
+        document = self.signed_retirement(qualified_manifest(self.trust, None, "1", "2"))
+        prefix = f"spr-custody/devnet/{DOMAIN}/"
+        marker = prefix + "retired/1.json"
+
+        def change_on_write(region, service, operation, args, **options):
+            result = self.aws(region, service, operation, args, **options)
+            if operation == "put-object" and marker in args:
+                self.versions[prefix + "1.json"] = "changed-version"
+            return result
+
+        with (patch("custody_ledger.aws", side_effect=change_on_write),
+              self.assertRaisesRegex(ValueError, "changed during verification")):
+            commit_retirement(self.trust, None, document)
+        self.assertIn(marker, self.objects)
 
     @patch("retirement.require_recovery_quorum")
     @patch("retirement.qualified_policy")
@@ -3408,7 +3433,8 @@ class CustodyLedgerTests(unittest.TestCase):
         _, old, _ = load_epoch(self.trust, "1")
         rotated, _ = self.rotation_document(old)
         publish(self.trust, self.sign(rotated))
-        qualification.return_value = self.live_qualification(self.replacement_target())
+        target = self.replacement_target()
+        qualification.return_value = self.live_qualification(target)
         marker = qualified_manifest(self.trust, None, "1", "2")
         candidate = {"manifest": marker, "signatures": [], "recoveryProofs": []}
         _, receipt, roster = load_epoch(self.trust, "2")
@@ -3422,11 +3448,27 @@ class CustodyLedgerTests(unittest.TestCase):
                 prove_recovery(self.trust, {**candidate, "manifest": {**marker, "replacementReceiptSha256": "ab" * 32}}, 2, 7443)
             with self.assertRaisesRegex(ValueError, "did not supply an attested bootstrap slot"):
                 prove_recovery(self.trust, candidate, 4, 7443)
+            with self.assertRaisesRegex(ValueError, "object missing"):
+                prove_recovery(self.trust, candidate, 2, 7443)
             kms.assert_not_called()
+            register_target(self.trust, self.signed_subject(TARGET_APPROVAL, target))
             with self.assertRaisesRegex(ValueError, "recovery failed"):
                 prove_recovery(self.trust, candidate, 2, 7443)
             prove_share.assert_called_once_with(self.trust, receipt, member, 2, 7443, ANY)
             approval.assert_not_called()
+
+            def changed_registration(*args):
+                require_current = args[-1]
+                require_current()
+                path = f"spr-custody/devnet/{DOMAIN}/{target_object_name(target)}"
+                self.versions[path] = "changed-registration"
+                require_current()
+
+            prove_share.side_effect = changed_registration
+            with patch.dict(self.versions), self.assertRaisesRegex(ValueError, "changed during verification"):
+                prove_recovery(self.trust, candidate, 2, 7443)
+            approval.assert_not_called()
+
             prove_share.side_effect = None
             approval.return_value = {"signatures": [sign(RETIREMENT_RECOVERY, marker, key_arn)]}
             proven = prove_recovery(self.trust, candidate, 2, 7443)
@@ -3454,3 +3496,34 @@ class CustodyLedgerTests(unittest.TestCase):
             with patch.object(self, "now", self.now), self.assertRaisesRegex(ValueError, "recovery window"):
                 prove_recovery(self.trust, candidate, 2, 7443)
             approval.assert_not_called()
+
+    @patch("retirement.require_recovery_quorum")
+    @patch("retirement.qualified_policy")
+    def test_retirement_signer_rechecks_receipts_and_live_policy_after_signing(self, qualification, _keys):
+        publish(self.trust, self.sign(self.document(1)))
+        rotation, _ = self.rotation_document(load_epoch(self.trust, "1")[1])
+        publish(self.trust, self.sign(rotation))
+        target = self.replacement_target()
+        register_target(self.trust, self.signed_subject(TARGET_APPROVAL, target))
+        boot = self.live_qualification(target)
+        qualification.return_value = boot
+        document = self.signed_retirement(qualified_manifest(self.trust, None, "1", "2"))
+        key_arn = approval_keys(self.trust)[0]["keyArn"]
+
+        def change_receipt(*_args):
+            self.versions[f"spr-custody/devnet/{DOMAIN}/1.json"] = "changed-receipt"
+            return document
+
+        def change_policy(*_args):
+            qualification.return_value = self.live_qualification(target, "cd" * 32)
+            return document
+
+        for change, message in (
+            (change_receipt, "changed during verification"),
+            (change_policy, "no longer matches the qualified replacement and wallet policy"),
+        ):
+            qualification.return_value = boot
+            with (self.subTest(change=change.__name__), patch.dict(self.versions),
+                  patch("retirement.add_approval", side_effect=change),
+                  self.assertRaisesRegex(ValueError, message)):
+                sign_retirement(self.trust, None, {**document, "signatures": []}, key_arn)
