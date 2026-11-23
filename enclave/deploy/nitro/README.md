@@ -646,9 +646,11 @@ pinned history and excluded versions.
 
    When the verifier reports it is waiting, cold-boot a registered replacement
    with the proved three slots. The verifier reads the candidate registrations
-   before starting the `--wait-seconds` timer and polls for a later attested
-   boot. Before writing the report it checks the old keys, parents and replica
-   records again, including the observed replacement's registration. It
+   before starting the `--wait-seconds` timer and polls until a later attested
+   boot qualifies. If the first observed boot fails qualification, the verifier
+   can qualify a later standby within the original wait window. Before writing
+   the report it checks the old keys, parents and replica records again,
+   including the observed replacement's registration. It
    verifies the replica's installed protections, the six keys used by the
    new boot, and the same registered boot and wallet policy.
    The report records the retired domain and custody digest, the S3 closure

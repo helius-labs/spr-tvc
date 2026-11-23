@@ -2307,6 +2307,16 @@ class CustodyLedgerTests(unittest.TestCase):
                 profiles = [f"slot-{slot}" for slot in range(1, 7)]
                 report = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
                 self.assertEqual(report["replacement"]["replacementTargetSha256"], sha256(standby))
+            with self.subTest(stage="standby arrives on a later poll"), patch("retirement.time.sleep") as sleep:
+                query.side_effect = [
+                    observation(primary_observed), observation(primary_observed, standby_observed),
+                    observation(standby_observed), SimpleNamespace(),
+                ]
+                report = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
+                self.assertEqual(report["retirementObservedAtMs"], str(self.now * 1000))
+                self.assertEqual(report["replacement"]["replacementTargetSha256"], sha256(standby))
+                sleep.assert_called_once()
+            query.side_effect = None
 
             unavailable.add(standby["wrappingKeys"][1])
             with self.assertRaisesRegex(ValueError, "no attested replacement qualified") as rejected:
@@ -2549,8 +2559,14 @@ class CustodyLedgerTests(unittest.TestCase):
                             {"policyDigest": "fe" * 32, "targets": [{**observed, "bootstrap": {**fresh, "bootKeyId": "da" * 32}}]}):
                 with self.subTest(changed=changed):
                     query.side_effect = [SimpleNamespace(stdout=body) for body in (ready, self.attestation_reply(changed))]
-                    with self.assertRaisesRegex(ValueError, "no fresh attested serving boot"):
+                    with (patch("retirement.time.monotonic", side_effect=[0, 0, 0, 0, 0, 5]),
+                          self.assertRaisesRegex(ValueError, "no fresh attested serving boot")):
                         verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
+            query.side_effect = [SimpleNamespace(stdout=ready)] * 2
+            with (patch("retirement.time.monotonic", side_effect=[0, 0, 0, 4, 5, 5]),
+                  self.assertRaisesRegex(ValueError, "replacement boot wait expired")):
+                verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
+            self.assertEqual(query.call_args.kwargs["timeout"], 1)
             visited.clear()
             host_state.reset_mock()
             identity.reset_mock()

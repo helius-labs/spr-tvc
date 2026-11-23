@@ -615,20 +615,22 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
             require_current_requalification(trust, qualification)
             boots = attested_boots(pinned_trust, candidates, qualification, custody, after_ms=after_ms,
                                    deadline=deadline, required_slots=proven_slots)
+            slots, parents = inspect_all()
+            current_candidates = replacement_targets(trust, qualification)
+
+            def confirm(boot):
+                return attested_boots(pinned_trust, current_candidates, qualification, custody, after_ms=after_ms,
+                                      deadline=deadline, expected=boot)[0]
+
+            boot = ready_boot(trust, qualification, boots, replacement_custodians, confirm=confirm, observed_records=observed)
             break
         except (ReplacementNotReady, subprocess.SubprocessError) as error:
             remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise ValueError("no replacement boot observed after verifying the old keys") from error
-            time.sleep(min(2, remaining))
+            if remaining > 0:
+                time.sleep(min(2, remaining))
+            if remaining <= 0 or time.monotonic() >= deadline:
+                raise ValueError(f"no replacement boot observed after verifying the old keys: {error}") from error
 
-    slots, parents = inspect_all()
-    candidates = replacement_targets(trust, qualification)
-
-    def confirm(boot):
-        return attested_boots(pinned_trust, candidates, qualification, custody, after_ms=after_ms, expected=boot)[0]
-
-    boot = ready_boot(trust, qualification, boots, replacement_custodians, confirm=confirm, observed_records=observed)
     confirm_retirement_policy(trust, wallet_trust, qualification, boot, replica, replica_profile, observed_records=observed)
     report = {
         "retirementSha256": sha256(document), "retirementObservedAtMs": str(after_ms),
