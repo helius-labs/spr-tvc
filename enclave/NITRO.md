@@ -195,9 +195,10 @@ acknowledgement keys. Their proofs bind the boot, both receipts, the wallet
 policy, the registered serving target and the deadline 24 hours after its
 bootstrap. Both publication buckets must serve the same signed policy file
 before and after attestation. A draft selects a registered boot whose
-registration is replicated when configured and whose three recovery and
-three wrapping keys remain enabled. Signers and the publisher reattest that
-exact boot, check the publication order of the replacement's receipt and
+registration is replicated when configured. For its three slots, inspection
+profiles in the replacement custody accounts verify that each recovery and
+wrapping key is enabled and has the expected sealed policy. The signers and
+publisher reattest that boot, check the publication order of the replacement's receipt and
 registration, and recheck those keys. When a replica is pinned, they also
 verify that the receipt chain and the relevant old and replacement target
 registrations are replicated before closing the epoch. Mainnet requires this
@@ -219,9 +220,8 @@ every registered old parent because a reconstructed seed stays in enclave
 memory until the enclave stops. It attests a registered serving parent on
 the replacement receipt using the three proven slots. The parent can change
 after the marker commits. Its bootstrap must be later than the S3 write
-second, and all six recovery and wrapping keys for those slots must be
-enabled. The same boot and wallet policy must still be current after the key
-checks. Where replication is configured, the observed replacement's
+second. The same six key and policy checks apply, and the boot and wallet
+policy must still be current after those checks. Where replication is configured, the observed replacement's
 registration must also match its copy in the pinned replica. Pre-deletion
 inspection and final verification try other boots from the same observation
 if a candidate fails its key, replication or repeated attestation check.

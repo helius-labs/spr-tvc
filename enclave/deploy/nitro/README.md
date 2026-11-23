@@ -539,12 +539,17 @@ pinned history and excluded versions.
    current epoch. Pass each output to the next custodian.
 
    Two custody approval signers then sign, and the ledger publisher commits
-   the record within 24 hours of the replacement boot. Signers and the
-   publisher need `kms:DescribeKey` on the recovery and target wrapping keys
-   for those exact three slots. All six keys must still be enabled. Draft, sign
-   and publish require the same signed policy file in both buckets before and
-   after attestation and match the replacement to its registered serving
-   target. Draft selects an attested target with enabled keys and a replicated
+   the record within 24 hours of the replacement boot. Provide six read-only
+   replacement inspection profiles in slot order. For each of the three
+   attested slots, STS checks that its profile belongs to the replacement
+   custodian's account, then `kms:DescribeKey` and `kms:GetKeyPolicy` check
+   that both keys are enabled and have their exact sealed policies. KMS only
+   supports reading key policy from the account that owns the key.
+   [AWS KMS GetKeyPolicy](https://docs.aws.amazon.com/kms/latest/APIReference/API_GetKeyPolicy.html)
+
+   Draft, sign and publish require the same signed policy file in both buckets
+   before and after attestation and match the replacement to its registered
+   serving target. Draft selects an attested target with qualified keys and a replicated
    registration when a replica is configured. Sign and publish recheck those
    conditions for the exact signed boot. After inspecting the ledger slot, the
    publisher rechecks the three recovery and wrapping pairs, then confirms the
@@ -562,15 +567,20 @@ pinned history and excluded versions.
    those for requests in flight.
 
    ```sh
-   python3 "$nitro/retirement.py" trust.json draft wallet-trust.json 1 2 > retire-draft.json
+   python3 "$nitro/retirement.py" trust.json draft wallet-trust.json 1 2 \
+     --replacement-inspection-profiles "${replacement_inspection_profiles[@]}" > retire-draft.json
    python3 "$nitro/retirement.py" trust.json prove-recovery retire-draft.json 2 --relay-port "$port" > retire-proof-1.json
    python3 "$nitro/retirement.py" trust.json prove-recovery retire-proof-1.json 4 --relay-port "$port" > retire-proof-2.json
    python3 "$nitro/retirement.py" trust.json prove-recovery retire-proof-2.json 6 --relay-port "$port" > retire-proof-3.json
-   python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-proof-3.json "$first_approval_key" > retire-signed-1.json
-   python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-signed-1.json "$second_approval_key" > retire-signed-2.json
-   python3 "$nitro/retirement.py" trust.json publish wallet-trust.json retire-signed-2.json
+   python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-proof-3.json "$first_approval_key" \
+     --replacement-inspection-profiles "${replacement_inspection_profiles[@]}" > retire-signed-1.json
+   python3 "$nitro/retirement.py" trust.json sign wallet-trust.json retire-signed-1.json "$second_approval_key" \
+     --replacement-inspection-profiles "${replacement_inspection_profiles[@]}" > retire-signed-2.json
+   python3 "$nitro/retirement.py" trust.json publish wallet-trust.json retire-signed-2.json \
+     --replacement-inspection-profiles "${replacement_inspection_profiles[@]}"
    python3 "$nitro/retirement.py" trust.json inspect 1 "$share_index" \
      --wallet-trust wallet-trust.json \
+     --replacement-inspection-profiles "${replacement_inspection_profiles[@]}" \
      --host-inspection-profile "$old_host_account=$old_host_read_profile" \
      --replica-profile "$recovery_bucket_read_profile"
    ```
@@ -605,8 +615,8 @@ pinned history and excluded versions.
    deletion. Supply a read-only inspection profile for each old parent account.
    The command verifies termination of every registered old parent and attests
    the replacement under the current wallet policy before and after checking
-   its six recovery and wrapping keys. The replacement epoch must remain
-   open and the boot must use the three proved slots after the marker's S3
+   the state and sealed policies of its six recovery and wrapping keys. The
+   replacement epoch must remain open and the boot must use the three proved slots after the marker's S3
    write second. Inspection and the final report check the replica's bucket
    protections after confirming the live replacement. They then match both
    buckets to the receipt and registration used by that boot. During candidate
@@ -617,8 +627,7 @@ pinned history and excluded versions.
    A changed digest, revocation, disagreement, failed read, closed epoch or
    expired boot evidence stops the command. `inspect` reports the
    boot evidence deadline as `validUntilMs` in Unix milliseconds. Rerun
-   inspection if it passes before scheduling deletion. The role needs `kms:DescribeKey` for the
-   six replacement keys. Use
+   inspection if it passes before scheduling deletion. Use
    `inspect --check-inactive` for the historical key state check after scheduling.
 
    If one of the proved slots is unavailable, or the replacement epoch is
@@ -628,6 +637,7 @@ pinned history and excluded versions.
 
    ```sh
    python3 "$nitro/retirement.py" trust.json draft wallet-trust.json 1 "$active_epoch" \
+     --replacement-inspection-profiles "${replacement_inspection_profiles[@]}" \
      --requalify > requalification-draft.json
    ```
 
@@ -655,6 +665,7 @@ pinned history and excluded versions.
    ```sh
    python3 "$nitro/retirement.py" trust.json verify-retired wallet-trust.json 1 \
      --inspection-profiles "${old_inspection_profiles[@]}" \
+     --replacement-inspection-profiles "${replacement_inspection_profiles[@]}" \
      --host-inspection-profile "$old_host_account=$old_host_read_profile" \
      --replica-profile "$recovery_bucket_read_profile" \
      --output "$retirement_report"
