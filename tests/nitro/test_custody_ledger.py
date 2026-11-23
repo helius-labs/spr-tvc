@@ -52,14 +52,16 @@ NEXT_ROLES = {
     "publisherRole": "arn:aws:iam::000000000011:role/publisher", "readerRoles": [READ_ROLE],
 }
 PINS = {f"PCR{i}": f"{i+1:02x}" * 48 for i in range(3)}
+HOST_ACCOUNT = HOST.split(":")[4]
+KEY_PROFILES = {f"{slot:012d}": f"key-read-{slot}" for slot in range(1, 7)}
 PAYMENT_PROFILES = {
     "source_profile": "source-read", "replica_profile": "replica-read",
-    "key_profiles": {f"{slot:012d}": f"key-read-{slot}" for slot in range(1, 7)},
+    "key_profiles": {**KEY_PROFILES, HOST_ACCOUNT: "host-read"},
 }
-REPLACEMENT_PROFILES = {f"{index:012d}": f"replacement-{index}" for index in range(1, 7)}
+REPLACEMENT_PROFILES = {**{f"{index:012d}": f"replacement-{index}" for index in range(1, 7)}, HOST_ACCOUNT: "host-read"}
 
 
-def publish(trust, document, *, key_profiles=PAYMENT_PROFILES["key_profiles"]):
+def publish(trust, document, *, key_profiles=KEY_PROFILES):
     return publish_receipt(trust, document, key_profiles=key_profiles)
 
 
@@ -95,6 +97,8 @@ class CustodyLedgerTests(unittest.TestCase):
         self.enterContext(patch("time.time", side_effect=lambda: self.now))
         self.enterContext(patch("custody_ledger.aws", side_effect=self.aws))
         self.enterContext(patch("deployment.require_live_registration"))
+        self.payment_host = self.enterContext(patch("custody_ledger.require_bootstrap_access"))
+        self.retirement_host = self.enterContext(patch("retirement.require_bootstrap_access"))
         self.enterContext(patch("approval.kms", side_effect=AssertionError("receipt verification must not call KMS")))
         self.key_metadata = {}
         self.key_policies = {}
@@ -1271,7 +1275,7 @@ class CustodyLedgerTests(unittest.TestCase):
             publish_receipt(self.trust, document)
         self.key_inspection.assert_not_called()
         self.recovery_inspection.assert_not_called()
-        accounts = PAYMENT_PROFILES["key_profiles"]
+        accounts = KEY_PROFILES
         with self.assertRaisesRegex(ValueError, "missing read-only inspection profile"):
             publish(self.trust, document, key_profiles={account: name for account, name in accounts.items() if int(account) != 1})
         with self.assertRaisesRegex(ValueError, "wrong inspection profile"):
@@ -1792,6 +1796,16 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertCountEqual([call.args[0] for call in kms.call_args_list if call.args[1] == "describe-key"],
                                   [*recovery, *primary["wrappingKeys"], *standby["wrappingKeys"]])
             self.assertEqual(sts.call_count, 6)
+            self.assertCountEqual(self.payment_host.call_args_list, [call(primary, "host-read"), call(standby, "host-read")])
+
+            def inspect_parent(target, profile):
+                if profile is None or target == standby:
+                    raise ValueError("host bootstrap policy differs")
+
+            self.payment_host.side_effect = inspect_parent
+            with self.assertRaisesRegex(ValueError, "host bootstrap policy differs"):
+                check_release_policy(self.trust, document, **PAYMENT_PROFILES)
+            self.payment_host.side_effect = None
             profiles = {**PAYMENT_PROFILES["key_profiles"], "000000000003": "unexpected-profile"}
             kms.reset_mock()
             check_release_policy(self.trust, document, key_profiles=profiles, **ledger_profiles)
@@ -1800,7 +1814,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 check_release_policy(self.trust, document, key_profiles=profiles, **ledger_profiles,
                                      bootstrap_slots=[[3, 4, 5], [3, 4, 5]])
             profiles = {account: profile for account, profile in PAYMENT_PROFILES["key_profiles"].items()
-                        if int(account) in {3, 4, 5}}
+                        if int(account) in {3, 4, 5} or account == HOST_ACCOUNT}
             check_release_policy(self.trust, document, key_profiles=profiles, **ledger_profiles)
             for arn in (recovery[2], standby["wrappingKeys"][2]):
                 bad_policy.add(arn)
@@ -1835,10 +1849,12 @@ class CustodyLedgerTests(unittest.TestCase):
                     check_release_policy(self.trust, {**document, "policy": {**policy, "targets": targets[:1]}},
                                          **PAYMENT_PROFILES)
             kms.reset_mock()
+            self.payment_host.reset_mock()
             inspect_source.reset_mock()
             inspect_replica.reset_mock()
             check_release_policy(self.trust, {**document, "policy": {**policy, "recoveryOnly": True}})
             kms.assert_not_called()
+            self.payment_host.assert_not_called()
             inspect_source.assert_not_called()
             inspect_replica.assert_not_called()
 
@@ -1860,7 +1876,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 check_release_policy(self.trust, document, **PAYMENT_PROFILES)
 
     def test_payment_checks_profiles_for_both_custody_rosters_in_an_overlap(self):
-        targets, profiles, policies = [], {}, {}
+        targets, profiles, policies = [], {HOST_ACCOUNT: "host-read"}, {}
         for epoch, first in (("1", 21), ("2", 31)):
             accounts = range(first, first + 6)
             members = [{
@@ -1869,7 +1885,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 "retirementRole": f"arn:aws:iam::{account:012d}:role/retirement",
             } for account in accounts]
             target = {
-                "hostRole": HOST, "instanceId": INSTANCE, "releaseId": f"release-{epoch}", "pcrs": PINS,
+                "hostRole": HOST, "hostRegion": REGION, "instanceId": INSTANCE, "releaseId": f"release-{epoch}", "pcrs": PINS,
                 "wrappingKeys": [key(account, 2) for account in accounts],
             }
             pairs = [(member["recoveryKeyArn"], wrapping)
@@ -1887,8 +1903,9 @@ class CustodyLedgerTests(unittest.TestCase):
         with (patch("custody_ledger.require_profile_account") as identity,
               patch("custody_ledger.inspect_rsa_key", side_effect=inspect) as keys):
             require_payment_recovery_quorums(self.trust, targets, profiles)
-            self.assertCountEqual([request.args[2] for request in identity.call_args_list], profiles)
+            self.assertCountEqual([request.args[2] for request in identity.call_args_list], set(profiles) - {HOST_ACCOUNT})
             self.assertCountEqual([request.args[0] for request in keys.call_args_list], policies)
+            self.assertCountEqual(self.payment_host.call_args_list, [call(entry[1], "host-read") for entry in targets])
             del profiles[f"{35:012d}"]
             with self.assertRaisesRegex(ValueError, "custody epoch 2 target release-2 requires three"):
                 require_payment_recovery_quorums(self.trust, targets, profiles)
@@ -3104,6 +3121,13 @@ class CustodyLedgerTests(unittest.TestCase):
                     commit(retirement)
                 write.assert_not_called()
             unreadable_policies.clear()
+            self.retirement_host.side_effect = ValueError("host bootstrap policy differs")
+            with patch("retirement.write_once") as write:
+                with self.assertRaisesRegex(ValueError, "host bootstrap policy differs"):
+                    commit(retirement)
+                write.assert_not_called()
+            self.retirement_host.assert_called_with(replacement, "host-read")
+            self.retirement_host.side_effect = None
             journal = f"spr-custody/devnet/{DOMAIN}/"
             early_target = datetime.fromtimestamp(self.now - 1, timezone.utc).isoformat()
             late_receipt = datetime.fromtimestamp(self.now + 1, timezone.utc).isoformat()

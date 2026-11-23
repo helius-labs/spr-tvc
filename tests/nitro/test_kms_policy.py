@@ -12,7 +12,7 @@ from unittest.mock import ANY, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import InvalidAwsResponse, aws, require_profile_account
-from deployment import host_policy
+from host import host_policy
 from kms_policy import RSA_OAEP, acknowledgement_policy, key_policy, recovery_policy, validate_scope
 from provision import InsufficientShares, UnconfirmedBootstrap, main as provision_main, provision, read_target, recipient_for
 from relay import InvalidRecipientResponse, decrypt_recipient

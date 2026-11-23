@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from approval import (
-    KEY_ARN, ROLE_ARN, add_approval, approval_roster, arn, aws, canonical, fields, file_digest, hex_digest,
+    KEY_ARN, ROLE_ARN, add_approval, approval_roster, arn, canonical, fields, file_digest, hex_digest,
     parse_json, publish_new_file, read_document, read_json, require_custody_key_profiles, require_inspection_profiles,
     require_profile_account, sha256,
 )
@@ -19,68 +19,10 @@ from custody_ledger import (
     require_target_approval_window, target_attestation, target_object_name, validate_target, verify_target_approval,
     wrapping_pairs, write_once,
 )
-from kms_policy import decrypt_conditions, key_policy, target_boot_pins
+from host import host_policy, require_bootstrap_access, require_host_state
+from kms_policy import key_policy
 from provenance import verify as verify_build
 from relay import inspect_rsa_key, relay_pins, sealed_rsa_key
-
-
-def host_policy(manifest):
-    pins = target_boot_pins(manifest["hostRole"], manifest["pcrs"], manifest["instanceId"])
-    return {"Version": "2012-10-17", "Statement": [
-        {"Effect": "Allow", "Action": "kms:Decrypt", "Resource": manifest["wrappingKeys"],
-         "Condition": decrypt_conditions(pins)}
-    ]}
-
-
-class HostUnobserved(ValueError):
-    """EC2 did not return state for the requested instance."""
-
-
-def require_host_role(instance, role, account, region, profile):
-    attachment = instance.get("IamInstanceProfile")
-    if not isinstance(attachment, dict):
-        raise ValueError("target parent has no instance profile")
-    profile_arn = attachment.get("Arn")
-    profile_id = attachment.get("Id")
-    if (not isinstance(profile_arn, str) or
-            not profile_arn.startswith(f"arn:aws:iam::{account}:instance-profile/") or
-            not isinstance(profile_id, str) or not profile_id):
-        raise ValueError("target parent has no instance profile in its approved account")
-    profile_name = profile_arn.rsplit("/", 1)[-1]
-    if not re.fullmatch(r"[A-Za-z0-9_+=,.@-]{1,128}", profile_name):
-        raise ValueError("invalid target instance profile name")
-    installed = aws(region, "iam", "get-instance-profile", ["--instance-profile-name", profile_name],
-                    profile=profile).get("InstanceProfile")
-    if not isinstance(installed, dict):
-        raise ValueError("IAM returned no target instance profile")
-    roles = installed.get("Roles")
-    if (installed.get("Arn") != profile_arn or installed.get("InstanceProfileId") != profile_id or
-            not isinstance(roles, list) or len(roles) != 1 or not isinstance(roles[0], dict) or roles[0].get("Arn") != role):
-        raise ValueError("target instance profile does not contain the approved host role")
-
-
-def require_host_state(manifest, state, profile):
-    account = arn(ROLE_ARN, manifest["hostRole"])[1]
-    region, instance = manifest["hostRegion"], manifest["instanceId"]
-    try:
-        reservations = aws(region, "ec2", "describe-instances", ["--instance-ids", instance], profile=profile)["Reservations"]
-    except (ValueError, subprocess.TimeoutExpired) as error:
-        raise HostUnobserved(f"EC2 could not describe {account}/{region}/{instance}") from error
-    if not reservations:
-        raise HostUnobserved(f"missing EC2 evidence for {account}/{region}/{instance}")
-    if len(reservations) != 1 or reservations[0].get("OwnerId") != account:
-        raise ValueError(f"unexpected EC2 reservation for {account}/{region}/{instance}")
-    instances = reservations[0].get("Instances", [])
-    if (len(instances) != 1 or instances[0].get("InstanceId") != instance or
-            instances[0].get("State", {}).get("Name") != state or
-            (state == "running" and instances[0].get("EnclaveOptions", {}).get("Enabled") is not True)):
-        raise ValueError(f"expected {account}/{region}/{instance} to be {state}")
-    if state == "running":
-        parent = instances[0]
-        if parent.get("Architecture") != "x86_64":
-            raise ValueError("target parent must support the reviewed x86-64 EIF")
-        require_host_role(parent, manifest["hostRole"], account, region, profile)
-    return {"account": account, "region": region, "instanceId": instance, "state": state, "source": "ec2"}
 
 
 def target_binding(manifest):
@@ -94,10 +36,8 @@ def wrapping_policies(manifest, custodians):
                        manifest["pcrs"], manifest["instanceId"]) for member in custodians]
 
 
-def require_live_registration(manifest, custodians, key_profiles, host_profile):
+def require_live_registration(manifest, custodians, key_profiles):
     require_custody_key_profiles(key_profiles)
-    if not host_profile:
-        raise ValueError("provide --host-inspection-profile for a new target registration")
     policies = wrapping_policies(manifest, custodians)
 
     def check_key(key, expected):
@@ -115,12 +55,10 @@ def require_live_registration(manifest, custodians, key_profiles, host_profile):
 
     with ThreadPoolExecutor(max_workers=len(policies)) as workers:
         list(workers.map(lambda pair: check_key(*pair), zip(manifest["wrappingKeys"], policies, strict=True)))
-    host_account = arn(ROLE_ARN, manifest["hostRole"])[1]
-    require_profile_account(host_profile, manifest["hostRegion"], host_account)
-    require_host_state(manifest, "running", host_profile)
+    require_bootstrap_access(manifest, key_profiles.get(arn(ROLE_ARN, manifest["hostRole"])[1]))
 
 
-def register_target(trust, document, *, build=None, key_profiles=None, host_profile=None):
+def register_target(trust, document, *, build=None, key_profiles=None):
     fields(document, "manifest", "signatures")
     manifest = document["manifest"]
     validate_target(trust, manifest)
@@ -148,7 +86,7 @@ def register_target(trust, document, *, build=None, key_profiles=None, host_prof
         return
 
     def before_write():
-        require_live_registration(manifest, custodians, key_profiles, host_profile)
+        require_live_registration(manifest, custodians, key_profiles)
         require_active_epoch(trust, epoch)
         require_target_approval_window(manifest, time.time(), remaining=LEDGER_WRITE_MARGIN_SECONDS)
         require_publication_roster(trust, manifest["approvalFromEpoch"])
@@ -266,8 +204,7 @@ def main():
     sign.add_argument("--next-relay-build", nargs=2, type=Path, metavar=("BUILD", "REVIEW"))
     register = commands.add_parser("register")
     register.add_argument("target", type=Path)
-    register.add_argument("--host-inspection-profile")
-    register.add_argument("--custody-key-profiles", type=Path, help="JSON map from custody AWS account to read-only profile")
+    register.add_argument("--custody-key-profiles", type=Path, help="JSON map from custody and host accounts to read-only profiles")
     identity = commands.add_parser("host-policy")
     identity.add_argument("target", type=Path)
     commands.add_parser("attestation-pins").add_argument("target", type=Path)
@@ -300,15 +237,18 @@ def main():
         document = read_json(args.target)
         if args.command == "register":
             profiles = read_json(args.custody_key_profiles) if args.custody_key_profiles else None
-            register_target(trust, document, build=args.build, key_profiles=profiles, host_profile=args.host_inspection_profile)
+            register_target(trust, document, build=args.build, key_profiles=profiles)
             return
         _, receipt, custodians, receipt_at = load_epoch_with_time(trust, document["manifest"]["custodyEpoch"])
         keys, policies, next_keys = target(trust, document, receipt, custodians, args.build)
         if args.command in {"host-policy", "attestation-pins"}:
-            require_registered_target(trust, verify_target_approval(trust, document), receipt_at=receipt_at)
-            manifest = document["manifest"]
-            result = host_policy(manifest) if args.command == "host-policy" else target_attestation(manifest)["pcrs"]
-            print(canonical(result).decode())
+            manifest = verify_target_approval(trust, document)
+            if args.command == "host-policy":
+                require_active_epoch(trust, manifest["custodyEpoch"])
+                print(canonical(host_policy(manifest)).decode())
+            else:
+                require_registered_target(trust, manifest, receipt_at=receipt_at)
+                print(canonical(target_attestation(manifest)["pcrs"]).decode())
             return
         require_active_epoch(trust, receipt["custody"]["epoch"])
         manifest = document["manifest"]

@@ -297,7 +297,7 @@ def require_custody_key_profiles(profiles):
             any(not isinstance(account, str) or not re.fullmatch(r"[0-9]{12}", account)
                 or not isinstance(profile, str) or not profile.strip()
                 for account, profile in profiles.items()) or len(set(profiles.values())) != len(profiles)):
-        raise ValueError("provide --custody-key-profiles with distinct AWS profiles keyed by custody account")
+        raise ValueError("provide --custody-key-profiles with distinct AWS profiles keyed by account")
 
 
 def require_profile_account(profile, region, account):

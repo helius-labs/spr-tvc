@@ -43,7 +43,7 @@ pub(crate) struct Args {
     /// Read-only AWS profile in the pinned custody replica's account.
     #[arg(long)]
     replica_profile: Option<String>,
-    /// JSON map from custody AWS account to read-only KMS inspection profile.
+    /// JSON map from custody and host AWS accounts to read-only inspection profiles.
     #[arg(long)]
     custody_key_profiles: Option<PathBuf>,
     /// Sign as a custody approver.

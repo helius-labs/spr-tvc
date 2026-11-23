@@ -29,7 +29,7 @@ from custody_ledger import (
     retirement_object_name, retirement_recovery, retirement_target, sign_share_recovery,
     target_attestation, target_path, verify_retirement, write_once,
 )
-from deployment import HostUnobserved, require_host_state
+from host import HostUnobserved, require_bootstrap_access, require_host_state
 from kms_policy import key_policy
 from relay import custody_recovery_policy, inspect_rsa_key
 
@@ -74,6 +74,7 @@ def require_recovery_quorum(trust, manifest, custodians, replacement_profiles, *
 
     with ThreadPoolExecutor(max_workers=len(slots)) as workers:
         list(workers.map(lambda pair: check_slot(*pair), zip(slots, custodians, strict=True)))
+    require_bootstrap_access(target, replacement_profiles.get(arn(ROLE_ARN, target["hostRole"])[1]))
 
 
 def registered_targets(trust, epoch, receipt_digest, **options):
@@ -701,7 +702,7 @@ def main():
     verify.add_argument("--inspection-profiles", nargs=6, required=True)
     for command in (draft, sign, publish, inspect, verify):
         command.add_argument("--custody-key-profiles", type=Path, required=command is not inspect,
-                             help="JSON map from replacement custody account to read-only profile")
+                             help="JSON map from replacement custody and host accounts to read-only profiles")
     for command in (inspect, verify):
         command.add_argument("--host-inspection-profile", metavar="ACCOUNT=PROFILE", action="append", default=[])
         command.add_argument("--requalification", type=Path, help="signed proof of a new quorum for the closed epoch")

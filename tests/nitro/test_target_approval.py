@@ -13,7 +13,8 @@ from unittest.mock import call, patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import P256_ORDER, is_p256_der_signature, sha256
 from custody_ledger import TARGET_APPROVAL, target_object_name
-from deployment import HostUnobserved, file_digest, main, register_target, require_host_state, target
+from deployment import file_digest, main, register_target, target
+from host import HOST_BOOTSTRAP_POLICY, HostUnobserved, host_policy, require_host_state
 from kms_policy import RSA_OAEP, recovery_policy
 from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, schedule, sign
 from provenance import describe
@@ -265,7 +266,7 @@ class TargetApprovalTests(unittest.TestCase):
             ])
             sign_target.assert_called_once()
 
-    @patch("deployment.aws")
+    @patch("host.aws")
     def test_host_state_requires_exact_account_id_and_expected_state(self, describe):
         instance = {"InstanceId": INSTANCE, "State": {"Name": "terminated"}}
         reservation = {"OwnerId": "000000000007", "Instances": [instance]}
@@ -287,7 +288,7 @@ class TargetApprovalTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 require_host_state(self.manifest, "running", "host-reader")
 
-    @patch("deployment.aws")
+    @patch("host.aws")
     def test_running_parent_must_have_the_approved_architecture_and_role(self, aws):
         account = "000000000007"
         attachment = {"Arn": f"arn:aws:iam::{account}:instance-profile/nitro/serving-parent", "Id": "AIPAEXAMPLE"}
@@ -355,17 +356,30 @@ class TargetApprovalTests(unittest.TestCase):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 require_terminated_parent(self.manifest, "host-reader")
 
-    def test_host_policy_command_requires_the_registered_quorum_approved_target(self):
+    def test_host_policy_requires_approval_before_registration_and_pins_require_registration(self):
         trust_path, target_path = self.build / "trust.json", self.build / "target.json"
         trust_path.write_text(json.dumps(self.trust))
         argv = ["deployment.py", str(trust_path), str(self.build), "host-policy", str(target_path)]
         with (patch("sys.argv", argv), patch("deployment.load_epoch_with_time", side_effect=self.load_epoch),
-              patch("deployment.require_registered_target") as registered, patch("sys.stdout", new_callable=io.StringIO) as output):
+              patch("deployment.require_active_epoch") as active, patch("deployment.require_registered_target") as registered,
+              patch("sys.stdout", new_callable=io.StringIO) as output):
             target_path.write_text(json.dumps({**self.approval, "signatures": []}))
             with self.assertRaisesRegex(SystemExit, "signing quorum"):
                 main()
             registered.assert_not_called()
             target_path.write_text(json.dumps(self.approval))
+            active.side_effect = ValueError("custody epoch is retired")
+            with self.assertRaisesRegex(SystemExit, "retired"):
+                main()
+            self.assertEqual(output.getvalue(), "")
+            active.side_effect = None
+            main()
+            self.assertEqual(json.loads(output.getvalue()), host_policy(self.manifest))
+            active.assert_called_with(self.trust, "5")
+            registered.assert_not_called()
+            argv[3] = "attestation-pins"
+            output.seek(0)
+            output.truncate()
             registered.side_effect = ValueError("target is unregistered")
             with self.assertRaisesRegex(SystemExit, "unregistered"):
                 main()
@@ -373,7 +387,7 @@ class TargetApprovalTests(unittest.TestCase):
             registered.side_effect = None
             main()
             registered.assert_called_with(self.trust, self.manifest, receipt_at=1)
-            self.assertEqual(json.loads(output.getvalue())["Statement"][0]["Resource"], self.manifest["wrappingKeys"])
+            self.assertEqual(set(json.loads(output.getvalue())), {"0", "1", "2", "3", "4"})
 
     def test_register_command_confirms_the_original_write_with_the_reviewed_artifacts(self):
         trust_path, target_path = self.build / "trust.json", self.build / "target.json"
@@ -406,7 +420,8 @@ class TargetApprovalTests(unittest.TestCase):
     def test_first_registration_rechecks_the_host_keys_and_approval_window(self):
         _, policies, _ = target(self.trust, self.approval, self.receipt, self.custodians, self.build)
         installed = dict(zip(self.manifest["wrappingKeys"], policies, strict=True))
-        profiles = {f"{slot:012d}": f"key-read-{slot}" for slot in range(1, 7)}
+        host_account = HOST.split(":")[4]
+        profiles = {**{f"{slot:012d}": f"key-read-{slot}" for slot in range(1, 7)}, host_account: "host-read"}
         now = self.manifest["expiresAt"] - 60
         writes = []
 
@@ -422,30 +437,34 @@ class TargetApprovalTests(unittest.TestCase):
         def register(**inspection):
             register_target(self.trust, self.approval, build=self.build, **inspection)
 
-        options = {"key_profiles": profiles, "host_profile": "host-read"}
+        options = {"key_profiles": profiles}
 
         with (patch("deployment.load_epoch_with_time", side_effect=self.load_epoch),
               patch("deployment.list_objects", return_value=[]),
               patch("deployment.require_active_epoch") as active,
               patch("deployment.require_profile_account") as identity,
+              patch("host.require_profile_account", side_effect=identity),
               patch("deployment.inspect_rsa_key", side_effect=inspect) as keys,
-              patch("deployment.require_host_state") as host,
+              patch("host.require_host_state") as host,
+              patch("host.aws") as iam,
               patch("deployment.require_registered_target") as registered,
               patch("deployment.time.time", side_effect=lambda: now),
               patch("deployment.write_once", side_effect=write)):
             with self.assertRaisesRegex(ValueError, "provide --custody-key-profiles"):
                 register()
-            with self.assertRaisesRegex(ValueError, "provide --host-inspection-profile"):
-                register(key_profiles=profiles)
             keys.assert_not_called()
+            with self.assertRaisesRegex(ValueError, "missing read-only inspection profile for host account"):
+                register(key_profiles={name: profile for name, profile in profiles.items() if name != host_account})
             account = f"{1:012d}"
             with self.assertRaisesRegex(ValueError, "missing read-only inspection profile"):
-                register(key_profiles={name: profile for name, profile in profiles.items() if name != account},
-                         host_profile="host-read")
+                register(key_profiles={name: profile for name, profile in profiles.items() if name != account})
             identity.side_effect = ValueError("wrong inspection account")
             with self.assertRaisesRegex(ValueError, "wrong inspection account"):
                 register(**options)
             identity.side_effect = None
+            policy = {"RoleName": HOST.rsplit("/", 1)[-1], "PolicyName": HOST_BOOTSTRAP_POLICY,
+                      "PolicyDocument": host_policy(self.manifest)}
+            iam.return_value = policy
             with patch.dict(installed, {self.manifest["wrappingKeys"][0]: {}}):
                 with self.assertRaisesRegex(ValueError, "installed wrapping key policy"):
                     register(**options)
@@ -453,6 +472,11 @@ class TargetApprovalTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "parent lost the approved role"):
                 register(**options)
             host.side_effect = None
+            for change in ({"PolicyDocument": {}}, {"RoleName": "other"}, {"PolicyName": "other"}):
+                iam.return_value = {**policy, **change}
+                with self.subTest(change=change), self.assertRaisesRegex(ValueError, "installed bootstrap policy"):
+                    register(**options)
+            iam.return_value = policy
             active.side_effect = ValueError("epoch is retired")
             with self.assertRaisesRegex(ValueError, "epoch is retired"):
                 register(**options)
@@ -475,11 +499,14 @@ class TargetApprovalTests(unittest.TestCase):
             for path, contents in ((trust_path, self.trust), (target_path, self.approval), (profiles_path, profiles)):
                 path.write_text(json.dumps(contents))
             with patch("sys.argv", ["deployment.py", str(trust_path), str(self.build), "register", str(target_path),
-                                    "--host-inspection-profile", "host-read", "--custody-key-profiles", str(profiles_path)]):
+                                    "--custody-key-profiles", str(profiles_path)]):
                 main()
             self.assertEqual(writes, [target_object_name(self.manifest)])
             self.assertCountEqual([request.args[0] for request in keys.call_args_list], self.manifest["wrappingKeys"])
-            self.assertCountEqual([request.args[2] for request in identity.call_args_list], [*profiles, HOST.split(":")[4]])
+            self.assertCountEqual([request.args[2] for request in identity.call_args_list], profiles)
+            iam.assert_called_with(REGION, "iam", "get-role-policy", [
+                "--role-name", HOST.rsplit("/", 1)[-1], "--policy-name", HOST_BOOTSTRAP_POLICY,
+            ], profile="host-read")
             registered.assert_called_once_with(self.trust, self.manifest, receipt_at=1, expected_version="written")
 
     def test_rejects_receipt_and_eif_substitution(self):

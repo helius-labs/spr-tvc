@@ -428,9 +428,9 @@ pinned history and excluded versions.
 2. Two approval signers independently check and sign the target manifest. It
    binds the canonical receipt, mode, EIF, configuration, measurements, parent
    account, EC2 region and instance ID, and six wrapping keys. Each signer uses
-   a read-only profile in the host account with `ec2:DescribeInstances` and
-   `iam:GetInstanceProfile`. The parent must be running on x86-64 with Nitro
-   Enclaves enabled. The IAM profile returned for the EC2 attachment must
+   a read-only profile in the host account with `ec2:DescribeInstances`,
+   `iam:GetInstanceProfile` and `iam:GetRolePolicy`. The parent must be running
+   on x86-64 with Nitro Enclaves enabled. The IAM profile returned for the EC2 attachment must
    have the same ARN and ID, and contain the role bound into PCR3.
    [IAM instance profile lookup](https://docs.aws.amazon.com/IAM/latest/APIReference/API_GetInstanceProfile.html)
 
@@ -451,17 +451,20 @@ pinned history and excluded versions.
      target-signed.json --review target-review.json \
      --host-inspection-profile "$host_read_profile" \
      --inspection-profiles "${inspection_profiles[@]}"
-   python3 "$nitro/deployment.py" trust.json "$build_dir" register target-signed.json \
-     --host-inspection-profile "$host_read_profile" --custody-key-profiles "$custody_key_profiles"
    python3 "$nitro/deployment.py" trust.json "$build_dir" host-policy target-signed.json > host-kms-policy.json
+   aws --profile "$host_admin_profile" iam put-role-policy --role-name "${host_role##*/}" --policy-name spr-nitro-bootstrap \
+     --policy-document file://host-kms-policy.json
+   python3 "$nitro/deployment.py" trust.json "$build_dir" register target-signed.json \
+     --custody-key-profiles "$custody_key_profiles"
    python3 "$nitro/deployment.py" trust.json "$build_dir" attestation-pins target-signed.json > pcrs.json
    ```
 
    Register with the dedicated ledger publisher more than 30 seconds before
-   the approval deadline. Before the first write, the publisher checks that
-   the exact EC2 parent still runs with the approved role and that all six
-   wrapping keys are enabled with their approved policies. Use the same
-   read-only AWS profiles used for signing. The ledger verifies that S3
+   the approval deadline. Before the first write, the publisher checks the
+   running parent, attached role, the exact installed `spr-nitro-bootstrap`
+   policy and all six enabled wrapping keys with their approved policies.
+   Include the host account and all six custody accounts in
+   `$custody_key_profiles`. The ledger verifies that S3
    recorded the first registration before expiry. It keeps the signed target
    and all six wrapping-key ARNs. Within an epoch, a release ID
    and PCR0–PCR4 identify one wrapping-key set. Each parent needs its own set.
@@ -470,10 +473,8 @@ pinned history and excluded versions.
    without replacing the registered target. Use [Share release](#share-release)
    to produce more than three wraps so a new boot can tolerate unavailable
    keys.
-3. Use a host role dedicated to the measured target. Install
-   `host-kms-policy.json` as an inline IAM policy on that role. Cross-account
-   KMS requires it in addition to the policies on the keys.
-   Archive the host policy with the approved target. Give the parent read
+3. Use a host role dedicated to the measured target. Archive the inline
+   IAM policy with the approved target. Give the parent read
    access to pinned versions of the EIF, signed target and wrapped shares.
    Record the SHA-256 of `target-signed.json` in the reviewed host deployment
    configuration. Copy it verbatim and place each wrapped share at
@@ -547,7 +548,9 @@ pinned history and excluded versions.
 
    Two custody approval signers then sign, and the ledger publisher commits
    the record within 24 hours of the replacement boot. Pass the same
-   account-to-profile JSON file used for payment activation. For each of the three
+   account-to-profile JSON file used for payment activation. Include the
+   replacement host account so the tools can verify its attached role and
+   installed bootstrap policy. For each of the three
    attested slots, STS checks that its profile belongs to the replacement
    custodian's account, then `kms:DescribeKey` and `kms:GetKeyPolicy` check
    that both keys are enabled and have their exact sealed policies. KMS only
@@ -884,11 +887,14 @@ retain three recoverable slots per target. Each slot needs its recovery and
 wrapping keys enabled with their approved sealed policies. The publisher and wallet pin
 verifier check the exact three slots in the target's attested boot. If a slot
 is unavailable, qualify a boot using three healthy slots before accepting
-new payments. Pass `--custody-key-profiles` with a JSON object mapping each
-custody account ID to a read-only AWS profile with `kms:DescribeKey` and
-`kms:GetKeyPolicy` on its recovery and wrapping keys. Include both rosters
-if the policy spans epochs with different custodians. A slot without a
-profile does not count toward quorum. `nitro-sign`, primary publication
+new payments. Pass `--custody-key-profiles` with a JSON object mapping AWS
+account IDs to read-only profiles. In the custody accounts, the profiles need
+`kms:DescribeKey` and `kms:GetKeyPolicy` on the recovery and wrapping keys.
+Include both rosters if the policy spans epochs with different custodians.
+A slot without a profile does not count toward quorum. Each target also
+needs its host account profile, with `ec2:DescribeInstances`,
+`iam:GetInstanceProfile` and `iam:GetRolePolicy`, to check the running parent
+and the installed `spr-nitro-bootstrap` policy. `nitro-sign`, primary publication
 and `--check-wallet-trust` also take `--source-profile` and
 `--replica-profile` for the two ledger accounts.
 Both buckets must have the exact policy generated from custody trust,

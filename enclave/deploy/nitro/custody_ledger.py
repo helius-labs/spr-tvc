@@ -16,6 +16,7 @@ from approval import (
     read_json, require_custody_key_profiles, require_inspection_profiles, require_kms_key, require_profile_account,
     sha256, signing_key, signing_sec1,
 )
+from host import require_bootstrap_access
 from kms_policy import acknowledgement_policy, boot_pins, key_policy, target_boot_pins, validate_custodian_roles, validate_scope
 from provenance import verify as verify_build
 from relay import custody_recovery_policy, inspect_rsa_key, prove_share, relay_pins, sealed_rsa_key, verify_relay_build
@@ -930,11 +931,8 @@ def require_payment_recovery_quorums(trust, target_slots, profiles):
         except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired):
             return False
 
-    with ThreadPoolExecutor(max_workers=min(len(expected), 24)) as workers:
-        verified_accounts = {account for account, valid in zip(accounts, workers.map(verify_account, accounts), strict=True)
-                             if valid}
-        available = {key for key, valid in zip(expected, workers.map(qualified, expected), strict=True) if valid}
-    for epoch, target, _, pairs, bootstrapped in target_slots:
+    def verify_target(entry):
+        epoch, target, _, pairs, bootstrapped = entry
         release = target["releaseId"]
         ready = {slot for slot, (recovery, wrapping) in enumerate(pairs, 1)
                  if recovery in available and wrapping in available}
@@ -942,6 +940,13 @@ def require_payment_recovery_quorums(trust, target_slots, profiles):
             raise ValueError(f"custody epoch {epoch} target {release} requires three enabled recovery and wrapping pairs with approved policies")
         if bootstrapped is not None and not ready.issuperset(bootstrapped):
             raise ValueError(f"custody epoch {epoch} target {release} has an unavailable attested bootstrap slot")
+        require_bootstrap_access(target, profiles.get(arn(ROLE_ARN, target["hostRole"])[1]))
+
+    with ThreadPoolExecutor(max_workers=min(len(expected), 24)) as workers:
+        verified_accounts = {account for account, valid in zip(accounts, workers.map(verify_account, accounts), strict=True)
+                             if valid}
+        available = {key for key, valid in zip(expected, workers.map(qualified, expected), strict=True) if valid}
+        list(workers.map(verify_target, target_slots))
 
 
 def check_release_policy(trust, document, custody_signer=None, *, source_profile=None, replica_profile=None,
@@ -1312,7 +1317,7 @@ def main():
     check = commands.add_parser("check-release-policy")
     check.add_argument("--source-profile")
     check.add_argument("--replica-profile")
-    check.add_argument("--custody-key-profiles", type=Path, help="JSON map from custody AWS account to read-only profile")
+    check.add_argument("--custody-key-profiles", type=Path, help="JSON map from custody and host accounts to read-only profiles")
     check.add_argument("--bootstrap-slots", help="JSON array of attested slot triples in policy target order")
     check.add_argument("candidate", type=Path)
     check.add_argument("--custody-signer", nargs=2, metavar=("KEY_ARN", "SEC1_HEX"))

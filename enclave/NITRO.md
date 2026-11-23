@@ -141,9 +141,10 @@ must fall between its predecessor and successor receipts. A serving registration
 must follow its receipt, and a retirement marker must follow both receipts and
 the replacement registration. The verifier allows equal S3 timestamps.
 Before writing a new target registration, the publisher verifies the running
-parent's approved role and the enabled state and sealed policies of all six
-wrapping keys. It checks that the epoch is still open and that the approval
-and its roster will remain valid through the write window. An exact retry
+parent's approved role, its installed cross-account bootstrap policy and the
+enabled state and sealed policies of all six wrapping keys. It checks that
+the epoch is still open and that the approval and its roster will remain
+valid through the write window. An exact retry
 verifies the stored record at its original write time and confirms the epoch
 is open. Retiring an approval or
 acknowledgement signing key leaves custody receipts verifiable offline.
@@ -206,8 +207,9 @@ bootstrap. Both publication buckets must serve the same signed policy file
 before and after attestation. A draft selects a registered boot whose
 registration is replicated when configured. For its three slots, inspection
 profiles in the replacement custody accounts verify that each recovery and
-wrapping key is enabled and has the expected sealed policy. The signers and
-publisher reattest that boot, check the publication order of the replacement's receipt and
+wrapping key is enabled and has the expected sealed policy. The replacement
+parent must still have its approved role and installed bootstrap policy. The
+signers and publisher reattest that boot and check the publication order of the replacement's receipt and
 registration, and recheck those keys. When a replica is pinned, they also
 verify that the receipt chain and the relevant old and replacement target
 registrations are replicated before closing the epoch. Mainnet requires this
@@ -321,8 +323,9 @@ check that every serving target has three distinct custody slots where both
 the recovery key and the target wrapping key are enabled and have their
 approved sealed policies. An inspection profile in the owning account reads
 the live KMS state and policy for each exact ARN in the receipt and
-registration. The primary publisher and wallet pin verifier also require
-the three attested slots to pass these checks.
+registration. They also verify the running parent's role and installed
+bootstrap policy. The primary publisher and wallet pin verifier require the
+three attested slots to pass the key checks.
 Recovery-only publication can preserve access through a running enclave during
 a key outage. Two of the three independently pinned custody approval
 keys also sign the entire policy. Their digest uses
