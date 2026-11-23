@@ -45,6 +45,8 @@ it("uses the service when both registry reads succeed with no record", async () 
   expect(lookup).toHaveBeenCalledTimes(2);
   expect(lookup.mock.calls[1]).toEqual(lookup.mock.calls[0]);
   expect(service.address).toHaveBeenCalledWith(recipient, lookup.mock.calls[0]?.[1]);
+  expect(service.address).toHaveBeenCalledTimes(2);
+  expect(service.address.mock.invocationCallOrder[1]).toBeGreaterThan(genesis.mock.invocationCallOrder[1]!);
 });
 
 it("uses a registration that appears during the service lookup", async () => {
@@ -111,6 +113,29 @@ it("propagates a failed genesis RPC without requesting recipient keys", async ()
   genesis.mockRejectedValueOnce(failure);
   await expect(resolvePaymentAddress(request)).rejects.toBe(failure);
   expect(service.address).not.toHaveBeenCalled();
+});
+
+it("refuses a fallback if the chain changes during the registry recheck", async () => {
+  lookup.mockResolvedValue(undefined);
+  genesis.mockResolvedValueOnce(service.genesisHash).mockResolvedValueOnce(genesisHashForNetwork("mainnet"));
+  await expect(resolvePaymentAddress(request)).rejects.toMatchObject({ code: "PaymentNetworkMismatch" });
+  expect(service.address).toHaveBeenCalledOnce();
+});
+
+it("refuses a fallback when payment policy changes during the final chain check", async () => {
+  const recoveryOnly = new Error("recovery only");
+  lookup.mockResolvedValue(undefined);
+  genesis.mockResolvedValueOnce(service.genesisHash).mockImplementationOnce(async () => {
+    service.address.mockRejectedValueOnce(recoveryOnly);
+    return service.genesisHash;
+  });
+  await expect(resolvePaymentAddress(request)).rejects.toBe(recoveryOnly);
+});
+
+it("refuses a changed service address after the final chain check", async () => {
+  lookup.mockResolvedValue(undefined);
+  service.address.mockResolvedValueOnce(fallbackAddress).mockResolvedValueOnce(registryAddress);
+  await expect(resolvePaymentAddress(request)).rejects.toMatchObject({ code: "ReleaseBindingMismatch" });
 });
 
 it("refuses to attach local fixture keys to a public cluster", () => {
