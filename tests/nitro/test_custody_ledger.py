@@ -725,6 +725,76 @@ class CustodyLedgerTests(unittest.TestCase):
         self.assertEqual(load_epoch(self.trust, "1")[1], previous)
         self.assertEqual(load_epoch(self.trust, "2")[1]["custody"]["epoch"], "2")
 
+    def test_retired_roster_cannot_sign_acknowledge_or_publish_a_receipt(self):
+        first = self.sign(self.document(1))
+        publish(self.trust, first)
+        successor, _ = self.rotation_document(record(self.trust, first)[0])
+        receipt, _ = record(self.trust, successor)
+        receipt["packages"] = [{"recipientSha256": f"{index:02x}" * 32} for index in range(1, 7)]
+        successor = self.sign(successor)
+        cutoff = self.now + 60
+        self.trust["approvalKeys"].append(schedule("3", 9, cutoff))
+        stored = dict(self.objects)
+        self.now = cutoff - 30
+        with self.assertRaisesRegex(ValueError, "receipt approval roster has retired"):
+            publish(self.trust, successor)
+        self.now = cutoff
+        with self.assertRaisesRegex(ValueError, "receipt approval roster has retired"):
+            publish(self.trust, successor)
+        self.assertEqual(self.objects, stored)
+
+        build, review = pathlib.Path("unused-build"), pathlib.Path("unused-review.json")
+        with (patch("custody_ledger.verify_reviewed_ceremony"), patch("custody_ledger.check_custody_roster"),
+              patch("custody_ledger.add_approval") as sign_approval,
+              patch("custody_ledger.prove_share") as prove_share):
+            with self.assertRaisesRegex(ValueError, "receipt approval roster has retired"):
+                sign_epoch(self.trust, successor, key(7, 7), build, review)
+            with self.assertRaisesRegex(ValueError, "receipt approval roster has retired"):
+                acknowledge(self.trust, successor, 1, 1, build, review)
+        sign_approval.assert_not_called()
+        prove_share.assert_not_called()
+
+    def test_receipt_history_uses_its_recorded_publication_time(self):
+        first = self.sign(self.document(1))
+        publish(self.trust, first)
+        cutoff = self.now + 60
+        self.trust["approvalKeys"].append(schedule("2", 9, cutoff))
+        self.now = cutoff
+        name = f"spr-custody/devnet/{DOMAIN}/1.json"
+        original = self.objects[name], self.timestamps[name]
+        _, metadata = read_stored_object(self.trust, "1.json")
+        version = metadata["VersionId"]
+        publish(self.trust, first)
+        self.assertEqual((self.objects[name], self.timestamps[name]), original)
+        self.assertEqual(load_epoch(self.trust, "1")[0], first)
+        with self.assertRaisesRegex(ValueError, "cannot exclude"):
+            require_uncommitted_record(self.trust, "1.json", version)
+
+        out = BytesIO()
+        archive(self.trust, "1", out)
+        entry = json.loads(out.getvalue())
+        published_at = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
+        with patch.dict(self.timestamps, {name: published_at}):
+            with self.assertRaisesRegex(ValueError, "receipt approval roster has retired"):
+                load_epoch(self.trust, "1")
+            require_uncommitted_record(self.trust, "1.json", version)
+        entry["publishedAt"] = published_at
+        payload = canonical(entry) + b"\n"
+        with self.assertRaisesRegex(ValueError, "receipt approval roster has retired"):
+            verify_archive(self.trust, "1", BytesIO(payload), hashlib.sha256(payload).hexdigest())
+        self.archive_capture_verifier.assert_not_called()
+
+    def test_incoming_receipt_roster_can_commission_before_cutover(self):
+        first = self.sign(self.document(1))
+        publish(self.trust, first)
+        cutoff = self.now + 120
+        self.trust["approvalKeys"].append(schedule("2", 9, cutoff))
+        incoming, _ = self.rotation_document(record(self.trust, first)[0])
+        publish(self.trust, self.sign(incoming))
+        self.assertEqual(load_epoch(self.trust, "2")[0], incoming)
+        self.now = cutoff
+        self.assertEqual(load_epoch(self.trust, "2")[0], incoming)
+
     def test_custody_approval_keys_cannot_also_acknowledge_shares(self):
         document = self.document(1)
         member = document["authorization"]["manifest"]["custodians"][0]["acknowledgementKey"]
@@ -747,7 +817,7 @@ class CustodyLedgerTests(unittest.TestCase):
     def test_archive_verifies_rotation_history_under_the_historical_rosters(self):
         first = self.sign(self.document(1))
         publish(self.trust, first)
-        self.rotate_approvals("2")
+        self.trust["approvalKeys"].append(schedule("2", 9, self.now + 60))
         second, approval = self.rotation_document(record(self.trust, first)[0])
         publish(self.trust, self.sign(second))
         prefix = f"spr-custody/devnet/{DOMAIN}/"

@@ -661,8 +661,9 @@ def read_epoch_record(trust, epoch, **options):
     receipt, custodians = record(trust, document)
     if receipt["custody"]["epoch"] != epoch:
         raise ValueError("canonical custody receipt belongs to another epoch")
-    check_commit(trust, document, receipt, custodians)
-    return document, receipt, custodians, publication_time(metadata)
+    published_at = publication_time(metadata)
+    check_commit(trust, document, receipt, custodians, published_at=published_at)
+    return document, receipt, custodians, published_at
 
 
 def load_epoch_with_time(trust, epoch, *, expected_version=None, **options):
@@ -680,8 +681,18 @@ def acknowledgements(document):
     return {"manifest": document["authorization"]["manifest"], "signatures": document["acknowledgements"]}
 
 
-def check_commit(trust, document, receipt, custodians):
-    check_approvals(approval_keys(trust, receipt["custody"]["epoch"]), LABEL, document["authorization"])
+def receipt_approval_keys(trust, epoch, *, at=None):
+    roster = approval_roster(trust, epoch=epoch)
+    if at is not None:
+        active = approval_roster(trust, at=at)
+        if epoch_number(roster["fromEpoch"]) < epoch_number(active["fromEpoch"]):
+            raise ValueError("custody receipt approval roster has retired")
+    return roster["keys"]
+
+
+def check_commit(trust, document, receipt, custodians, *, published_at=None):
+    keys = receipt_approval_keys(trust, receipt["custody"]["epoch"], at=published_at)
+    check_approvals(keys, LABEL, document["authorization"])
     check_approvals([custodian["acknowledgementKey"] for custodian in custodians],
                     ACKNOWLEDGEMENT, acknowledgements(document), minimum=6)
 
@@ -1127,7 +1138,7 @@ def check_custody_history_entry(trust, epoch, entry, previous):
     receipt, custodians = record(trust, document)
     if receipt["custody"]["epoch"] != epoch:
         raise ValueError("custody history epochs must be consecutive from genesis")
-    check_commit(trust, document, receipt, custodians)
+    check_commit(trust, document, receipt, custodians, published_at=published_at)
     manifest = document["authorization"]["manifest"]
     if previous is None:
         if rotation is not None:
@@ -1226,12 +1237,13 @@ def verify_reviewed_ceremony(manifest, target, build, review):
     verify_ceremony_capture(capture)
 
 
-def require_open_ceremony(trust, document, receipt, observed_records):
+def require_open_ceremony(trust, document, receipt, observed_records, *, remaining=0):
     check_previous(trust, document, receipt, observed_records=observed_records)
     epoch = receipt["custody"]["epoch"]
     require_active_epoch(trust, epoch)
     if epoch != "1":
         require_active_epoch(trust, str(epoch_number(epoch) - 1))
+    receipt_approval_keys(trust, epoch, at=time.time() + remaining)
 
 
 def review_ceremony_for_signing(trust, document, receipt, build, review):
@@ -1287,6 +1299,7 @@ def acknowledge(trust, document, index, relay_port, build, review, *, output=Non
 
 def publish(trust, document, *, key_profiles=None):
     receipt, custodians = record(trust, document)
+    # An existing receipt is confirmed against its original S3 publication time.
     check_commit(trust, document, receipt, custodians)
     observed_records = {}
     check_previous(trust, document, receipt, observed_records=observed_records)
@@ -1301,7 +1314,7 @@ def publish(trust, document, *, key_profiles=None):
 
     def before_write():
         require_receipt_keys(trust, epoch, custodians, key_profiles)
-        require_open_ceremony(trust, document, receipt, observed_records)
+        require_open_ceremony(trust, document, receipt, observed_records, remaining=LEDGER_WRITE_MARGIN_SECONDS)
 
     write_once(trust, ledger_object(trust, epoch), document, confirm, before_write=before_write)
 

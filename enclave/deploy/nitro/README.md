@@ -357,10 +357,13 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    To change custody approval keys, append a schedule entry for the first
    uncommitted epoch and set a cutover time. Distribute the updated trust file
    independently before cutover. Custody receipts use the roster for their
-   epoch. Target and retirement approvals use the roster active when S3
-   committed the record. After slot inspection, the tools leave 30 seconds
-   before an approval deadline or roster cutover to submit a target or
-   retirement write. Re-sign unpublished targets and requalify and sign
+   epoch. The incoming roster can publish its assigned receipts before
+   cutover. The outgoing roster stops signing and acknowledging receipts at
+   cutover, and S3 must commit its receipts before then. Target and retirement
+   approvals use the roster active when S3 committed the record. After slot
+   inspection, the tools leave 30 seconds before the applicable deadline or
+   roster cutover to submit a new receipt, target or retirement write.
+   Re-sign unpublished targets and requalify and sign
    unpublished retirements under the new roster after cutover. If a target
    registration response was lost, rerun `register` with the original signed
    file and build. The command confirms an exact recorded approval under

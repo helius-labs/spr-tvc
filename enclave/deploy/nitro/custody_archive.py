@@ -206,7 +206,7 @@ def require_uncommitted_record(trust, name, version, **options):
     try:
         if label == LABEL:
             receipt, custodians = record(trust, document)
-            check_commit(trust, document, receipt, custodians)
+            check_commit(trust, document, receipt, custodians, published_at=published_at)
         elif label == TARGET_APPROVAL:
             verify_target_approval(trust, document, at=published_at)
         else:

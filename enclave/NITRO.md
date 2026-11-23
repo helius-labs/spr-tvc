@@ -140,9 +140,13 @@ each recovery and acknowledgement key through a read-only profile in the
 key-owning account. For a rotation, it rechecks the same predecessor and
 registration S3 versions, write times and bytes after key inspection and
 during readback. It authenticates the committed, versioned record before
-reporting success, including after a lost S3 response. Historical receipts
-verify with the public keys pinned for their epoch. Target approvals and retirement records
-verify under the roster active at the original S3 write. A rotation registration
+reporting success, including after a lost S3 response. Receipt signatures use
+the public keys pinned for their epoch. The original S3 write must precede
+that roster's retirement. The incoming roster can publish receipts for its
+assigned epochs before cutover. Signing and acknowledgement stop at cutover for
+the outgoing roster. New receipt writes leave a 30-second margin before
+retirement. Target approvals and retirement records verify under the roster
+active at the original S3 write. A rotation registration
 must fall between its predecessor and successor receipts. A serving registration
 must follow its receipt, and a retirement marker must follow both receipts and
 the replacement registration. The verifier allows equal S3 timestamps.
