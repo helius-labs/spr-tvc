@@ -127,11 +127,11 @@ def checkpoint(trust, expected, *, excluded=None, **options):
     if expected is not None and actual != expected:
         raise ValueError("custody ledger differs from the independently pinned checkpoint")
     verify_ledger_records(trust, names, checkpoint_records=records, **options)
+    require_frozen_ledger(trust, **options)
     if versions != list_ledger_versions(trust, **options):
         raise ValueError("custody ledger changed during checkpoint")
     if destination is not None and versions != list_ledger_versions(destination, **options):
         raise ValueError("pinned replica versions differ from the custody ledger")
-    require_frozen_ledger(trust, **options)
     return actual, {name: versions[name] for name in names}
 
 
@@ -253,6 +253,12 @@ def require_unchanged_versions(trust, versions, *, profile):
         raise ValueError(f"custody bucket {trust['ledger']['bucket']} changed after verification")
 
 
+def confirm_repair_source(trust, manifest, versions, profile):
+    require_frozen_ledger(trust, profile=profile)
+    require_unchanged_versions(trust, {**versions, **manifest["excluded"]}, profile=profile)
+    require_current_repair(trust, manifest)
+
+
 def repair_source(trust, promoted, expected, plan, profile, *, minimum):
     original, bindings = repair_bindings(trust, promoted, expected)
     fields(plan, "manifest", "signatures")
@@ -274,9 +280,7 @@ def repair_source(trust, promoted, expected, plan, profile, *, minimum):
     _, versions = checkpoint(original, expected, excluded=excluded, profile=profile)
     for name, version in excluded.items():
         require_uncommitted_record(original, name, version, profile=profile)
-    require_unchanged_versions(original, {**versions, **excluded}, profile=profile)
-    require_frozen_ledger(original, profile=profile)
-    require_current_repair(trust, manifest)
+    confirm_repair_source(original, manifest, versions, profile)
     return versions
 
 
@@ -302,9 +306,9 @@ def draft_repair(trust, promoted, expected, names, profile):
 
 
 def sign_repair(trust, promoted, expected, plan, profile, key):
-    repair_source(trust, promoted, expected, plan, profile, minimum=0)
+    versions = repair_source(trust, promoted, expected, plan, profile, minimum=0)
     signed = add_approval(approval_keys(trust), REPAIR_APPROVAL, plan, key)
-    require_current_repair(trust, plan["manifest"])
+    confirm_repair_source(trust, plan["manifest"], versions, profile)
     return signed
 
 
@@ -315,9 +319,7 @@ def repair_transfer(trust, promoted, expected, plan, source_profile, recovery_pr
     transfer = {**trust, "ledgerReplica": destination}
     require_pinned_replication(transfer, profile=source_profile)
     check_recovery_bucket(transfer, destination, recovery_profile)
-    require_unchanged_versions(trust, {**versions, **plan["manifest"]["excluded"]}, profile=source_profile)
-    require_frozen_ledger(trust, profile=source_profile)
-    require_current_repair(trust, plan["manifest"])
+    confirm_repair_source(trust, plan["manifest"], versions, source_profile)
     csv.writer(output, lineterminator="\n").writerows(
         (source["bucket"], quote(prefix + name), version) for name, version in versions.items()
     )
@@ -345,13 +347,14 @@ def verify_promotion(trust, promoted, expected, source_profile, recovery_profile
         preserved = repair_source(trust, promoted, expected, repair, source_profile, minimum=2)
         original_versions = {**preserved, **repair["manifest"]["excluded"]}
     require_pinned_replication(promoted, profile=recovery_profile)
+    if next_replica is not None:
+        check_recovery_bucket(promoted, next_replica, replica_profile)
+    require_frozen_ledger(promoted, profile=recovery_profile)
+    require_frozen_ledger(original, profile=source_profile)
     require_unchanged_versions(original, original_versions, profile=source_profile)
     require_unchanged_versions(promoted, recovered_versions, profile=recovery_profile)
     if next_replica is not None:
         require_unchanged_versions(replica_trust(promoted, next_replica), recovered_versions, profile=recovery_profile)
-        check_recovery_bucket(promoted, next_replica, replica_profile)
-    require_frozen_ledger(promoted, profile=recovery_profile)
-    require_frozen_ledger(original, profile=source_profile)
     if repair is not None:
         require_current_repair(trust, repair["manifest"])
     return expected

@@ -383,6 +383,16 @@ class LedgerReplicationTests(unittest.TestCase):
             with patch.dict(records[new_replica["bucket"]], {"retired/2.json": (body, metadata)}):
                 with self.assertRaisesRegex(ValueError, "pinned replica versions differ"):
                     ledger_checkpoint(promoted)
+
+            def late_replication(_trust):
+                if check_fence.call_count == 2:
+                    records[new_replica["bucket"]]["retired/2.json"] = (body, metadata)
+
+            with (patch.dict(records[new_replica["bucket"]]),
+                  patch("custody_archive.require_frozen_ledger", side_effect=late_replication) as check_fence):
+                with self.assertRaisesRegex(ValueError, "pinned replica versions differ"):
+                    ledger_checkpoint(promoted, pin)
+
             with patch("custody_archive.list_ledger_versions", return_value={
                 **versions(promoted), "1.json": "changed-after-list",
             }):
@@ -530,6 +540,17 @@ class LedgerReplicationTests(unittest.TestCase):
                       patch("custody_archive.require_pinned_replication", side_effect=append_version)):
                     with self.assertRaisesRegex(ValueError, f"custody bucket {bucket} changed after verification"):
                         verify()
+
+            def replicate_during_policy_check(*args):
+                check_recovery_bucket(*args)
+                bucket = new_replica["bucket"]
+                names[bucket] = [*names[bucket], "retired/2.json"]
+
+            with (patch.dict(names),
+                  patch("custody_archive.check_recovery_bucket", side_effect=replicate_during_policy_check)):
+                with self.assertRaisesRegex(ValueError, "custody bucket custody-replacement changed after verification"):
+                    verify()
+
             with patch.dict(replication, {}, clear=True):
                 with self.assertRaisesRegex(ValueError, "does not match the pinned ledger replica"):
                     verify()

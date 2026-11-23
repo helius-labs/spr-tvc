@@ -283,7 +283,8 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    `--frozen --check-installed`. Keep that policy in place while recording and
    comparing checkpoints. Before and after reading the records, the
    checkpoint command verifies the write deny, versioning, bucket ownership,
-   all public access blocks and absence of lifecycle rules.
+   all public access blocks and absence of lifecycle rules. It then relists
+   source and replica versions before printing the digest.
    [S3 consistency model](https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html)
 
    Include the inspection role from the bucket owner's account in the reader
@@ -343,9 +344,9 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    The verifier matches both frozen buckets against the independently retained
    checkpoint. It verifies the receipt chain, target registrations and
    retirement proofs using the exact checkpointed records. After verifying the
-   history it rechecks the replication rule, each bucket's object versions,
-   the new replica's protections, and the write denies on the original and
-   recovered buckets. After it succeeds, install and verify the writable
+   history it rechecks the replication rule, the new replica's protections,
+   and the write denies on the original and recovered buckets. It then relists
+   every bucket's object versions. After it succeeds, install and verify the writable
    policy on the recovered bucket and distribute the recovered trust file. While the original bucket is
    unreachable or its write deny is unverified, keep custody changes suspended.
 
@@ -383,7 +384,9 @@ preserves a receipt with its approval quorum and all six valid custodian
 acknowledgements, a target approved at its publication time, and a retirement
 with its approval quorum and three valid replacement proofs. Repair also
 stops if a replacement receipt cannot be read or the signature verifier
-returns an error instead of a definite result.
+returns an error instead of a definite result. After KMS signs, the command
+rechecks the source freeze, retained and excluded versions, and the approval
+deadline and roster before returning the signature.
 
 ```sh
 python3 "$nitro/custody_archive.py" trust.json draft-repair recovered-trust.json excluded-records.json \

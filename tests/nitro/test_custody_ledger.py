@@ -1061,6 +1061,16 @@ class CustodyLedgerTests(unittest.TestCase):
             self.assertEqual(plan["manifest"]["excluded"], {
                 name: hashlib.sha256((prefix + name).encode()).hexdigest() for name in exclusions
             })
+
+            def sign_after_excluded_version_changes(_keys, label, candidate, key_arn):
+                self.versions[bad_key] = "changed-during-signing"
+                return {**candidate, "signatures": [sign(label, candidate["manifest"], key_arn)]}
+
+            with (patch.dict(self.versions),
+                  patch("custody_archive.add_approval", side_effect=sign_after_excluded_version_changes)):
+                with self.assertRaisesRegex(ValueError, "custody bucket custody-journal changed after verification"):
+                    sign_repair(original, recovered, pin, plan, "source-read", approval_keys(original)[0]["keyArn"])
+
             for signer in approval_keys(original)[:2]:
                 plan = sign_repair(original, recovered, pin, plan, "source-read", signer["keyArn"])
             self.assertEqual(len(plan["signatures"]), 2)
