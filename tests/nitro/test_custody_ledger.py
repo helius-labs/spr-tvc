@@ -675,14 +675,12 @@ class CustodyLedgerTests(unittest.TestCase):
         document = self.sign(rotation)
         output = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory())) / "signed.json"
         build, review = pathlib.Path("build"), pathlib.Path("ceremony-review.json")
-        write_bytes = pathlib.Path.write_bytes
+        fsync = os.fsync
 
-        def change_while_staging(path, data):
-            size = write_bytes(path, data)
-            if path.name == output.name:
-                self.assertFalse(output.exists())
-                self.versions[f"spr-custody/devnet/{DOMAIN}/1.json"] = "changed-predecessor"
-            return size
+        def change_while_staging(fd):
+            fsync(fd)
+            self.assertFalse(output.exists())
+            self.versions[f"spr-custody/devnet/{DOMAIN}/1.json"] = "changed-predecessor"
 
         with (patch("custody_ledger.verify_reviewed_ceremony"),
               patch("custody_ledger.check_custody_roster"),
@@ -693,7 +691,7 @@ class CustodyLedgerTests(unittest.TestCase):
                 lambda: sign_epoch(self.trust, document, key(8, 7), build, review, output=output),
                 lambda: acknowledge(self.trust, document, 1, 7443, build, review, output=output),
             ):
-                with (patch.dict(self.versions), patch.object(pathlib.Path, "write_bytes", change_while_staging),
+                with (patch.dict(self.versions), patch("approval.os.fsync", side_effect=change_while_staging),
                       self.assertRaisesRegex(ValueError, "changed during verification")):
                     operation()
                 self.assertFalse(output.exists())
