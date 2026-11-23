@@ -69,5 +69,6 @@ fi
         --sbf-program "${registry:?missing user registry program ID}" target/deploy/spr_user_registry.so \
         -- --deactivate-feature B8JJXCy5amZyWG9r7EnUYLwzXSXTxG7GZ1qZ1qggo83g
 )
-solana airdrop 10 "$(solana address --keypair "$TVC_SOLANA_KEYPAIR_PATH")" --url "$ZOLANA_ENDPOINT" >/dev/null
+solana airdrop 10 "$(solana address --keypair "$TVC_SOLANA_KEYPAIR_PATH")" \
+    --url "$ZOLANA_ENDPOINT" --commitment finalized >/dev/null
 "$@"

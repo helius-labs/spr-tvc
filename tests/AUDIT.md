@@ -283,6 +283,7 @@ Scope includes the native enclave, the common owner-signature and note-opening c
 | N-275 | The devnet canary could start retirement after confirmation and did not reconcile the source wallet after sweeping. | Wait for Solana finality, retain the exact transaction ID on an ambiguous send, and sync both wallets through the sweep slot. [Rehearsal tests](../example/tests/setup.test.ts) · SPR-NITRO-116 |
 | N-276 | The seed cutover canary checked the stop through a client configured with new recovery-only pins. | Require the original payment client to observe both signed heads, reject payment lookup, and persist the recovery-only checkpoint. [Rehearsal tests](../example/tests/nitro.test.ts) · SPR-NITRO-116 |
 | N-277 | The wallet pinned older Intel TDX quote verifiers for the prover. The TypeScript verifier lacked module appraisal checks present in Rust. Both versions predated tighter collateral issuer checks and certificate parsing bounds. | Upgrade the Rust and TypeScript wallet SDKs to Phala 0.7.1. Keep the wallet's signed TCB allowlist in force. [Wallet PR](https://github.com/helius-labs/privacy-rings/pull/652) · [Module and parsing fixes](https://github.com/Phala-Network/dcap-qvl/releases/tag/v0.7.0) · [Issuer check](https://github.com/Phala-Network/dcap-qvl/releases/tag/v0.7.1) · SPR-NITRO-117 |
+| N-278 | The service lifecycle used the published wallet SDK, and the guarded wallet lifecycle used an in-process recipient resolver. | Install both packed SDKs in an isolated consumer and exercise the signed registry assertion with the standalone loopback service. Wait for the payer's airdrop to finalize before the test uses finalized preflight. [Packed SDK lifecycle](guarded-payment.mts) · SPR-NITRO-118 |
 
 ## Remaining qualification and review
 
@@ -303,6 +304,11 @@ environment because it allowed administrator bypass. GitHub listed one
 individual reviewer. Devnet still reported deployment slot `520179445` for
 the registry. The wallet's live Nitro prover proof passed, and the Rust and
 TypeScript TDX verifiers passed their recorded quote tests.
+
+The packed SDK lifecycle ran on Agave 4.2.2 with the wallet built at
+[`95cdbc883`](https://github.com/helius-labs/privacy-rings/commit/95cdbc883536e4fc16b3da8fba8c470d1615bf93)
+and the standalone loopback service at `2f7aa34`. The test passed through
+finalized recovery and sweep. Live Nitro qualification remains in Q-09.
 
 ## Browser checkpoint rehearsal
 

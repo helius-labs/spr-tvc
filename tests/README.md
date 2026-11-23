@@ -15,6 +15,24 @@ recipient then registers wallet-local keys, opens the earlier note with the
 service, and sweeps it. The payer funds the transactions and the recipient
 keeps no public SOL. Pass a port offset to run another Solana localnet.
 
+## Guarded payments with packed SDKs
+
+Set `wallet` to a Privacy Rings checkout with the guarded payment SDK and
+registry program. Install its npm dependencies and run `just setup` here.
+
+```sh
+wallet="$(cd ../zolana && pwd)"
+artifacts="$(mktemp -d)"
+(cd "$wallet/sdk-libs/ts" && npm pack --workspaces=false --pack-destination "$artifacts")
+ZOLANA_DIR="$wallet" bash tests/guarded-payment.sh "$artifacts"/heliuslabs-spr-*.tgz
+```
+
+The test installs both tarballs together, type-checks the consumer, and
+starts a local validator and the standalone loopback service. It checks the
+signed registry assertion, pays an unfunded recipient, rejects a second
+payment when the recipient registers during signing, then recovers and
+sweeps the first note. Both sides of the sweep are checked at its finalized slot.
+
 ## Live Nitro upgrade
 
 For an on-chain rehearsal, start with a canonical devnet policy containing
