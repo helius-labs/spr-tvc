@@ -839,8 +839,11 @@ Recovery-only activation can proceed during a key or replica inspection outage
 while the required records remain readable.
 [Cross-account KMS permissions](https://docs.aws.amazon.com/kms/latest/developerguide/key-policy-modifying-external-accounts.html) · [S3 bucket policy permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetBucketPolicy.html)
 Publish from the first listed bucket's AWS account, then mirror the exact signed
-file from the second account. A new activation requires the same signed
-predecessor file at both buckets. Sign a new revision to change the primary's
+file from the second account. After a write attempt, the publisher reads the
+current version and signed bytes together. It requires the exact file and
+matches the version from the write response when available. A new activation
+requires the same signed predecessor file at both buckets. Sign a new
+revision to change the primary's
 signatures. The mirror can repair its copy at the same revision if the
 primary's file retains every release and custody signer already on the mirror.
 If the mirror is behind during an outage, rerun the mirror command with the

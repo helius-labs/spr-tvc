@@ -27,6 +27,7 @@ const MAX_CUSTODY_TRUST_BYTES = 2 * MAX_BYTES;
 const WRITE_MARGIN_MS = 30_000n;
 const custodyLedger = fileURLToPath(new URL("../enclave/deploy/nitro/custody_ledger.py", import.meta.url));
 type Run = (command: string, args: string[], timeout: number) => Promise<{ stdout: string }>;
+type PolicyObject = (operation: string, args: readonly string[]) => Promise<{ stdout: string }>;
 const runCommand: Run = (command, args, timeout) => execute(command, args, {
   timeout, maxBuffer: 64 * 1024,
   env: { ...process.env, AWS_IGNORE_CONFIGURED_ENDPOINT_URLS: "true" },
@@ -86,6 +87,52 @@ function publicationStorage({ bucket, region, account }: ReturnType<typeof publi
 function etag(value: unknown): string {
   if (typeof value !== "string" || !/^"[^"\s]{1,128}"$/.test(value)) throw new Error("invalid S3 revision");
   return value;
+}
+
+function versionId(value: unknown): string {
+  if (typeof value !== "string" || value === "null" || !/^[!-~]{1,1024}$/.test(value)) {
+    throw new Error("expected an original S3 policy version");
+  }
+  return value;
+}
+
+async function readPolicyHead(call: PolicyObject, path: string) {
+  await rm(path, { force: true });
+  const { stdout } = await call("get-object", ["--range", `bytes=0-${MAX_BYTES}`, path]);
+  const { ETag, VersionId } = parseStrictJson<{ ETag?: unknown; VersionId?: unknown }>(stdout);
+  return { etag: ETag, version: VersionId, text: await readBoundedDocument(path, MAX_BYTES) };
+}
+
+async function writePolicyHead(
+  call: PolicyObject, precondition: string[], candidate: string, readback: string, text: string, previousVersion: unknown,
+) {
+  let acknowledgedVersion: string | undefined;
+  let writeError: unknown;
+  try {
+    const { stdout } = await call("put-object", [...precondition, "--content-type", "application/json",
+      "--cache-control", "no-store", "--body", candidate]);
+    acknowledgedVersion = versionId(parseStrictJson<{ VersionId?: unknown }>(stdout).VersionId);
+  } catch (error) {
+    writeError = error;
+  }
+  let current: Awaited<ReturnType<typeof readPolicyHead>>;
+  let currentVersion: string;
+  try {
+    current = await readPolicyHead(call, readback);
+    currentVersion = versionId(current.version);
+  } catch (readError) {
+    if (writeError === undefined) throw readError;
+    throw new AggregateError([writeError, readError],
+      `policy write could not be confirmed. Write failed with ${writeError}. Readback failed with ${readError}`,
+      { cause: readError });
+  }
+  if (current.text !== text) {
+    if (writeError !== undefined) throw writeError;
+    throw new Error("policy write did not persist the expected signed bytes");
+  }
+  if (currentVersion === previousVersion || (acknowledgedVersion !== undefined && currentVersion !== acknowledgedVersion)) {
+    throw new Error("policy write did not persist the expected S3 version");
+  }
 }
 
 function publicationUnavailable(error: unknown): boolean {
@@ -310,12 +357,7 @@ export async function publish(
 
   const storage = publicationStorage(publication, run);
   const call = (operation: string, args: readonly string[]) => storage(operation, ["--key", key, ...args]);
-
-  async function readHead() {
-    const { stdout } = await call("get-object", ["--range", `bytes=0-${MAX_BYTES}`, current]);
-    const { ETag } = JSON.parse(stdout) as { ETag: string };
-    return { etag: etag(ETag), text: await readBoundedDocument(current, MAX_BYTES) };
-  }
+  const readHead = () => readPolicyHead(call, current);
 
   try {
     await writeFile(candidate, text, { mode: 0o600, flag: "wx" });
@@ -325,7 +367,10 @@ export async function publish(
       // If the mirror has no readable genesis, S3 must still enforce creation only.
       head = await readHead().catch(() => undefined);
     }
-    if (head?.text === text) return;
+    if (head?.text === text) {
+      versionId(head.version);
+      return;
+    }
     const mirror = !isSecond && head && policy.action === "revoke" ? await readPeer(true) : undefined;
     const revocationWitness = primary !== undefined ? "primary" : mirror !== undefined && mirror !== text ? { mirror } : undefined;
     if (!nextNitroPublication(verified, head?.text, trust, emergencyFrom, revocationWitness)) {
@@ -371,16 +416,8 @@ export async function publish(
     }
     requireCustodyWriteWindow(confirmedCutover, beforeWrite);
     requireFreshProbes(probes, beforeWrite, Number(WRITE_MARGIN_MS));
-    const precondition = head ? ["--if-match", head.etag] : ["--if-none-match", "*"];
-    try {
-      await call("put-object", [...precondition, "--content-type", "application/json", "--cache-control", "no-store", "--body", candidate]);
-    } catch (writeError) {
-      const observed = await readHead().catch((readError: unknown) => {
-        throw new Error(`policy write could not be confirmed. Write failed with ${writeError}. Readback failed with ${readError}`,
-          { cause: new AggregateError([writeError, readError]) });
-      });
-      if (observed.text !== text) throw writeError;
-    }
+    const precondition = head ? ["--if-match", etag(head.etag)] : ["--if-none-match", "*"];
+    await writePolicyHead(call, precondition, candidate, current, text, head?.version);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -402,13 +439,6 @@ async function pinnedPublication(trust: NitroTrust) {
 }
 
 type StoredVersion = { VersionId: string; Size: number };
-
-function versionId(value: unknown): string {
-  if (typeof value !== "string" || value === "null" || !/^[!-~]{1,1024}$/.test(value)) {
-    throw new Error("expected an original S3 policy version");
-  }
-  return value;
-}
 
 /** Restore the exact retained policy in one bucket using the other bucket as witness. */
 export async function restorePublication(trust: NitroTrust, name: string, retainedVersion: string, { run = runCommand }: Pick<PublicationOptions, "run"> = {}) {
@@ -510,29 +540,8 @@ export async function restorePublication(trust: NitroTrust, name: string, retain
     const primaryPolicy = verifyStoredNitroPolicy(primaryText, trust, BigInt(Date.now()));
     nextNitroPublication(primaryPolicy, isPrimary ? witness : text, trust, trust, "primary");
     if (alreadyRestored) return;
-    let acknowledgedVersion: string | undefined;
-    let writeError: unknown;
-    try {
-      const { stdout } = await call("put-object", ["--key", key, "--if-match", damaged.etag, "--content-type", "application/json",
-        "--cache-control", "no-store", "--body", candidate]);
-      acknowledgedVersion = versionId(JSON.parse(stdout).VersionId);
-    } catch (error) {
-      writeError = error;
-    }
-    try {
-      const current = join(directory, "current.json");
-      const { stdout } = await call("get-object", ["--key", key, "--range", `bytes=0-${MAX_BYTES}`, current]);
-      const currentVersion = versionId(JSON.parse(stdout).VersionId);
-      if (currentVersion === damaged.VersionId || (acknowledgedVersion !== undefined && currentVersion !== acknowledgedVersion)) {
-        throw new Error("restored policy does not match the current S3 version");
-      }
-      if (await readBoundedDocument(current, MAX_BYTES) !== text) throw new Error("restored policy does not match the retained bytes");
-    } catch (readError) {
-      if (writeError === undefined) throw readError;
-      throw new AggregateError([writeError, readError],
-        `policy restoration could not be confirmed. Write failed with ${writeError}. Readback failed with ${readError}`,
-        { cause: readError });
-    }
+    const object: PolicyObject = (operation, args) => call(operation, ["--key", key, ...args]);
+    await writePolicyHead(object, ["--if-match", damaged.etag], candidate, join(directory, "current.json"), text, damaged.VersionId);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

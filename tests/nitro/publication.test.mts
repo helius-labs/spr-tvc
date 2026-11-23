@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createECDH } from "node:crypto";
+import { createECDH, createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -65,6 +65,15 @@ function awsOnly(aws: (args: string[]) => Promise<{ stdout: string }>) {
     assert.equal(command, "aws");
     return aws(args);
   } };
+}
+
+function policyMetadata(text: string, ETag = '"current"') {
+  return { stdout: JSON.stringify({ ETag, VersionId: createHash("sha256").update(text).digest("hex") }) };
+}
+
+async function readPolicy(args: string[], text: string, etag?: string) {
+  await writeFile(args.at(-1)!, text);
+  return policyMetadata(text, etag);
 }
 
 function freshProbe(remaining = () => 60_000) {
@@ -207,8 +216,7 @@ test("one conditional publisher wins and replaying the exact policy is idempoten
         if (arrivals === 2) gate.resolve();
         await gate.promise;
       }
-      await writeFile(args.at(-1)!, observed.head);
-      return { stdout: JSON.stringify({ ETag: observed.etag }) };
+      return readPolicy(args, observed.head, observed.etag);
     }
     assert.ok(args.includes("put-object"));
     const candidate = await readFile(args.at(-1)!, "utf8");
@@ -217,7 +225,7 @@ test("one conditional publisher wins and replaying the exact policy is idempoten
     head = candidate;
     etag = '"committed"';
     committed += 1;
-    return { stdout: "{}" };
+    return policyMetadata(head, etag);
   }
   const next = { ...first, sequence: "2", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(first)) };
   const candidates = [signed(next), signed({ ...next, minimumCustodyEpoch: "2" })];
@@ -277,7 +285,7 @@ test("confirms a restored head by its current S3 version and exact signed bytes"
     } else if (fault === "missing file") {
       await assert.rejects(restore, { code: "ENOENT" });
     } else if (fault !== undefined && fault !== "lost response") {
-      await assert.rejects(restore, /restored policy.*(version|bytes)/);
+      await assert.rejects(restore, /policy write.*(version|bytes)/);
     } else {
       await restore;
     }
@@ -297,8 +305,7 @@ test("confirms a lost write response only by exact bytes and reports both failur
       if (args.includes("get-object")) {
         if (wrote && outcome === "unavailable") throw readError;
         const head = wrote && outcome === "committed" ? text : signed(first);
-        await writeFile(args.at(-1)!, head);
-        return { stdout: JSON.stringify({ ETag: '"current"' }) };
+        return readPolicy(args, head);
       }
       assert.ok(args.includes("put-object"));
       wrote = true;
@@ -310,10 +317,44 @@ test("confirms a lost write response only by exact bytes and reports both failur
     else await assert.rejects(publishNext, error => {
       assert.ok(error instanceof Error);
       assert.match(error.message, /write could not be confirmed.*write response lost.*readback unavailable/);
-      assert.ok(error.cause instanceof AggregateError);
-      assert.deepEqual(error.cause.errors, [writeError, readError]);
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, [writeError, readError]);
       return true;
     });
+  }
+});
+
+test("confirms a successful publish against the current version and signed bytes", async context => {
+  const predecessor = signed(first);
+  const next = { ...first, sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest };
+  const wanted = signed(next);
+  const newer = signed({ ...next, sequence: "3", previousPolicyDigest: encodeLowerHex(nitroPolicySigningDigest(next)) });
+  context.mock.method(globalThis, "fetch", async () => new Response(predecessor));
+  for (const outcome of ["unchanged", "superseded", "wrong version", "same version", "unversioned", "missing body", "committed"]) {
+    let writes = 0;
+    const options = awsOnly(async args => {
+      if (args.includes("put-object")) {
+        writes++;
+        assert.ok(args.includes("--if-match"));
+        assert.equal(await readFile(args.at(-1)!, "utf8"), wanted);
+        return { stdout: JSON.stringify({ VersionId: outcome === "same version" ? "old" : "new" }) };
+      }
+      assert.ok(args.includes("get-object"));
+      const isOld = writes === 0 || outcome === "unchanged";
+      const body = isOld ? predecessor : outcome === "superseded" ? newer : wanted;
+      let VersionId = "new";
+      if (isOld || outcome === "same version") VersionId = "old";
+      else if (outcome === "wrong version" || outcome === "superseded") VersionId = "other";
+      else if (outcome === "unversioned") VersionId = "null";
+      if (writes === 0 || outcome !== "missing body") await writeFile(args.at(-1)!, body);
+      return { stdout: JSON.stringify({ VersionId, ETag: '"current"' }) };
+    });
+    const result = publish(trust, trust.publications[0].bucket, wanted, options);
+    if (outcome === "committed") await result;
+    else if (outcome === "missing body") await assert.rejects(result, { code: "ENOENT" });
+    else if (outcome === "unversioned") await assert.rejects(result, /expected an original S3 policy version/);
+    else await assert.rejects(result, /policy write.*(version|bytes)/);
+    assert.equal(writes, 1);
   }
 });
 
@@ -325,8 +366,7 @@ test("the primary leaves time for the conditional write before policy expiry", a
   context.mock.method(globalThis, "fetch", async () => new Response(predecessor));
   const read = awsOnly(async args => {
     assert.ok(args.includes("get-object"));
-    await writeFile(args.at(-1)!, predecessor);
-    return { stdout: JSON.stringify({ ETag: '"current"' }) };
+    return readPolicy(args, predecessor, '"current"');
   });
   const next = { ...first, sequence: "2", previousPolicyDigest: trust.minimumPolicyDigest };
   const activation = signed({ ...next, action: "activate", targets: [target] });
@@ -394,8 +434,7 @@ test("qualifies a planned custody transition only after the incoming roster acti
     if (command === "python3") return { stdout: JSON.stringify({ custodyKeys: activeKeys, nextCutover: null, canaryDigest }) };
     assert.equal(command, "aws");
     assert.ok(args.includes("get-object"));
-    await writeFile(args.at(-1)!, signed(first));
-    return { stdout: JSON.stringify({ ETag: '"predecessor"' }) };
+    return readPolicy(args, signed(first), '"predecessor"');
   };
   const options = { run, custodyTrust: "/pinned/custody.json", nextTrust: incoming };
   await assert.rejects(publish(trust, trust.publications[0].bucket, text, options), /active custody approval roster/);
@@ -424,10 +463,14 @@ test("requires a successful operation probe on every target before writing an ac
   const run = async (command: string, args: string[]) => {
     if (command === "python3") return { stdout: JSON.stringify({ custodyKeys: trust.custodyKeys, nextCutover: null, canaryDigest }) };
     assert.equal(command, "aws");
+    if (args.includes("get-object")) {
+      assert.equal(writes, 1);
+      return readPolicy(args, text);
+    }
     assert.ok(args.includes("put-object"));
     assert.equal(await readFile(args.at(-1)!, "utf8"), text);
     writes += 1;
-    return { stdout: "{}" };
+    return policyMetadata(text);
   };
   const options = { run, probe, custodyTrust: "/pinned/custody.json" };
   await assert.rejects(publish(pinned, trust.publications[0].bucket, text, options), /operation probe failed/);
@@ -451,6 +494,7 @@ test("checks the outgoing boot during fleet replacement and can recover from its
   };
   context.mock.method(globalThis, "fetch", async () => new Response(previous));
   let state: "mismatch" | "offline" | "ready" = "mismatch";
+  let head = previous;
   let writes = 0;
   const checked: { endpoint: string; canary: DecryptionCanary }[] = [];
   const options = {
@@ -461,12 +505,12 @@ test("checks the outgoing boot during fleet replacement and can recover from its
       }
       assert.equal(command, "aws");
       if (args.includes("get-object")) {
-        await writeFile(args.at(-1)!, previous);
-        return { stdout: JSON.stringify({ ETag: '"predecessor"' }) };
+        return readPolicy(args, head, '"predecessor"');
       }
       assert.ok(args.includes("put-object"));
       writes++;
-      return { stdout: "{}" };
+      head = await readFile(args.at(-1)!, "utf8");
+      return policyMetadata(head);
     },
     async probe(replica: typeof target, _trust: NitroTrust, { canary }: { canary: DecryptionCanary }) {
       checked.push({ endpoint: replica.endpoint, canary });
@@ -486,6 +530,7 @@ test("checks the outgoing boot during fleet replacement and can recover from its
   await publish(pinned, bucket, signed(next), options);
   assert.equal(writes, 1);
   state = "ready";
+  head = previous;
   checked.length = 0;
   await publish(pinned, bucket, signed({ ...next, targets: [target, replacement] }), options);
   assert.deepEqual(checked.map(({ endpoint }) => endpoint), [target.endpoint, replacement.endpoint]);
@@ -516,11 +561,10 @@ test("activation rejects an incompatible peer or invalid custody state observed 
     }
     assert.equal(command, "aws");
     if (args.includes("get-object")) {
-      await writeFile(args.at(-1)!, predecessor);
-      return { stdout: JSON.stringify({ ETag: '"predecessor"' }) };
+      return readPolicy(args, writes === 0 ? predecessor : text, '"predecessor"');
     }
     writes += 1;
-    return { stdout: "{}" };
+    return policyMetadata(text);
   };
   const options = { run, custodyTrust: "/pinned/custody.json" };
   const bucket = trust.publications[0].bucket;
@@ -593,8 +637,7 @@ test("rechecks live replica evidence after the final custody read", async contex
         return { stdout: JSON.stringify({ custodyKeys: trust.custodyKeys, nextCutover: null, canaryDigest }) };
       }
       assert.ok(args.includes("get-object"));
-      await writeFile(args.at(-1)!, predecessor);
-      return { stdout: JSON.stringify({ ETag: '"predecessor"' }) };
+      return readPolicy(args, predecessor, '"predecessor"');
     },
     async probe() { remaining = 60_000; return freshProbe(() => remaining); },
   };
@@ -620,10 +663,13 @@ test("mirrors the first publisher's policy into only the selected pinned bucket"
     assert.equal(args[args.indexOf("--bucket") + 1], peer.bucket);
     assert.equal(args[args.indexOf("--expected-bucket-owner") + 1], peer.account);
     assert.equal(args[args.indexOf("--region") + 1], peer.region);
-    if (args.includes("get-object")) throw new Error("NoSuchKey");
+    if (args.includes("get-object")) {
+      if (writes === 0) throw new Error("NoSuchKey");
+      return readPolicy(args, signed(first));
+    }
     assert.equal(args[args.indexOf("--if-none-match") + 1], "*");
     writes += 1;
-    return { stdout: "{}" };
+    return policyMetadata(signed(first));
   }
   await publish(trust, peer.bucket, signed(first), awsOnly(aws));
   await assert.rejects(publish(trust, "unexpected-bucket", signed(first), awsOnly(aws)), /pinned publication buckets/);
@@ -638,8 +684,7 @@ test("revocation refuses a mirror behind the immediate predecessor", async conte
   context.mock.method(globalThis, "fetch", async () => new Response(signed(first)));
   await assert.rejects(publish(trust, primary.bucket, signed(third), awsOnly(async args => {
     assert.ok(args.includes("get-object"));
-    await writeFile(args.at(-1)!, signed(second));
-    return { stdout: JSON.stringify({ ETag: '"second"' }) };
+    return readPolicy(args, signed(second), '"second"');
   })), /ReleasePolicyInvalid/);
 });
 
@@ -662,12 +707,11 @@ test("an expired primary can catch up the mirror before an emergency revocation"
     if (args.includes("get-object")) {
       const head = heads.get(bucket);
       if (head === undefined) throw new Error("NoSuchKey");
-      await writeFile(args.at(-1)!, head);
-      return { stdout: JSON.stringify({ ETag: '"current"' }) };
+      return readPolicy(args, head, '"current"');
     }
     writes.push(bucket);
     heads.set(bucket, await readFile(args.at(-1)!, "utf8"));
-    return { stdout: "{}" };
+    return policyMetadata(heads.get(bucket)!);
   });
 
   await assert.rejects(publish(oldPins, primary.bucket, revoked, runner));
@@ -697,14 +741,13 @@ test("copies the live primary during a custody or replica outage so emergency re
     ...awsOnly(async args => {
       const bucket = args[args.indexOf("--bucket") + 1]!;
       if (args.includes("get-object")) {
-        await writeFile(args.at(-1)!, heads.get(bucket)!);
-        return { stdout: JSON.stringify({ ETag: '"prior-etag"' }) };
+        return readPolicy(args, heads.get(bucket)!, '"prior-etag"');
       }
       assert.ok(args.includes("put-object"));
       assert.equal(args[args.indexOf("--if-match") + 1], '"prior-etag"');
       writes.push(bucket);
       heads.set(bucket, await readFile(args.at(-1)!, "utf8"));
-      return { stdout: "{}" };
+      return policyMetadata(heads.get(bucket)!);
     }),
     probe: async () => assert.fail("mirror and revocation must stay available when probes fail"),
   };
@@ -743,15 +786,14 @@ test("records emergency revocation during a mirror outage and repairs a lagging 
     ...awsOnly(async args => {
       const bucket = args[args.indexOf("--bucket") + 1]!;
       if (args.includes("get-object")) {
-        await writeFile(args.at(-1)!, heads.get(bucket)!);
-        return { stdout: JSON.stringify({ ETag: '"previous"' }) };
+        return readPolicy(args, heads.get(bucket)!, '"previous"');
       }
       assert.ok(args.includes("put-object"));
       assert.equal(args[args.indexOf("--if-match") + 1], '"previous"');
       writes.push(bucket);
       heads.set(bucket, await readFile(args.at(-1)!, "utf8"));
       if (bucket === primary.bucket) throw new Error("lost write acknowledgement");
-      return { stdout: "{}" };
+      return policyMetadata(heads.get(bucket)!);
     }),
     probe: async () => assert.fail("a revocation does not contact any enclave"),
   };
@@ -795,14 +837,13 @@ test("records a revocation on the mirror during a primary outage only with its i
   const options = awsOnly(async args => {
     const bucket = args[args.indexOf("--bucket") + 1]!;
     if (args.includes("get-object")) {
-      await writeFile(args.at(-1)!, heads.get(bucket)!);
-      return { stdout: JSON.stringify({ ETag: '"previous"' }) };
+      return readPolicy(args, heads.get(bucket)!, '"previous"');
     }
     assert.ok(args.includes("put-object"));
     assert.equal(args[args.indexOf("--if-match") + 1], '"previous"');
     writes.push(bucket);
     heads.set(bucket, await readFile(args.at(-1)!, "utf8"));
-    return { stdout: "{}" };
+    return policyMetadata(heads.get(bucket)!);
   });
   await assert.rejects(publish(trust, mirror.bucket, activation, options), /requires the primary's exact signed policy/);
   await assert.rejects(publish(trust, mirror.bucket, revoked, options), /ReleasePolicyInvalid/);
@@ -846,14 +887,13 @@ for (const [primarySequence, mirrorSequence] of [[2, 2], [2, 4], [4, 2]] as cons
   const options = awsOnly(async args => {
     const bucket = args[args.indexOf("--bucket") + 1]!;
     if (args.includes("get-object")) {
-      await writeFile(args.at(-1)!, heads.get(bucket)!);
-      return { stdout: JSON.stringify({ ETag: '"head"' }) };
+      return readPolicy(args, heads.get(bucket)!, '"head"');
     }
     assert.ok(args.includes("put-object"));
     assert.equal(args[args.indexOf("--if-match") + 1], '"head"');
     writes.push(bucket);
     heads.set(bucket, await readFile(args.at(-1)!, "utf8"));
-    return { stdout: "{}" };
+    return policyMetadata(heads.get(bucket)!);
   });
 
   await publish(trust, mirror.bucket, signed(fork), options);
@@ -924,12 +964,11 @@ test("publishes a rollover revision with both quorums and mirrors its exact sign
   const runner = awsOnly(async args => {
     const bucket = args[args.indexOf("--bucket") + 1]!;
     if (args.includes("get-object")) {
-      await writeFile(args.at(-1)!, heads.get(bucket)!);
-      return { stdout: JSON.stringify({ ETag: '"current"' }) };
+      return readPolicy(args, heads.get(bucket)!, '"current"');
     }
     assert.ok(args.includes("put-object"));
     heads.set(bucket, await readFile(args.at(-1)!, "utf8"));
-    return { stdout: "{}" };
+    return policyMetadata(heads.get(bucket)!);
   });
   const rotated = { ...pins(bridge), keys: keys.slice(2) };
   const transition = { ...runner, nextTrust: rotated };
@@ -968,12 +1007,11 @@ test("repairs a mirrored genesis against its ETag while preserving both signer s
   context.mock.method(globalThis, "fetch", async () => new Response(primary));
   const runner = awsOnly(async args => {
     if (args.includes("get-object")) {
-      await writeFile(args.at(-1)!, head);
-      return { stdout: JSON.stringify({ ETag: '"genesis"' }) };
+      return readPolicy(args, head, '"genesis"');
     }
     assert.equal(args[args.indexOf("--if-match") + 1], '"genesis"');
     head = await readFile(args.at(-1)!, "utf8");
-    return { stdout: "{}" };
+    return policyMetadata(head);
   });
   await publish(trust, mirror.bucket, primary, runner);
   assert.equal(head, primary);
@@ -998,13 +1036,12 @@ test("revokes from the same authenticated predecessor when the mirror has extra 
   const runner = awsOnly(async args => {
     const bucket = args[args.indexOf("--bucket") + 1]!;
     if (args.includes("get-object")) {
-      await writeFile(args.at(-1)!, heads.get(bucket)!);
-      return { stdout: JSON.stringify({ ETag: '"prior"' }) };
+      return readPolicy(args, heads.get(bucket)!, '"prior"');
     }
     assert.ok(args.includes("put-object"));
     assert.equal(args[args.indexOf("--if-match") + 1], '"prior"');
     heads.set(bucket, await readFile(args.at(-1)!, "utf8"));
-    return { stdout: "{}" };
+    return policyMetadata(heads.get(bucket)!);
   });
   await assert.rejects(publish(trust, mirror.bucket, prior, runner), /preserve the existing signers/);
   await assert.rejects(publish(trust, primary.bucket, activation, { ...runner, custodyTrust: "custody.json" }), /same signed predecessor/);
@@ -1031,13 +1068,12 @@ test("an emergency transition authenticates the predecessor without requiring it
   let writes = 0;
   const runner = awsOnly(async args => {
     if (args.includes("get-object")) {
-      await writeFile(args.at(-1)!, predecessor);
-      return { stdout: JSON.stringify({ ETag: '"current"' }) };
+      return readPolicy(args, writes === 0 ? predecessor : text);
     }
     assert.ok(args.includes("put-object"));
     assert.equal(await readFile(args.at(-1)!, "utf8"), text);
     writes += 1;
-    return { stdout: "{}" };
+    return policyMetadata(text);
   });
   await assert.rejects(publish(incoming, primary.bucket, text, runner), /ReleasePolicyInvalid/);
   await assert.rejects(publish(incoming, primary.bucket, text, {
@@ -1093,6 +1129,7 @@ test("mainnet checks both installed publication buckets before enabling payments
   let unsafe = "";
   let probes = 0;
   let writes = 0;
+  let committed: string | undefined;
   const options = {
     custodyTrust,
     sourceProfile: "source-read", replicaProfile: "replica-read",
@@ -1102,11 +1139,18 @@ test("mainnet checks both installed publication buckets before enabling payments
         return { stdout: JSON.stringify({ custodyKeys: mainnet.custodyKeys, nextCutover: null, canaryDigest }) };
       }
       assert.equal(command, "aws");
+      if (args.includes("get-object")) {
+        assert.ok(committed);
+        assert.ok(!args.includes("--profile"));
+        assert.equal(args[args.indexOf("--bucket") + 1], primary.bucket);
+        return readPolicy(args, committed);
+      }
       if (args.includes("put-object")) {
         assert.ok(!args.includes("--profile"));
         assert.equal(args[args.indexOf("--bucket") + 1], primary.bucket);
         writes++;
-        return { stdout: "{}" };
+        committed = await readFile(args.at(-1)!, "utf8");
+        return policyMetadata(committed);
       }
       assert.ok(probes > 0);
       const bucket = args[args.indexOf("--bucket") + 1];
