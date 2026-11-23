@@ -11,11 +11,12 @@
   "policyValidityDays": 365,
   "networks": {
     "devnet": {
-      "appId": "67d544db-f727-4c8b-83fe-74a929ac763b",
-      "endpoint": "https://app-67d544db-f727-4c8b-83fe-74a929ac763b.app.turnkey.cloud",
-      "securityDomainId": "6d110d0f6ff414817ed4785cf5c2938a780ddbe2929d48abff6596628d2a5122",
-      "quorumKeyId": "local-a3bff1d85778f146",
-      "quorumKeyEpoch": "1"
+      "appId": "d0103c38-5533-4d28-96a1-ea67bb3d76be",
+      "endpoint": "https://app-d0103c38-5533-4d28-96a1-ea67bb3d76be.app.turnkey.cloud",
+      "securityDomainId": "f61b5c3a39179127f7757a8cee280071d717db39d4b733d0c61be5f49960fe45",
+      "quorumKeyId": "e946ef6c-fcce-4b04-bc1e-9941e4e17b37",
+      "quorumKeyEpoch": "1",
+      "quorumPublicKey": "045dba3785f795238b281077f1a332ba7f31c9134e0226e7a0029b1d9156b728bad11a9e013d0082d8a770308b0079a69252be56f2726c325d4b0198e25d873850044f692813ad9bd2fa19de1f5e688e3c100e526add951d28e51bf54d00971be2117fcd7d992fbe98db1766dc7a0ecf8b464ef5559a62affdeddbdb58ab12628566"
     }
   }
 }

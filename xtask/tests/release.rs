@@ -11,13 +11,22 @@ fn release_requires_inputs_for_its_phase_and_network() {
     };
     let sha = "1".repeat(40);
     for (phase, network, args) in [
-        ("describe", "devnet", vec![]),
-        ("stage", "devnet", vec!["--image", "unused"]),
-        ("stage", "devnet", vec!["--source-commit", &sha]),
+        ("deploy", "mainnet", vec!["--image", "image"]),
+        ("deploy", "devnet", vec!["--source-commit", &sha]),
         ("prepare", "devnet", vec![]),
         ("pin", "devnet", vec!["--signed-policy", "signed.json"]),
-        ("stage", "mainnet", vec![]),
-        ("stage", "mainnet", vec!["--source-commit", &sha[..12]]),
+        ("pin", "devnet", vec!["--image", "image"]),
+        ("pin", "devnet", vec!["--run", "123"]),
+        ("pin", "devnet", vec!["--publish"]),
+        ("pin", "devnet", vec!["--replicas", "1"]),
+        ("pin", "devnet", vec!["--activate"]),
+        (
+            "deploy",
+            "mainnet",
+            vec!["--source-commit", &sha, "--activate"],
+        ),
+        ("deploy", "mainnet", vec![]),
+        ("deploy", "mainnet", vec!["--source-commit", &sha[..12]]),
         ("pin", "mainnet", vec!["--source-commit", &sha]),
     ] {
         assert!(
@@ -25,11 +34,49 @@ fn release_requires_inputs_for_its_phase_and_network() {
             "{phase} {network}"
         );
     }
-    parse("describe", "devnet", &["--image", "image"])
+    for args in [
+        &[][..],
+        &["--image", "image"],
+        &["--run", "123"],
+        &["--publish"],
+        &["--activate"],
+    ] {
+        parse("deploy", "devnet", args).unwrap().validate().unwrap();
+    }
+    for args in [
+        &["--run", "0"][..],
+        &["--replicas", "0"],
+        &["--publish", "--run", "123"],
+        &["--image", "image", "--run", "123"],
+        &["--image", "image", "--publish"],
+    ] {
+        assert!(parse("deploy", "devnet", args).is_err(), "{args:?}");
+    }
+    for replicas in ["1", "2"] {
+        parse(
+            "deploy",
+            "devnet",
+            &["--image", "image", "--replicas", replicas],
+        )
         .unwrap()
         .validate()
         .unwrap();
-    parse("stage", "devnet", &[]).unwrap().validate().unwrap();
+    }
+    parse(
+        "deploy",
+        "mainnet",
+        &[
+            "--image",
+            "image",
+            "--replicas",
+            "2",
+            "--source-commit",
+            &sha,
+        ],
+    )
+    .unwrap()
+    .validate()
+    .unwrap();
     parse("prepare", "mainnet", &["--source-commit", &sha])
         .unwrap()
         .validate()
@@ -46,7 +93,7 @@ fn release_requires_inputs_for_its_phase_and_network() {
 }
 
 #[test]
-fn deployment_records_contain_only_the_staged_id() {
+fn deployment_records_do_not_cache_turnkey_status() {
     let record: stage::Deployment = serde_json::from_str(r#"{"deployId":"candidate"}"#).unwrap();
     assert_eq!(
         serde_json::to_value(record).unwrap(),

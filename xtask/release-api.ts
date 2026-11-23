@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { setTimeout } from "node:timers/promises";
 
 import type { VerifyLiveReplicaInput } from "../sdk/dist/testing.js";
 
@@ -8,10 +9,26 @@ function requiredEnv(name: string): string {
   return value;
 }
 
-const [operation, value] = process.argv.slice(2);
+const [operation, value, option] = process.argv.slice(2);
 if (operation === "info" && value) {
   const { fetchLiveServiceInfo } = await import("../sdk/dist/testing.js");
-  const info = await fetchLiveServiceInfo(new URL(value), AbortSignal.timeout(10_000));
+  const { DecryptionServiceHttpError } = await import("../sdk/dist/index.js");
+  const endpoint = new URL(value);
+  const wait = option === "--wait";
+  const deadline = AbortSignal.timeout(wait ? 45_000 : 10_000);
+  const retryable = new Set([404, 502, 503, 504]);
+  let info;
+  for (;;) {
+    try {
+      info = await fetchLiveServiceInfo(endpoint, AbortSignal.any([deadline, AbortSignal.timeout(10_000)]));
+      break;
+    } catch (error) {
+      if (!wait || !(error instanceof DecryptionServiceHttpError) || !retryable.has(error.status)) {
+        throw error;
+      }
+      await setTimeout(2_000, undefined, { signal: deadline });
+    }
+  }
   console.log(JSON.stringify(info));
 } else {
   const { Turnkey } = await import("@turnkey/sdk-server");

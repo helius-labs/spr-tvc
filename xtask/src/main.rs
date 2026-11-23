@@ -1,12 +1,16 @@
+mod activate;
 mod policy;
+mod publish;
 mod stage;
 mod tools;
 
 use std::fs;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 
 use anyhow::{ensure, Context, Result};
 use clap::{Parser, ValueEnum};
+use qos_p256::P256Public;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use spr_tvc_protocol::encoding::{decimal_u64, hex as wire_hex};
@@ -17,16 +21,18 @@ const DEPLOY_DIR: &str = "enclave/deploy";
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Phase {
-    Describe,
-    Stage,
+    /// Submit a candidate to Turnkey or resume its recorded deployment.
+    Deploy,
+    /// Prepare the mainnet release policy for signing.
     Prepare,
+    /// Verify the live deployment and write the SDK release pin.
     Pin,
 }
 
 #[derive(Parser)]
 #[command(
     bin_name = "cargo xtask",
-    about = "Describe, stage, and pin an enclave release"
+    about = "Deploy and verify a decryption service release"
 )]
 struct Args {
     phase: Phase,
@@ -34,8 +40,21 @@ struct Args {
     release_id: String,
     #[arg(long, value_parser = parse_network)]
     network: Network,
-    #[arg(long)]
+    /// Published image reference with its tag and SHA-256 digest.
+    #[arg(long, group = "image_source")]
     image: Option<String>,
+    /// GitHub Actions run ID from a successful image publish.
+    #[arg(long, group = "image_source", value_name = "RUN_ID")]
+    run: Option<NonZeroU64>,
+    /// Publish an image from main and stage it after GitHub approval.
+    #[arg(long, group = "image_source")]
+    publish: bool,
+    /// Replicas to request when creating a deployment. Defaults to Turnkey's default.
+    #[arg(long)]
+    replicas: Option<NonZeroU32>,
+    /// Review, provision, and pin a devnet deployment with two hosted operators.
+    #[arg(long)]
+    activate: bool,
     #[arg(long)]
     source_commit: Option<String>,
     #[arg(long)]
@@ -65,8 +84,16 @@ fn release_id(value: &str) -> Result<String, &'static str> {
 impl Args {
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.image.is_some() == (self.phase == Phase::Describe),
-            "--image is required for describe and only used by that phase"
+            self.phase == Phase::Deploy
+                || (self.image.is_none()
+                    && self.run.is_none()
+                    && !self.publish
+                    && self.replicas.is_none()),
+            "--image, --run, --publish, and --replicas are only used by deploy"
+        );
+        ensure!(
+            !self.activate || (self.phase == Phase::Deploy && self.network == Network::Devnet),
+            "--activate is only used by devnet deploy"
         );
         ensure!(
             self.signed_policy.is_some()
@@ -122,11 +149,6 @@ struct NetworkConfig {
     quorum_key_id: String,
     #[serde(with = "decimal_u64")]
     quorum_key_epoch: u64,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AppConfig {
     #[serde(with = "wire_hex")]
     quorum_public_key: Vec<u8>,
 }
@@ -149,23 +171,32 @@ impl Release<'_> {
             .unwrap_or(&self.config.qos_version)
     }
 
+    fn network_dir(&self) -> PathBuf {
+        Path::new(DEPLOY_DIR).join(self.network().as_str())
+    }
+
     fn path(&self, suffix: &str) -> PathBuf {
-        Path::new(DEPLOY_DIR)
-            .join(self.network().as_str())
+        self.network_dir()
             .join(format!("{}.{suffix}.json", self.args.release_id))
+    }
+
+    fn lock(&self) -> Result<fs::File> {
+        let dir = self.network_dir();
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(format!(".{}.lock", self.args.release_id));
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        file.try_lock()
+            .with_context(|| format!("lock release at {}", path.display()))?;
+        Ok(file)
     }
 
     fn pin_path(&self) -> PathBuf {
         Path::new("sdk/releases").join(format!("{}.json", self.network()))
     }
-}
-
-fn app_config(network: Network) -> Result<AppConfig> {
-    read_json(
-        &Path::new(DEPLOY_DIR)
-            .join(network.as_str())
-            .join(format!("spr-{APP}-{network}.app.json")),
-    )
 }
 
 fn lower_hex(value: &str, len: usize) -> bool {
@@ -197,7 +228,7 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
 
 fn run(args: &Args) -> Result<()> {
     args.validate()?;
-    let config: ReleaseConfig = read_json(Path::new(DEPLOY_DIR).join("release.json").as_path())?;
+    let config: ReleaseConfig = read_json(&Path::new(DEPLOY_DIR).join("release.json"))?;
     let app = match args.network {
         Network::Devnet => &config.networks.devnet,
         Network::Mainnet => config
@@ -214,14 +245,19 @@ fn run(args: &Args) -> Result<()> {
         "incomplete {} app config",
         args.network
     );
+    P256Public::from_bytes(&app.quorum_public_key).map_err(|error| {
+        anyhow::anyhow!("invalid {} Quorum public key ({error:?})", args.network)
+    })?;
     let release = Release {
         args,
         config: &config,
         app,
     };
     match args.phase {
-        Phase::Describe => release.describe(),
-        Phase::Stage => release.stage(),
+        Phase::Deploy => {
+            let _lock = release.lock()?;
+            release.deploy()
+        }
         Phase::Prepare | Phase::Pin => release.policy(),
     }
 }

@@ -61,7 +61,7 @@ pub(crate) fn run(command: &mut Command) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn capture_check(command: &mut Command) -> Result<Vec<u8>> {
+pub(crate) fn check_output(command: &mut Command) -> Result<(ExitStatus, Vec<u8>)> {
     let mut stdout = tempfile::tempfile()?;
     let mut child = command
         .stdin(Stdio::null())
@@ -79,6 +79,11 @@ pub(crate) fn capture_check(command: &mut Command) -> Result<Vec<u8>> {
         output.len() as u64 <= MAX_CHECK_OUTPUT_BYTES,
         "release check output exceeds 4 MiB"
     );
+    Ok((status, output))
+}
+
+pub(crate) fn capture_check(command: &mut Command) -> Result<Vec<u8>> {
+    let (status, output) = check_output(command)?;
     ensure!(
         status.success(),
         "{:?} failed ({status}): {}",
@@ -99,6 +104,10 @@ pub(crate) fn tvc_json<T: DeserializeOwned>(
     output: fn(&mut Command) -> Result<Vec<u8>>,
 ) -> Result<T> {
     let json = output(command.args(["--message-format", "json"]))?;
+    decode_tvc(&json)
+}
+
+pub(crate) fn decode_tvc<T: DeserializeOwned>(json: &[u8]) -> Result<T> {
     let line = json
         .trim_ascii_end()
         .rsplit(|&b| b == b'\n')

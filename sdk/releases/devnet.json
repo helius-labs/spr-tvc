@@ -1,1 +1,53 @@
-null
+{
+  "qosIdentityPcrs": {
+    "0": "a16c37b49023089be139b667cf87a32c796a9ccacacf9f0c87bf1a2f58546f2b46218ee6c0a17885f8a7d1b8cccff078",
+    "1": "a16c37b49023089be139b667cf87a32c796a9ccacacf9f0c87bf1a2f58546f2b46218ee6c0a17885f8a7d1b8cccff078",
+    "2": "21b9efbc184807662e966d34f390821309eeac6802309798826296bf3e8bec7c10edb30948c90ba67310f7b964fc500a",
+    "3": "321c3cd57bd9dc5549f349c315b93167fca1adbaf19fbb9c548101bae757970fe269e530ba684826e2f5fb043319a20f"
+  },
+  "releaseAuthorities": {
+    "authoritySetId": "rehearsal-02-1795191064817",
+    "keys": [
+      {
+        "keyId": "rehearsal-02-authority-1",
+        "publicKey": "043cc9fd78ac7511608dce84396c9d0056a83f61c58b87e08fcb9dbbd6c5091fe9996969f79cba2758257ac2165bcdea329deedb70949be54f7bfeb6f18d47c5fd"
+      }
+    ],
+    "minimumRevocationEpoch": "0",
+    "threshold": 1
+  },
+  "releasePolicy": {
+    "authoritySetId": "rehearsal-02-1795191064817",
+    "policy": {
+      "acceptedExecutableDigests": [
+        "70eda10b78aa0493c6fc0e5ccf199a4adac5f8cbde208427db68e172bb5455c0"
+      ],
+      "acceptedManifestDigests": [
+        "d0b4f43ecf14d2724340dc122b969857b6e122d59ce3dd53bf29ceb87e891341"
+      ],
+      "allowedOperations": [
+        "ServicePublicKeys",
+        "ServiceDecrypt"
+      ],
+      "expiresAtMs": "1826727064817",
+      "maxEncryptedRequestBytes": 262144,
+      "maxEncryptedResponseBytes": 262144,
+      "network": "devnet",
+      "quorumKeyEpoch": "1",
+      "quorumKeyId": "e946ef6c-fcce-4b04-bc1e-9941e4e17b37",
+      "quorumPublicKey": "045dba3785f795238b281077f1a332ba7f31c9134e0226e7a0029b1d9156b728bad11a9e013d0082d8a770308b0079a69252be56f2726c325d4b0198e25d873850044f692813ad9bd2fa19de1f5e688e3c100e526add951d28e51bf54d00971be2117fcd7d992fbe98db1766dc7a0ecf8b464ef5559a62affdeddbdb58ab12628566",
+      "releaseId": "rehearsal-02",
+      "revocationEpoch": "0",
+      "securityDomainId": "f61b5c3a39179127f7757a8cee280071d717db39d4b733d0c61be5f49960fe45",
+      "turnkeyTrustRootId": "aws-nitro-root-g1",
+      "validFromMs": "1795191064817",
+      "version": 1
+    },
+    "signatures": [
+      {
+        "keyId": "rehearsal-02-authority-1",
+        "signature": "d0a1fca5cb30dd5236e94ff82cf7ed8e69464a09f57096a1f4a73e9474e65be20d8c8694dafbc8cb1a00be6bf016f0ac4d03bd2c49f94390c0fbd6bf48f7132b"
+      }
+    ]
+  }
+}

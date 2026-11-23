@@ -41,11 +41,45 @@ The tests use fixtures and simulated attestation inputs. The
 [service spec](../enclave/SPEC.md#key-custody-and-trust) describes the trust
 required of Quorum operators and the release authorities.
 
+## Live devnet transfer
+
+The [Rust test](devnet/shielded_transfer.rs) creates two fresh wallets. It
+funds A with 0.01 devnet SOL, registers A, shields 0.001 SOL, and sends
+0.0004 SOL to unregistered B. B discovers the transfer by its public owner
+tag and opens the note through the attested decryption service on Gatekeeper.
+The test verifies devnet genesis, the deployed prover, and the signed service
+release before loading the payer.
+
+Populate `sdk/releases/devnet.json` with the signed pin for the release
+Gatekeeper serves. [Pinning instructions](../xtask/README.md#pin-devnet)
+
+Run from the repository root with a funded devnet payer and a Helius devnet
+API key in `HELIUS_API_KEY` or `API_KEY`. Each run funds a fresh sender
+and leaves its test balances on devnet.
+
+```sh
+SPR_E2E_PAYER=/path/to/devnet-keypair.json \
+  cargo test --locked --manifest-path tests/devnet/Cargo.toml -- --ignored --nocapture
+```
+
+| Invariant | Live check |
+| --- | --- |
+| The expected deployment answers each request. | The session signs a fresh challenge. Each operation proves its request and encrypted result. The replica key, signed release, Nitro chain, and PCRs all match. |
+| B can receive without registering or holding public SOL. | A's on-chain record matches its local wallet. B's record stays absent and its public balance stays unchanged. `PublicKeys` takes only the public address and returns stable, distinct viewing and nullifier keys for A and B. |
+| The transfer conserves shielded value. | The transfer spends A's deposit nullifier and leaves one exact change note. B recovers one note for the expected amount, and its commitment matches the confirmed Solana instruction. |
+| Only B authorizes decryption for B. | An unsigned request, A's signature for B, a changed slot index after signing, and a signed batch over 256 all fail. A's valid request for its own keys and B's local wallet cannot open B's note. |
+| A replay stays bound to the response key. | Replaying the same encrypted request yields the same encrypted answer. An unrelated response key fails to open it. |
+| A modified commitment cannot credit a balance. | The wallet discards the otherwise decryptable note when its indexed commitment is changed. |
+
 ## Mainnet release controls
 
 | Invariant | Coverage |
 | --- | --- |
 | An unapproved build cannot supply a production manifest. | The operator tool requires the reviewed source commit, expected GitHub workflow, protected source ref, and immutable image digest. [Provenance checks](../xtask/tests/stage.rs) |
+| A publish run supplies one image reference. | The operator tool accepts the report from the configured publish workflow and rejects missing or duplicate image references. [Publish report](../xtask/tests/publish.rs) |
+| Hosted activation is restricted to a devnet app with matching 2-of-2 sets. | The CLI rejects mainnet activation and removes inherited approval and attestation bypass flags. The same two distinct operators must be in both sets. [Release CLI](../xtask/tests/release.rs) · [Activation](../xtask/tests/activate.rs) |
+| Selecting a deployment does not make it ready for pinning. | Hosted activation waits for the expected target replicas and retries temporary ingress errors before verifying the Boot Proof. [Activation](../xtask/tests/activate.rs) |
+| A replica request applies only when creating a deployment. | The operator tool forwards the explicit count, clears inherited TVC deployment overrides, and rejects a changed replica request on resumption. [Release staging](../xtask/tests/stage.rs) |
 | The staged mainnet release cannot switch a serving app or replace the known Quorum domain. | Candidate selection permits the first deployment or resumption of the same deployment. The operator tool rejects a shared devnet identity, a different Quorum key, and a one-share manifest. [Release staging](../xtask/tests/stage.rs) · [Approved deployment](../xtask/tests/policy.rs) |
 | A release bundle cannot choose its own mainnet trust anchors. | The SDK binds the policy to the independently pinned domain, Quorum key, distinct authority threshold, maximum lifetime, and revocation floor. [Mainnet pins](../sdk/src/protocol/mainnet-release.test.ts) |
 | The example validates RPC genesis before loading signing credentials. | Preflight rejects mainnet configuration before any network call. It rejects mainnet genesis in both modes and accepts only the devnet genesis for hosted mode. Local mode requires loopback. [Example preflight](../example/tests/setup.test.ts) |

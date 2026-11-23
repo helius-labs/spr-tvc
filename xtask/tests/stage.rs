@@ -44,3 +44,42 @@ fn staging_can_resume_its_candidate_but_cannot_replace_the_live_deployment() {
     assert!(require_candidate(Some("live"), Some("candidate")).is_err());
     assert!(require_candidate(Some("live"), None).is_err());
 }
+
+#[test]
+fn replica_request_is_explicit_and_cannot_resize_a_recorded_deployment() {
+    let descriptor = Path::new("release.deployment.json");
+    let one = NonZeroU32::new(1);
+    let two = NonZeroU32::new(2);
+    let command = create_command(descriptor, one);
+    assert!(command.get_args().eq([
+        "deploy",
+        "create",
+        "--non-interactive",
+        "--config-file",
+        "release.deployment.json",
+        "--replicas",
+        "1",
+    ]));
+    assert!(!create_command(descriptor, None)
+        .get_args()
+        .any(|arg| arg == "--replicas"));
+    for name in [
+        "TVC_REPLICAS",
+        "TVC_APP_ID",
+        "TVC_DANGEROUS_DEPLOY_DEBUG_MODE",
+    ] {
+        assert!(command
+            .get_envs()
+            .any(|(key, value)| key == name && value.is_none()));
+    }
+
+    let record = Deployment {
+        deploy_id: "candidate".into(),
+        replicas: one,
+        hosted_share_receipts: Vec::new(),
+    };
+    let record: Deployment = serde_json::from_value(serde_json::to_value(record).unwrap()).unwrap();
+    record.check_replicas(one).unwrap();
+    record.check_replicas(None).unwrap();
+    assert!(record.check_replicas(two).is_err());
+}

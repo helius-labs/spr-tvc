@@ -1,9 +1,12 @@
+use std::num::NonZeroU32;
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use spr_tvc_protocol::types::{Network, ServiceInfo};
 
+use crate::publish::{self, REPO, WORKFLOW};
 use crate::tools::{bridge, capture, capture_check, run, tvc, tvc_json, Credentials};
 use crate::{lower_hex, read_json, write_json, Release, APP};
 
@@ -28,6 +31,45 @@ pub(crate) struct Descriptor {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Deployment {
     pub(crate) deploy_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) replicas: Option<NonZeroU32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) hosted_share_receipts: Vec<String>,
+}
+
+impl Deployment {
+    fn check_replicas(&self, requested: Option<NonZeroU32>) -> Result<()> {
+        ensure!(
+            requested.is_none() || requested == self.replicas,
+            "deployment already exists with a different replica request; use a new release ID"
+        );
+        Ok(())
+    }
+}
+
+fn create_command(descriptor: &Path, replicas: Option<NonZeroU32>) -> Command {
+    let mut command = tvc(&["deploy", "create", "--non-interactive", "--config-file"]);
+    command.arg(descriptor);
+    // The TVC CLI gives environment overrides precedence over the descriptor.
+    for name in [
+        "TVC_APP_ID",
+        "TVC_QOS_VERSION",
+        "TVC_PIVOT_IMAGE_URL",
+        "TVC_EXPECTED_PIVOT_DIGEST",
+        "TVC_PIVOT_PATH",
+        "TVC_PIVOT_ARGS",
+        "TVC_PIVOT_PULL_SECRET",
+        "TVC_DANGEROUS_DEPLOY_DEBUG_MODE",
+        "TVC_HEALTH_CHECK_PORT",
+        "TVC_PUBLIC_INGRESS_PORT",
+        "TVC_REPLICAS",
+    ] {
+        command.env_remove(name);
+    }
+    if let Some(replicas) = replicas {
+        command.args(["--replicas", &replicas.to_string()]);
+    }
+    command
 }
 
 fn image_digest<'a>(
@@ -71,9 +113,9 @@ fn provenance_command(repository: &str, digest: &str, commit: &str) -> Command {
         "verify",
         &format!("oci://{repository}@sha256:{digest}"),
         "--repo",
-        "helius-labs/spr-tvc",
+        REPO,
         "--signer-workflow",
-        "helius-labs/spr-tvc/.github/workflows/publish-enclave-image.yml",
+        &format!("{REPO}/{WORKFLOW}"),
         "--source-ref",
         "refs/heads/main",
         "--source-digest",
@@ -82,6 +124,32 @@ fn provenance_command(repository: &str, digest: &str, commit: &str) -> Command {
         "https://slsa.dev/provenance/v1",
     ]);
     command
+}
+
+fn pivot_digest(image: &str) -> Result<String> {
+    let rootfs = tempfile::NamedTempFile::new()?;
+    run(Command::new("crane")
+        .args(["export", "--platform", "linux/amd64", image, "-"])
+        .stdout(rootfs.reopen()?))
+    .context("export the pinned image with crane; see the release runbook for setup")?;
+    let output = capture_check(
+        Command::new("bash")
+            .args([
+                "-o",
+                "pipefail",
+                "-c",
+                "tar -xOf \"$1\" \"$2\" | sha256sum",
+                "pivot-digest",
+            ])
+            .arg(rootfs.path())
+            .arg(PIVOT_PATH.trim_start_matches('/')),
+    )?;
+    let digest = std::str::from_utf8(&output)?
+        .split_ascii_whitespace()
+        .next()
+        .filter(|digest| lower_hex(digest, 64))
+        .context("could not read /tvc_app SHA-256")?;
+    Ok(digest.to_owned())
 }
 
 impl Release<'_> {
@@ -95,39 +163,11 @@ impl Release<'_> {
         Ok(())
     }
 
-    pub(crate) fn describe(&self) -> Result<()> {
-        let image = self
-            .args
-            .image
-            .as_deref()
-            .context("describe requires --image")?;
-        ensure!(
-            !self.path("deploy").try_exists()?,
-            "use a new release ID for a staged deployment"
-        );
+    fn describe(&self, image: &str) -> Result<Descriptor> {
         self.verify_image(image)?;
-        let output = capture(Command::new("docker").args([
-            "run",
-            "--rm",
-            "--network",
-            "none",
-            "--read-only",
-            "--platform",
-            "linux/amd64",
-            "--entrypoint",
-            "sha256sum",
-            image,
-            PIVOT_PATH,
-        ]))?;
-        let digest = std::str::from_utf8(&output)?
-            .split_ascii_whitespace()
-            .next()
-            .filter(|digest| lower_hex(digest, 64))
-            .context("could not read /tvc_app SHA-256")?;
-        write_json(
-            &self.path("deployment"),
-            &self.deployment_descriptor(image, digest),
-        )
+        let descriptor = self.deployment_descriptor(image, &pivot_digest(image)?);
+        write_json(&self.path("deployment"), &descriptor)?;
+        Ok(descriptor)
     }
 
     pub(crate) fn deployment_descriptor(&self, image: &str, digest: &str) -> Descriptor {
@@ -198,20 +238,62 @@ impl Release<'_> {
     }
 
     pub(crate) fn live_info(&self) -> Result<ServiceInfo> {
-        let output = capture_check(&mut bridge(&["info", &self.app.endpoint]))?;
+        let mut command = bridge(&["info", &self.app.endpoint]);
+        if self.args.activate {
+            command.arg("--wait");
+        }
+        let output = capture_check(&mut command)?;
         serde_json::from_slice(&output).context("decode live discovery")
     }
 
-    pub(crate) fn stage(&self) -> Result<()> {
-        let descriptor = self.read_descriptor()?;
-        let credentials = Credentials::load()?;
-        let path = self.path("deploy");
-        let existing: Option<Deployment> = if path.try_exists()? {
-            Some(read_json(&path)?)
+    fn selected_image(&self) -> Result<Option<String>> {
+        let run = if self.args.publish {
+            Some(publish::publish(self.network())?)
         } else {
-            None
+            self.args.run
         };
+        let Some(run) = run else {
+            return Ok(self.args.image.clone());
+        };
+        let (image, commit) = publish::image_from_run(run)?;
+        image_digest(
+            &image,
+            &self.config.image_repository,
+            self.network(),
+            Some(&commit),
+        )?;
+        Ok(Some(image))
+    }
+
+    pub(crate) fn deploy(&self) -> Result<()> {
+        let path = self.path("deploy");
+        let existing: Option<Deployment> =
+            path.try_exists()?.then(|| read_json(&path)).transpose()?;
+        let described = self.path("deployment").try_exists()?;
+        ensure!(
+            !self.args.publish || (!described && existing.is_none()),
+            "release already has a candidate; rerun without --publish"
+        );
+        ensure!(
+            described
+                || existing.is_some()
+                || self.args.publish
+                || self.args.run.is_some()
+                || self.args.image.is_some(),
+            "a new deployment needs --run, --publish, or --image"
+        );
+        if let Some(record) = &existing {
+            record.check_replicas(self.args.replicas)?;
+        }
+        let credentials = Credentials::load()?;
         let live = self.live_deployment()?;
+        if self.args.activate {
+            ensure!(
+                live.is_none()
+                    || live.as_deref() == existing.as_ref().map(|record| record.deploy_id.as_str()),
+                "--activate requires a fresh devnet app or its already live deployment"
+            );
+        }
         if self.network() == Network::Mainnet {
             self.production_trust()?;
             require_candidate(
@@ -219,7 +301,18 @@ impl Release<'_> {
                 existing.as_ref().map(|record| record.deploy_id.as_str()),
             )?;
         }
-        let record = if let Some(record) = existing {
+        let image = self.selected_image()?;
+        let descriptor = if described || existing.is_some() {
+            let descriptor = self.read_descriptor()?;
+            ensure!(
+                image.is_none_or(|image| descriptor.pivot_container_image_url == image),
+                "release already describes a different image; use a new release ID"
+            );
+            descriptor
+        } else {
+            self.describe(image.as_deref().context("missing release image")?)?
+        };
+        let mut record = if let Some(record) = existing {
             record
         } else {
             #[derive(Deserialize)]
@@ -228,18 +321,23 @@ impl Release<'_> {
                 deployment_id: String,
             }
             let created: CreatedDeployment = tvc_json(
-                tvc(&["deploy", "create", "--config-file"]).arg(self.path("deployment")),
+                &mut create_command(&self.path("deployment"), self.args.replicas),
                 capture,
             )?;
             let record = Deployment {
                 deploy_id: created.deployment_id,
+                replicas: self.args.replicas,
+                hosted_share_receipts: Vec::new(),
             };
             write_json(&path, &record)?;
             record
         };
         self.approved_deployment(&record.deploy_id, &descriptor, &credentials)?;
         println!("verified deployment {}", record.deploy_id);
-        if live.as_deref() != Some(&record.deploy_id) {
+        if self.args.activate {
+            self.activate(&mut record, &credentials)?;
+            self.policy()?;
+        } else if live.as_deref() != Some(&record.deploy_id) {
             println!("Review, approve, and provision it with tvc.");
         }
         Ok(())

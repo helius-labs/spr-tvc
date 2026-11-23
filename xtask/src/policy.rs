@@ -27,7 +27,7 @@ use zeroize::Zeroizing;
 
 use crate::stage::{Deployment, Descriptor};
 use crate::tools::{capture_check, verify_live, Credentials};
-use crate::{app_config, lower_hex, read_json, write_json, Pcrs, Phase, Release};
+use crate::{lower_hex, read_json, write_json, Pcrs, Phase, Release};
 
 const OPERATIONS: [OperationKind; 2] = [
     OperationKind::ServicePublicKeys,
@@ -153,18 +153,16 @@ impl Release<'_> {
         let trust: MainnetTrust =
             read_json::<Option<_>>(std::path::Path::new("sdk/trust/mainnet.json"))?
                 .context("mainnet trust anchors are unavailable")?;
-        let mainnet = app_config(Network::Mainnet)?;
         let devnet = &self.config.networks.devnet;
-        let devnet_key = app_config(Network::Devnet)?.quorum_public_key;
         ensure!(
             trust.security_domain_id == self.app.security_domain_id
-                && trust.quorum_public_key == mainnet.quorum_public_key,
+                && trust.quorum_public_key == self.app.quorum_public_key,
             "mainnet app must match the independently pinned Quorum key and security domain"
         );
         ensure!(
             devnet.app_id != self.app.app_id
                 && devnet.security_domain_id != trust.security_domain_id
-                && devnet_key != trust.quorum_public_key,
+                && devnet.quorum_public_key != trust.quorum_public_key,
             "mainnet and devnet require separate apps, domains, and Quorum keys"
         );
         if let Some(previous) = read_json::<Option<SignedReleasePolicy>>(&self.pin_path())? {
@@ -188,15 +186,12 @@ impl Release<'_> {
             &mut credentials.bridge(&["deployment", deploy_id]),
         )?)
         .context("decode authenticated Turnkey deployment")?;
-        let app = app_config(self.network())?;
-        P256Public::from_bytes(&app.quorum_public_key)
-            .map_err(|error| anyhow::anyhow!("invalid Turnkey app Quorum key ({error:?})"))?;
         deployment.approve(
             self,
             deploy_id,
             &credentials.organization_id,
             descriptor,
-            &app.quorum_public_key,
+            &self.app.quorum_public_key,
         )
     }
 

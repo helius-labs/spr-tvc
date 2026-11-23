@@ -1,9 +1,9 @@
 # Publishes the decryption enclave to GHCR using its release config.
 # The image tag includes the network and commit. Turnkey pulls it anonymously, so the
-# package must be public. Operators pass the image reference from the run
-# summary to cargo xtask describe.
+# package must be public. cargo xtask deploy can dispatch or consume this run.
 
 name: publish-enclave-image
+run-name: Publish ${{ inputs.network }} enclave image
 
 on:
   workflow_dispatch:
