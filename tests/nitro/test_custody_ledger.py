@@ -2325,6 +2325,20 @@ class CustodyLedgerTests(unittest.TestCase):
                 self.assertEqual(report["retirementObservedAtMs"], str(self.now * 1000))
                 self.assertEqual(report["replacement"]["replacementTargetSha256"], sha256(standby))
                 sleep.assert_called_once()
+            with self.subTest(stage="standby is registered during the wait"):
+                late = self.replacement_target(releaseId="late-standby", instanceId="i-1234567890abcdefd",
+                                               wrappingKeys=[key(slot, 40) for slot in range(1, 7)])
+                late_observed = {**target_attestation(late), "bootstrap": {**standby_boot, "bootKeyId": "af" * 32}}
+                approved = self.signed_subject(TARGET_APPROVAL, late)
+                query.side_effect = [
+                    observation(primary_observed), observation(late_observed),
+                    observation(late_observed), SimpleNamespace(),
+                ]
+                with patch("retirement.sleep", side_effect=lambda _: register_target(self.trust, approved)) as sleep:
+                    report = verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5)
+                self.assertEqual(report["retirementObservedAtMs"], str(self.now * 1000))
+                self.assertEqual(report["replacement"]["replacementTargetSha256"], sha256(late))
+                sleep.assert_called_once()
             query.side_effect = None
 
             unavailable.add(standby["wrappingKeys"][1])
@@ -2583,7 +2597,7 @@ class CustodyLedgerTests(unittest.TestCase):
             quorum.reset_mock()
 
             def attest(*_args, **_options):
-                self.assertEqual(registrations.call_count, 2 if query.call_count >= 3 else 1)
+                self.assertEqual(registrations.call_count, min(query.call_count, 3))
                 if query.call_count >= 3:
                     self.assertEqual(host_state.call_count, 4)
                     self.assertEqual(len(visited), 2 * len(inventory))
@@ -2683,9 +2697,13 @@ class CustodyLedgerTests(unittest.TestCase):
                 query.return_value.stdout = self.attestation_reply({
                     "policyDigest": "fe" * 32, "targets": [{**target_attestation(standby), "bootstrap": fresh}],
                 })
-                with patch("retirement.read_replicated_record", side_effect=ValueError("standby replication pending")) as read:
-                    with self.assertRaisesRegex(ValueError, "standby replication pending"):
-                        verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5, replica_profile="recovery-read")
+                query.reset_mock()
+                with (patch("retirement.read_replicated_record", side_effect=ValueError("standby replication pending")) as read,
+                      patch("retirement.time.monotonic", side_effect=[0, 0, 0, 1, 1, 5]),
+                      self.assertRaisesRegex(ValueError, "standby replication pending")):
+                    verify_retired(self.trust, wallet, "1", profiles, host_profiles, 5, replica_profile="recovery-read")
+                with self.subTest(stage="registration refresh reaches the original deadline"):
+                    query.assert_called_once()
                     self.assertEqual(read.call_args.args[-1], target_object_name(standby))
 
     def test_retirement_cli_publishes_the_completed_report_without_overwriting(self):

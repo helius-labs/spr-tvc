@@ -629,8 +629,11 @@ def verify_retired(trust, wallet_trust, epoch, profiles, host_profiles, wait_sec
             remaining = deadline - time.monotonic()
             if remaining > 0:
                 sleep(min(2, remaining))
-            if remaining <= 0 or time.monotonic() >= deadline:
-                raise ValueError(f"no replacement boot observed after verifying the old keys: {error}") from error
+                if time.monotonic() < deadline:
+                    candidates = replacement_targets(trust, qualification)
+                    if time.monotonic() < deadline:
+                        continue
+            raise ValueError(f"no replacement boot observed after verifying the old keys: {error}") from error
 
     confirm_retirement_policy(trust, wallet_trust, qualification, boot, replica, replica_profile, observed_records=observed)
     report = {

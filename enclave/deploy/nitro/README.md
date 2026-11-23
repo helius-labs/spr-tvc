@@ -158,6 +158,11 @@ While the source is unavailable, the frozen replica can be inspected against
 an independently retained checkpoint. Writable promotion requires the
 original bucket to be reachable so its write deny and final record set can be
 verified.
+An existing serving target can cold-boot during a custody-ledger outage
+using its pinned EIF, signed target file and retained wrapped shares. Rehearse
+that boot with access to the ledger disabled. The parent still needs three
+working wrapping keys, and the wallet needs both policy buckets and an
+attested serving endpoint. Commission replacement parents before an outage.
 [S3 replication status](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication-status.html)
 
 ## Commit a custody epoch
@@ -655,13 +660,12 @@ pinned history and excluded versions.
    ```
 
    When the verifier reports it is waiting, cold-boot a registered replacement
-   with the proved three slots. The verifier reads the candidate registrations
-   before starting the `--wait-seconds` timer and polls until a later attested
-   boot qualifies. If the first observed boot fails qualification, the verifier
-   can qualify a later standby within the original wait window. Before writing
-   the report it checks the old keys, parents and replica records again,
-   including the observed replacement's registration. It
-   verifies the replica's installed protections, the six keys used by the
+   with the proved three slots. The verifier refreshes the signed target
+   registrations between polls. It can qualify a standby registered during
+   the original `--wait-seconds` window if its boot and keys pass the same checks.
+   Before writing the report it rechecks the old keys, parents and replica
+   records, including the selected replacement's registration. It verifies
+   the replica's installed protections, the six keys used by the
    new boot, and the same registered boot and wallet policy.
    The report records the retired domain and custody digest, the S3 closure
    time, and the replacement custody digest, policy and boot. Pass a new
