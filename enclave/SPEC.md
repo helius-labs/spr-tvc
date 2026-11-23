@@ -58,10 +58,10 @@ signs the request.
    salt, output position, and note commitment. The owner tag exposes the
    recipient's Solana address. The commitment binds that address and service
    nullifier public key through `owner_hash`.
-   Wallet rechecks and RPC preflight establish the recipient state before
-   submission. A registration or viewing-key update can still land ahead of
-   an already signed payment. The default ring needs the registry assertion
-   in the signed payment to enforce that state at execution.
+   The guarded default-ring payment includes an assertion in the signed
+   Solana message. The updated registry program checks that the recipient
+   still has the selected keys or remains unregistered for a service
+   destination. A mismatch reverts the payment.
 3. **Authorize the exact batch.** The recipient wallet uses the owner tag to
    find candidate outputs. The SDK checks each item's cipher label, 16-byte
    salt and slot before asking the owner to sign. Transfer slots are unsigned

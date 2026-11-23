@@ -25,7 +25,8 @@ After a successful miss and service lookup, it checks the registry and
 chain again. The second registry read must reach the slot of the first.
 A registration found on either read takes precedence. The resolver returns an
 address for building the payment. Use the SPR wallet's guarded payment API to
-carry registry freshness through signing and broadcast. The transfer
+enforce the selected registry state during execution on a network running the
+updated registry program. The transfer
 publishes the recipient's Solana address as its owner tag. `open` signs an
 empty batch to obtain the nullifier secret and returns SPR `WalletKeys`. Sync with those keys
 to sign and decrypt note batches for that owner, including notes received
