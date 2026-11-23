@@ -1,10 +1,12 @@
 # Confidential transfer with Turnkey
 
 The example uses a Turnkey-managed Solana account to sign transactions and
-decrypt approvals. It deposits SOL, sends to the address's service keys,
-claims the note, then sweeps it into the account's locally derived shielded
-wallet. The on-chain transfer publishes the recipient's Solana owner tag.
-The code verifies the recipient and the decryption service before depositing.
+decrypt approvals. It deposits SOL, then pays the recipient's Solana address
+through `buildTransferTransaction` and the decryption service. That payment
+asserts the user-registry record in the same transaction and confirms the
+service policy before broadcast. The owner later claims the note and sweeps
+it into the account's locally derived shielded wallet. The on-chain transfer
+publishes the recipient's Solana owner tag.
 
 ## Devnet
 

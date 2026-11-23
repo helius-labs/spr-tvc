@@ -33,8 +33,8 @@ importers:
   example:
     dependencies:
       '@heliuslabs/spr':
-        specifier: 0.9.0-alpha
-        version: 0.9.0-alpha(@solana/kit@8.3.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))(typescript@5.9.3)
+        specifier: github:helius-labs/privacy-rings#8b158d91947af261ff8e4a064ae4001f8b4c4224&path:sdk-libs/ts
+        version: https://codeload.github.com/helius-labs/privacy-rings/tar.gz/8b158d91947af261ff8e4a064ae4001f8b4c4224#path:sdk-libs/ts(@solana/kit@8.3.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))(typescript@5.9.3)
       '@heliuslabs/spr-decryption-service':
         specifier: workspace:*
         version: link:../sdk
@@ -325,6 +325,13 @@ packages:
     peerDependencies:
       '@solana/kit': ^8.3.0
 
+  '@heliuslabs/spr@https://codeload.github.com/helius-labs/privacy-rings/tar.gz/8b158d91947af261ff8e4a064ae4001f8b4c4224#path:sdk-libs/ts':
+    resolution: {path: sdk-libs/ts, tarball: https://codeload.github.com/helius-labs/privacy-rings/tar.gz/8b158d91947af261ff8e4a064ae4001f8b4c4224}
+    version: 0.9.0-alpha
+    engines: {node: ^22.12.0 || >=24}
+    peerDependencies:
+      '@solana/kit': ^8.3.0
+
   '@hpke/common@1.10.1':
     resolution: {integrity: sha512-moJwhmtLtuxiUzzNp1jpfBfx8yefKoO9D/RCR9dmwrnc7qjJqId1rEtQz+lSlU5cabX8daToMSx/7HayXOiaFw==}
     engines: {node: '>=16.0.0'}
@@ -482,6 +489,11 @@ packages:
 
   '@phala/dcap-qvl@0.6.5':
     resolution: {integrity: sha512-zhQjaQV3AoSlYSUi8EZsQvW5+02Fh2OMoJhsLI1MWzu0X2GXumfzNmQrd7MYwziTLCwTWxzZsfmh6jsJlGXZfQ==}
+    engines: {node: '>=14.0.0'}
+    hasBin: true
+
+  '@phala/dcap-qvl@0.7.1':
+    resolution: {integrity: sha512-cbqJTABnqmTyVm6ksx//MgJiiMGJQAI1ckN7KZHmxWUM0nWWNxXz95M0DHv7SqnhKgH200qpEe9IT1AgEvGUnA==}
     engines: {node: '>=14.0.0'}
     hasBin: true
 
@@ -2275,6 +2287,25 @@ snapshots:
       - encoding
       - typescript
 
+  '@heliuslabs/spr@https://codeload.github.com/helius-labs/privacy-rings/tar.gz/8b158d91947af261ff8e4a064ae4001f8b4c4224#path:sdk-libs/ts(@solana/kit@8.3.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))(typescript@5.9.3)':
+    dependencies:
+      '@hpke/core': 1.9.0
+      '@noble/ciphers': 2.3.0
+      '@noble/curves': 2.3.0
+      '@noble/hashes': 2.3.0
+      '@peculiar/asn1-schema': 2.10.0
+      '@peculiar/asn1-x509': 2.10.0
+      '@phala/dcap-qvl': 0.7.1
+      '@solana-program/system': 0.14.1(@solana/kit@8.3.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
+      '@solana-program/token': 0.16.1(@solana/kit@8.3.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
+      '@solana/kit': 8.3.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      '@solana/rpc-spec-types': 8.3.0(typescript@5.9.3)
+      bn.js: 5.2.5
+      cborg: 6.1.3
+    transitivePeerDependencies:
+      - encoding
+      - typescript
+
   '@hpke/common@1.10.1': {}
 
   '@hpke/core@1.9.0':
@@ -2458,6 +2489,19 @@ snapshots:
       tsyringe: 4.10.0
 
   '@phala/dcap-qvl@0.6.5':
+    dependencies:
+      '@peculiar/asn1-schema': 2.10.0
+      '@peculiar/asn1-x509': 2.10.0
+      asn1.js: 5.4.1
+      bn.js: 5.2.5
+      buffer: 6.0.3
+      elliptic: 6.6.1
+      hash.js: 1.1.7
+      node-fetch: 2.7.0
+    transitivePeerDependencies:
+      - encoding
+
+  '@phala/dcap-qvl@0.7.1':
     dependencies:
       '@peculiar/asn1-schema': 2.10.0
       '@peculiar/asn1-x509': 2.10.0

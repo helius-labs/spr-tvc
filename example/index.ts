@@ -1,3 +1,4 @@
+import { signTransactionWithSigners } from "@solana/kit";
 import {
   SOL_MINT,
   Wallet,
@@ -34,8 +35,6 @@ async function main(): Promise<void> {
       if (registration) await send(registration);
       if (!await isWalletRegistered({ rpc: zolana, owner: sender.address })) throw new Error("sender did not register");
     }
-    const payment = { rpc: zolana, owner: recipient.address, service };
-    const recipientAddress = await resolvePaymentAddress(payment);
     const requireOriginalPaymentPolicy = await nitro?.prepareTransfer();
 
     const wallet = new Wallet({ identity: keys.address() });
@@ -48,24 +47,39 @@ async function main(): Promise<void> {
     const depositTx = await send(deposit);
     await syncWallet({ client: zolana, wallet, keys, config: { requireSlot: depositTx.slot } });
 
+    let paidTo: Awaited<ReturnType<typeof service.address>> | undefined;
     const transfer = await buildTransferTransaction({
       client: zolana,
       wallet,
       keys,
       feePayer: sender.address,
-      recipient: recipientAddress,
+      recipient: recipient.address,
       amount: AMOUNT,
+      decryptionService: {
+        genesisHash: service.genesisHash,
+        async address(owner, options) {
+          const resolved = await service.address(owner, options);
+          paidTo = resolved;
+          return resolved;
+        },
+        confirmAddress(owner, expected, options) {
+          return service.confirmAddress(owner, expected, options);
+        },
+      },
     });
-    const transferTx = await send(transfer, async () => {
-      const current = await resolvePaymentAddress(payment);
-      if (!Buffer.from(current.toBytes()).equals(recipientAddress.toBytes())) {
-        throw new Error("the recipient payment keys changed before broadcast");
-      }
+    if (paidTo === undefined) throw new Error("the transfer did not resolve a service address");
+    const transferSignature = await transfer.send(async (transaction) => {
+      const signed = await signTransactionWithSigners([sender], transaction);
       await requireOriginalPaymentPolicy?.();
+      return signed;
     });
+    const transferTx = {
+      signature: transferSignature,
+      slot: await zolana.confirmTransaction(transferSignature),
+    };
     const finalizedAt = BigInt(Date.now());
     if (nitro) console.log(`finalized transfer recipient=${recipient.address} tx=${transferTx.signature} awaiting ${nitro.seedChanged ? "the seed cutover" : "the replacement custody epoch"}`);
-    const replacement = await nitro?.afterTransfer(recipientAddress, finalizedAt);
+    const replacement = await nitro?.afterTransfer(paidTo, finalizedAt);
     const reader = replacement?.service ?? service;
     await checkRecipient(false);
     ownKeys = sender.address === recipient.address

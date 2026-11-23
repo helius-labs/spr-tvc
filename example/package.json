@@ -10,11 +10,11 @@
     "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
-    "@heliuslabs/spr": "0.9.0-alpha",
+    "@heliuslabs/spr": "github:helius-labs/privacy-rings#8b158d91947af261ff8e4a064ae4001f8b4c4224&path:sdk-libs/ts",
+    "@heliuslabs/spr-decryption-service": "workspace:*",
     "@solana/kit": "^8.3.0",
     "@turnkey/sdk-server": "^8.3.0",
-    "dotenv": "^17.0.0",
-    "@heliuslabs/spr-decryption-service": "workspace:*"
+    "dotenv": "^17.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
