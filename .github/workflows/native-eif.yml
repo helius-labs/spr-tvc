@@ -38,12 +38,6 @@ permissions:
 
 jobs:
   build:
-    if: >-
-      github.event_name == 'pull_request' ||
-      (github.event_name == 'workflow_dispatch' &&
-       ((inputs.network == 'devnet' && startsWith(github.ref, 'refs/heads/')) ||
-        (inputs.network == 'mainnet' && github.ref == 'refs/heads/main' && github.ref_protected &&
-         github.workflow_ref == 'helius-labs/spr-tvc/.github/workflows/publish-enclave-image.yml@refs/heads/main')))
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
@@ -57,6 +51,25 @@ jobs:
       SPR_NETWORK: ${{ inputs.network || 'devnet' }}
       NITRO_CLI_REVISION: 536dca352e130e23bb39b6227753c91ad702048d # aws-nitro-enclaves-cli v1.5.3
     steps:
+      - name: Reject unsupported build source
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          RELEASE_NETWORK: ${{ inputs.network }}
+          CALLER_WORKFLOW: ${{ github.workflow_ref }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            if [[ "$RELEASE_NETWORK" == devnet && "$GITHUB_REF" == refs/heads/* ]]; then
+              exit 0
+            fi
+            if [[ "$RELEASE_NETWORK" == mainnet && "$GITHUB_REF" == refs/heads/main &&
+                  "${GITHUB_REF_PROTECTED:-}" == true &&
+                  "$CALLER_WORKFLOW" == helius-labs/spr-tvc/.github/workflows/publish-enclave-image.yml@refs/heads/main ]]; then
+              exit 0
+            fi
+          fi
+          echo "::error::Dispatch a devnet EIF from a branch or a mainnet EIF from protected main using publish-enclave-image.yml."
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

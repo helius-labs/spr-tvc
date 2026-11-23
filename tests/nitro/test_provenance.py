@@ -4,6 +4,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 
@@ -20,6 +21,35 @@ PROVENANCE_SHA256 = "cd" * 32
 class IndependentReleaseReviewTests(unittest.TestCase):
     review = {"state": "approved", "comment": PROVENANCE_SHA256, "user": {"id": 2, "type": "User"},
               "environments": [{"name": "image-publish", "id": ENVIRONMENT_ID}]}
+
+    def test_invalid_release_dispatch_fails_before_checkout(self):
+        workflow = pathlib.Path(__file__).resolve().parents[2] / ".github/workflows/native-eif.yml"
+        build = workflow.read_text().split("\n  build:\n", 1)[1].split("\n  attest:\n", 1)[0]
+        first_step = build.split("\n    steps:\n", 1)[1].split("\n      - uses:", 1)[0]
+        self.assertNotIn("\n    if:", build)
+        self.assertIn("if: github.event_name != 'pull_request'", first_step)
+        script = textwrap.dedent(first_step.split("        run: |\n", 1)[1])
+        ref = "refs/heads/main"
+        caller = f"helius-labs/spr-tvc/.github/workflows/publish-enclave-image.yml@{ref}"
+        base = {"GITHUB_EVENT_NAME": "workflow_dispatch", "RELEASE_NETWORK": "mainnet",
+                "GITHUB_REF": ref, "GITHUB_REF_PROTECTED": "true", "CALLER_WORKFLOW": caller}
+        for overrides, accepted in (
+            ({}, True),
+            ({"RELEASE_NETWORK": "devnet", "GITHUB_REF": "refs/heads/rehearsal", "GITHUB_REF_PROTECTED": ""}, True),
+            ({"RELEASE_NETWORK": "devnet", "GITHUB_REF": "refs/tags/v1"}, False),
+            ({"RELEASE_NETWORK": "unknown"}, False),
+            ({"GITHUB_REF_PROTECTED": "false"}, False),
+            ({"GITHUB_REF": "refs/heads/Main", "CALLER_WORKFLOW": caller.replace(ref, "refs/heads/Main")}, False),
+            ({"GITHUB_REF": "refs/heads/rehearsal"}, False),
+            ({"CALLER_WORKFLOW": caller.replace("publish-enclave-image", "other")}, False),
+            ({"GITHUB_EVENT_NAME": "schedule"}, False),
+        ):
+            with self.subTest(overrides=overrides):
+                result = subprocess.run(["bash", "-euo", "pipefail", "-c", script],
+                                        env={**base, **overrides}, capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0 if accepted else 1, result.stderr)
+                if not accepted:
+                    self.assertTrue(result.stdout.startswith("::error::"), result.stdout)
 
     def test_requires_a_configured_reviewer_before_building_mainnet(self):
         def environment(*reviewers):

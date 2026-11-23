@@ -47,7 +47,8 @@ commit from independent release review. A single commit can build different
 EIFs from different configurations. Signers also verify the GitHub
 attestation came from the designated native EIF workflow. Devnet can
 use an explicit branch in this repository. Mainnet requires a fresh dispatch
-from protected `main`. The build and signing jobs require administrator bypass
+of `publish-enclave-image.yml` from protected `main`. An invalid dispatch
+fails before checkout. The build and signing jobs require administrator bypass
 to be disabled and compare the `image-publish` environment ID and its list of
 eligible individual reviewer IDs. The approver must be on that list and
 different from the dispatcher. The build shows the immutable artifact and
