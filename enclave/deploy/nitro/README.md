@@ -751,12 +751,23 @@ a deterministic Turnkey signature for each wallet. Native Nitro derives
 service keys from its own custody seed, so it cannot open those notes with
 the new keys. [Archived mainnet release](https://github.com/helius-labs/spr-tvc/commit/400c803e73457902676fe28bde65648b2a3a0d5f) · [Embedded wallet recovery](https://github.com/helius-labs/spr-tvc/blob/6cac352eb7020f82b7aa1d1ce58ca85677f265d5/packages/tvc-wallet/README.md)
 
-Before switching mainnet routes, establish which wallets received notes
-under the embedded release. For any affected wallet, keep an approved
-Turnkey recovery route available, rederive and verify its original shielded
-identity, then use an owner-authorized sweep to wallet-local keys. Rehearse
-that recovery and confirm the sweep before retiring the old route. If the
-payment history is incomplete, retain the recovery path.
+Before switching mainnet routes, reconcile integration payment records with
+finalized transactions and wallet sync under the original shielded identities.
+Gateway logs can identify enrollment activity. A wallet must open its notes
+to establish what it can still spend.
+
+1. Keep an approved Turnkey recovery deployment available. Verify and pin its
+   release for the recovery client. The original Turnkey account must authorize
+   the bootstrap signature under a policy that names the recovery enclave's key.
+2. Reopen each affected wallet with `tvc.open({ identity: originalIdentity },
+   { approve })`. This rederives the identity, checks it against the saved one,
+   and seals the seed to the recovery deployment. Sync with the recovered keys.
+3. Have the owner sign a sweep to their wallet-local shielded address. Verify
+   that the transaction finalized, the old notes were spent, and the destination
+   wallet can open the resulting notes. Rehearse this process before cutover.
+
+Keep recovery available while any payment history or wallet recovery remains
+unresolved.
 
 ## Publish wallet policy
 
