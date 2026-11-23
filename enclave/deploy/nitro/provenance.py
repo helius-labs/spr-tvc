@@ -81,35 +81,41 @@ def require_available_reviewer(environment, actor_id, attempt):
         raise ValueError("expected the image-publish release environment")
     if environment.get("can_admins_bypass") is not False:
         raise ValueError("disable administrator bypass on image-publish before building for mainnet")
+    reviewers = set()
     for rule in environment["protection_rules"]:
         if rule["type"] != "required_reviewers":
             continue
         for entry in rule["reviewers"]:
             reviewer = entry["reviewer"]
             identity = reviewer["id"]
-            if type(identity) is int and identity > 0 and (
-                entry["type"] == "Team" or
-                (entry["type"] == "User" and reviewer["type"] == "User" and identity != actor)
-            ):
-                return environment_id
-    raise ValueError("image-publish has no required reviewer who can independently approve this dispatcher")
+            if (entry["type"] == "User" and reviewer["type"] == "User" and
+                    type(identity) is int and identity > 0 and identity != actor):
+                reviewers.add(identity)
+    if not reviewers:
+        raise ValueError("image-publish has no required reviewer listed as an individual GitHub user other than the dispatcher")
+    return {"environmentId": environment_id, "reviewerIds": sorted(reviewers)}
 
 
-def require_independent_review(reviews, actor_id, attempt, environment_id, provenance_sha256):
+def require_independent_review(reviews, actor_id, attempt, snapshot, provenance_sha256):
     actor = release_actor(actor_id, attempt)
     digest = hex_digest(provenance_sha256)
-    if not isinstance(reviews, list) or type(environment_id) is not int or environment_id <= 0:
+    fields(snapshot, "environmentId", "reviewerIds")
+    environment_id, reviewers = snapshot["environmentId"], snapshot["reviewerIds"]
+    if (not isinstance(reviews, list) or type(environment_id) is not int or environment_id <= 0 or
+            not isinstance(reviewers, list) or not reviewers or
+            any(type(identity) is not int or identity <= 0 or identity == actor for identity in reviewers) or
+            reviewers != sorted(set(reviewers))):
         raise ValueError("invalid GitHub release review evidence")
     for review in reviews:
         reviewer = review["user"]
         if (review["state"] == "approved" and review.get("comment") == digest and
                 reviewer["type"] == "User" and
-                type(reviewer["id"]) is int and reviewer["id"] > 0 and reviewer["id"] != actor and
+                type(reviewer["id"]) is int and reviewer["id"] in reviewers and
                 any(environment["name"] == MAIN_ENVIRONMENT and
                     type(environment.get("id")) is int and environment["id"] == environment_id
                     for environment in review["environments"])):
             return
-    raise ValueError("mainnet build requires an image-publish approval from another GitHub user "
+    raise ValueError("mainnet build requires an image-publish approval from a configured reviewer "
                      "with the exact provenance digest as the comment")
 
 
@@ -134,7 +140,7 @@ def main():
     for command in (reviewers, review):
         command.add_argument("actor_id")
         command.add_argument("attempt")
-    review.add_argument("environment_id", type=int)
+    review.add_argument("reviewer_snapshot")
     review.add_argument("provenance_sha256")
     args = parser.parse_args()
     try:
@@ -149,9 +155,9 @@ def main():
         else:
             evidence = parse_json(sys.stdin.buffer.read(MAX_DOCUMENT_BYTES + 1))
             if args.command == "check-reviewers":
-                print(require_available_reviewer(evidence, args.actor_id, args.attempt))
+                print(canonical(require_available_reviewer(evidence, args.actor_id, args.attempt)).decode())
             else:
-                require_independent_review(evidence, args.actor_id, args.attempt, args.environment_id,
+                require_independent_review(evidence, args.actor_id, args.attempt, parse_json(args.reviewer_snapshot),
                                            args.provenance_sha256)
     except (OSError, TypeError, ValueError, KeyError, subprocess.SubprocessError) as error:
         raise SystemExit(str(error)) from None

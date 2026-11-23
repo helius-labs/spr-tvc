@@ -179,12 +179,13 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
    Dispatch `publish-enclave-image.yml` with the public configuration. For
    devnet, use the reviewed branch. Dispatch mainnet builds from protected `main`.
    In the `image-publish` environment, disable administrator bypass and
-   configure a required reviewer other than the dispatcher or a review team.
-   A different GitHub user checks the unsigned artifact linked in the run
+   list an individual GitHub user other than the dispatcher as a required reviewer.
+   A reviewer on that list checks the unsigned artifact linked in the run
    summary, computes SHA-256 of its `provenance.json`, and uses that lowercase
    hex digest as the entire `image-publish` approval comment. The workflow
-   checks the environment before building and again before signing. The
-   recorded approval must match the environment ID and provenance digest.
+   records the environment ID and eligible reviewer IDs before building and
+   requires the same IDs before signing. The recorded approval must identify
+   a reviewer from that list, the same environment ID and the provenance digest.
    If the sole required reviewer must dispatch, add another required reviewer
    first. Dispatch a new run if the build needs another attempt.
    The reviewer records the summary's **Build review pins** as `review.json`

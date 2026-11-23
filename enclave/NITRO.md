@@ -47,12 +47,12 @@ commit from independent release review. A single commit can build different
 EIFs from different configurations. Signers also verify the GitHub
 attestation came from the designated native EIF workflow. Devnet can
 use an explicit branch in this repository. Mainnet requires a fresh dispatch
-from protected `main` and an `image-publish` approval from a GitHub user other
-than the dispatcher. The environment must disable administrator bypass before
-build and signing, and the recorded approval must match the build's environment
-ID. The build shows the immutable artifact and its hashes before review. The
-signing job rechecks the downloaded EIF and its files against that provenance
-digest.
+from protected `main`. The build and signing jobs require administrator bypass
+to be disabled and compare the `image-publish` environment ID and its list of
+eligible individual reviewer IDs. The approver must be on that list and
+different from the dispatcher. The build shows the immutable artifact and
+its hashes before review. The approval names the exact provenance digest,
+which the signing job checks against the downloaded EIF and its files.
 The artifact packager runs the release binary against the exact
 configuration bytes it will measure, using the same checks as enclave startup.
 The native builder fetches OpenSSL from a pinned 3.5 LTS revision, verifies its
