@@ -63,9 +63,9 @@ async function main(): Promise<void> {
       }
       await requireOriginalPaymentPolicy?.();
     });
-    const confirmedAt = BigInt(Date.now());
-    if (nitro) console.log(`transfer recipient=${recipient.address} tx=${transferTx.signature} awaiting ${nitro.seedChanged ? "the seed cutover" : "the replacement custody epoch"}`);
-    const replacement = await nitro?.afterTransfer(recipientAddress, confirmedAt);
+    const finalizedAt = BigInt(Date.now());
+    if (nitro) console.log(`finalized transfer recipient=${recipient.address} tx=${transferTx.signature} awaiting ${nitro.seedChanged ? "the seed cutover" : "the replacement custody epoch"}`);
+    const replacement = await nitro?.afterTransfer(recipientAddress, finalizedAt);
     const reader = replacement?.service ?? service;
     await checkRecipient(false);
     ownKeys = sender.address === recipient.address
@@ -109,12 +109,12 @@ async function main(): Promise<void> {
     });
     const sweepTx = await sweepSend(sweep, replacement?.requireSamePolicy);
     const own = new Wallet({ identity: ownKeys.address() });
-    await syncWallet({
-      client: zolana,
-      wallet: own,
-      keys: ownKeys,
-      config: { requireSlot: sweepTx.slot },
-    });
+    const sweepSlot = { requireSlot: sweepTx.slot };
+    await Promise.all([
+      syncWallet({ client: zolana, wallet: own, keys: ownKeys, config: sweepSlot }),
+      syncWallet({ client: zolana, wallet: received, keys: serviceKeys, config: sweepSlot }),
+    ]);
+    expectBalance("swept source", received.balance(SOL_MINT), 0n, 0);
     expectBalance("sweep", own.balance(SOL_MINT), AMOUNT, 1);
     await checkRecipient(localnet === true);
     const boot = replacement?.bootKeyId ? ` transfer=${transferTx.signature} boot=${replacement.bootKeyId}` : "";

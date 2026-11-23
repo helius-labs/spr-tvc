@@ -768,22 +768,31 @@ to its KMS policy. [Nitro attestation](https://docs.aws.amazon.com/enclaves/late
 1. Freeze new sends that resolve through the old service. Initialize a fresh
    domain with a newly generated seed and an independent release namespace.
    Commission its serving slots and publish an activation with
-   `recoveryOnly: false`. Verify both buckets and the serving replicas before
-   distributing the new send pins.
+   `recoveryOnly: false`. Verify both buckets and the serving replicas.
 2. Publish `recoveryOnly: true` in the next old-domain policy. If recovery
    replicas are offline, publish a target-free revocation with the flag set.
    Publish a recovery-only activation once the old replicas are ready. Preserve
    `recoveryOnly: true` in all later old-domain policies. Pin the flag and the
    cutover sequence when distributing old-domain recovery trust to wallets.
-3. Keep the old domain available for owner-signed recovery. Open it with the
-   recovery pins, scan the owner's outputs, verify commitments, and sweep to
-   wallet-local notes. Switch new sends to the new domain and discard cached
-   service-derived destinations. Recovery-only mode applies when resolving a
-   recipient through the service. An explicit shielded address can still be
-   used in a transaction. Rehearse both paths
-   using [the on-chain devnet procedure](../../../tests/README.md#live-seed-cutover).
-   Retain the old recovery capability until affected owners have a recovery
-   path. Treat previously exposed note data as compromised.
+3. Verify the recovery-only activation in both old-domain buckets and have an
+   existing wallet observe it. Distribute the new send pins and discard cached
+   service-derived destinations. Keep the old domain available for owner-signed
+   recovery.
+4. Reconcile old signed payment attempts by their transaction IDs. Wait for
+   Solana finality before counting an attempt as settled. For an unresolved
+   attempt, use its exact signed blockhash, last valid block height and
+   finalized signature history to establish expiry. Keep the old domain
+   available throughout. Recovery-only policy stops new lookups through the
+   old service. An old signed transaction can still land, and a sender with
+   explicit old keys can still create a new transaction. Reconciliation covers
+   the recorded payment attempts. Keep recovery available for future payments
+   to the old destination as well.
+5. Open the old domain with the recovery pins, scan the owner's outputs,
+   verify commitments, and sweep to wallet-local notes. Confirm the sweep and
+   check the finalized source and destination balances. Retain old recovery
+   capability until affected owners have a recovery path. Treat previously
+   exposed note data as compromised.
+   [On-chain devnet rehearsal](../../../tests/README.md#live-seed-cutover)
 
 ### Migrate from the Turnkey embedded wallet
 

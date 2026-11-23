@@ -482,10 +482,11 @@ keys. A Rust Nitro payment submission requires at least one attached recipient
 and binds the resolved keys to its outputs. Signing returns the transaction ID
 and blockhash lifetime for the caller to record before broadcast. A send
 consumes the signed payment, checks its blockhash, and rechecks its recipients.
-A permissionless sender can still pay a previously published destination.
-Earlier ciphertexts retain
-their exposure, and owners must retain access to the old domain until recovery
-is complete. [Cutover runbook](deploy/nitro/README.md#replace-a-compromised-seed)
+A payment submitted before the cutover can still land while its blockhash is
+valid. A permissionless sender can also use a previously published destination.
+Reconcile pending payments at Solana finality and keep the old recovery path
+available. Earlier ciphertexts retain their exposure.
+[Cutover runbook](deploy/nitro/README.md#replace-a-compromised-seed)
 
 ## Wallet connection and operations
 

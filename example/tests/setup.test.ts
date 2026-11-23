@@ -7,7 +7,8 @@ import { test, type TestContext } from "node:test";
 
 import {
   blockhash, compileTransaction, createTransactionMessage, generateKeyPairSigner,
-  setTransactionMessageFeePayer, setTransactionMessageLifetimeUsingBlockhash,
+  getSignatureFromTransaction, setTransactionMessageFeePayer, setTransactionMessageLifetimeUsingBlockhash,
+  signTransactionWithSigners,
 } from "@solana/kit";
 import { createSprClient } from "@heliuslabs/spr";
 import { sendAndConfirmFactory, setup } from "../setup.js";
@@ -43,6 +44,50 @@ test("a policy change while the wallet signs prevents RPC broadcast", async (t) 
     throw new Error("payment policy changed");
   }), /payment policy changed/);
   assert.equal(fetch.mock.callCount(), 0);
+});
+
+test("a finalized rehearsal waits for finality and retains its transaction ID on an ambiguous send", async (t) => {
+  const payer = await generateKeyPairSigner();
+  const transaction = compileTransaction(setTransactionMessageLifetimeUsingBlockhash(
+    { blockhash: blockhash(LOCALNET), lastValidBlockHeight: 1n },
+    setTransactionMessageFeePayer(payer.address, createTransactionMessage({ version: 0 })),
+  ));
+  const signature = getSignatureFromTransaction(await signTransactionWithSigners([payer], transaction));
+  let polls = 0;
+  let ambiguous = false;
+  t.mock.method(globalThis, "fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const { id, method, params } = JSON.parse(String(init?.body));
+    if (method === "sendTransaction") {
+      assert.equal(params[1].preflightCommitment ?? "finalized", "finalized");
+      if (ambiguous) {
+        return Response.json({ jsonrpc: "2.0", id, error: { code: -32000, message: "RPC lost its reply" } });
+      }
+      return Response.json({ jsonrpc: "2.0", id, result: signature });
+    }
+    assert.equal(method, "getSignatureStatuses");
+    assert.deepEqual(params[0], [signature]);
+    const confirmationStatus = ++polls === 1 ? "confirmed" : "finalized";
+    return Response.json({
+      jsonrpc: "2.0", id, result: { context: { slot: 100 }, value: [
+        { slot: 66, confirmations: polls === 1 ? 1 : null, err: null, status: { Ok: null }, confirmationStatus },
+      ] },
+    });
+  });
+  const client = await createSprClient({
+    solanaRpcUrl: "http://127.0.0.1:8899/",
+    indexerUrl: "http://127.0.0.1:8080/",
+    proverUrl: "http://127.0.0.1:8081/",
+    commitment: "finalized",
+    indexerConfig: { poll: { numRetries: 2, delayMs: 1n, maxDelayMs: 1n } },
+  });
+  const send = sendAndConfirmFactory(client, payer);
+  assert.deepEqual(await send(transaction), { signature, slot: 66n });
+  assert.equal(polls, 2);
+  ambiguous = true;
+  await assert.rejects(send(transaction), {
+    message: `check Solana transaction ${signature} before retrying the rehearsal`,
+  });
+  assert.equal(polls, 2);
 });
 
 function setEnv(t: TestContext, values: Record<string, string | undefined>): void {

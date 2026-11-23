@@ -2,7 +2,10 @@ import { lstat } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout } from "node:timers/promises";
 import type { ShieldedAddress } from "@heliuslabs/spr";
-import { DecryptionServiceError } from "@heliuslabs/spr-decryption-service";
+import type { Address } from "@solana/kit";
+import {
+  DecryptionServiceError, type DecryptionService, type DecryptionServiceRequestOptions,
+} from "@heliuslabs/spr-decryption-service";
 import {
   advancesNitroPolicy, createNitroDecryptionService, type NitroPolicyCheckpoint, type NitroPolicyStore, type NitroTrust,
 } from "@heliuslabs/spr-decryption-service/nitro";
@@ -73,7 +76,10 @@ export function checkpointStore(path: string, trust: Pick<NitroTrust, "network" 
   return { store, close: () => db.close() };
 }
 
-const RETRYABLE_POLICY_ERRORS = new Set(["ReleasePolicyInvalid", "BootProofUnverified", "EndpointUnavailable", "ExpiredRequest"]);
+const RETRYABLE_POLICY_ERRORS = new Set([
+  "ReleasePolicyInvalid", "ReleasePolicySuperseded", "ReleasePolicyRevoked",
+  "BootProofUnverified", "EndpointUnavailable", "ExpiredRequest",
+]);
 
 type VerifiedPublication = Pick<Awaited<ReturnType<typeof readPublishedNitroPolicy>>, "sameEnvelope" | "checkpoint" | "policy">;
 
@@ -82,6 +88,25 @@ function acceptedPolicy(
   accepted: NitroPolicyCheckpoint | undefined,
 ): boolean {
   return published.sameEnvelope && sameNitroCheckpoint(accepted, published.checkpoint);
+}
+
+export async function observeRecoveryOnly(
+  published: VerifiedPublication,
+  originalClient: Pick<DecryptionService, "address">,
+  store: Pick<NitroPolicyStore, "current">,
+  recipient: Address,
+  options: DecryptionServiceRequestOptions,
+): Promise<NitroPolicyCheckpoint | undefined> {
+  if (!published.sameEnvelope || published.policy.action !== "activate" || !published.policy.recoveryOnly) {
+    return undefined;
+  }
+  try {
+    await originalClient.address(recipient, options);
+  } catch (error) {
+    if (!(error instanceof DecryptionServiceError) || error.code !== "ReleasePolicyRecoveryOnly") throw error;
+    return acceptedPolicy(published, await store.current()) ? published.checkpoint : undefined;
+  }
+  throw new Error("old domain still serves payment destinations");
 }
 
 type Custody = { custodyEpoch: string; custodyDigest: string };
@@ -137,7 +162,7 @@ export function parseRetirementReport(text: string, scope: RetirementScope) {
   const published = decodeDecimalU64(retired.publishedAtMs);
   const observed = decodeDecimalU64(report.retirementObservedAtMs);
   if (published <= scope.transferredAt || observed < published) {
-    throw new Error("expected retirement to be published after the confirmed transfer and before verification");
+    throw new Error("expected retirement to be published after the finalized transfer and before verification");
   }
   const { custodyDigest, walletPolicyDigest, replacementBootstrap: { bootedAtMs, bootKeyId, slots } } = replacement;
   requireHex(custodyDigest, 32);
@@ -260,18 +285,12 @@ export async function nativeDevnet(walletTrust: string, checkpoint: string, repl
           try {
             let recoveryCheckpoint: NitroPolicyCheckpoint | undefined;
             if (reader) {
-              try {
-                await reader.address(recipient, options);
-                throw new Error("old domain still serves payment destinations");
-              } catch (error) {
-                if (!(error instanceof DecryptionServiceError) || error.code !== "ReleasePolicyRecoveryOnly") throw error;
-              }
-              const oldHead = await readPublishedNitroPolicy(recoveryTrust, signal);
-              if (!oldHead.policy.recoveryOnly || !acceptedPolicy(oldHead, await original.store.current())) {
+              const oldHead = await readPublishedNitroPolicy(trust, signal);
+              recoveryCheckpoint = await observeRecoveryOnly(oldHead, service, original.store, recipient, options);
+              if (!recoveryCheckpoint) {
                 await setTimeout(2_000, undefined, { signal });
                 continue;
               }
-              recoveryCheckpoint = oldHead.checkpoint;
             }
             const destination = await next.address(recipient, options);
             const published = await readPublishedNitroPolicy(nextTrust, signal);

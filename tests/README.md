@@ -39,7 +39,7 @@ example validates both trust files when testing a seed cutover. Before
 depositing, it resolves the recipient without their signature and checks that
 both buckets serve the policy it accepted for the original epoch. It rechecks
 the recipient and signed policy after signing, before sending. Wait for the
-confirmed transfer, stop the old replica, then publish the replacement custody
+finalized transfer, stop the old replica, then publish the replacement custody
 floor to both buckets. The example waits up to five minutes for both buckets
 to serve the accepted policy with targets only at the requested replacement
 epoch. It checks that the
@@ -52,12 +52,12 @@ recipient remains unregistered and holds no public SOL.
 To tie the claim to the post-retirement cold boot, set
 `NITRO_RETIREMENT_REPORT` to a new absolute path. Run the canary and
 `verify-retired` on the same clock-synchronized operator host. After the
-canary logs its confirmed transfer, follow the
+canary logs its finalized transfer, follow the
 [retirement procedure](../enclave/deploy/nitro/README.md#rotate-custody-and-activate-releases).
 Use a separate canary transfer for the check before scheduling key deletion.
 Pass the canary's path to `verify-retired --output` in a directory
 controlled by the operator. The canary waits up to one hour for the verified
-report. It checks that the S3 closure was published after transfer confirmation
+report. It checks that the S3 closure was published after transfer finality
 for the original domain, epoch and custody digest. It recovers the note
 through the exact replacement custody record, signed policy and attested boot
 in the report.
@@ -69,13 +69,16 @@ Prepare two devnet seed domains with separately initialized seeds and approved
 wallet trust files. Start with the old domain serving an ordinary activation.
 Run the command above with `NITRO_REPLACEMENT_TRUST="$new_wallet_trust"` in
 place of `NITRO_REPLACEMENT_EPOCH`. Use a fresh checkpoint file. After the
-transfer confirms, publish the recovery-only successor to both old-domain
+transfer finalizes, publish the recovery-only successor to both old-domain
 buckets and activate the new domain. Keep the old recovery replicas running.
-The example waits for both policy pairs to agree. It checks that old payment
-lookup fails and the new domain returns different viewing and nullifier keys
+The example waits for both policy pairs to agree. It checks that the original
+payment client rejects lookup and saves the accepted recovery-only checkpoint.
+The new domain returns different viewing and nullifier keys
 for the same recipient. It then opens the old note and sweeps it to the
 recipient's wallet-local keys. Before proving and sending the sweep, it
-rechecks the agreed published policy and checkpoint in each domain.
+rechecks the agreed published policy and checkpoint in each domain. After
+finality it syncs both wallets and verifies that the source note was spent
+and the destination opened the expected note.
 
 ## Synthetic recovery drill
 

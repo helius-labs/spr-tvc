@@ -101,7 +101,7 @@ export async function setup(): Promise<ExampleSetup> {
     throw new Error("the local example requires loopback RPC");
   }
   await initializePoseidon();
-  const zolana = await createSprClient(config);
+  const zolana = await createSprClient(nitroTrust ? { ...config, commitment: "finalized" } : config);
   const genesis = await zolana.solanaRpc.getGenesisHash().send();
   if (genesis === genesisHashForNetwork("mainnet") || (!localEndpoint && genesis !== genesisHashForNetwork(network))) {
     throw new Error("the example requires a Solana devnet or localnet RPC");
@@ -175,8 +175,15 @@ export function sendAndConfirmFactory(
     assertIsFullySignedTransaction(signed);
     assertIsTransactionWithinSizeLimit(signed);
     await beforeBroadcast?.();
-    await send(signed, { commitment: client.commitment });
     const signature = getSignatureFromTransaction(signed);
-    return { signature, slot: await client.confirmTransaction(signature) };
+    try {
+      await send(signed, {
+        commitment: client.commitment,
+        preflightCommitment: client.commitment,
+      });
+      return { signature, slot: await client.confirmTransaction(signature) };
+    } catch (cause) {
+      throw new Error(`check Solana transaction ${signature} before retrying the rehearsal`, { cause });
+    }
   };
 }

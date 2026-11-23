@@ -5,9 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { address } from "@solana/kit";
+import { initializePoseidon, ShieldedKeypair } from "@heliuslabs/spr";
+import { DecryptionServiceError, type DecryptionService } from "@heliuslabs/spr-decryption-service";
 import type { NitroPolicy, NitroTarget, NitroPolicyCheckpoint, NitroTrust } from "@heliuslabs/spr-decryption-service/nitro";
 import {
-  acceptedReplacementPolicy, checkpointStore, nativeDevnet, parseRetirementReport,
+  acceptedReplacementPolicy, checkpointStore, nativeDevnet, observeRecoveryOnly, parseRetirementReport,
   requireCurrentPolicy, requireOriginalPolicy, requireRetirementPolicy, waitForRetirement,
 } from "../nitro.js";
 
@@ -37,7 +40,7 @@ test("the retirement canary binds the transfer to the exact retired custody reco
   assert.throws(() => parse({ ...report, retired: undefined }), /custody domain and epochs/);
   assert.throws(() => parse({ ...report, replacement: { ...replacement, custodyEpoch: "4" } }), /custody domain and epochs/);
   for (const publishedAtMs of ["1000", "1999", "4000"]) {
-    assert.throws(() => parse({ ...report, retired: { ...retired, publishedAtMs } }), /after the confirmed transfer and before verification/);
+    assert.throws(() => parse({ ...report, retired: { ...retired, publishedAtMs } }), /after the finalized transfer and before verification/);
   }
   assert.throws(() => parse({ ...report, retirementObservedAtMs: bootstrap.bootedAtMs }), /later boot from three custody slots/);
   for (const slots of [[2, 2, 6], [2, 4, 7], [2, 4], [1, 2, 4, 6]]) {
@@ -62,7 +65,7 @@ function agreed(checkpoint: NitroPolicyCheckpoint, previousPolicyDigest: string 
   return [revision, revision] as const;
 }
 
-test("native rotation rehearsal checks both published policies and the exact serving epochs", () => {
+test("native rotation rehearsal checks both published policies and the exact serving epochs", async context => {
   const target: NitroTarget = {
     endpoint: "https://original.example/", releaseId: "old",
     executableSha256: "11".repeat(32), custodyEpoch: "1", custodyDigest: "22".repeat(32),
@@ -118,6 +121,40 @@ test("native rotation rehearsal checks both published policies and the exact ser
   assert.throws(() => requireCurrentPolicy(next, checkpoint, nextCheckpoint), /policy changed during the rehearsal/);
   assert.throws(() => requireCurrentPolicy(published, nextCheckpoint, nextCheckpoint), /policy changed during the rehearsal/);
   assert.throws(() => requireCurrentPolicy({ ...next, sameEnvelope: false }, nextCheckpoint, nextCheckpoint), /policy changed during the rehearsal/);
+
+  await context.test("seed cutover exercises the original payment client", async () => {
+    const recovery = { ...nextCheckpoint, recoveryOnly: true };
+    const stopped = { ...next, checkpoint: recovery, policy: { ...replacementPolicy, recoveryOnly: true } };
+    const owner = address("11111111111111111111111111111111");
+    const options = { signal: new AbortController().signal, timeoutMs: 100 };
+    let accepted: NitroPolicyCheckpoint = checkpoint;
+    const store = { current: async () => accepted };
+    let reads = 0;
+    const originalClient: Pick<DecryptionService, "address"> = {
+      async address(address, request) {
+        assert.equal(address, owner);
+        assert.equal(request, options);
+        reads += 1;
+        throw new DecryptionServiceError("ReleasePolicyRecoveryOnly");
+      },
+    };
+    assert.equal(await observeRecoveryOnly(next, originalClient, store, owner, options), undefined);
+    assert.equal(await observeRecoveryOnly({ ...stopped, sameEnvelope: false }, originalClient, store, owner, options), undefined);
+    assert.equal(reads, 0);
+    assert.equal(await observeRecoveryOnly(stopped, originalClient, store, owner, options), undefined);
+    accepted = recovery;
+    assert.deepEqual(await observeRecoveryOnly(stopped, originalClient, store, owner, options), recovery);
+    await assert.rejects(
+      observeRecoveryOnly(stopped, { async address() { throw new DecryptionServiceError("ReleasePolicyRevoked"); } }, store, owner, options),
+      { code: "ReleasePolicyRevoked" },
+    );
+    await initializePoseidon();
+    const stillPaying = { async address() { return ShieldedKeypair.generate().shieldedAddress(); } };
+    await assert.rejects(
+      observeRecoveryOnly(stopped, stillPaying, store, owner, options),
+      /old domain still serves payment destinations/,
+    );
+  });
 });
 
 test("native rehearsal checkpoints survive closing the database and exclude earlier custody floors", async () => {
