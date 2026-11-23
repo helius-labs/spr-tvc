@@ -38,12 +38,12 @@ export async function resolvePaymentAddress(
     }
     signal.throwIfAborted();
     const registered = await lookup();
-    if (registered) return registered.address;
     await requireServiceChain();
+    if (registered) return registered.address;
     const fallback = await serviceAddress();
     const latestRegistration = await lookup();
-    if (latestRegistration) return latestRegistration.address;
     await requireServiceChain();
+    if (latestRegistration) return latestRegistration.address;
     const confirmed = await serviceAddress();
     if (!bytesEqual(confirmed.toBytes(), fallback.toBytes())) {
       throw new DecryptionServiceError("ReleaseBindingMismatch", "service payment address changed during lookup");

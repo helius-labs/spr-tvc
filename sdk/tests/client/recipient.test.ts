@@ -27,7 +27,8 @@ const request = { rpc, owner: recipient, service };
 
 beforeEach(() => {
   lookup.mockReset();
-  vi.clearAllMocks();
+  genesis.mockReset().mockResolvedValue(service.genesisHash);
+  service.address.mockReset().mockResolvedValue(fallbackAddress);
 });
 
 it("uses the registered address before asking the service", async () => {
@@ -36,7 +37,7 @@ it("uses the registered address before asking the service", async () => {
   expect(lookup).toHaveBeenCalledTimes(1);
   expect(lookup).toHaveBeenCalledWith({ rpc, owner: recipient }, { signal: expect.any(AbortSignal) });
   expect(service.address).not.toHaveBeenCalled();
-  expect(genesis).not.toHaveBeenCalled();
+  expect(genesis).toHaveBeenCalledOnce();
 });
 
 it("uses the service when both registry reads succeed with no record", async () => {
@@ -113,6 +114,18 @@ it("propagates a failed genesis RPC without requesting recipient keys", async ()
   genesis.mockRejectedValueOnce(failure);
   await expect(resolvePaymentAddress(request)).rejects.toBe(failure);
   expect(service.address).not.toHaveBeenCalled();
+});
+
+it.each(["first read", "after a miss"] as const)("rejects a registered address from the wrong chain at %s", async phase => {
+  if (phase === "first read") {
+    lookup.mockResolvedValueOnce(registered);
+  } else {
+    lookup.mockResolvedValueOnce(undefined).mockResolvedValueOnce(registered);
+    genesis.mockResolvedValueOnce(service.genesisHash);
+  }
+  genesis.mockResolvedValueOnce(genesisHashForNetwork("mainnet"));
+  await expect(resolvePaymentAddress(request)).rejects.toMatchObject({ code: "PaymentNetworkMismatch" });
+  expect(service.address).toHaveBeenCalledTimes(phase === "first read" ? 0 : 1);
 });
 
 it("refuses a fallback if the chain changes during the registry recheck", async () => {
