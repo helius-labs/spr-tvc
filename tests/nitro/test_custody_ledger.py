@@ -25,7 +25,7 @@ from custody_ledger import (
     ACKNOWLEDGEMENT, LABEL, RECOVERY_WINDOW_SECONDS, RETIREMENT, RETIREMENT_RECOVERY, TARGET_APPROVAL, acknowledge,
     check_custody_roster, check_installed_ledger, check_release_policy, draft, ledger_policy, ledger_reader_policy,
     ledger_record_fingerprint, ledger_replica_plan,
-    list_ledger_versions, list_objects, load_epoch, publish, read_registered_target, read_stored_object, read_stored_payload,
+    list_ledger_versions, list_objects, load_epoch, publish as publish_receipt, read_registered_target, read_stored_object, read_stored_payload,
     record, replication_configuration, require_active_epoch, require_payment_recovery_quorums,
     sign_epoch, storage, target_attestation,
     target_object_name, write_once,
@@ -34,6 +34,7 @@ from deployment import register_target, require_registered_target
 from kms_policy import acknowledgement_policy, boot_pins
 from nitro_fixtures import DOMAIN, HOST, INSTANCE, REGION, key, pin, replication_role_responses, schedule, sign
 from provenance import describe
+from relay import custody_recovery_policy
 from retirement import (LiveBoot, commit_retirement, confirm_retirement_policy, inspect_keys, prove_recovery, qualified_manifest,
                         qualified_policy, qualify_key_retirement, main as retirement_main, replacement_targets,
                         require_observed_target_replication, retirement_inventory, retirement_scope, sign_retirement,
@@ -56,6 +57,10 @@ PAYMENT_PROFILES = {
     "key_profiles": {f"{slot:012d}": f"key-read-{slot}" for slot in range(1, 7)},
 }
 REPLACEMENT_PROFILES = {f"{index:012d}": f"replacement-{index}" for index in range(1, 7)}
+
+
+def publish(trust, document, *, key_profiles=PAYMENT_PROFILES["key_profiles"]):
+    return publish_receipt(trust, document, key_profiles=key_profiles)
 
 
 def listing(prefix, keys=(), **metadata):
@@ -91,11 +96,18 @@ class CustodyLedgerTests(unittest.TestCase):
         self.enterContext(patch("custody_ledger.aws", side_effect=self.aws))
         self.enterContext(patch("approval.kms", side_effect=AssertionError("receipt verification must not call KMS")))
         self.key_metadata = {}
+        self.key_policies = {}
         self.key_inspection = self.enterContext(patch("custody_ledger.kms", side_effect=self.describe_custody_key))
+        self.recovery_inspection = self.enterContext(patch("relay.kms", side_effect=self.describe_custody_key))
+        self.key_identity = self.enterContext(patch("custody_ledger.require_profile_account", side_effect=self.check_receipt_profile))
         self.capture_verifier = self.enterContext(patch("custody_ledger.verify_ceremony_capture"))
         self.archive_capture_verifier = self.enterContext(patch("custody_archive.verify_ceremony_capture"))
 
-    def describe_custody_key(self, arn, operation):
+    def describe_custody_key(self, arn, operation, args=(), *, profile=None):
+        self.assertEqual(profile, PAYMENT_PROFILES["key_profiles"][arn.split(":")[4]])
+        if operation == "get-key-policy":
+            self.assertEqual(args, ["--policy-name", "default"])
+            return {"Policy": json.dumps(self.key_policies[arn])}
         self.assertEqual(operation, "describe-key")
         acknowledgement = arn in {key(slot, 8) for slot in range(1, 7)}
         return {"KeyMetadata": {
@@ -104,6 +116,10 @@ class CustodyLedgerTests(unittest.TestCase):
             "KeyUsage": "SIGN_VERIFY" if acknowledgement else "ENCRYPT_DECRYPT",
             **self.key_metadata.get(arn, {}),
         }}
+
+    def check_receipt_profile(self, profile, region, account):
+        if PAYMENT_PROFILES["key_profiles"].get(account) != profile:
+            raise ValueError("wrong inspection profile for the custody account")
 
     def rotate_approvals(self, epoch):
         self.now += 60
@@ -115,6 +131,11 @@ class CustodyLedgerTests(unittest.TestCase):
             "custodianRole": f"arn:aws:iam::{index:012}:role/custodian",
             "retirementRole": f"arn:aws:iam::{index:012}:role/retirement",
         } for index in range(1, 7)]
+        for member in roster:
+            self.key_policies[member["recoveryKeyArn"]] = custody_recovery_policy(self.trust, member, str(epoch))
+            self.key_policies[member["acknowledgementKey"]["keyArn"]] = acknowledgement_policy(
+                member["custodianRole"], member["retirementRole"],
+            )
         custody = {"epoch": str(epoch), "noteSeedCommitment": "34" * 32, "canaryDigest": "35" * 32,
                    "shareCommitments": [variant * 32] * 6}
         receipt = {
@@ -1240,11 +1261,20 @@ class CustodyLedgerTests(unittest.TestCase):
         publish(self.trust, document)
         self.assertEqual(load_epoch(self.trust, "1")[0], document)
 
-    def test_first_receipt_write_requires_all_acknowledged_keys_to_still_be_enabled(self):
+    def test_first_receipt_write_requires_all_acknowledged_keys_and_policies(self):
         document = self.sign(self.document(1))
         roster = document["authorization"]["manifest"]["custodians"]
         recovery = roster[0]["recoveryKeyArn"]
         acknowledgement = roster[-1]["acknowledgementKey"]["keyArn"]
+        with self.assertRaisesRegex(ValueError, "provide --custody-key-profiles"):
+            publish_receipt(self.trust, document)
+        self.key_inspection.assert_not_called()
+        self.recovery_inspection.assert_not_called()
+        accounts = PAYMENT_PROFILES["key_profiles"]
+        with self.assertRaisesRegex(ValueError, "missing read-only inspection profile"):
+            publish(self.trust, document, key_profiles={account: name for account, name in accounts.items() if int(account) != 1})
+        with self.assertRaisesRegex(ValueError, "wrong inspection profile"):
+            publish(self.trust, document, key_profiles={**accounts, f"{1:012d}": "wrong-account"})
         for arn, metadata in ((recovery, {"KeyState": "PendingDeletion"}),
                               (acknowledgement, {"KeyState": "Disabled"}),
                               (recovery, {"Arn": acknowledgement})):
@@ -1252,15 +1282,31 @@ class CustodyLedgerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "expected an enabled, single-region key"):
                     publish(self.trust, document)
                 self.assertEqual(self.objects, {})
+        for arn in (recovery, acknowledgement):
+            with self.subTest(arn=arn), patch.dict(self.key_policies, {arn: {}}):
+                with self.assertRaisesRegex(ValueError, "installed .*policy"):
+                    publish(self.trust, document)
+                self.assertEqual(self.objects, {})
         self.key_inspection.reset_mock()
+        self.recovery_inspection.reset_mock()
+        self.key_identity.reset_mock()
         publish(self.trust, document)
-        self.assertCountEqual([request.args[0] for request in self.key_inspection.call_args_list], [
-            arn for member in roster for arn in (member["recoveryKeyArn"], member["acknowledgementKey"]["keyArn"])
-        ])
+        self.assertCountEqual([request.args[2] for request in self.key_identity.call_args_list], accounts)
+        for requests, keys in (
+            (self.recovery_inspection.call_args_list, [member["recoveryKeyArn"] for member in roster]),
+            (self.key_inspection.call_args_list, [member["acknowledgementKey"]["keyArn"] for member in roster]),
+        ):
+            self.assertCountEqual([request.args[0] for request in requests if request.args[1] == "describe-key"], keys)
+            self.assertCountEqual([request.args[0] for request in requests if request.args[1] == "get-key-policy"], keys)
         self.key_inspection.reset_mock()
+        self.recovery_inspection.reset_mock()
+        self.key_identity.reset_mock()
         self.key_inspection.side_effect = AssertionError("an authenticated receipt retry must not need KMS")
-        publish(self.trust, document)
+        self.recovery_inspection.side_effect = AssertionError("an authenticated receipt retry must not need KMS")
+        publish_receipt(self.trust, document)
         self.key_inspection.assert_not_called()
+        self.recovery_inspection.assert_not_called()
+        self.key_identity.assert_not_called()
 
     @patch("custody_ledger.verify_reviewed_ceremony")
     @patch("custody_ledger.prove_share")

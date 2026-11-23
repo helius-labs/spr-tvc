@@ -130,8 +130,9 @@ the registered rotation approval. It must match the approved rotation image,
 host role, successor roster and successor relay. All six custodians sign an
 acknowledgement that their sealed key can open its share.
 A conditional S3 write commits one record for the epoch. Before the first
-write, the publisher checks the enabled state and identity of each recovery
-and acknowledgement key. It authenticates the committed, versioned record
+write, the publisher checks the enabled state, identity and sealed policy of
+each recovery and acknowledgement key through a read-only profile in the
+key-owning account. It authenticates the committed, versioned record
 before reporting success,
 including after a lost S3 response. Historical receipts verify with the
 public keys pinned for their epoch. Target approvals and retirement records

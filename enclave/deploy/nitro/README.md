@@ -241,16 +241,19 @@ publisher hosts. All three roles run the Nitro evidence verifier locally.
      --inspection-profiles "${inspection_profiles[@]}"
    python3 "$nitro/custody_ledger.py" trust.json acknowledge epoch-signed.json "$build_dir" "$share_index" epoch-ack.json \
      --relay-port "$port" --review review.json
-   python3 "$nitro/custody_ledger.py" trust.json publish epoch-ack.json
+   python3 "$nitro/custody_ledger.py" trust.json publish epoch-ack.json \
+     --custody-key-profiles "$custody_key_profiles"
    python3 "$nitro/custody_ledger.py" trust.json read 1 > receipt.json
    ```
 
    `publish` verifies the Nitro evidence, two approvals and all six
    acknowledgements on the same candidate. Before the first write, it verifies
    that all six recovery keys and all six acknowledgement keys are enabled and
-   still match the exact KMS ARNs and key types. Give the publisher
-   `kms:DescribeKey` on those twelve keys. After checking the slot histories
-   and keys, the new epoch and any predecessor must still be open. The
+   match the approved KMS ARNs, key types and sealed policies. Use an
+   account-to-profile JSON file with read-only `kms:DescribeKey` and
+   `kms:GetKeyPolicy` access in all six key-owning accounts. After checking
+   the slot histories and keys, the new epoch and any predecessor must still
+   be open. The
    conditional write fixes the receipt and its recovery relay. A rotated
    receipt pins the previous receipt and registered rotation approval. An
    authenticated retry reads the original record even after retirement.

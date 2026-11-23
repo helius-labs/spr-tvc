@@ -16,7 +16,7 @@ from approval import (
     read_json, require_custody_key_profiles, require_inspection_profiles, require_kms_key, require_profile_account,
     sha256, signing_key, signing_sec1,
 )
-from kms_policy import RSA_KEYS, acknowledgement_policy, boot_pins, key_policy, target_boot_pins, validate_custodian_roles, validate_scope
+from kms_policy import acknowledgement_policy, boot_pins, key_policy, target_boot_pins, validate_custodian_roles, validate_scope
 from provenance import verify as verify_build
 from relay import custody_recovery_policy, inspect_rsa_key, prove_share, relay_pins, sealed_rsa_key, verify_relay_build
 
@@ -1163,16 +1163,26 @@ def check_acknowledgement_policy(custodian, **options):
         raise ValueError("installed acknowledgement policy does not match the custodian role")
 
 
-def require_receipt_keys(custodians):
+def require_receipt_keys(trust, epoch, custodians, key_profiles):
+    require_custody_key_profiles(key_profiles)
+
     def check_slot(member):
-        for key, specs, usage in (
-            (member["recoveryKeyArn"], RSA_KEYS, "ENCRYPT_DECRYPT"),
-            (member["acknowledgementKey"]["keyArn"], {"ECC_NIST_P256"}, "SIGN_VERIFY"),
-        ):
-            try:
-                require_kms_key(kms(key, "describe-key")["KeyMetadata"], key, specs, usage)
-            except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
-                raise ValueError(f"custody key {key} is unavailable: {error}") from error
+        recovery = member["recoveryKeyArn"]
+        acknowledgement = member["acknowledgementKey"]["keyArn"]
+        region, account = arn(KEY_ARN, recovery).groups()
+        profile = key_profiles.get(account)
+        if profile is None:
+            raise ValueError(f"missing read-only inspection profile for custody account {account}")
+        require_profile_account(profile, region, account)
+        try:
+            _, installed = inspect_rsa_key(recovery, profile=profile)
+            if installed != custody_recovery_policy(trust, member, epoch):
+                raise ValueError("installed recovery key policy does not match the approved relay")
+            metadata = kms(acknowledgement, "describe-key", profile=profile)["KeyMetadata"]
+            require_kms_key(metadata, acknowledgement, {"ECC_NIST_P256"}, "SIGN_VERIFY")
+            check_acknowledgement_policy(member, profile=profile)
+        except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+            raise ValueError(f"custody account {account} has an unavailable key: {error}") from error
 
     with ThreadPoolExecutor(max_workers=6) as workers:
         list(workers.map(check_slot, custodians))
@@ -1250,7 +1260,7 @@ def acknowledge(trust, document, index, relay_port, build, review):
     return {**document, "acknowledgements": signatures}
 
 
-def publish(trust, document):
+def publish(trust, document, *, key_profiles=None):
     receipt, custodians = record(trust, document)
     check_commit(trust, document, receipt, custodians)
     check_previous(trust, document, receipt)
@@ -1264,7 +1274,7 @@ def publish(trust, document):
             raise ValueError("a different custody receipt is already committed")
 
     def before_write():
-        require_receipt_keys(custodians)
+        require_receipt_keys(trust, epoch, custodians, key_profiles)
         require_active_epoch(trust, epoch)
         if epoch != "1":
             require_active_epoch(trust, str(epoch_number(epoch) - 1))
@@ -1298,6 +1308,7 @@ def main():
     ack.add_argument("--review", type=Path, required=True)
     post = commands.add_parser("publish")
     post.add_argument("candidate", type=Path)
+    post.add_argument("--custody-key-profiles", type=Path, help="JSON map from custody AWS account to read-only profile")
     check = commands.add_parser("check-release-policy")
     check.add_argument("--source-profile")
     check.add_argument("--replica-profile")
@@ -1354,7 +1365,8 @@ def main():
             return
         document = read_json(args.candidate)
         if args.command == "publish":
-            publish(trust, document)
+            profiles = read_json(args.custody_key_profiles) if args.custody_key_profiles else None
+            publish(trust, document, key_profiles=profiles)
             return
         if args.command == "check-release-policy":
             slots = parse_json(args.bootstrap_slots.encode()) if args.bootstrap_slots is not None else None
