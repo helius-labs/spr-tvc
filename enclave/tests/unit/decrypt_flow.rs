@@ -15,7 +15,7 @@ use zeroize::Zeroizing;
 use super::*;
 use crate::release::NETWORK;
 use crate::service::router;
-use crate::testing;
+use crate::testing::{self, transfer_output};
 
 const RESPONSE_SECRET: [u8; 32] = [0x42; 32];
 const APPROVAL_EXPIRES_AT_MS: u64 = 1_795_290_720_000;
@@ -50,19 +50,7 @@ fn service() -> Service {
 }
 
 fn request(service: &Service, operation: ServiceOperation) -> ServiceRequest {
-    let info = &service.info;
-    ServiceRequest {
-        version: API_VERSION,
-        request_id: [0x77; 32],
-        target_release_id: info.release_id.clone(),
-        target_manifest_digest: info.manifest_digest,
-        target_executable_digest: info.executable_digest,
-        quorum_key_id: info.quorum_key_id.clone(),
-        quorum_key_epoch: info.quorum_key_epoch,
-        client_response_public_key: public_key_uncompressed(&response_public_key(&RESPONSE_SECRET))
-            .to_vec(),
-        operation,
-    }
+    testing::request(&service.info, operation, &RESPONSE_SECRET)
 }
 
 fn envelope(service: &Service, request: &ServiceRequest) -> EncryptedRequest {
@@ -151,35 +139,8 @@ fn decrypt(
             items,
         },
     );
-    let message = decrypt_message(
-        &owner.verifying_key().to_bytes(),
-        network,
-        &service_request_digest(&request).unwrap(),
-    );
-    let ServiceOperation::Decrypt { signature, .. } = &mut request.operation else {
-        unreachable!()
-    };
-    *signature = owner.sign(&message).to_bytes();
+    testing::sign_decrypt(&mut request, owner, network);
     request
-}
-
-fn transfer_output(viewing_public_key: [u8; 33], plaintext: &[u8], slot: u32) -> DecryptItem {
-    let transaction = ViewingKey::new();
-    let salt = random_salt();
-    DecryptItem {
-        ciphertext: transaction
-            .encrypt_slot(
-                &X25519Pubkey::from_bytes(viewing_public_key).unwrap(),
-                plaintext,
-                salt,
-                slot,
-            )
-            .unwrap(),
-        ephemeral_viewing_public_key: transaction.pubkey().as_bytes().to_vec(),
-        salt: salt.to_vec(),
-        slot_index: slot.into(),
-        label: DecryptLabel::Transfer,
-    }
 }
 
 #[path = "owner_authorization.rs"]
