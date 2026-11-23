@@ -1,5 +1,6 @@
-import { address, signatureBytes, type Address, type MessagePartialSigner } from "@solana/kit";
+import { address, getAddressEncoder, signatureBytes, type Address, type MessagePartialSigner } from "@solana/kit";
 import { p256 } from "@noble/curves/p256";
+import { ed25519 } from "@noble/curves/ed25519";
 import { NullifierKey, ViewingKey, initializePoseidon } from "@heliuslabs/spr";
 import type { Bytes16, Bytes31 } from "@heliuslabs/spr/keypair";
 import { expect, it, vi } from "vitest";
@@ -16,7 +17,9 @@ import { genesisHashForNetwork } from "../../src/protocol/network.js";
 import { decryptionServiceFromSession } from "../../src/client/decryption.js";
 import { decryptMessage, serviceRequestDigest, type ServiceRequest } from "../../src/protocol/decryption.js";
 
-const ownerAddress = address("11111111111111111111111111111111");
+import { signOwnerMessage, testOwner } from "./test-owner.js";
+
+const ownerAddress = testOwner.address;
 
 function fixture() {
   const quorum = new Uint8Array(32).fill(1);
@@ -91,15 +94,36 @@ it("checks the serialized request ceiling before asking for a signature or sendi
   expect(fetch).not.toHaveBeenCalled();
 });
 
+it.each(["another owner", "different message", "mutated signer input"] as const)(
+  "does not send a decryption approval signed for %s", async problem => {
+    const { context, fetch } = fixture();
+    const signMessages = vi.fn<MessagePartialSigner["signMessages"]>(async ([message]) => {
+      if (problem === "another owner") {
+        const otherOwner = new Uint8Array(32).fill(8);
+        return [{ [ownerAddress]: signatureBytes(ed25519.sign(Uint8Array.from(message!.content), otherOwner)) }];
+      }
+      if (problem === "mutated signer input") {
+        const handedToSigner = message!.content;
+        expect(handedToSigner).toBeInstanceOf(Uint8Array);
+        if (handedToSigner instanceof Uint8Array) handedToSigner.fill(7);
+        return [{ [ownerAddress]: signOwnerMessage(Uint8Array.from(handedToSigner)) }];
+      }
+      return [{ [ownerAddress]: signOwnerMessage(Uint8Array.of(7)) }];
+    });
+    await expect(exchange.executeServiceCall(context, {
+      type: "Decrypt", owner: { address: ownerAddress, signMessages }, items: [],
+    }, new AbortController().signal)).rejects.toMatchObject({ code: "InvalidSignature" });
+    expect(fetch).not.toHaveBeenCalled();
+  },
+);
+
 it.each([
   { releasePolicyExpiresAtMs: 100_000n, freshness: undefined, expiresAt: "61000" },
   { releasePolicyExpiresAtMs: 30_000n, freshness: undefined, expiresAt: "30001" },
   { releasePolicyExpiresAtMs: 30_000n, freshness: () => 3_000, expiresAt: "4000" },
 ])("signs the deadline that fits the verified session", async ({ releasePolicyExpiresAtMs, freshness, expiresAt }) => {
   const { context, quorum, fetch } = fixture();
-  const signMessages = vi.fn<MessagePartialSigner["signMessages"]>(async () => [
-    { [ownerAddress]: signatureBytes(new Uint8Array(64).fill(1)) },
-  ]);
+  const signMessages = vi.fn(testOwner.signMessages);
   await expect(exchange.executeServiceCall({
     ...context, releasePolicyExpiresAtMs, policyFreshnessRemainingMs: freshness,
   }, {
@@ -109,7 +133,7 @@ it.each([
   const request = JSON.parse(new TextDecoder().decode(qosDecrypt(quorum, decodeLowerHex(body.ciphertext)))) as ServiceRequest;
   expect(request.operation).toMatchObject({ type: "Decrypt", expires_at_ms: expiresAt });
   expect(signMessages.mock.calls[0]?.[0][0]?.content).toEqual(
-    decryptMessage(new Uint8Array(32), "devnet", serviceRequestDigest(request)),
+    decryptMessage(Uint8Array.from(getAddressEncoder().encode(ownerAddress)), "devnet", serviceRequestDigest(request)),
   );
 });
 
@@ -143,10 +167,10 @@ it("aborts a stalled owner approval at the end of the release window", async () 
     let returnSignature!: () => void;
     const owner = {
       address: ownerAddress,
-      signMessages: vi.fn<MessagePartialSigner["signMessages"]>((_messages, options) => {
+      signMessages: vi.fn<MessagePartialSigner["signMessages"]>((messages, options) => {
         approvalSignal = options?.abortSignal;
         return new Promise(resolve => {
-          returnSignature = () => resolve([{ [ownerAddress]: signatureBytes(new Uint8Array(64).fill(1)) }]);
+          returnSignature = () => resolve(testOwner.signMessages(messages));
         });
       }),
     };
@@ -196,9 +220,7 @@ it.each(["before signing", "after signing", "replica reply"] as const)(
           return new Response(null, { status: 503 });
         });
       }
-      const signMessages = vi.fn<MessagePartialSigner["signMessages"]>(async () => [
-        { [ownerAddress]: signatureBytes(new Uint8Array(64).fill(1)) },
-      ]);
+      const signMessages = vi.fn(testOwner.signMessages);
       const caller = new AbortController();
       const pending = exchange.executeServiceCall({ ...context, requirePublishedPolicy, releasePolicyExpiresAtMs: 1009n },
         { type: "Decrypt", owner: { address: ownerAddress, signMessages }, items: [] }, caller.signal);
@@ -228,9 +250,9 @@ it("refuses to send a request signed after the release expires", async () => {
   let now = 1000n;
   const owner = {
     address: ownerAddress,
-    signMessages: vi.fn(async () => {
+    signMessages: vi.fn<MessagePartialSigner["signMessages"]>(async messages => {
       now = context.releasePolicyExpiresAtMs + 1n;
-      return [{ [ownerAddress]: signatureBytes(new Uint8Array(64).fill(1)) }];
+      return testOwner.signMessages(messages);
     }),
   };
   await expect(exchange.executeServiceCall({ ...context, nowMs: () => now }, {

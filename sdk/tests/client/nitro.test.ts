@@ -3,7 +3,7 @@ import { ed25519 } from "@noble/curves/ed25519";
 import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha256";
 import { concatBytes } from "@noble/hashes/utils";
-import { address, getAddressEncoder, signatureBytes, type MessagePartialSigner } from "@solana/kit";
+import { address, getAddressEncoder, type MessagePartialSigner } from "@solana/kit";
 import { NullifierKey, ViewingKey, initializePoseidon, type ProofService } from "@heliuslabs/spr";
 import { X25519PublicKey, type Bytes16, type Bytes31, type Bytes32 } from "@heliuslabs/spr/keypair";
 import { BN254_MODULUS_DEC } from "@heliuslabs/spr/transaction";
@@ -22,6 +22,7 @@ import { decryptMessage, SERVICE_PROOF_TYPE, serviceRequestDigest, type ServiceR
 import { resultDigest } from "../../src/protocol/digest.js";
 import { encodeLowerHex, requireHex } from "../../src/protocol/hex.js";
 import { canonicalizeJsonValue } from "../../src/protocol/jcs.js";
+import { signOwnerMessage, testOwner } from "./test-owner.js";
 
 vi.mock("../../src/attestation/boot-proof.js", () => ({ verifyNativeNitroEvidence: vi.fn() }));
 
@@ -91,7 +92,14 @@ function attestedDiscovery(custodyDigest = "99".repeat(32), boot = secrets, cert
 }
 
 const signMessages = vi.fn<MessagePartialSigner["signMessages"]>();
-const signer = { address: address("3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"), signMessages };
+const signer = { address: testOwner.address, signMessages };
+function expectSignedOwner(request: ServiceRequest) {
+  expect(request.operation).toMatchObject({ type: "Decrypt", signer: signer.address });
+  if (request.operation.type !== "Decrypt") throw new Error("expected a decrypt approval");
+  const owner = Uint8Array.from(getAddressEncoder().encode(signer.address));
+  const message = decryptMessage(owner, trust.network, serviceRequestDigest(request));
+  expect(request.operation.signature).toBe(encodeLowerHex(signOwnerMessage(message)));
+}
 const proofs = {} as ProofService;
 const emptyStore = { async current() { return undefined; } };
 const replacementBoot = [3, 4].map(value => new Uint8Array(32).fill(value));
@@ -540,13 +548,13 @@ describe("native client trust gate", () => {
         return signedReply(request, secrets, { type: "PublicKeys", viewing_public_key: encodeLowerHex(viewingPublicKey.toBytes()),
           nullifier_public_key: nullifierPublicKey });
       }
-      expect(request.operation).toMatchObject({ signer: signer.address, signature: "01".repeat(64) });
+      expectSignedOwner(request);
       return signedReply(request, secrets, { type: "Decrypt", nullifier_secret: encodeLowerHex(secret),
         plaintexts: request.operation.items.map(() => "aa") });
     });
     vi.stubGlobal("fetch", fetch);
     const store = checkpointStore();
-    signMessages.mockResolvedValue([{ [signer.address]: signatureBytes(new Uint8Array(64).fill(1)) }]);
+    signMessages.mockImplementation(testOwner.signMessages);
     const client = createNitroDecryptionService({ trust, policyStore: store });
     await expect(client.address(signer.address)).rejects.toMatchObject({ code: "ReleasePolicyRecoveryOnly" });
     expect(fetch.mock.calls.some(([url]) => url.pathname === "/v1/operations")).toBe(false);
@@ -847,7 +855,7 @@ describe("native client trust gate", () => {
       if (++requests === 2) {
         const { ciphertext } = JSON.parse(String(init.body)) as { ciphertext: string };
         const request = JSON.parse(new TextDecoder().decode(qosDecrypt(boot[0]!, requireHex(ciphertext)))) as ServiceRequest;
-        expect(request.operation).toMatchObject({ type: "Decrypt", signature: "01".repeat(64) });
+        expectSignedOwner(request);
         return failure === "http" ? new Response(null, { status: 503 }) : signedReply(request, replacementBoot, {
           type: "Decrypt", nullifier_secret: "00".repeat(31), plaintexts: [],
         });
@@ -855,7 +863,7 @@ describe("native client trust gate", () => {
       return lookupReply(init, boot);
     });
     vi.stubGlobal("fetch", fetch);
-    signMessages.mockResolvedValueOnce([{ [signer.address]: signatureBytes(new Uint8Array(64).fill(1)) }]);
+    signMessages.mockImplementationOnce(testOwner.signMessages);
     const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
     await expect(client.open(signer, proofs)).rejects.toMatchObject(failure === "http"
       ? { code: "OperationUnavailable", status: 503 } : { code: "BootProofUnverified" });
@@ -1033,9 +1041,9 @@ describe("native client trust gate", () => {
     vi.stubGlobal("fetch", fetch);
     vi.stubGlobal("indexedDB", new IDBFactory());
     const newClient = createNitroDecryptionService({ trust });
-    signMessages.mockImplementationOnce(async () => {
+    signMessages.mockImplementationOnce(async messages => {
       await expect(newClient.address(signer.address)).rejects.toMatchObject({ code: "ReleasePolicyRevoked" });
-      return [{ [signer.address]: signatureBytes(new Uint8Array(64).fill(1)) }];
+      return testOwner.signMessages(messages);
     });
     await expect(createNitroDecryptionService({ trust }).open(signer, proofs))
       .rejects.toMatchObject({ code: "ReleasePolicySuperseded" });
@@ -1060,12 +1068,12 @@ describe("native client trust gate", () => {
       async current() { return stored; },
       async accept(update) { stored = update[0].checkpoint; return true; },
     } });
-    signMessages.mockImplementationOnce(async () => {
+    signMessages.mockImplementationOnce(async messages => {
       const older = stored;
       await expect(client.address(signer.address)).rejects.toMatchObject({ code: "ReleasePolicyRevoked" });
       expect(stored?.sequence).toBe("3");
       stored = older;
-      return [{ [signer.address]: signatureBytes(new Uint8Array(64).fill(1)) }];
+      return testOwner.signMessages(messages);
     });
     await expect(client.open(signer, proofs)).rejects.toMatchObject({ code: "ReleasePolicySuperseded" });
     expect(fetch.mock.calls.filter(([url]) => url.pathname === "/v1/operations")).toHaveLength(1);
@@ -1103,9 +1111,9 @@ describe("native client trust gate", () => {
       vi.stubGlobal("fetch", fetch);
       const signingExpected = phase !== "before signing" && phase !== "publisher outage";
       if (signingExpected) {
-        signMessages.mockImplementationOnce(async () => {
+        signMessages.mockImplementationOnce(async messages => {
           if (phase === "after signing") published = revoked;
-          return [{ [signer.address]: signatureBytes(new Uint8Array(64).fill(1)) }];
+          return testOwner.signMessages(messages);
         });
       }
       const store = checkpointStore();
@@ -1229,9 +1237,9 @@ describe("native client trust gate", () => {
       policyHeads(fetch, policy);
       policyHeads(fetch, policy);
       vi.stubGlobal("fetch", fetch);
-      signMessages.mockImplementationOnce(async () => {
+      signMessages.mockImplementationOnce(async messages => {
         elapsed = 60_000;
-        return [{ [signer.address]: signatureBytes(new Uint8Array(64).fill(1)) }];
+        return testOwner.signMessages(messages);
       });
       const client = createNitroDecryptionService({ trust, policyStore: checkpointStore() });
       await expect(client.open(signer, proofs)).rejects.toMatchObject({ code: "ExpiredRequest" });

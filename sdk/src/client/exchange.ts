@@ -1,6 +1,7 @@
 import type { Bytes32 } from "@heliuslabs/spr";
 import { X25519PublicKey } from "@heliuslabs/spr/keypair";
 import { BN254_MODULUS_DEC } from "@heliuslabs/spr/transaction";
+import { ed25519 } from "@noble/curves/ed25519";
 import { p256 } from "@noble/curves/p256";
 import { createSignableMessage, getAddressEncoder, type MessagePartialSigner } from "@solana/kit";
 
@@ -54,6 +55,18 @@ export function decodePublicKeys(result: Extract<ServiceResult, { type: "PublicK
   }
   const viewingPublicKey = X25519PublicKey.fromBytes(requireHex(result.viewing_public_key, 33));
   return { nullifierPublicKey, viewingPublicKey };
+}
+
+function verifiesOwnerSignature(signature: Uint8Array, message: Uint8Array, publicKey: Uint8Array): boolean {
+  try {
+    const owner = ed25519.ExtendedPoint.fromHex(publicKey);
+    const nonce = ed25519.ExtendedPoint.fromHex(signature.subarray(0, 32));
+    return !owner.isSmallOrder() && owner.isTorsionFree() &&
+      !nonce.isSmallOrder() && nonce.isTorsionFree() &&
+      ed25519.verify(signature, message, publicKey, { zip215: false });
+  } catch {
+    return false;
+  }
 }
 
 function ownerApprovalScope(context: ConnectedTvcRuntime, signal: AbortSignal) {
@@ -122,18 +135,20 @@ export async function executeServiceCall<T extends ServiceCall>(
     checkSignedRequestSize(context, request);
     if (owner) {
       const address = operation.signer;
-      const message = decryptMessage(
-        new Uint8Array(addressEncoder.encode(address)),
-        info.network,
-        requestDigest,
-      );
+      const publicKey = Uint8Array.from(addressEncoder.encode(address));
+      const message = decryptMessage(publicKey, info.network, requestDigest);
       requireCurrentReleasePolicy(context, context.nowMs());
       signal.throwIfAborted();
       const [signatures] = await awaitWithSignal(
-        owner.signMessages([createSignableMessage(message)], { abortSignal: signal }), signal,
+        owner.signMessages([createSignableMessage(message.slice())], { abortSignal: signal }), signal,
       );
-      const signature = signatures?.[address];
-      if (signature?.length !== ED25519_SIGNATURE_BYTES) {
+      requireCurrentReleasePolicy(context, context.nowMs());
+      const proposed = signatures?.[address];
+      if (!(proposed instanceof Uint8Array) || proposed.length !== ED25519_SIGNATURE_BYTES) {
+        throw new DecryptionServiceError("InvalidSignature");
+      }
+      const signature = new Uint8Array(proposed);
+      if (!verifiesOwnerSignature(signature, message, publicKey)) {
         throw new DecryptionServiceError("InvalidSignature");
       }
       request = { ...request, operation: { ...operation, signature: encodeLowerHex(signature) } };

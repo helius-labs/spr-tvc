@@ -65,8 +65,9 @@ signs the request.
    fresh request ID, ordered items, response public key, and exclusive deadline
    `expires_at_ms`. The SDK sets the deadline within 60 seconds and within the
    verified session. The enclave accepts a deadline up to 120 seconds ahead of
-   its clock, allowing a minute of clock skew. The SDK seals the signed request
-   to the pinned Quorum encryption key. An empty batch uses the same
+   its clock, allowing a minute of clock skew. The SDK verifies the signature
+   over the message it gave the signer and seals the signed request to the
+   pinned Quorum encryption key. An empty batch uses the same
    authorization to obtain the service nullifier secret.
 4. **Open inside the enclave.** The enclave authenticates the envelope and
    rejects batches over 256 items during request decoding, before hashing the

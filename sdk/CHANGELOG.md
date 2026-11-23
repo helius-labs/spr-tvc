@@ -7,6 +7,7 @@ Native Nitro trust pins require the exact policy digest for their minimum revisi
 Payment resolution checks the Solana genesis hash before the service lookup and after the registry recheck. An unregistered recipient must still have the same payment keys under the current service policy after both RPC reads.
 Native Nitro checks the published policy before sending an address for lookup and before returning service keys for payment or recovery.
 Destroying a key handle cancels pending decryption and proof calls and clears any derived keys it has yet to return.
+The client verifies the owner signature against the exact request before sending it to the enclave.
 
 ## 0.1.0-alpha.0
 
