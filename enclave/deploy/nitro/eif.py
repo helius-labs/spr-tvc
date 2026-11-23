@@ -24,6 +24,8 @@ LAUNCH_FILES = {
 LINUXKIT_DIRECTORIES = {b"rootfs", b"rootfs/dev", b"rootfs/dev/pts", b"rootfs/dev/shm", b"rootfs/etc",
                         b"rootfs/proc", b"rootfs/sys", b"rootfs/run", b"rootfs/var", b"rootfs/tmp"}
 LINUXKIT_LINKS = {b"rootfs/etc/mtab": b"/proc/mounts", b"rootfs/etc/resolv.conf": b"/run/resolvconf/resolv.conf"}
+HOSTS_PATH = b"rootfs/etc/hosts"
+HOSTS_SHA256 = "43037ff87af87fda11c4377e963593a0f55e513702779db721c6ce574c06e88e"
 
 
 def measured_sections(image):
@@ -99,8 +101,11 @@ def application_entries(archive):
 def verify_application(archive, manifest):
     seen = set()
     for name, mode, body in application_entries(archive):
-        if stat.S_ISDIR(mode) and name.removesuffix(b"/") in LINUXKIT_DIRECTORIES and not body:
-            seen.add(name.removesuffix(b"/"))
+        directory = name.removesuffix(b"/")
+        if directory in LINUXKIT_DIRECTORIES:
+            if mode != 0o040755 or body:
+                raise ValueError("unexpected LinuxKit directory mode or contents")
+            seen.add(directory)
             continue
         if name in seen:
             raise ValueError("duplicate file in EIF application archive")
@@ -115,10 +120,13 @@ def verify_application(archive, manifest):
         elif name in LINUXKIT_LINKS:
             if not stat.S_ISLNK(mode) or body != LINUXKIT_LINKS[name]:
                 raise ValueError("unexpected LinuxKit symlink")
-        elif name != b"rootfs/etc/hosts" or not stat.S_ISREG(mode):
+        elif name == HOSTS_PATH:
+            if mode != 0o100755 or hashlib.sha256(body).hexdigest() != HOSTS_SHA256:
+                raise ValueError("unexpected LinuxKit hosts file mode or contents")
+        else:
             raise ValueError("unexpected file in EIF application archive")
-    if ({b"rootfs"} | APP_FILES.keys() | LAUNCH_FILES.keys()) - seen:
-        raise ValueError("EIF is missing the measured application, configuration or launch files")
+    if ({b"rootfs", HOSTS_PATH} | APP_FILES.keys() | LAUNCH_FILES.keys()) - seen:
+        raise ValueError("EIF is missing the measured application, configuration or runtime files")
 
 
 def verify_eif(path, manifest):

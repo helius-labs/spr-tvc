@@ -66,11 +66,12 @@ It checks the Linux x86-64 native lockfile against RustSec and verifies that
 the OpenSSL revision includes the vendor's published fixes. The release job
 repeats both checks after review and before signing the artifact.
 The written EIF must pass Nitro CLI's checksum check and match the build PCRs.
-The builder and operators independently read the EIF bytes. They check the
-checksum, recompute PCR0–PCR2, and pin PCR1 to the kernel, command line and
-bootstrap packaged by Nitro CLI v1.5.3. The application archive must launch
-`/tvc_app` with the expected environment and contain the exact executable
-and configuration identified in provenance. [AWS EIF specification](https://github.com/aws/aws-nitro-enclaves-image-format#enclave-image-file-eif-specification)
+The build verifies the EIF before upload. The signing job and operators
+repeat the check. They verify the checksum, recompute PCR0–PCR2, and pin
+PCR1 to the kernel, command line and bootstrap packaged by Nitro CLI v1.5.3.
+The application archive must contain the exact executable and configuration
+from provenance, launch `/tvc_app` with the expected environment, and preserve
+the pinned LinuxKit directory permissions and hosts file. [AWS EIF specification](https://github.com/aws/aws-nitro-enclaves-image-format#enclave-image-file-eif-specification)
 
 The workflow attests the executable, configuration, EIF and PCR0–PCR2
 hashes after verifying the approval. Signers verify a private copy of the

@@ -15,6 +15,8 @@ CMDLINE = b"command line fixture"
 BOOTSTRAP = b"bootstrap fixture"
 APP = b"application fixture"
 CONFIGURATION = b'{"fixture":true}'
+HOSTS = (b"127.0.0.1       localhost\n::1     localhost ip6-localhost ip6-loopback\n"
+         b"fe00::0 ip6-localnet\nff00::0 ip6-mcastprefix\nff02::1 ip6-allnodes\nff02::2 ip6-allrouters\n")
 
 
 def extend(data):
@@ -50,6 +52,7 @@ class EifTests(unittest.TestCase):
         self.payload = {
             b"rootfs": entry(b"rootfs", 0o040755, links=2),
             b"rootfs/configuration.json": entry(b"rootfs/configuration.json", 0o100644, CONFIGURATION),
+            b"rootfs/etc/hosts": entry(b"rootfs/etc/hosts", 0o100755, HOSTS),
             b"rootfs/tvc_app": entry(b"rootfs/tvc_app", 0o100755, APP),
             b"cmd": entry(b"cmd", 0o100644, b"/tvc_app\n"),
             b"env": entry(b"env", 0o100644, b"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"),
@@ -116,6 +119,22 @@ class EifTests(unittest.TestCase):
         with patch("eif.MAX_EIF_BYTES", len(original) - 1):
             with self.assertRaisesRegex(ValueError, "exceed 64 MiB"):
                 verify_eif(self.path, manifest)
+
+    def test_checks_the_pinned_linuxkit_runtime_files(self):
+        valid = b"".join(self.payload.values())
+        # LinuxKit adds its mount directories after unpacking the application.
+        directories = entry(b"rootfs/dev/", 0o040755) + entry(b"rootfs/dev", 0o040755)
+        verify_eif(self.path, self.image(valid + directories + self.trailer))
+        for archive, message in (
+            (valid + directories + entry(b"rootfs/dev", 0o040700), "unexpected LinuxKit directory"),
+            (valid.replace(self.payload[b"rootfs/etc/hosts"], entry(b"rootfs/etc/hosts", 0o100755, b"changed\n")),
+             "unexpected LinuxKit hosts"),
+            (valid.replace(self.payload[b"rootfs/etc/hosts"], entry(b"rootfs/etc/hosts", 0o100644, HOSTS)),
+             "unexpected LinuxKit hosts"),
+            (valid.replace(self.payload[b"rootfs/etc/hosts"], b""), "missing the measured application"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                verify_eif(self.path, self.image(archive + self.trailer))
 
     def test_rejects_ambiguous_or_incomplete_application_archives(self):
         valid = b"".join(self.payload.values())
