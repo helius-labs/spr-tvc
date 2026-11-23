@@ -1,13 +1,17 @@
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use spr_tvc_protocol::types::{Network, ServiceInfo};
 
-use crate::tools::{bridge, capture, capture_check, run, tvc, tvc_json, Credentials};
+use crate::tools::{
+    bridge, capture, capture_check, capture_with_timeout, run, tvc, tvc_json, Credentials,
+};
 use crate::{lower_hex, read_json, write_json, Release, APP};
 
 const PIVOT_PATH: &str = "/tvc_app";
+const IMAGE_INSPECTION_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -106,19 +110,22 @@ impl Release<'_> {
             "use a new release ID for a staged deployment"
         );
         self.verify_image(image)?;
-        let output = capture(Command::new("docker").args([
-            "run",
-            "--rm",
-            "--network",
-            "none",
-            "--read-only",
-            "--platform",
-            "linux/amd64",
-            "--entrypoint",
-            "sha256sum",
-            image,
-            PIVOT_PATH,
-        ]))?;
+        let output = capture_with_timeout(
+            Command::new("docker").args([
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--read-only",
+                "--platform",
+                "linux/amd64",
+                "--entrypoint",
+                "sha256sum",
+                image,
+                PIVOT_PATH,
+            ]),
+            IMAGE_INSPECTION_TIMEOUT,
+        )?;
         let digest = std::str::from_utf8(&output)?
             .split_ascii_whitespace()
             .next()

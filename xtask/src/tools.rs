@@ -2,8 +2,10 @@ use std::env;
 use std::fs;
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::time::Duration;
+use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -21,10 +23,15 @@ fn wait_for_check(child: &mut Child, timeout: Duration) -> Result<ExitStatus> {
     if let Ok(Some(status)) = status {
         return Ok(status);
     }
-    child.kill().context("stop release check")?;
-    child.wait().context("reap release check")?;
+    stop_check(child)?;
     status.context("wait for release check")?;
     anyhow::bail!("release check timed out after {timeout:?}")
+}
+
+fn stop_check(child: &mut Child) -> Result<()> {
+    child.kill().context("stop release check")?;
+    child.wait().context("reap release check")?;
+    Ok(())
 }
 
 pub(crate) fn capture(command: &mut Command) -> Result<Vec<u8>> {
@@ -62,28 +69,53 @@ pub(crate) fn run(command: &mut Command) -> Result<()> {
 }
 
 pub(crate) fn capture_check(command: &mut Command) -> Result<Vec<u8>> {
-    let mut stdout = tempfile::tempfile()?;
+    capture_with_timeout(command, CHECK_TIMEOUT)
+}
+
+pub(crate) fn capture_with_timeout(command: &mut Command, timeout: Duration) -> Result<Vec<u8>> {
     let mut child = command
         .stdin(Stdio::null())
-        .stdout(stdout.try_clone()?)
+        .stdout(Stdio::piped())
         .spawn()
         .with_context(|| format!("run {:?}", command.get_program()))?;
-    let status = wait_for_check(&mut child, CHECK_TIMEOUT)
-        .with_context(|| format!("run {:?}", command.get_program()))?;
-    stdout.rewind()?;
-    let mut output = Vec::new();
-    stdout
-        .take(MAX_CHECK_OUTPUT_BYTES + 1)
-        .read_to_end(&mut output)?;
-    ensure!(
-        output.len() as u64 <= MAX_CHECK_OUTPUT_BYTES,
-        "release check output exceeds 4 MiB"
-    );
+    let deadline = Instant::now() + timeout;
+    let stdout = child.stdout.take().expect("release check stdout is piped");
+    let output = read_check_output(stdout, deadline);
+    if output.is_err() {
+        stop_check(&mut child)?;
+    }
+    let output = output.with_context(|| format!("capture {:?}", command.get_program()))?;
+    let status = wait_for_check(
+        &mut child,
+        deadline.saturating_duration_since(Instant::now()),
+    )
+    .with_context(|| format!("run {:?}", command.get_program()))?;
     ensure!(
         status.success(),
         "{:?} failed ({status}): {}",
         command.get_program(),
         String::from_utf8_lossy(&output).trim(),
+    );
+    Ok(output)
+}
+
+fn read_check_output(stdout: ChildStdout, deadline: Instant) -> Result<Vec<u8>> {
+    let (send, receive) = mpsc::channel();
+    thread::Builder::new()
+        .spawn(move || {
+            let mut bytes = Vec::new();
+            let read = stdout
+                .take(MAX_CHECK_OUTPUT_BYTES + 1)
+                .read_to_end(&mut bytes);
+            let _ = send.send(read.map(|_| bytes));
+        })
+        .context("start release check output reader")?;
+    let output = receive
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .context("release check output did not finish before the deadline")??;
+    ensure!(
+        output.len() as u64 <= MAX_CHECK_OUTPUT_BYTES,
+        "release check output exceeds 4 MiB"
     );
     Ok(output)
 }
