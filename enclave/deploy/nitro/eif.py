@@ -6,9 +6,8 @@ import re
 import stat
 import struct
 
-from approval import open_regular
+from approval import MAX_ARTIFACT_BYTES, open_regular
 
-MAX_EIF_BYTES = 64 * 1024 * 1024
 EIF_HEADER = struct.Struct(">4sHHQQHH32Q32QII")
 SECTION_HEADER = struct.Struct(">HHQ")
 SECTION_TYPES = (1, 2, 5, 3, 3)  # Kernel, cmdline, metadata, bootstrap, application.
@@ -131,8 +130,8 @@ def verify_application(archive, manifest):
 
 def verify_eif(path, manifest):
     with open_regular(path) as source:
-        image = memoryview(source.read(MAX_EIF_BYTES + 1))
-    if len(image) > MAX_EIF_BYTES or hashlib.sha256(image).hexdigest() != manifest["eifSha256"]:
+        image = memoryview(source.read(MAX_ARTIFACT_BYTES + 1))
+    if len(image) > MAX_ARTIFACT_BYTES or hashlib.sha256(image).hexdigest() != manifest["eifSha256"]:
         raise ValueError("EIF bytes do not match the reviewed digest or exceed 64 MiB")
     kernel, cmdline, bootstrap, app = measured_sections(image)
     bootstrap_pcr = pcr(kernel, cmdline, bootstrap)

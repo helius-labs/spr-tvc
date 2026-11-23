@@ -17,6 +17,7 @@ KEY_ARN = re.compile(r"arn:aws:kms:([a-z0-9-]+):([0-9]{12}):key/[0-9a-f]{8}(?:-[
 ROLE_ARN = re.compile(r"arn:aws:iam::([0-9]{12}):role/[A-Za-z0-9+=,.@_/-]+")
 SIGNING_ALGORITHM = "ECDSA_SHA_256"
 MAX_DOCUMENT_BYTES = 64 * 1024
+MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 P256_SPKI_PREFIX = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d03010703420004")
 P256_ORDER = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551
 
@@ -74,9 +75,18 @@ def sha256(value):
     return hashlib.sha256(canonical(value)).hexdigest()
 
 
-def file_digest(path):
+def file_digest(path, *, max_bytes=MAX_ARTIFACT_BYTES):
     with open_regular(path) as source:
-        return hashlib.file_digest(source, "sha256").hexdigest()
+        if os.fstat(source.fileno()).st_size > max_bytes:
+            raise ValueError(f"{path.name} exceeds {max_bytes} bytes")
+        digest = hashlib.sha256()
+        remaining = max_bytes
+        while block := source.read(min(64 * 1024, remaining + 1)):
+            remaining -= len(block)
+            if remaining < 0:
+                raise ValueError(f"{path.name} exceeds {max_bytes} bytes")
+            digest.update(block)
+        return digest.hexdigest()
 
 
 def hex_digest(value, length=32):

@@ -6,10 +6,11 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
-from approval import MAX_DOCUMENT_BYTES, canonical
+from approval import MAX_ARTIFACT_BYTES, MAX_DOCUMENT_BYTES, canonical, file_digest
 from provenance import WORKFLOW, check_artifact, describe, require_available_reviewer, require_independent_review, verify
 
 COMMIT = "ab" * 20
@@ -168,6 +169,38 @@ class ProvenanceTests(unittest.TestCase):
             finally:
                 path.unlink()
                 path.write_bytes(original)
+
+    def test_rejects_artifacts_over_their_limits_before_hashing(self):
+        for name, limit in (("tvc_app", MAX_ARTIFACT_BYTES), ("configuration.json", MAX_DOCUMENT_BYTES),
+                            ("enclave.eif", MAX_ARTIFACT_BYTES)):
+            path = self.build / name
+            original = path.read_bytes()
+            with path.open("r+b") as artifact:
+                artifact.truncate(limit + 1)
+            try:
+                with (self.subTest(name=name), patch("approval.hashlib.sha256") as digest,
+                      self.assertRaisesRegex(ValueError, f"{name} exceeds {limit} bytes")):
+                    file_digest(path, max_bytes=limit)
+                digest.assert_not_called()
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, f"{name} exceeds {limit} bytes"):
+                    check_artifact(self.build, "mainnet", COMMIT, hashlib.sha256(self.manifest.read_bytes()).hexdigest())
+                self.check_eif.assert_not_called()
+            finally:
+                path.write_bytes(original)
+
+    def test_hashes_the_exact_size_limit(self):
+        path = self.build / "tvc_app"
+        payload = b"fixture" * 10_000
+        path.write_bytes(payload)
+        self.assertEqual(file_digest(path, max_bytes=len(payload)), hashlib.sha256(payload).hexdigest())
+
+    def test_applies_the_limit_if_the_file_grows_after_the_size_check(self):
+        path = self.build / "tvc_app"
+        path.write_bytes(b"first" + b" later bytes")
+        initial = SimpleNamespace(st_mode=path.stat().st_mode, st_size=5)
+        with patch("approval.os.fstat", return_value=initial):
+            with self.assertRaisesRegex(ValueError, "tvc_app exceeds 5 bytes"):
+                file_digest(path, max_bytes=5)
 
     @patch("provenance.subprocess.run")
     def test_matches_the_exact_source_network_and_artifacts_before_github_verification(self, run):

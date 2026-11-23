@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from approval import (
-    KEY_ARN, ROLE_ARN, add_approval, approval_roster, arn, canonical, fields, file_digest, hex_digest,
+    KEY_ARN, ROLE_ARN, MAX_DOCUMENT_BYTES, add_approval, approval_roster, arn, canonical, fields, file_digest, hex_digest,
     parse_json, publish_new_file, read_document, read_json, require_custody_key_profiles, require_inspection_profiles,
     require_profile_account, sha256,
 )
@@ -229,7 +229,8 @@ def main():
                 "receiptSha256": sha256(receipt), "releaseId": config["releaseId"], "mode": mode,
                 "expiresAt": args.expires_at, "eifSha256": file_digest(args.build / "enclave.eif"),
                 "executableSha256": file_digest(args.build / "tvc_app"),
-                "configurationSha256": file_digest(config_path), "pcrs": {pcr: measured[pcr] for pcr in ("PCR0", "PCR1", "PCR2")},
+                "configurationSha256": file_digest(config_path, max_bytes=MAX_DOCUMENT_BYTES),
+                "pcrs": {pcr: measured[pcr] for pcr in ("PCR0", "PCR1", "PCR2")},
                 "hostRole": args.host_role, "hostRegion": args.host_region, "instanceId": args.instance_id,
                 "wrappingKeys": read_json(args.wrapping_keys),
                 "nextCustodians": read_json(args.next_roster) if args.next_roster else None,

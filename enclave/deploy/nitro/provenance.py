@@ -25,7 +25,7 @@ def describe(build, network, source_commit):
         "network": network,
         "sourceCommit": source_commit,
         "executableSha256": file_digest(build / "tvc_app"),
-        "configurationSha256": file_digest(build / "configuration.json"),
+        "configurationSha256": file_digest(build / "configuration.json", max_bytes=MAX_DOCUMENT_BYTES),
         "eifSha256": file_digest(build / "enclave.eif"),
         "pcrs": {name: hex_digest(pins[name], 48) for name in ("PCR0", "PCR1", "PCR2")},
     }

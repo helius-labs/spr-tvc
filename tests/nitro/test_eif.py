@@ -116,7 +116,7 @@ class EifTests(unittest.TestCase):
             with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, message):
                 verify_eif(self.path, {**manifest, "eifSha256": hashlib.sha256(changed).hexdigest()})
         self.path.write_bytes(original)
-        with patch("eif.MAX_EIF_BYTES", len(original) - 1):
+        with patch("eif.MAX_ARTIFACT_BYTES", len(original) - 1):
             with self.assertRaisesRegex(ValueError, "exceed 64 MiB"):
                 verify_eif(self.path, manifest)
 

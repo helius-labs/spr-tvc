@@ -1058,7 +1058,7 @@ def draft(trust, capture, build, host, roster):
     }
     if epoch != 1:
         target, _ = read_rotation_target(trust, manifest, str(epoch - 1))
-        if target["configurationSha256"] != file_digest(build / "configuration.json"):
+        if target["configurationSha256"] != file_digest(build / "configuration.json", max_bytes=MAX_DOCUMENT_BYTES):
             raise ValueError("ceremony build configuration does not match the registered rotation target")
         manifest["rotationTargetSha256"] = sha256(target)
     document = {"authorization": {"manifest": manifest, "signatures": []}, "acknowledgements": []}
