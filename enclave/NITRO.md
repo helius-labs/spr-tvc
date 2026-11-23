@@ -91,8 +91,10 @@ share and can only wrap it to its approved target.
 
 An initialization EIF measures the network, security domain and six ordered RSA
 recipient public keys. It generates the 32-byte seed inside Nitro and uses
-3-of-6 Shamir secret sharing over GF(256). Each share encodes its custody epoch
-as eight big-endian bytes, its one-byte index and the 32-byte share value.
+3-of-6 Shamir secret sharing over GF(256). Share creation keeps the polynomial
+and per-byte scratch values in zeroizing storage. Each share encodes its
+custody epoch as eight big-endian bytes, its one-byte index and the 32-byte
+share value.
 The seed identity is SHA-256 over `SPR/native-nitro/note-seed/v1`, the domain
 and the seed. Each share commitment hashes
 `SPR/native-nitro/custody-share/v1`, the domain and that share's encoded bytes.

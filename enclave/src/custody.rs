@@ -13,7 +13,7 @@ use spr_tvc_protocol::{
     digest::sha256,
     encoding::{decimal_u64, hex, jcs_serialize},
 };
-use vsss_rs::Gf256;
+use vsss_rs::{DefaultShare, Gf256, IdentifierGf256, Polynomial};
 use zeroize::Zeroizing;
 
 use crate::keys::NoteSeed;
@@ -22,6 +22,7 @@ pub(crate) const SHARE_COUNT: usize = 6;
 pub(crate) const THRESHOLD: usize = 3;
 const EPOCH_BYTES: usize = 8;
 pub(crate) const SHARE_BYTES: usize = EPOCH_BYTES + 1 + 32;
+type GfShare = DefaultShare<IdentifierGf256, IdentifierGf256>;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -161,24 +162,36 @@ pub(crate) fn encrypt_share(
     Ok(ciphertext)
 }
 
-fn split(epoch: u64, seed: &NoteSeed) -> io::Result<Zeroizing<Vec<Vec<u8>>>> {
+fn split(
+    epoch: u64,
+    seed: &NoteSeed,
+    mut rng: impl rand_core::CryptoRng,
+) -> io::Result<Zeroizing<Vec<Vec<u8>>>> {
+    let epoch = epoch.to_be_bytes();
     let mut shares = Zeroizing::new(
-        Gf256::split_bytes(
-            THRESHOLD,
-            SHARE_COUNT,
-            seed.0.as_slice(),
-            rand_core::UnwrapErr(getrandom::SysRng),
-        )
-        .map_err(|_| io::Error::other("failed to split note seed"))?,
+        (1..=SHARE_COUNT as u8)
+            .map(|slot| {
+                let mut share = Vec::with_capacity(SHARE_BYTES);
+                share.extend_from_slice(&epoch);
+                share.push(slot);
+                share
+            })
+            .collect::<Vec<_>>(),
     );
-    let mut encoded = Zeroizing::new(Vec::with_capacity(SHARE_COUNT));
-    for (index, share) in shares.iter_mut().enumerate() {
-        if share.len() != 33 || usize::from(share[0]) != index + 1 {
-            return Err(io::Error::other("unexpected share identifier"));
+    let mut polynomial: Zeroizing<[GfShare; THRESHOLD]> = Zeroizing::new(Default::default());
+    let mut intercept = Zeroizing::new(IdentifierGf256::default());
+    let mut value = Zeroizing::new(IdentifierGf256::default());
+    for &byte in seed.0.iter() {
+        *intercept = IdentifierGf256(Gf256(byte));
+        Polynomial::fill(&mut *polynomial, &intercept, &mut rng, THRESHOLD)
+            .map_err(|_| io::Error::other("failed to split note seed"))?;
+        for share in shares.iter_mut() {
+            let id = IdentifierGf256(Gf256(share[EPOCH_BYTES]));
+            polynomial.evaluate_in_place(&id, THRESHOLD, &mut value);
+            share.push(value.as_ref().0);
         }
-        encoded.push([epoch.to_be_bytes().as_slice(), share].concat());
     }
-    Ok(encoded)
+    Ok(shares)
 }
 
 pub(crate) struct Recipients(Vec<PKey<Public>>);
@@ -209,7 +222,7 @@ impl Recipients {
         epoch: u64,
         seed: &NoteSeed,
     ) -> io::Result<(Custody, Vec<CustodianPackage>)> {
-        let shares = split(epoch, seed)?;
+        let shares = split(epoch, seed, rand_core::UnwrapErr(getrandom::SysRng))?;
         let note_seed_commitment = note_commitment(domain, seed);
         let custody = Custody {
             epoch,

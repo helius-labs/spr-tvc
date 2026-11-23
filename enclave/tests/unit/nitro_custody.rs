@@ -1,4 +1,5 @@
 use openssl::{encrypt::Decrypter, pkey::Private, rsa::Rsa};
+use rand_core::{Infallible, TryCryptoRng, TryRng};
 
 use super::*;
 
@@ -19,7 +20,7 @@ fn hashes_the_canonical_custody_record_for_release_attestation() {
 pub(crate) const DOMAIN: [u8; 32] = [0xab; 32];
 
 pub(crate) fn fixture(epoch: u64, seed: &NoteSeed) -> (Custody, Zeroizing<Vec<Vec<u8>>>) {
-    let shares = split(epoch, seed).unwrap();
+    let shares = split(epoch, seed, rand_core::UnwrapErr(getrandom::SysRng)).unwrap();
     let note_seed_commitment = note_commitment(&DOMAIN, seed);
     let custody = Custody {
         epoch,
@@ -45,6 +46,45 @@ fn restore_seed(custody: &Custody, domain: &[u8; 32], shares: &[Vec<u8>]) -> Opt
             }),
         )
         .map(|(seed, _)| seed)
+}
+
+struct FixtureRng(u32);
+
+impl TryRng for FixtureRng {
+    type Error = Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        let value = self.0;
+        self.0 = value.wrapping_add(1);
+        Ok(value)
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(u64::from(self.try_next_u32()?) | (u64::from(self.try_next_u32()?) << 32))
+    }
+
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        for chunk in dst.chunks_mut(4) {
+            chunk.copy_from_slice(&self.try_next_u32()?.to_le_bytes()[..chunk.len()]);
+        }
+        Ok(())
+    }
+}
+
+impl TryCryptoRng for FixtureRng {}
+
+#[test]
+fn zeroizing_split_matches_vsss_byte_shares() {
+    let seed = NoteSeed(Zeroizing::new(std::array::from_fn(|index| index as u8)));
+    let expected = Zeroizing::new(
+        Gf256::split_bytes(THRESHOLD, SHARE_COUNT, seed.0.as_slice(), FixtureRng(0)).unwrap(),
+    );
+    let encoded = split(7, &seed, FixtureRng(0)).unwrap();
+    assert_eq!(encoded.len(), SHARE_COUNT);
+    for (share, expected) in encoded.iter().zip(expected.iter()) {
+        assert_eq!(&share[..EPOCH_BYTES], &7_u64.to_be_bytes());
+        assert_eq!(&share[EPOCH_BYTES..], expected);
+    }
 }
 
 #[test]
