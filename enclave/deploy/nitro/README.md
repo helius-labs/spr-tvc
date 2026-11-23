@@ -470,8 +470,11 @@ pinned history and excluded versions.
    python3 "$nitro/provision.py" 16 "$approved_target" --target-sha256 "$target_sha256"
    ```
    If fewer than three KMS envelopes are available, the command checks the
-   parent credentials with STS and reports a role mismatch. Healthy
-   provisioning uses the KMS endpoints. [AWS KMS recipient response](https://docs.aws.amazon.com/kms/latest/APIReference/API_Decrypt.html)
+   parent credentials with STS and reports a role mismatch. HTTP 429 means
+   the enclave processed no shares. The command retries the same ciphertext
+   within one eight-second submission deadline. If the acknowledgement is
+   lost, verify serving attestation or the rotation receipt before restarting.
+   [AWS KMS recipient response](https://docs.aws.amazon.com/kms/latest/APIReference/API_Decrypt.html)
 
 4. Keep port 44031 private. Forward port 44030 through TLS without caching.
    Open one HTTP/1 request per upstream vsock connection. The enclave closes

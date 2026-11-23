@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "enclave/deploy/nitro"))
 from approval import InvalidAwsResponse, aws, require_profile_account
@@ -206,7 +206,8 @@ class ProvisioningTests(unittest.TestCase):
                               [(key, base64.b64encode(bytes([slot]) * 256).decode(), b"evidence")
                                for slot, key in enumerate(KEYS, start=1)])
         request.assert_called_with(16, "POST", "/shares",
-                                   b"".join(struct.pack(">BH", slot, 1) + str(slot).encode() for slot in (2, 4, 6)), limit=3)
+                                   b"".join(struct.pack(">BH", slot, 1) + str(slot).encode() for slot in (2, 4, 6)),
+                                   limit=3, deadline=ANY)
 
     @patch("provision.decrypt_recipient")
     @patch("provision.request", return_value=(200, b"evidence"))
@@ -223,7 +224,8 @@ class ProvisioningTests(unittest.TestCase):
         self.assertEqual(provision(16, TARGET, self.shares, [6, 2, 4]), [2, 4, 6])
         self.assertEqual({call.args[0] for call in decrypt.call_args_list}, {KEYS[1], KEYS[3], KEYS[5]})
         request.assert_called_with(16, "POST", "/shares",
-                                   b"".join(struct.pack(">BH", slot, 8) + b"envelope" for slot in (2, 4, 6)), limit=3)
+                                   b"".join(struct.pack(">BH", slot, 8) + b"envelope" for slot in (2, 4, 6)),
+                                   limit=3, deadline=ANY)
         request.reset_mock(side_effect=True)
         request.return_value = (200, b"evidence")
         decrypt.reset_mock(side_effect=True)
@@ -247,9 +249,32 @@ class ProvisioningTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "refused the shares with HTTP 400"):
             provision(16, TARGET, self.shares, [2, 4, 6])
         for result in (TimeoutError("lost response"), (404, b""), (410, b""), (503, b"")):
+            request.reset_mock()
             request.side_effect = [(200, b"evidence"), result]
             with self.subTest(result=result), self.assertRaisesRegex(UnconfirmedBootstrap, "could not confirm"):
                 provision(16, TARGET, self.shares, [2, 4, 6])
+            self.assertEqual(request.call_count, 2)
+
+    @patch("provision.sleep")
+    @patch("provision.decrypt_recipient", return_value=b"envelope")
+    @patch("provision.request", side_effect=[(200, b"evidence"), (429, b""), (200, bytes([2, 4, 6]))])
+    def test_retries_busy_submission_with_the_same_envelopes_and_deadline(self, request, decrypt, sleep):
+        self.assertEqual(provision(16, TARGET, self.shares, [2, 4, 6]), [2, 4, 6])
+        self.assertEqual(decrypt.call_count, 3)
+        first, retry = request.call_args_list[1:]
+        self.assertEqual(first, retry)
+        self.assertEqual(first.args[:3], (16, "POST", "/shares"))
+        self.assertIn("deadline", first.kwargs)
+        sleep.assert_called_once()
+
+    @patch("provision.monotonic", side_effect=[0, 0, 0, 10, 10, 18, 18])
+    @patch("provision.decrypt_recipient", return_value=b"envelope")
+    @patch("provision.request", side_effect=[(200, b"evidence"), (429, b"")])
+    def test_stops_retrying_busy_shares_at_the_submission_deadline(self, request, _decrypt, _clock):
+        with self.assertRaisesRegex(ValueError, "remained busy until the share submission deadline"):
+            provision(16, TARGET, self.shares, [2, 4, 6])
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(request.call_args.kwargs["deadline"], 18)
 
     @patch("provision.request")
     def test_refuses_keys_or_slot_selections_outside_the_approved_custody_set(self, request):

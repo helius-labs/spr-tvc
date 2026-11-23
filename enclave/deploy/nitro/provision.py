@@ -117,8 +117,18 @@ def provision(cid, manifest, directory, slots=None):
     if len(shares) < THRESHOLD:
         raise InsufficientShares(f"KMS returned fewer than three share envelopes; successful slots: {submitted}")
     frame = b"".join(struct.pack(">BH", slot, len(share)) + share for slot, share in shares)
+    deadline = monotonic() + HTTP_TIMEOUT
     try:
-        status, body = request(cid, "POST", "/shares", frame, limit=THRESHOLD)
+        while monotonic() < deadline:
+            status, body = request(cid, "POST", "/shares", frame, limit=THRESHOLD, deadline=deadline)
+            if status != 429:
+                break
+            # The enclave returns 429 before it processes any shares.
+            remaining = deadline - monotonic()
+            if remaining > 0:
+                sleep(min(0.25, remaining))
+        else:
+            raise ValueError("enclave remained busy until the share submission deadline")
     except (OSError, http.client.HTTPException) as error:
         raise UnconfirmedBootstrap("no complete acknowledgement") from error
     if status == 400:
