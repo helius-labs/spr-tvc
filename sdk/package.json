@@ -28,6 +28,10 @@
       "types": "./dist/protocol.d.ts",
       "import": "./dist/protocol.js"
     },
+    "./release": {
+      "types": "./dist/release.d.ts",
+      "import": "./dist/release.js"
+    },
     "./testing": {
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"
