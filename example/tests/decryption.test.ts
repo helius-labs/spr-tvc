@@ -28,11 +28,10 @@ test("the direct service opens signed batches and the SDK checks commitments", {
       return signer.signMessages(messages);
     },
   };
-  const unavailableProof = () => { throw new Error("this test only decrypts"); };
-  const keys = await service.open(owner, { prove: unavailableProof, proveMerge: unavailableProof });
+  const keys = await service.keys(owner);
   const sender = ViewingKey.generate();
   try {
-    assert.equal(approvals.length, 1);
+    assert.equal(approvals.length, 0);
     const recipient = await service.address(owner.address);
     assert.deepEqual(keys.address().viewingPublicKey.toBytes(), recipient.viewingPublicKey.toBytes());
     assert.deepEqual(keys.address().nullifierPublicKey, recipient.nullifierPublicKey);
@@ -59,8 +58,7 @@ test("the direct service opens signed batches and the SDK checks commitments", {
     const report = await decryptTransactions({ wallet, keys, transactions: [transaction] });
     assert.equal(report.undecryptableCandidates, 1);
     assert.deepEqual(wallet.utxos().map(({ utxo }) => utxo.amount), [5n]);
-    assert.equal(approvals.length, 2);
-    assert.notEqual(approvals[0], approvals[1]);
+    assert.equal(approvals.length, 1);
   } finally {
     keys.destroy();
     sender.destroy();

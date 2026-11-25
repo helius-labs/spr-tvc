@@ -2,23 +2,29 @@ import { NullifierKey, ShieldedAddress, ShieldedPublicKey, initializePoseidon, t
 import { X25519Keypair, type Bytes31 } from "@heliuslabs/spr/keypair";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
-import { encodeLowerHex } from "../../src/protocol/hex.js";
+import { decodeLowerHex, encodeLowerHex } from "../../src/protocol/hex.js";
 import type { DecryptItem } from "../../src/protocol/types.js";
-import { ServiceKeys } from "../../src/client/keys.js";
+import { ServiceKeys, type OpenedNotes } from "../../src/client/keys.js";
 
-const proofs = { prove: vi.fn(), proveMerge: vi.fn() };
 const bytes = (fill: number, length = 32) => new Uint8Array(length).fill(fill);
 
 beforeAll(() => initializePoseidon());
 
-function keys(secret: Bytes31, decrypt = vi.fn(async (items: readonly DecryptItem[]) => items.map((item) => item.ciphertext))) {
+function opened(secret: Bytes31, items: readonly DecryptItem[]): OpenedNotes {
+  return {
+    plaintexts: items.map((item) => decodeLowerHex(item.ciphertext)),
+    nullifierSecret: new Uint8Array(secret) as Bytes31,
+  };
+}
+
+function keys(secret: Bytes31, decrypt = vi.fn(async (items: readonly DecryptItem[]) => opened(secret, items))) {
   const nullifier = NullifierKey.fromSecret(secret);
   const address = ShieldedAddress.fromPublicKeys(
     ShieldedPublicKey.fromEd25519(bytes(1) as Bytes32),
     nullifier.publicKey(),
     X25519Keypair.generate().publicKey(),
   );
-  return { address, nullifier, decrypt, keys: new ServiceKeys(address, secret, proofs, decrypt) };
+  return { address, nullifier, decrypt, keys: new ServiceKeys(address, decrypt) };
 }
 
 describe("the keys of an address under the service", () => {
@@ -55,5 +61,32 @@ describe("the keys of an address under the service", () => {
     } as const);
     expect(await held.decrypt([request(7), request(8)])).toEqual([bytes(7, 50), bytes(8, 50)]);
     expect(decrypt.mock.calls[0]?.[0].map((item) => item.slot_index)).toEqual(["7", "8"]);
+    expect(await held.nullifierSecret()).toEqual(bytes(5, 31));
+    expect(decrypt).toHaveBeenCalledOnce();
+  });
+
+  it("shares one decrypt when a derive starts beside the notes", async () => {
+    const secret = bytes(5, 31) as Bytes31;
+    const { address, nullifier, decrypt, keys: held } = keys(secret, vi.fn(async (items: readonly DecryptItem[]) => {
+      await Promise.resolve();
+      return opened(secret, items);
+    }));
+    const note = {
+      ciphertext: bytes(7, 50),
+      viewingPublicKey: address.viewingPublicKey,
+      txViewingPublicKey: X25519Keypair.generate().publicKey(),
+      salt: bytes(0, 16) as never,
+      slotIndex: 7,
+      label: "transfer",
+    } as const;
+    const derivation = { kind: "nullifier", utxoHash: bytes(2) as Bytes32, blinding: bytes(3) as Bytes32 } as const;
+    const [nullifiers, openedNotes] = await Promise.all([
+      held.derive([derivation]),
+      held.decrypt([note]),
+    ]);
+    expect(openedNotes).toEqual([bytes(7, 50)]);
+    expect(nullifiers).toEqual([nullifier.nullifier(derivation.utxoHash, derivation.blinding)]);
+    expect(decrypt).toHaveBeenCalledOnce();
+    expect(decrypt.mock.calls[0]?.[0]).toHaveLength(1);
   });
 });

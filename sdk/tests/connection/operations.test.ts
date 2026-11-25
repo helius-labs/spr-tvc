@@ -20,7 +20,7 @@ const requestId = "aa".repeat(32);
 const manifest = "bb".repeat(32);
 const text = new TextEncoder();
 
-function fixture() {
+async function fixture() {
   const exchange: Exchange = {
     request: { request_id: requestId },
     requestDigest: bytes(5),
@@ -29,7 +29,7 @@ function fixture() {
   };
   const result = canonicalizeJsonValue({ type: "PublicKeys" });
   const receiver = p256.getPublicKey(exchange.responseSecret, false);
-  const ciphertext = qosEncrypt(receiver, text.encode(result));
+  const ciphertext = await qosEncrypt(receiver, text.encode(result));
   const payload = {
     type: SERVICE_PROOF_TYPE,
     version: API_VERSION,
@@ -70,8 +70,8 @@ function fixture() {
     proof.proof_payload = canonical;
     proof.signature = encodeLowerHex(signP256Message(signing, text.encode(canonical)));
   }
-  function replyWith(key: Uint8Array, plaintext: string) {
-    const ciphertext = qosEncrypt(key, text.encode(plaintext));
+  async function replyWith(key: Uint8Array, plaintext: string) {
+    const ciphertext = await qosEncrypt(key, text.encode(plaintext));
     response.encrypted_result = encodeLowerHex(ciphertext);
     sign({ ...payload, result_digest: encodeLowerHex(resultDigest(ciphertext)) });
   }
@@ -80,7 +80,7 @@ function fixture() {
 
 describe("operation replies", () => {
   it("opens only a reply signed by the replica for this request and ciphertext", async () => {
-    const f = fixture();
+    const f = await fixture();
     await expect(sealedExchange(f.context, f.exchange)).resolves.toBe(f.result);
     expect(f.verifyOperationAppProof).toHaveBeenCalledWith(expect.objectContaining({ publicKey: ephemeral }), undefined);
   });
@@ -89,63 +89,63 @@ describe("operation replies", () => {
     ["type", "wrong"], ["version", API_VERSION + 1], ["request_id", "00".repeat(32)], ["request_digest", "00".repeat(32)],
     ["result_digest", "00".repeat(32)], ["operation", "ServiceDecrypt"],
   ])("rejects an attested proof with a wrong %s", async (field, value) => {
-    const f = fixture();
+    const f = await fixture();
     f.sign({ ...f.payload, [field]: value });
     await expect(sealedExchange(f.context, f.exchange)).rejects.toMatchObject({ code: "ReleaseBindingMismatch" });
   });
 
   it("rejects a response from another request and an oversized encrypted result", async () => {
-    const wrong = fixture();
+    const wrong = await fixture();
     wrong.response.request_id = "00".repeat(32);
     await expect(sealedExchange(wrong.context, wrong.exchange)).rejects.toMatchObject({ code: "ReleaseBindingMismatch" });
     expect(wrong.verifyOperationAppProof).not.toHaveBeenCalled();
 
-    const oversized = fixture();
+    const oversized = await fixture();
     oversized.response.encrypted_result = "00".repeat(MAX_ENCRYPTED_RESPONSE_BYTES + 1);
     await expect(sealedExchange(oversized.context, oversized.exchange)).rejects.toMatchObject({ code: "ResponseTooLarge" });
     expect(oversized.verifyOperationAppProof).not.toHaveBeenCalled();
   });
 
   it("rejects unsupported reply versions, malformed proof JSON, and the wrong scheme", async () => {
-    const old = fixture();
+    const old = await fixture();
     Object.assign(old.response, { version: API_VERSION + 1 });
     await expect(sealedExchange(old.context, old.exchange)).rejects.toMatchObject({ code: "ReleaseBindingMismatch" });
 
-    const malformed = fixture();
+    const malformed = await fixture();
     malformed.proof.proof_payload = " " + malformed.proof.proof_payload;
     await expect(sealedExchange(malformed.context, malformed.exchange)).rejects.toMatchObject({ code: "TurnkeyEvidenceInvalid" });
 
-    const wrong = fixture();
+    const wrong = await fixture();
     Object.assign(wrong.proof, { scheme: "SIGNATURE_SCHEME_TK_API_P256" });
     await expect(sealedExchange(wrong.context, wrong.exchange)).rejects.toMatchObject({ code: "TurnkeyEvidenceInvalid" });
 
-    const extra = fixture();
+    const extra = await fixture();
     extra.sign({ ...extra.payload, sealed_seed_digest: "00".repeat(32) });
     await expect(sealedExchange(extra.context, extra.exchange)).rejects.toMatchObject({ code: "UnknownJsonField" });
   });
 
   it("rejects an invalid signature and refuses an unverified replica", async () => {
-    const badSignature = fixture();
+    const badSignature = await fixture();
     badSignature.proof.signature = "00".repeat(64);
     await expect(sealedExchange(badSignature.context, badSignature.exchange)).rejects.toMatchObject({ code: "InvalidSignature" });
     expect(badSignature.verifyOperationAppProof).not.toHaveBeenCalled();
 
-    const unverified = fixture();
+    const unverified = await fixture();
     unverified.verifyOperationAppProof.mockRejectedValueOnce(new Error("unverified replica"));
     await expect(sealedExchange(unverified.context, unverified.exchange)).rejects.toThrow("unverified replica");
   });
 
   it("checks the signed ciphertext digest, envelope authentication, and canonical plaintext", async () => {
-    const changed = fixture();
+    const changed = await fixture();
     changed.response.encrypted_result += "00";
     await expect(sealedExchange(changed.context, changed.exchange)).rejects.toMatchObject({ code: "ReleaseBindingMismatch" });
 
-    const wrongReceiver = fixture();
-    wrongReceiver.replyWith(p256.getPublicKey(bytes(7), false), wrongReceiver.result);
+    const wrongReceiver = await fixture();
+    await wrongReceiver.replyWith(p256.getPublicKey(bytes(7), false), wrongReceiver.result);
     await expect(sealedExchange(wrongReceiver.context, wrongReceiver.exchange)).rejects.toMatchObject({ code: "InvalidEncryptedEnvelope" });
 
-    const noncanonical = fixture();
-    noncanonical.replyWith(noncanonical.receiver, " " + noncanonical.result);
+    const noncanonical = await fixture();
+    await noncanonical.replyWith(noncanonical.receiver, " " + noncanonical.result);
     await expect(sealedExchange(noncanonical.context, noncanonical.exchange)).rejects.toMatchObject({ code: "InvalidCanonicalJson" });
   });
 });

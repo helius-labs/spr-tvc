@@ -3,7 +3,6 @@ import {
   CborError,
   decodeAwsNitroAttestationCbor,
   decodeCbor,
-  encodeCoseSigStructure,
 } from "../../src/attestation/cbor.js";
 import { decodeLowerHex, encodeLowerHex } from "../../src/protocol/hex.js";
 
@@ -125,33 +124,5 @@ describe("strict CBOR decoder", () => {
 
   it("rejects invalid UTF-8 in text strings", () => {
     expect(() => decodeHex("62c328")).toThrowError();
-  });
-});
-
-describe("COSE Sig_structure encoding", () => {
-  it("produces the canonical array the ES384 signature covers", () => {
-    const encoded = encodeCoseSigStructure(
-      decodeLowerHex("a10138"),
-      new Uint8Array(0),
-      decodeLowerHex("0102030405"),
-    );
-    // 84 | 6a "Signature1" | 43 a10138 | 40 | 45 0102030405
-    expect(encodeLowerHex(encoded)).toBe(
-      "846a5369676e61747572653143a101384045" + "0102030405",
-    );
-    expect(decodeCbor(encoded)).toEqual([
-      "Signature1",
-      decodeLowerHex("a10138"),
-      new Uint8Array(0),
-      decodeLowerHex("0102030405"),
-    ]);
-  });
-
-  it("round-trips byte strings that need multi-byte length headers", () => {
-    const payload = new Uint8Array(500).fill(0xab);
-    const decoded = decodeCbor(
-      encodeCoseSigStructure(new Uint8Array(0), new Uint8Array(0), payload),
-    ) as unknown[];
-    expect(decoded[3]).toEqual(payload);
   });
 });

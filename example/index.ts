@@ -7,7 +7,7 @@ import {
 } from "@heliuslabs/spr";
 import { isWalletRegistered } from "@heliuslabs/spr/wallet";
 
-import { expectBalance, localWalletKeys, sendAndConfirmFactory, setup } from "./setup.js";
+import { expectBalance, localWalletKeys, sendAndConfirmFactory, serviceSpendKeys, setup } from "./setup.js";
 
 const AMOUNT = 3_000_000n;
 
@@ -16,9 +16,10 @@ async function main(): Promise<void> {
   if (await isWalletRegistered({ rpc: zolana, owner: recipient.address })) {
     throw new Error("the example requires a recipient without a registry record");
   }
-  const serviceKeys = await service.open(recipient, zolana.proofService);
+  const serviceKeys = await service.keys(recipient);
   let keys: Awaited<ReturnType<typeof localWalletKeys>> | undefined;
   let ownKeys: typeof keys;
+  let spendKeys: Awaited<ReturnType<typeof serviceSpendKeys>> | undefined;
   try {
     keys = await localWalletKeys(sender, zolana.proofService);
     const send = sendAndConfirmFactory(zolana, sender);
@@ -56,10 +57,11 @@ async function main(): Promise<void> {
     ownKeys = sender.address === recipient.address
       ? keys
       : await localWalletKeys(recipient, zolana.proofService);
+    spendKeys = await serviceSpendKeys(serviceKeys, zolana.proofService);
     const sweep = await buildTransferTransaction({
       client: zolana,
       wallet: received,
-      keys: serviceKeys,
+      keys: spendKeys,
       feePayer: sender.address,
       recipient: ownKeys.address(),
       amount: AMOUNT,
@@ -76,6 +78,7 @@ async function main(): Promise<void> {
     expectBalance("sweep", own.balance(SOL_MINT), AMOUNT, 1);
     console.log(`sweep recipient=${recipient.address} private_balance=${AMOUNT} tx=${sweepTx.signature}`);
   } finally {
+    spendKeys?.destroy();
     serviceKeys.destroy();
     if (ownKeys !== keys) ownKeys?.destroy();
     keys?.destroy();

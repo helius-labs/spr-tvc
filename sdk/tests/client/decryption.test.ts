@@ -163,7 +163,6 @@ it.each(["caller", "client"])("uses one %s deadline across all decrypt batches",
   await initializePoseidon();
   const { context } = fixture();
   const owner = { address: ownerAddress, signMessages: vi.fn() };
-  const proofs = { prove: vi.fn(), proveMerge: vi.fn() };
   const secret = new Uint8Array(31).fill(5) as Bytes31;
   const nullifier = NullifierKey.fromSecret(secret);
   const viewing = ViewingKey.generate();
@@ -176,10 +175,9 @@ it.each(["caller", "client"])("uses one %s deadline across all decrypt batches",
       type: "PublicKeys",
       viewing_public_key: encodeLowerHex(viewingPublicKey.toBytes()),
       nullifier_public_key: encodeLowerHex(nullifier.publicKey()),
-    })
-    .mockResolvedValueOnce({ type: "Decrypt", plaintexts: [], nullifier_secret: encodeLowerHex(secret) });
+    });
   try {
-    const keys = await service.open(owner, proofs);
+    const keys = await service.keys(owner);
     try {
       vi.useFakeTimers();
       operation
@@ -202,7 +200,7 @@ it.each(["caller", "client"])("uses one %s deadline across all decrypt batches",
       );
       const rejected = expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
       await vi.advanceTimersByTimeAsync(6);
-      const calls = operation.mock.calls.slice(2);
+      const calls = operation.mock.calls.slice(1);
       const first = calls[1];
       const second = calls[2];
       expect(calls.map(([, call]) =>

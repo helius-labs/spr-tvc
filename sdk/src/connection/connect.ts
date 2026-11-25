@@ -85,7 +85,7 @@ function requireQosPublicKey(value: string): Uint8Array {
 /** A random challenge encrypted to the quorum key, and the payload the enclave must sign. */
 export type QosPingChallenge = { readonly body: string; readonly payload: string };
 
-export function qosPingChallenge(quorumPublicKey: string): QosPingChallenge {
+export async function qosPingChallenge(quorumPublicKey: string): Promise<QosPingChallenge> {
   const quorumPublic = parseQosP256Public(requireQosPublicKey(quorumPublicKey));
   const payload = canonicalizeJsonValue({
     type: TVC_QOS_PING_PROOF_TYPE,
@@ -95,7 +95,7 @@ export function qosPingChallenge(quorumPublicKey: string): QosPingChallenge {
   const body = canonicalizeJsonValue({
     version: API_VERSION,
     encrypted_challenge: encodeLowerHex(
-      qosEncrypt(quorumPublic.encryption, new TextEncoder().encode(payload)),
+      await qosEncrypt(quorumPublic.encryption, new TextEncoder().encode(payload)),
     ),
   });
   return { body, payload };
@@ -162,7 +162,7 @@ export async function verifyLiveReplica(input: VerifyLiveReplicaInput): Promise<
     throw new DecryptionServiceError("ReleaseBindingMismatch");
   }
   const transport = input.transport ?? createDefaultTransport();
-  const challenge = qosPingChallenge(input.approved.quorumPublicKey);
+  const challenge = await qosPingChallenge(input.approved.quorumPublicKey);
   const appProof = verifyQosPingAnswer(
     await fetchPing(input.endpoint, challenge.body, transport, signal),
     challenge,
@@ -200,7 +200,7 @@ export async function connectAndVerifyTvc(
     nowMs: verificationNow,
   }), verifySignal);
 
-  const challenge = qosPingChallenge(releasePolicy.policy.quorumPublicKey);
+  const challenge = await qosPingChallenge(releasePolicy.policy.quorumPublicKey);
   const session = await fetchSession(backend, challenge.body, transport, signal);
   const info = parseServiceInfo(session.infoText);
   bindDiscoveryToPolicy(info, releasePolicy);

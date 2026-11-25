@@ -1,5 +1,6 @@
 import { gcm } from "@noble/ciphers/aes";
 import { p256 } from "@noble/curves/p256";
+import { encryptToQuorumKey } from "../attestation/turnkey.js";
 import { hmac } from "@noble/hashes/hmac";
 import { sha512 } from "@noble/hashes/sha512";
 import {
@@ -128,17 +129,12 @@ export function qosEncryptWith(
   return encodeQosEnvelope(nonce, ephemeralPublic, encryptedMessage);
 }
 
+/** Encrypts to a quorum encryption key with Turnkey's QOS envelope. */
 export function qosEncrypt(
   receiverEncryptionSec1: Uint8Array,
-  plaintext: Uint8Array
-): Uint8Array {
-  const nonce = crypto.getRandomValues(new Uint8Array(12));
-  return qosEncryptWith(
-    receiverEncryptionSec1,
-    plaintext,
-    p256.utils.randomPrivateKey(),
-    nonce
-  );
+  plaintext: Uint8Array,
+): Promise<Uint8Array> {
+  return encryptToQuorumKey(receiverEncryptionSec1, plaintext);
 }
 
 export function qosDecrypt(
