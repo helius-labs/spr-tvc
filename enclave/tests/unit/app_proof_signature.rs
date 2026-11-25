@@ -45,6 +45,7 @@ fn an_encrypted_result_must_fit_the_response_ceiling() {
             signer: "unused".into(),
             signature: [0; 64],
             items: Vec::new(),
+            grant: None,
         },
     };
     let response_key = P256EncryptPublic::from_bytes(&pair.public_key().to_bytes()[..65]).unwrap();

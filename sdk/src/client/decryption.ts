@@ -1,14 +1,21 @@
 import { ShieldedAddress, ShieldedPublicKey, type Bytes32, type ProofService } from "@heliuslabs/spr";
 import { X25519PublicKey, type Bytes31 } from "@heliuslabs/spr/keypair";
-import { getAddressEncoder, type Address, type MessagePartialSigner } from "@solana/kit";
+import { address as solanaAddress, createSignableMessage, getAddressEncoder, type Address, type MessagePartialSigner } from "@solana/kit";
 
 import type { BootProofResolver } from "../connection/backend.js";
-import { requestScope, type DecryptionServiceRequestOptions } from "../connection/request.js";
+import { awaitWithSignal, requestScope, type DecryptionServiceRequestOptions } from "../connection/request.js";
 import { createDecryptionServiceSession, type DecryptionServiceSession } from "../connection/session.js";
 import type { DecryptionServiceTransport } from "../connection/http.js";
-import { DecryptionServiceHttpError } from "../protocol/error.js";
-import { requireHex } from "../protocol/hex.js";
+import { DecryptionServiceError, DecryptionServiceHttpError } from "../protocol/error.js";
+import { requireHex, encodeLowerHex } from "../protocol/hex.js";
 import { requireNetwork } from "../protocol/network.js";
+import {
+  acceptViewGrantWindow,
+  viewGrantDigest,
+  viewGrantMessage,
+  viewGrantWire,
+  type ViewGrant,
+} from "../protocol/decryption.js";
 import { releaseForConnection, type ReleaseTrust } from "../protocol/releases.js";
 import type { DecryptItem, Network } from "../protocol/types.js";
 import { batched, checkHexList } from "./items.js";
@@ -34,15 +41,48 @@ export type DecryptionService = {
   /** The shielded address a sender pays `owner` at before `owner` registers a wallet. */
   address(owner: Address, options?: DecryptionServiceRequestOptions): Promise<ShieldedAddress>;
   /**
-   * The keys of that address, for its owner. `owner` signs once here and once
-   * for every batch of outputs a sync opens.
+   * The keys of that address. `signer` is the owner, or a grantee named by
+   * `options.grant`. The signer authorizes the empty batch and every later batch.
    */
   open(
-    owner: MessagePartialSigner,
+    signer: MessagePartialSigner,
     proofs: ProofService,
-    options?: DecryptionServiceRequestOptions,
+    options?: DecryptionServiceRequestOptions & { readonly grant?: ViewGrant },
   ): Promise<DecryptionServiceKeys>;
 };
+
+/** The owner signs a 30-minute view grant for `grantee` on this release. */
+export async function signViewGrant(
+  owner: MessagePartialSigner,
+  input: {
+    readonly grantee: Address;
+    readonly network: Network;
+    readonly quorumKeyId: string;
+    readonly quorumKeyEpoch: bigint;
+    readonly notBeforeMs: bigint;
+    readonly expiryMs: bigint;
+  },
+  options?: DecryptionServiceRequestOptions,
+): Promise<ViewGrant> {
+  acceptViewGrantWindow(input.notBeforeMs, input.expiryMs, input.notBeforeMs);
+  const unsigned = viewGrantWire({ ...input, owner: owner.address });
+  const message = viewGrantMessage(
+    new Uint8Array(addressEncoder.encode(owner.address)),
+    viewGrantDigest(unsigned),
+  );
+  const scope = requestScope(options);
+  try {
+    const [signatures] = await awaitWithSignal(
+      owner.signMessages([createSignableMessage(message)], { abortSignal: scope.signal }),
+      scope.signal,
+    );
+    const signature = signatures?.[owner.address];
+    if (signature?.length !== 64) throw new DecryptionServiceError("InvalidSignature");
+    return { ...unsigned, signature: encodeLowerHex(signature) };
+  } finally {
+    scope.dispose();
+  }
+}
 
 export function decryptionServiceFromSession(
   session: DecryptionServiceSession,
@@ -83,11 +123,17 @@ export function decryptionServiceFromSession(
   }
 
   async function decrypt(
-    owner: MessagePartialSigner,
+    signer: MessagePartialSigner,
     items: readonly DecryptItem[],
     signal: AbortSignal,
+    grant?: ViewGrant,
   ) {
-    const result = await call({ type: "Decrypt", owner, items }, signal);
+    const result = await call({
+      type: "Decrypt",
+      owner: signer,
+      items,
+      ...(grant === undefined ? {} : { grant }),
+    }, signal);
     checkHexList(result.plaintexts, items.length);
     return result;
   }
@@ -96,15 +142,17 @@ export function decryptionServiceFromSession(
     address(owner, options) {
       return withinRequest(options, (signal) => address(owner, signal));
     },
-    open(owner, proofs, options) {
+    open(signer, proofs, options) {
       return withinRequest(options, async (signal) => {
-        const shielded = await address(owner.address, signal);
-        const bootstrap = await decrypt(owner, [], signal);
+        const grant = options?.grant;
+        const owner = grant === undefined ? signer.address : solanaAddress(grant.owner);
+        const shielded = await address(owner, signal);
+        const bootstrap = await decrypt(signer, [], signal, grant);
         const nullifierSecret = requireHex(bootstrap.nullifier_secret, 31) as Bytes31;
         try {
           return new ServiceKeys(shielded, nullifierSecret, proofs, (items, context) =>
             withinRequest(context, (batchSignal) =>
-              batched(items, async (batch) => (await decrypt(owner, batch, batchSignal)).plaintexts)),
+              batched(items, async (batch) => (await decrypt(signer, batch, batchSignal, grant)).plaintexts)),
           );
         } finally {
           nullifierSecret.fill(0);

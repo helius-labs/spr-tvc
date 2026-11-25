@@ -72,6 +72,7 @@ impl MaxEnvelope {
             operation: ServiceOperation::Decrypt {
                 signer: "1".repeat(44),
                 signature: [0; 64],
+                grant: None,
                 items: vec![DecryptItem {
                     ciphertext: Vec::new(),
                     ephemeral_viewing_public_key: vec![0x04; X25519_PUBLIC_KEY_LEN],

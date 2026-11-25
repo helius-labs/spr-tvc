@@ -1,5 +1,7 @@
 //! The encrypted operation endpoint.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use axum::body::Body;
 use axum::http::Response;
 use axum::response::IntoResponse;
@@ -45,9 +47,16 @@ pub(crate) fn execute(service: &Service, body: &[u8]) -> Result<String, Failure>
             signer,
             signature,
             items,
+            grant,
         } => {
-            let address =
-                owner::verify_decrypt(signer, signature, service.info.network, &request_digest)?;
+            let address = owner::DecryptAuthorization {
+                signer,
+                signature,
+                request_digest: &request_digest,
+                grant: grant.as_ref().map(Box::as_ref),
+                now_ms: unix_now_ms()?,
+            }
+            .address(&service.info)?;
             let keys = keys::for_address(&service.quorum, &address);
             let plaintexts = open_ciphertexts(&keys.viewing, items)?;
             ServiceResult::Decrypt(DecryptedOutputs {
@@ -63,6 +72,13 @@ pub(crate) fn execute(service: &Service, body: &[u8]) -> Result<String, Failure>
         &response_key,
         &result,
     )
+}
+
+fn unix_now_ms() -> Result<u64, Failure> {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Failure::Invalid)?;
+    u64::try_from(elapsed.as_millis()).map_err(|_| Failure::Invalid)
 }
 
 fn targets_release(request: &ServiceRequest, info: &ServiceInfo) -> bool {

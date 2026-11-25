@@ -47,13 +47,23 @@ and `ciphertext`. Its envelope contains canonical JSON with `version`,
 | Operation | Result |
 | --- | --- |
 | `PublicKeys { address }` | `viewing_public_key` and `nullifier_public_key` (32 bytes for the nullifier key) |
-| `Decrypt { signer, signature, items }` | `plaintexts` (one per item in order) and `nullifier_secret` (31 bytes). Any item count that fits in the encrypted body. |
+| `Decrypt { signer, signature, items, grant? }` | `plaintexts` (one per item in order) and `nullifier_secret` (31 bytes). Any item count that fits in the encrypted body. |
 
 The operation and its result each carry a `type` tag. `Decrypt` requires the
 signer's 64-byte Ed25519 signature over a Solana off-chain message v0, format
 0, with one signer. Its application domain is
 `SHA256("TSPP/decryption-service/decrypt/v1")`.
 The payload is `TSPP/decryption-service/decrypt/v1/<network>/<hex request digest>`.
+
+An absent `grant` means `signer` is the owner. A present `grant` means `signer`
+is the grantee. The owner signs it locally, over
+`TSPP/decryption-service/view-grant/v1/<hex grant digest>`, where the digest is
+`H(SPR_TVC_VIEW_GRANT_V1, JCS(grant))` without `signature`. The signed fields
+are `owner`, `grantee`, `network`, `quorum_key_id`, `quorum_key_epoch`,
+`not_before_ms`, and `expiry_ms`. The enclave accepts the grant while its
+clock is inside `[not_before_ms, expiry_ms)` and that span is at most 30
+minutes. A failed clock read denies the request. The grantee receives the
+same `nullifier_secret` as the owner. The enclave stores no grants.
 
 The response contains `version`, `request_id`, `encrypted_result`, and
 `tvc_app_proof`. The App Proof carries `scheme`
@@ -72,8 +82,8 @@ indexer. An empty indexer page of 1,000 50-byte recipient notes measures
 ## Key derivation and SPR note cipher
 
 The following derivations use HKDF-SHA256 with no salt. The address in
-`info` is the verified signer's raw 32-byte Ed25519 public key for
-`Decrypt` and the requested address for `PublicKeys`.
+`info` is the raw 32-byte Ed25519 public key of the owner for `Decrypt`
+(the signer, or the grant's `owner`) and the requested address for `PublicKeys`.
 
 | Input key material | `info` | Output |
 | --- | --- | --- |

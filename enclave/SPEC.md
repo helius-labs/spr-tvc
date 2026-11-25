@@ -52,15 +52,22 @@ signs the request.
    nullifier public key through `owner_hash`.
 3. **Authorize the exact batch.** The recipient wallet uses the owner tag to
    find candidate outputs. It generates a fresh P-256 response key pair and
-   keeps the private key. The owner signs a Solana off-chain message that
-   binds the network, target release and Quorum identity, fresh request ID,
-   ordered items, and response public key. The SDK seals the signed request
+   keeps the private key. The signer of the batch is the owner, or a grantee
+   named in a view grant the owner signed on a device. The grant lasts at
+   most 30 minutes, is checked against the enclave clock, and is not stored.
+   The signer signs a Solana off-chain message that binds the network, target
+   release and Quorum identity, fresh request ID, ordered items, response
+   public key, and, when present, the grant. The SDK seals the signed request
    to the pinned Quorum encryption key. An empty batch uses the same
-   authorization to obtain the service nullifier secret.
+   authorization to obtain the service nullifier secret. A grantee receives
+   that secret too. The window does not erase a secret already returned.
+   Spending a note still requires the owner's Solana signature.
 4. **Open inside the enclave.** The enclave authenticates the envelope,
-   checks that it targets the running release, and verifies the owner's
-   Ed25519 signature. The verified signer address alone selects the recipient
-   viewing secret for every item. Each item's ephemeral viewing public key
+   checks that it targets the running release, and verifies the signer's
+   Ed25519 signature. Without a grant, the signer address selects the
+   recipient viewing secret. With a grant, the grant owner selects it. The
+   enclave rejects a missing clock, a window outside 30 minutes, or a grant
+   for another network or Quorum key. Each item's ephemeral viewing public key
    is the sender's X25519 input. There is no item cap. One signature covers
    one indexer page of 1,000 notes. An empty page, 50-byte ciphertexts and
    `u64::MAX` slots, measures 631,814 bytes after the 97-byte QOS frame and
@@ -116,9 +123,10 @@ transfers.
   wallet must generate and retain the response private key for its approval.
 - **Quorum key.** Approved replicas under the same Quorum seed derive the same
   keys across releases. HKDF binds each key to its address and separates the
-  two purposes. The viewing secret stays in the enclave. The owner-authorized
+  two purposes. The viewing secret stays in the enclave. An authorized
   reply exports the nullifier secret, which can link spends for known notes
-  if leaked.
+  if leaked. A view grant gives the grantee that secret for notes decrypted
+  during the window. Spending a note still requires the owner's signature.
 - **Release and recovery.** Confidentiality depends on the approved image,
   Nitro isolation, and Quorum custody. An approved image can read the Quorum
   seed. Anyone who obtains it can decrypt recorded requests and derive

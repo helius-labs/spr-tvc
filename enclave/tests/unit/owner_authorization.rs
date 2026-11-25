@@ -133,6 +133,7 @@ fn only_an_address_a_key_can_sign_for_has_service_keys() {
                 signer: address,
                 signature: [0; 64],
                 items: Vec::new(),
+                grant: None,
             },
         ] {
             refused(&service, &request(&service, operation));

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { encodeLowerHex } from "../../src/protocol/hex.js";
-import { decryptMessage, serviceRequestDigest, type ServiceRequest } from "../../src/protocol/decryption.js";
+import {
+  acceptViewGrantWindow,
+  decryptMessage,
+  MAX_VIEW_GRANT_MS,
+  serviceRequestDigest,
+  type ServiceRequest,
+} from "../../src/protocol/decryption.js";
 
 // The same request and vectors as `protocol/tests/unit/decryption_request_binding.rs`.
 const request: ServiceRequest = {
@@ -40,6 +46,30 @@ describe("the decryption service's request", () => {
   it("is authorized by the off-chain message the enclave rebuilds", () => {
     const message = decryptMessage(new Uint8Array(32).fill(7), "mainnet", new Uint8Array(32).fill(9));
     expect(encodeLowerHex(message)).toBe(MESSAGE);
+  });
+
+  it("covers a view grant and keeps the owner's signature inside it", () => {
+    const grant = {
+      owner: "owner",
+      grantee: "grantee",
+      network: "devnet" as const,
+      quorum_key_id: "quorum",
+      quorum_key_epoch: "1",
+      not_before_ms: "1000",
+      expiry_ms: "2000",
+      signature: "ab".repeat(64),
+    };
+    const withGrant = { ...request, operation: { ...request.operation, grant } };
+    expect(encodeLowerHex(serviceRequestDigest(withGrant))).not.toBe(DIGEST);
+    const resigned = { ...withGrant, operation: { ...withGrant.operation, grant: { ...grant, signature: "cd".repeat(64) } } };
+    expect(encodeLowerHex(serviceRequestDigest(resigned))).not.toBe(encodeLowerHex(serviceRequestDigest(withGrant)));
+  });
+
+  it("accepts a half-open window of at most 30 minutes", () => {
+    const now = 1_000_000n;
+    expect(() => acceptViewGrantWindow(now, now + MAX_VIEW_GRANT_MS, now)).not.toThrow();
+    expect(() => acceptViewGrantWindow(now, now + MAX_VIEW_GRANT_MS, now + MAX_VIEW_GRANT_MS)).toThrow(/ExpiredRequest/);
+    expect(() => acceptViewGrantWindow(now, now + MAX_VIEW_GRANT_MS + 1n, now)).toThrow(/ExpiredRequest/);
   });
 
   it("binds the release ID and rejects invalid Unicode before hashing", () => {
