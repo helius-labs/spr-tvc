@@ -22,7 +22,7 @@ pub(crate) fn handle(service: &Service, body: &[u8]) -> Response<Body> {
     }
 }
 
-fn execute(service: &Service, body: &[u8]) -> Result<String, Failure> {
+pub(crate) fn execute(service: &Service, body: &[u8]) -> Result<String, Failure> {
     let plaintext = open_envelope(&service.info, &service.quorum, body)?;
     let request = parse_service_request(&plaintext).map_err(|_| Failure::Invalid)?;
     if !targets_release(&request, &service.info) {
@@ -73,7 +73,3 @@ fn targets_release(request: &ServiceRequest, info: &ServiceInfo) -> bool {
         && request.quorum_key_id == info.quorum_key_id
         && request.quorum_key_epoch == info.quorum_key_epoch
 }
-
-#[cfg(test)]
-#[path = "../tests/unit/decrypt_flow.rs"]
-mod tests;

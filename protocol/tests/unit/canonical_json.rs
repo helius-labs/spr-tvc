@@ -1,7 +1,7 @@
 use crate::decryption_service::{DecryptedOutputs, ServiceResult};
 use crate::types::EncryptedRequest;
 
-use super::parse_strict_json;
+use crate::encoding::parse_strict_json;
 
 #[test]
 fn results_encode_plaintexts_as_lowercase_hex_strings() {

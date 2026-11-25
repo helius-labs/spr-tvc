@@ -15,7 +15,10 @@ signs the request.
 2. **Start the enclave.** Turnkey's Quorum OS (QOS) writes `/qos.manifest` inside
    the enclave. The JSON envelope contains the approved boot configuration
    (`manifest.version = "v2"` in the QOS schema) and its approval signatures.
-   The service checks its loaded Quorum key against the manifest. It reports
+   Startup refuses the envelope unless its manifest-set approvals meet the
+   manifest threshold, pivot debug mode is off, and the pivot environment is
+   empty. The process arguments must equal the launch arguments in that
+   manifest. The service also checks its loaded Quorum key against the manifest. It reports
    that public key, the canonical digest of the inner manifest, and the
    executable digest in `/v1/info`. The release tool verifies the live
    replica before writing a signed SDK release pin.
@@ -58,8 +61,14 @@ signs the request.
    checks that it targets the running release, and verifies the owner's
    Ed25519 signature. The verified signer address alone selects the recipient
    viewing secret for every item. Each item's ephemeral viewing public key
-   is the sender's X25519 input. The enclave accepts up to 256 items. Any
-   malformed item fails the entire batch.
+   is the sender's X25519 input. There is no item cap. One signature covers
+   one indexer page of 1,000 notes. An empty page, 50-byte ciphertexts and
+   `u64::MAX` slots, measures 631,814 bytes after the 97-byte QOS frame and
+   hex encoding. The service accepts 10 MiB, the same body cap as the indexer.
+   The encrypted result uses the same ceiling. A larger body is
+   rejected before any ciphertext is opened. Concurrent requests can multiply
+   the cap by the number of connections the process accepts. There is no
+   separate inflight limit. Any malformed item fails the entire batch.
 5. **Return and verify.** The enclave seals the ordered plaintexts and the
    recipient's nullifier secret to the signed response public key. The
    replica signs an App Proof binding the request ID, operation, request
@@ -90,7 +99,8 @@ signs the request.
   The indexer sees the wallet's queries.
 - **Enclave to wallet.** The QOS envelope encrypts to the one-time response
   key. A relay cannot change that key without invalidating the owner's
-  signature. A replay can elicit another reply to the original key. The App
+  signature. A v1 signature does not expire. A replay only produces another
+  reply to the original response key. The App
   Proof authenticates the reply, and the response private key opens it.
 - **Wallet to prover.** The configured prover receives the transaction
   witness, including the service nullifier secret when proving a spend of a

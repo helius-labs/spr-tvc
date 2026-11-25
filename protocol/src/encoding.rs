@@ -341,7 +341,3 @@ pub fn is_rfc8785(input: &str) -> bool {
         Err(_) => false,
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/unit/canonical_json.rs"]
-mod tests;

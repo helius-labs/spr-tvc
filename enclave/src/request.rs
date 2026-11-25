@@ -112,7 +112,3 @@ pub(crate) fn sign_ephemeral_low_s(
     let signature = Signature::from_slice(&raw).map_err(|_| Failure::Unavailable)?;
     Ok(signature.normalize_s().to_bytes().to_vec())
 }
-
-#[cfg(test)]
-#[path = "../tests/unit/app_proof_signature.rs"]
-mod tests;

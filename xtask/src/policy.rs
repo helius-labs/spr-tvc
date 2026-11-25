@@ -9,8 +9,8 @@ use qos_p256::P256Public;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use spr_tvc_protocol::constants::{
-    API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, MAX_ENCRYPTED_REQUEST_BYTES,
-    MAX_ENCRYPTED_RESPONSE_BYTES,
+    API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, MAX_ENCRYPTED_POLICY_BYTES,
+    MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES,
 };
 use spr_tvc_protocol::crypto::{parse_uncompressed_sec1, public_key_uncompressed};
 use spr_tvc_protocol::decryption_service::SERVICE_PROOF_TYPE;
@@ -29,7 +29,7 @@ use crate::stage::{Deployment, Descriptor};
 use crate::tools::{capture_check, verify_live, Credentials};
 use crate::{app_config, lower_hex, read_json, write_json, Pcrs, Phase, Release};
 
-const OPERATIONS: [OperationKind; 2] = [
+pub(crate) const OPERATIONS: [OperationKind; 2] = [
     OperationKind::ServicePublicKeys,
     OperationKind::ServiceDecrypt,
 ];
@@ -39,18 +39,18 @@ const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MainnetTrust {
-    release_authorities: PinnedReleaseAuthorities,
-    qos_identity_pcrs: Pcrs,
+    pub(crate) release_authorities: PinnedReleaseAuthorities,
+    pub(crate) qos_identity_pcrs: Pcrs,
     #[serde(with = "wire_hex")]
-    security_domain_id: [u8; 32],
+    pub(crate) security_domain_id: [u8; 32],
     #[serde(with = "wire_hex")]
-    quorum_public_key: Vec<u8>,
-    maximum_policy_lifetime_ms: u64,
+    pub(crate) quorum_public_key: Vec<u8>,
+    pub(crate) maximum_policy_lifetime_ms: u64,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct TurnkeyDeployment {
+pub(crate) struct TurnkeyDeployment {
     id: String,
     organization_id: String,
     app_id: String,
@@ -76,14 +76,14 @@ struct Manifest {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Approved {
-    manifest_digest: String,
-    executable_digest: String,
+    pub(crate) manifest_digest: String,
+    pub(crate) executable_digest: String,
     #[serde(with = "wire_hex")]
-    quorum_public_key: Vec<u8>,
+    pub(crate) quorum_public_key: Vec<u8>,
 }
 
 impl TurnkeyDeployment {
-    fn approve(
+    pub(crate) fn approve(
         &self,
         release: &Release<'_>,
         deploy_id: &str,
@@ -265,8 +265,8 @@ impl Release<'_> {
             quorum_key_epoch: self.app.quorum_key_epoch,
             quorum_public_key: approved.quorum_public_key.clone(),
             allowed_operations: OPERATIONS.to_vec(),
-            max_encrypted_request_bytes: MAX_ENCRYPTED_REQUEST_BYTES as u32,
-            max_encrypted_response_bytes: MAX_ENCRYPTED_RESPONSE_BYTES as u32,
+            max_encrypted_request_bytes: MAX_ENCRYPTED_POLICY_BYTES,
+            max_encrypted_response_bytes: MAX_ENCRYPTED_POLICY_BYTES,
             turnkey_trust_root_id: self.config.turnkey_trust_root_id.clone(),
             valid_from_ms,
             expires_at_ms,
@@ -359,7 +359,7 @@ impl Release<'_> {
 }
 
 impl MainnetTrust {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         let authorities = &self.release_authorities;
         ensure!(
             authorities.threshold >= 2
@@ -400,7 +400,7 @@ fn now_ms() -> Result<u64> {
         .try_into()?)
 }
 
-fn verify_mainnet_policy(
+pub(crate) fn verify_mainnet_policy(
     signed: &SignedReleasePolicy,
     expected: &ReleasePolicy,
     trust: &MainnetTrust,
@@ -414,7 +414,9 @@ fn verify_mainnet_policy(
     Ok(())
 }
 
-fn devnet_sign(policy: ReleasePolicy) -> Result<(SignedReleasePolicy, PinnedReleaseAuthorities)> {
+pub(crate) fn devnet_sign(
+    policy: ReleasePolicy,
+) -> Result<(SignedReleasePolicy, PinnedReleaseAuthorities)> {
     ensure!(
         policy.network == Network::Devnet,
         "mainnet requires independent release authorities"
@@ -444,7 +446,3 @@ fn devnet_sign(policy: ReleasePolicy) -> Result<(SignedReleasePolicy, PinnedRele
     verify_signed_release_policy(&signed, &authorities, Network::Devnet, now)?;
     Ok((signed, authorities))
 }
-
-#[cfg(test)]
-#[path = "../tests/policy.rs"]
-mod tests;

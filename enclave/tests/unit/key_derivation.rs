@@ -1,4 +1,7 @@
-use super::*;
+use qos_p256::P256Pair;
+use zeroize::Zeroizing;
+
+use crate::keys::{derive, master_seed};
 
 #[test]
 fn keys_separate_addresses_and_seeds() {

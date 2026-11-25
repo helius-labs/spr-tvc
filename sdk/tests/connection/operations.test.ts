@@ -1,15 +1,15 @@
 import { p256 } from "@noble/curves/p256";
 import { describe, expect, it, vi } from "vitest";
 
-import { signP256Message } from "../crypto/p256.js";
-import { qosEncrypt } from "../crypto/qos.js";
-import { API_VERSION, TVC_APP_PROOF_SCHEME } from "../protocol/constants.js";
-import { SERVICE_PROOF_TYPE } from "../protocol/decryption.js";
-import { resultDigest } from "../protocol/digest.js";
-import { encodeLowerHex } from "../protocol/hex.js";
-import { canonicalizeJsonValue } from "../protocol/jcs.js";
-import type { ConnectedTvcRuntime } from "./connect.js";
-import { sealedExchange, type Exchange } from "./operations.js";
+import { signP256Message } from "../../src/crypto/p256.js";
+import { qosEncrypt } from "../../src/crypto/qos.js";
+import { API_VERSION, MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES, TVC_APP_PROOF_SCHEME } from "../../src/protocol/constants.js";
+import { SERVICE_PROOF_TYPE } from "../../src/protocol/decryption.js";
+import { resultDigest } from "../../src/protocol/digest.js";
+import { encodeLowerHex } from "../../src/protocol/hex.js";
+import { canonicalizeJsonValue } from "../../src/protocol/jcs.js";
+import type { ConnectedTvcRuntime } from "../../src/connection/connect.js";
+import { sealedExchange, type Exchange } from "../../src/connection/operations.js";
 
 const bytes = (value: number) => new Uint8Array(32).fill(value);
 const signing = bytes(1);
@@ -57,7 +57,8 @@ function fixture() {
       manifest_digest: manifest, executable_digest: manifest,
       quorum_public_key: quorum, quorum_key_id: "quorum", quorum_key_epoch: "1",
       supported_operations: [exchange.operation],
-      max_encrypted_request_bytes: "262144", max_encrypted_response_bytes: "262144",
+      max_encrypted_request_bytes: String(MAX_ENCRYPTED_REQUEST_BYTES),
+      max_encrypted_response_bytes: String(MAX_ENCRYPTED_REQUEST_BYTES),
       proof_type: SERVICE_PROOF_TYPE,
     },
     transport: { fetch: async () => Response.json(response) },
@@ -100,7 +101,7 @@ describe("operation replies", () => {
     expect(wrong.verifyOperationAppProof).not.toHaveBeenCalled();
 
     const oversized = fixture();
-    oversized.response.encrypted_result = "00".repeat(262_145);
+    oversized.response.encrypted_result = "00".repeat(MAX_ENCRYPTED_RESPONSE_BYTES + 1);
     await expect(sealedExchange(oversized.context, oversized.exchange)).rejects.toMatchObject({ code: "ResponseTooLarge" });
     expect(oversized.verifyOperationAppProof).not.toHaveBeenCalled();
   });

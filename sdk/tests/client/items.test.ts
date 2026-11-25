@@ -1,13 +1,13 @@
 import { expect, it, vi } from "vitest";
 
-import { DecryptionServiceError } from "../protocol/error.js";
-import { batched } from "./items.js";
+import { DecryptionServiceError } from "../../src/protocol/error.js";
+import { batched } from "../../src/client/items.js";
 
-it("splits at 256 items and preserves the result order", async () => {
-  const items = Array.from({ length: 257 }, (_, i) => i);
+it("sends a full indexer page as one batch and preserves the result order", async () => {
+  const items = Array.from({ length: 1000 }, (_, i) => i);
   const call = vi.fn(async (batch: readonly number[]) => batch.map((value) => value + 1));
   expect(await batched(items, call)).toEqual(items.map((value) => value + 1));
-  expect(call.mock.calls.map(([batch]) => batch.length)).toEqual([256, 1]);
+  expect(call.mock.calls.map(([batch]) => batch.length)).toEqual([1000]);
 });
 
 it("splits only on the pre-signing byte limit and stops on any other refusal", async () => {

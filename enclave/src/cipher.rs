@@ -2,20 +2,20 @@
 
 use spr_keypair::viewing_key::Salt;
 use spr_keypair::{ViewingKey, X25519Pubkey};
-use spr_tvc_protocol::constants::MAX_ITEMS_PER_BATCH;
 use spr_tvc_protocol::types::{DecryptItem, DecryptLabel};
 use zeroize::Zeroizing;
 
 use crate::request::Failure;
 
-/// Open every item under the supplied key. The pool cipher has no authentication tag.
+/// Open every item under the supplied key.
+///
+/// The pool cipher is `spr-keypair`'s `ctr_apply` at the commit pinned in the
+/// workspace: HKDF-SHA256 yields 44 bytes, and AES-256-CTR starts at
+/// `nonce || 2`. It has no authentication tag.
 pub(crate) fn open_ciphertexts(
     viewing: &ViewingKey,
     items: &[DecryptItem],
 ) -> Result<Vec<Vec<u8>>, Failure> {
-    if items.len() as u64 > MAX_ITEMS_PER_BATCH {
-        return Err(Failure::Invalid);
-    }
     // Wipe plaintexts already opened if a later item fails.
     let mut plaintexts = Zeroizing::new(Vec::with_capacity(items.len()));
     for item in items {

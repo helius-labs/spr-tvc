@@ -1,4 +1,9 @@
-use super::*;
+use std::fs;
+
+use clap::Parser;
+
+use crate::tools::Credentials;
+use crate::{release_id, stage, Args};
 
 #[test]
 fn release_requires_inputs_for_its_phase_and_network() {
@@ -82,9 +87,7 @@ fn tvc_uses_the_active_profile_and_ignores_nested_operator_ids() {
     )
     .unwrap();
     assert_eq!(
-        tools::Credentials::profile(dir.path())
-            .unwrap()
-            .organization_id,
+        Credentials::profile(dir.path()).unwrap().organization_id,
         "active-org"
     );
 }

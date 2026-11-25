@@ -17,7 +17,7 @@ pub(crate) fn for_address(quorum: &P256Pair, address: &[u8; ADDRESS_LEN]) -> Ser
     derive(&master_seed(quorum), address)
 }
 
-fn master_seed(quorum: &P256Pair) -> Zeroizing<[u8; MASTER_SEED_LEN]> {
+pub(crate) fn master_seed(quorum: &P256Pair) -> Zeroizing<[u8; MASTER_SEED_LEN]> {
     let mut seed = Zeroizing::new([0u8; MASTER_SEED_LEN]);
     Hkdf::<Sha256>::new(None, quorum.to_master_seed().as_slice())
         .expand(MASTER_SEED_LABEL, seed.as_mut_slice())
@@ -31,7 +31,7 @@ pub(crate) struct ServiceKeys {
 }
 
 /// HKDF-SHA256 over the master seed, one Expand per key with the address in the info.
-fn derive(seed: &[u8; MASTER_SEED_LEN], address: &[u8; ADDRESS_LEN]) -> ServiceKeys {
+pub(crate) fn derive(seed: &[u8; MASTER_SEED_LEN], address: &[u8; ADDRESS_LEN]) -> ServiceKeys {
     let hkdf = Hkdf::<Sha256>::new(None, seed);
     let mut viewing = Zeroizing::new([0u8; 32]);
     hkdf.expand_multi_info(&[VIEWING_KEY_LABEL, address], viewing.as_mut_slice())
@@ -44,7 +44,3 @@ fn derive(seed: &[u8; MASTER_SEED_LEN], address: &[u8; ADDRESS_LEN]) -> ServiceK
         nullifier: NullifierKey::from_secret(*nullifier),
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/unit/key_derivation.rs"]
-mod tests;

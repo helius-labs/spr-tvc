@@ -1,4 +1,6 @@
-use super::*;
+use spr_tvc_protocol::types::Network;
+
+use crate::stage::{image_digest, provenance_command, require_candidate};
 
 #[test]
 fn image_tag_and_digest_are_bound_to_network_and_reviewed_commit() {

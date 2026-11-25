@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod body_limit;
 pub mod constants;
 pub mod crypto;
 pub mod decryption_service;
@@ -21,3 +22,7 @@ pub use types::{
     HealthStatus, Network, OperationKind, OperationProofPayload, QosPingChallenge, QosPingRequest,
     QosPingResponse, ReleaseAuthoritySignature, ReleasePolicy, ServiceInfo, SignedReleasePolicy,
 };
+
+#[cfg(test)]
+#[path = "../tests/unit/harness.rs"]
+mod unit_tests;

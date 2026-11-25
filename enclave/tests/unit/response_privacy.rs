@@ -1,7 +1,7 @@
 use spr_tvc_protocol::types::EncryptedResponse;
 
 use super::*;
-use crate::testing::response_key;
+use crate::tests::testing::response_key;
 
 #[test]
 fn replay_keeps_the_signed_response_key_and_cannot_retarget_the_result() {

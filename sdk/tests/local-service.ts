@@ -1,17 +1,13 @@
 import { sha256 } from "@noble/hashes/sha256";
 
-import { connectLocalUnattestedTvc } from "./connection/local-connection.js";
-import { sessionFromConnector } from "./connection/session.js";
-import type { DecryptionServiceTransport } from "./connection/http.js";
-import { decryptionServiceFromSession, type DecryptionService } from "./client/decryption.js";
-import { encodeLowerHex } from "./protocol/hex.js";
-import { requireNetwork } from "./protocol/network.js";
-import type { Network, OperationKind } from "./protocol/types.js";
+import { decryptionServiceFromSession, type DecryptionService } from "../src/client/decryption.js";
+import type { DecryptionServiceTransport } from "../src/connection/http.js";
+import { connectLocalUnattestedTvc } from "../src/connection/local-connection.js";
+import { sessionFromConnector } from "../src/connection/session.js";
+import { encodeLowerHex } from "../src/protocol/hex.js";
+import { requireNetwork } from "../src/protocol/network.js";
+import type { Network, OperationKind } from "../src/protocol/types.js";
 import localTestkit from "../../tests/fixtures/local-testkit.json";
-
-export type { QosIdentityPcrs } from "./attestation/boot-proof.js";
-export type { TurnkeyBootProofWire } from "./attestation/turnkey.js";
-export { fetchLiveServiceInfo, verifyLiveReplica, type VerifyLiveReplicaInput } from "./connection/connect.js";
 
 const encoder = new TextEncoder();
 const digest = (label: string) => encodeLowerHex(sha256(encoder.encode(label)));

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import type { VerifyLiveReplicaInput } from "../sdk/dist/testing.js";
+import type { VerifyLiveReplicaInput } from "../sdk/dist/release.js";
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -10,7 +10,7 @@ function requiredEnv(name: string): string {
 
 const [operation, value] = process.argv.slice(2);
 if (operation === "info" && value) {
-  const { fetchLiveServiceInfo } = await import("../sdk/dist/testing.js");
+  const { fetchLiveServiceInfo } = await import("../sdk/dist/release.js");
   const info = await fetchLiveServiceInfo(new URL(value), AbortSignal.timeout(10_000));
   console.log(JSON.stringify(info));
 } else {
@@ -30,7 +30,7 @@ if (operation === "info" && value) {
   } else if (operation === "verify") {
     const input = JSON.parse(readFileSync(0, "utf8")) as
       Omit<VerifyLiveReplicaInput, "endpoint" | "bootProof" | "signal"> & { endpoint: string };
-    const { verifyLiveReplica } = await import("../sdk/dist/testing.js");
+    const { verifyLiveReplica } = await import("../sdk/dist/release.js");
     await verifyLiveReplica({
       ...input,
       endpoint: new URL(input.endpoint),

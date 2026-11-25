@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+use crate::body_limit::ensure_within_body;
 use crate::digest::domain_separated_hash;
 use crate::encoding::{self, canonicalize_json_value, decimal_u64, encode_lower_hex, hex};
 use crate::error::{ErrorCode, TvcError};
@@ -16,10 +17,12 @@ pub const SERVICE_REQUEST_DIGEST_DOMAIN: &[u8] = b"SPR_TVC_DECRYPTION_SERVICE_RE
 pub const DECRYPT_LABEL: &str = "TSPP/decryption-service/decrypt/v1";
 
 pub const ADDRESS_LEN: usize = 32;
-pub const X25519_PUBLIC_KEY_LEN: usize = 33;
-pub const NULLIFIER_SECRET_LEN: usize = 31;
+pub use spr_keypair::constants::BLINDING_LEN as NULLIFIER_SECRET_LEN;
+pub use spr_keypair::x25519::X25519_PUBKEY_LEN as X25519_PUBLIC_KEY_LEN;
 
 const OFFCHAIN_MESSAGE_MAGIC: &[u8; 16] = b"\xffsolana offchain";
+/// Solana off-chain message v0 prefix: magic, version, domain, format, signer count, signer, length.
+const OFFCHAIN_HEADER_LEN: usize = 16 + 1 + 32 + 1 + 1 + 32 + 2;
 
 /// The plaintext of an `EncryptedRequest` to the decryption service.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +96,7 @@ impl std::fmt::Debug for DecryptedOutputs {
 }
 
 pub fn parse_service_request(json: &str) -> Result<ServiceRequest, TvcError> {
+    ensure_within_body(json)?;
     encoding::parse_strict_json(json)
 }
 
@@ -122,7 +126,7 @@ pub fn decrypt_message(
         encode_lower_hex(request_digest)
     );
     let length = u16::try_from(payload.len()).expect("the payload is short");
-    let mut message = Vec::with_capacity(85 + payload.len());
+    let mut message = Vec::with_capacity(OFFCHAIN_HEADER_LEN + payload.len());
     message.extend_from_slice(OFFCHAIN_MESSAGE_MAGIC);
     message.push(0);
     message.extend_from_slice(&Sha256::digest(DECRYPT_LABEL.as_bytes()));
@@ -133,7 +137,3 @@ pub fn decrypt_message(
     message.extend_from_slice(payload.as_bytes());
     message
 }
-
-#[cfg(test)]
-#[path = "../tests/unit/decryption_request_binding.rs"]
-mod tests;

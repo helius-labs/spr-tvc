@@ -4,8 +4,8 @@ import {
   decodeAwsNitroAttestationCbor,
   decodeCbor,
   encodeCoseSigStructure,
-} from "./cbor.js";
-import { decodeLowerHex, encodeLowerHex } from "../protocol/hex.js";
+} from "../../src/attestation/cbor.js";
+import { decodeLowerHex, encodeLowerHex } from "../../src/protocol/hex.js";
 
 function decodeHex(hex: string) {
   return decodeCbor(decodeLowerHex(hex));

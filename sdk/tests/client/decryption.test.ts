@@ -4,15 +4,17 @@ import { NullifierKey, ViewingKey, initializePoseidon } from "@heliuslabs/spr";
 import type { Bytes16, Bytes31 } from "@heliuslabs/spr/keypair";
 import { expect, it, vi } from "vitest";
 
-import type { ConnectedTvcRuntime } from "../connection/connect.js";
-import { awaitWithSignal } from "../connection/request.js";
-import { sessionFromConnector } from "../connection/session.js";
-import { qosDecrypt } from "../crypto/qos.js";
-import { decodeLowerHex, encodeLowerHex } from "../protocol/hex.js";
-import type { ServiceInfo } from "../protocol/types.js";
-import * as exchange from "./exchange.js";
-import { decryptionServiceFromSession } from "./decryption.js";
-import type { ServiceRequest } from "../protocol/decryption.js";
+import type { ConnectedTvcRuntime } from "../../src/connection/connect.js";
+import { awaitWithSignal } from "../../src/connection/request.js";
+import { sessionFromConnector } from "../../src/connection/session.js";
+import { qosDecrypt } from "../../src/crypto/qos.js";
+import { decodeLowerHex, encodeLowerHex } from "../../src/protocol/hex.js";
+import { MAX_ENCRYPTED_REQUEST_BYTES } from "../../src/protocol/constants.js";
+import { DecryptionServiceError, DecryptionServiceHttpError } from "../../src/protocol/error.js";
+import type { ServiceInfo } from "../../src/protocol/types.js";
+import * as exchange from "../../src/client/exchange.js";
+import { decryptionServiceFromSession } from "../../src/client/decryption.js";
+import type { ServiceRequest } from "../../src/protocol/decryption.js";
 
 const ownerAddress = address("11111111111111111111111111111111");
 
@@ -24,7 +26,8 @@ function fixture() {
     release_id: "release", manifest_digest: "11".repeat(32), executable_digest: "22".repeat(32),
     quorum_public_key: publicKey + publicKey, quorum_key_id: "quorum", quorum_key_epoch: "1",
     supported_operations: ["ServicePublicKeys", "ServiceDecrypt"],
-    max_encrypted_request_bytes: "262144", max_encrypted_response_bytes: "262144", proof_type: "",
+    max_encrypted_request_bytes: String(MAX_ENCRYPTED_REQUEST_BYTES),
+    max_encrypted_response_bytes: String(MAX_ENCRYPTED_REQUEST_BYTES), proof_type: "",
   } satisfies ServiceInfo;
   const fetch = vi.fn(async (_url: unknown, _init?: RequestInit) => new Response("", { status: 503 }));
   const context: ConnectedTvcRuntime = {
@@ -56,6 +59,21 @@ it("asks for an address's keys from the release it verified", async () => {
   });
   // A failed exchange may mean the release moved on.
   expect(forget).toHaveBeenCalledWith(context);
+});
+
+it("forgets the attested session when the exchange returns 429", async () => {
+  const { context } = fixture();
+  const forget = vi.fn();
+  const service = decryptionServiceFromSession({ context: async () => context, forget, reset: vi.fn() });
+  const operation = vi.spyOn(exchange, "executeServiceCall").mockRejectedValueOnce(
+    new DecryptionServiceHttpError("OperationUnavailable", 429, null),
+  );
+  try {
+    await expect(service.address(ownerAddress)).rejects.toMatchObject({ status: 429 });
+    expect(forget).toHaveBeenCalledWith(context);
+  } finally {
+    operation.mockRestore();
+  }
 });
 
 
@@ -166,8 +184,11 @@ it.each(["caller", "client"])("uses one %s deadline across all decrypt batches",
       vi.useFakeTimers();
       operation
         .mockImplementationOnce(async () => {
+          throw new DecryptionServiceError("RequestTooLarge");
+        })
+        .mockImplementationOnce(async () => {
           await new Promise<void>((resolve) => setTimeout(resolve, 6));
-          return { type: "Decrypt", plaintexts: Array<string>(256).fill("01"), nullifier_secret: encodeLowerHex(secret) };
+          return { type: "Decrypt", plaintexts: Array<string>(500).fill("01"), nullifier_secret: encodeLowerHex(secret) };
         })
         .mockImplementationOnce(async (_context, _operation, signal) =>
           awaitWithSignal(new Promise<never>(() => {}), signal));
@@ -176,15 +197,16 @@ it.each(["caller", "client"])("uses one %s deadline across all decrypt batches",
         salt: new Uint8Array(16) as Bytes16, slotIndex: 0, label: "transfer" as const,
       };
       const pending = keys.decrypt(
-        Array.from({ length: 257 }, () => request),
+        Array.from({ length: 1000 }, () => request),
         source === "caller" ? { timeoutMs: 10 } : undefined,
       );
       const rejected = expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
       await vi.advanceTimersByTimeAsync(6);
-      const first = operation.mock.calls[2];
-      const second = operation.mock.calls[3];
-      expect(operation.mock.calls.slice(2).map(([, call]) =>
-        call.type === "Decrypt" ? call.items.length : 0)).toEqual([256, 1]);
+      const calls = operation.mock.calls.slice(2);
+      const first = calls[1];
+      const second = calls[2];
+      expect(calls.map(([, call]) =>
+        call.type === "Decrypt" ? call.items.length : 0)).toEqual([1000, 500, 500]);
       expect(second?.[2]).toBe(first?.[2]);
       expect(first?.[2].aborted).toBe(false);
       await vi.advanceTimersByTimeAsync(4);

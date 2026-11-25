@@ -1,9 +1,16 @@
 use std::fs;
 use std::path::PathBuf;
 
+use qos_core::protocol::services::boot::manifest::ManifestEnvelopeV2;
 use spr_tvc_protocol::encoding::encode_lower_hex;
 
-use super::*;
+use std::io;
+
+use qos_core::{EPHEMERAL_KEY_FILE, MANIFEST_FILE, QUORUM_FILE};
+use qos_p256::P256Pair;
+
+use crate::service::{require_hosted_pivot, Service};
+use crate::tests::testing;
 
 // Synthetic v2 envelope serialized by qos_core 0.12.1's storage writer.
 // The embedded manifest uses the Quorum key derived from seed [0x11; 32].
@@ -19,6 +26,10 @@ impl Drop for FixtureDir {
 }
 
 fn load(quorum_seed: u8, envelope: &[u8]) -> io::Result<Service> {
+    load_with(quorum_seed, envelope, &[])
+}
+
+fn load_with(quorum_seed: u8, envelope: &[u8], argv: &[String]) -> io::Result<Service> {
     let id = encode_lower_hex(&*qos_p256::bytes_os_rng::<16>());
     let dir = std::env::temp_dir().join(format!("spr-tvc-qos-{id}"));
     fs::create_dir(&dir).unwrap();
@@ -31,7 +42,7 @@ fn load(quorum_seed: u8, envelope: &[u8]) -> io::Result<Service> {
     fs::write(&quorum, encode_lower_hex(&[quorum_seed; 32])).unwrap();
     fs::write(&manifest, envelope).unwrap();
 
-    Service::load_from(crate::testing::release(), &ephemeral, &quorum, &manifest)
+    Service::load_from(testing::release(), &ephemeral, &quorum, &manifest, argv)
 }
 
 #[test]
@@ -79,4 +90,52 @@ fn startup_requires_the_current_qos_envelope_schema() {
         };
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
+}
+
+#[test]
+fn startup_rejects_launch_arguments_the_manifest_did_not_approve() {
+    let Err(error) = load_with(0x11, ENVELOPE, &["--port".into(), "3000".into()]) else {
+        panic!("startup accepted launch arguments the manifest did not approve");
+    };
+    assert!(error.to_string().contains("launch arguments"), "{error}");
+}
+
+#[test]
+fn startup_rejects_a_flipped_manifest_approval() {
+    let mut envelope: serde_json::Value = serde_json::from_slice(ENVELOPE).unwrap();
+    let signature = envelope["manifestSetApprovals"][0]["signature"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut bytes = signature.into_bytes();
+    let last = bytes.last_mut().unwrap();
+    *last = if *last == b'0' { b'1' } else { b'0' };
+    envelope["manifestSetApprovals"][0]["signature"] = String::from_utf8(bytes).unwrap().into();
+    let Err(error) = load(0x11, &serde_json::to_vec(&envelope).unwrap()) else {
+        panic!("startup accepted a flipped manifest approval");
+    };
+    assert!(error.to_string().contains("approvals"), "{error}");
+}
+
+#[test]
+fn startup_rejects_debug_mode_and_a_pivot_environment() {
+    use qos_core::protocol::services::boot::{PivotEnvValue, PivotEnvVarName};
+
+    let envelope: ManifestEnvelopeV2 = serde_json::from_slice(ENVELOPE).unwrap();
+    let pivot = envelope.manifest.pivot;
+    require_hosted_pivot(&pivot, &[]).unwrap();
+
+    let mut debug = pivot.clone();
+    debug.debug_mode = true;
+    assert!(require_hosted_pivot(&debug, &[]).is_err());
+
+    let mut with_env = pivot;
+    with_env
+        .env
+        .insert(
+            PivotEnvVarName::try_from("PATH".to_owned()).unwrap(),
+            PivotEnvValue::plain("x".into()).unwrap(),
+        )
+        .unwrap();
+    assert!(require_hosted_pivot(&with_env, &[]).is_err());
 }

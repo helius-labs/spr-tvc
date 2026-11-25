@@ -9,6 +9,7 @@ rust-version = "1.98"
 [dependencies]
 # Security-sensitive dependencies are pinned to exact versions.
 hex = { version = "=0.4.3" }
+spr-keypair.workspace = true
 p256 = { version = "=0.14.0", default-features = false, features = ["arithmetic", "ecdsa", "std"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = { version = "=1.0.150" }
@@ -19,6 +20,7 @@ zeroize = { version = "=1.9.0", features = ["zeroize_derive"] }
 [dev-dependencies]
 # Test-only interop pin. AGPL-3.0-only; not a runtime dependency of this crate.
 qos_p256.workspace = true
+spr-keypair.workspace = true
 
 [[test]]
 name = "conformance"

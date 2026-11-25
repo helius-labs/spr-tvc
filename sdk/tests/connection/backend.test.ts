@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sendToEnclave } from "./backend.js";
+import { sendToEnclave } from "../../src/connection/backend.js";
 
 describe("direct operations", () => {
   it.each([[400, "OperationRejected"], [429, "OperationRejected"], [503, "OperationUnavailable"]])(
