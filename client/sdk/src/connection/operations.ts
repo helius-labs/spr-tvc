@@ -204,7 +204,9 @@ export async function sealedExchange(
   if (BigInt(encryptedResult.length) > maxResponseBytes) {
     throw new DecryptionServiceError("ResponseTooLarge");
   }
-  await verifyOperationProof(context, exchange, response, encryptedResult, signal);
+  if (context.authenticateReplies !== false) {
+    await verifyOperationProof(context, exchange, response, encryptedResult, signal);
+  }
   let plaintext: string;
   try {
     plaintext = td.decode(qosDecrypt(exchange.responseSecret, encryptedResult));

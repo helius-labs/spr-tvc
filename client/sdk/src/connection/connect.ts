@@ -62,6 +62,11 @@ export type ConnectedTvcRuntime = {
   readonly releasePolicyExpiresAtMs: bigint;
   readonly nowMs: () => bigint;
   readonly trustVerifier: { verifyOperationAppProof(proof: TurnkeyAppProofWire, signal?: AbortSignal): Promise<void> };
+  /**
+   * The gatekeeper client sets this false and posts `/v1/operations` only.
+   * Omitted means the reply's App Proof is checked.
+   */
+  readonly authenticateReplies?: boolean;
 };
 
 export function parseServiceInfo(text: string): ServiceInfo {
