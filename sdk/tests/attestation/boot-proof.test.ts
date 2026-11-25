@@ -1,6 +1,6 @@
 import { p256 } from "@noble/curves/p256";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { encodeLowerHex } from "../protocol/hex.js";
+import { encodeLowerHex } from "../../src/protocol/hex.js";
 import {
   appProof,
   bootProof,
@@ -14,12 +14,12 @@ import {
 
 const verifyChainMock = vi.hoisted(() => vi.fn());
 
-vi.mock("./turnkey.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./turnkey.js")>()),
+vi.mock("../../src/attestation/turnkey.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/attestation/turnkey.js")>()),
   verifyTurnkeyAwsAttestation: verifyChainMock,
 }));
 
-const { verifyBootProof } = await import("./boot-proof.js");
+const { verifyBootProof } = await import("../../src/attestation/boot-proof.js");
 
 function verify(overrides: AttestationOverrides = {}, input: Record<string, unknown> = {}) {
   return verifyBootProof({

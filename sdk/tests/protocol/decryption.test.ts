@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { encodeLowerHex } from "./hex.js";
-import { decryptMessage, serviceRequestDigest, type ServiceRequest } from "./decryption.js";
+import { encodeLowerHex } from "../../src/protocol/hex.js";
+import { decryptMessage, serviceRequestDigest, type ServiceRequest } from "../../src/protocol/decryption.js";
 
 // The same request and vectors as `protocol/tests/unit/decryption_request_binding.rs`.
 const request: ServiceRequest = {

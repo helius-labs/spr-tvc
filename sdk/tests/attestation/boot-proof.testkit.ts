@@ -2,16 +2,16 @@
 // Excluded from the published build; imported only by *.test.ts.
 import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha256";
-import { signP256Message } from "../crypto/p256.js";
-import { TVC_APP_PROOF_SCHEME } from "../protocol/constants.js";
-import { encodeLowerHex } from "../protocol/hex.js";
-import { canonicalizeJsonValue } from "../protocol/jcs.js";
-import type { CborValue } from "./cbor.js";
+import { signP256Message } from "../../src/crypto/p256.js";
+import { TVC_APP_PROOF_SCHEME } from "../../src/protocol/constants.js";
+import { encodeLowerHex } from "../../src/protocol/hex.js";
+import { canonicalizeJsonValue } from "../../src/protocol/jcs.js";
+import type { CborValue } from "../../src/attestation/cbor.js";
 import type {
   TurnkeyAppProofWire,
   TurnkeyBootProofWire,
-} from "./turnkey.js";
-import { computeQosLiveManifestCommitmentPcr } from "./boot-proof.js";
+} from "../../src/attestation/turnkey.js";
+import { computeQosLiveManifestCommitmentPcr } from "../../src/attestation/boot-proof.js";
 
 export const NOW_MS = 1_750_000_000_000n;
 const ATTESTATION_TIMESTAMP = 1_749_999_990_000;

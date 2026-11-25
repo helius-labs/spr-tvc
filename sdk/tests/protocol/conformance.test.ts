@@ -3,43 +3,43 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sha256 } from "@noble/hashes/sha256";
 import { describe, expect, it } from "vitest";
-import { canonicalizeJsonValue, isRfc8785 } from "./jcs.js";
-import { decodeDecimalU64, encodeDecimalU64 } from "./decimal.js";
-import { decodeLowerHex, encodeLowerHex } from "./hex.js";
-import { parseStrictJson } from "./json.js";
-import { resultDigest } from "./digest.js";
+import { canonicalizeJsonValue, isRfc8785 } from "../../src/protocol/jcs.js";
+import { decodeDecimalU64, encodeDecimalU64 } from "../../src/protocol/decimal.js";
+import { decodeLowerHex, encodeLowerHex } from "../../src/protocol/hex.js";
+import { parseStrictJson } from "../../src/protocol/json.js";
+import { resultDigest } from "../../src/protocol/digest.js";
 import {
   MAX_ENCRYPTED_REQUEST_BYTES,
   MAX_ENCRYPTED_RESPONSE_BYTES,
   NOTES_PER_SIGNATURE,
-} from "./constants.js";
-import { DecryptionServiceError } from "./error.js";
-import type { HealthResponse, ServiceInfo } from "./types.js";
-import { SERVICE_INFO_KEYS } from "./types.js";
+} from "../../src/protocol/constants.js";
+import { DecryptionServiceError } from "../../src/protocol/error.js";
+import type { HealthResponse, ServiceInfo } from "../../src/protocol/types.js";
+import { SERVICE_INFO_KEYS } from "../../src/protocol/types.js";
 import {
   parseUncompressedSec1,
   verifyP256Message,
   verifyP256Prehash,
-} from "../crypto/p256.js";
+} from "../../src/crypto/p256.js";
 import {
   parseQosP256Public,
   qosDecrypt,
   qosEncryptWith,
-} from "../crypto/qos.js";
+} from "../../src/crypto/qos.js";
 import {
   computeQosLiveManifestCommitmentPcr,
   verifyBootProof,
-} from "../attestation/boot-proof.js";
-import { connectAndVerifyTvc } from "../connection/connect.js";
+} from "../../src/attestation/boot-proof.js";
+import { connectAndVerifyTvc } from "../../src/connection/connect.js";
 import {
   bindDiscoveryToPolicy,
   verifySignedReleasePolicy,
-} from "../attestation/release-policy.js";
+} from "../../src/attestation/release-policy.js";
 import type {
   Network,
   PinnedReleaseAuthorities,
   SignedReleasePolicy,
-} from "./types.js";
+} from "../../src/protocol/types.js";
 
 const fixturesDir = join(
   dirname(fileURLToPath(import.meta.url)),

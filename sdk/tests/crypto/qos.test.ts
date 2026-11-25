@@ -1,8 +1,8 @@
 import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha256";
 import { describe, expect, it } from "vitest";
-import { qosDecrypt, qosEncrypt, qosEncryptWith, parseQosP256Public } from "./qos.js";
-import { encodeLowerHex } from "../protocol/hex.js";
+import { qosDecrypt, qosEncrypt, qosEncryptWith, parseQosP256Public } from "../../src/crypto/qos.js";
+import { encodeLowerHex } from "../../src/protocol/hex.js";
 
 const secret = (label: string) => sha256(new TextEncoder().encode(label));
 const RECEIVER = secret("qos-receiver");

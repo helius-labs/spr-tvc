@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 
-import { DecryptionServiceError } from "../protocol/error.js";
-import { batched } from "./items.js";
+import { DecryptionServiceError } from "../../src/protocol/error.js";
+import { batched } from "../../src/client/items.js";
 
 it("sends a full indexer page as one batch and preserves the result order", async () => {
   const items = Array.from({ length: 1000 }, (_, i) => i);

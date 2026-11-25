@@ -4,17 +4,17 @@ import { NullifierKey, ViewingKey, initializePoseidon } from "@heliuslabs/spr";
 import type { Bytes16, Bytes31 } from "@heliuslabs/spr/keypair";
 import { expect, it, vi } from "vitest";
 
-import type { ConnectedTvcRuntime } from "../connection/connect.js";
-import { awaitWithSignal } from "../connection/request.js";
-import { sessionFromConnector } from "../connection/session.js";
-import { qosDecrypt } from "../crypto/qos.js";
-import { decodeLowerHex, encodeLowerHex } from "../protocol/hex.js";
-import { MAX_ENCRYPTED_REQUEST_BYTES } from "../protocol/constants.js";
-import { DecryptionServiceError, DecryptionServiceHttpError } from "../protocol/error.js";
-import type { ServiceInfo } from "../protocol/types.js";
-import * as exchange from "./exchange.js";
-import { decryptionServiceFromSession } from "./decryption.js";
-import type { ServiceRequest } from "../protocol/decryption.js";
+import type { ConnectedTvcRuntime } from "../../src/connection/connect.js";
+import { awaitWithSignal } from "../../src/connection/request.js";
+import { sessionFromConnector } from "../../src/connection/session.js";
+import { qosDecrypt } from "../../src/crypto/qos.js";
+import { decodeLowerHex, encodeLowerHex } from "../../src/protocol/hex.js";
+import { MAX_ENCRYPTED_REQUEST_BYTES } from "../../src/protocol/constants.js";
+import { DecryptionServiceError, DecryptionServiceHttpError } from "../../src/protocol/error.js";
+import type { ServiceInfo } from "../../src/protocol/types.js";
+import * as exchange from "../../src/client/exchange.js";
+import { decryptionServiceFromSession } from "../../src/client/decryption.js";
+import type { ServiceRequest } from "../../src/protocol/decryption.js";
 
 const ownerAddress = address("11111111111111111111111111111111");
 
