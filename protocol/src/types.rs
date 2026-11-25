@@ -85,6 +85,14 @@ pub enum DecryptLabel {
     RingDeposit,
 }
 
+/// Key schedule for one recipient ciphertext. The ciphertext bytes do not carry it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum KdfMode {
+    /// HKDF-SHA256 and AES-256-CTR. This schedule is outside the proof.
+    HkdfSha256Ctr,
+}
+
 /// One ciphertext to open with a viewing key the enclave holds. The client decodes the output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -100,6 +108,7 @@ pub struct DecryptItem {
     #[serde(with = "decimal_u64")]
     pub slot_index: u64,
     pub label: DecryptLabel,
+    pub kdf: KdfMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

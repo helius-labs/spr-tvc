@@ -13,7 +13,8 @@ use spr_tvc_protocol::decryption_service::{
 use spr_tvc_protocol::encoding::jcs_serialize;
 use spr_tvc_protocol::error::{ErrorCode, TvcError};
 use spr_tvc_protocol::types::{
-    AppProof, DecryptItem, DecryptLabel, EncryptedResponse, OperationKind, OperationProofPayload,
+    AppProof, DecryptItem, DecryptLabel, EncryptedResponse, KdfMode, OperationKind,
+    OperationProofPayload,
 };
 
 /// Longest base58 encoding of a 32-byte Solana address.
@@ -30,6 +31,7 @@ pub fn page_decrypt_request() -> ServiceRequest {
         salt: vec![0; SALT_LEN],
         slot_index: u64::MAX,
         label: DecryptLabel::Transfer,
+        kdf: KdfMode::HkdfSha256Ctr,
     };
     ServiceRequest {
         version: API_VERSION,
@@ -97,7 +99,7 @@ fn an_empty_page_fits_under_the_cap_and_the_reply_is_smaller() {
     let request = page_encrypted_request_len().unwrap();
     let response = page_encrypted_response_len().unwrap();
     let reply = jcs_serialize(&page_decrypt_result()).unwrap();
-    assert_eq!(request, 631_814, "the empty-page measurement moved");
+    assert_eq!(request, 675_814, "the empty-page measurement moved");
     assert!(request < MAX_ENCRYPTED_REQUEST_BYTES as usize);
     assert!(
         response <= request,

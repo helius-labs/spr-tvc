@@ -5,7 +5,7 @@ use crate::decryption_service::{
     ServiceOperation, ServiceRequest, MAX_VIEW_GRANT_MS,
 };
 use crate::encoding::{encode_lower_hex, jcs_serialize};
-use crate::types::{DecryptItem, DecryptLabel, Network};
+use crate::types::{DecryptItem, DecryptLabel, KdfMode, Network};
 
 fn request(operation: ServiceOperation) -> ServiceRequest {
     ServiceRequest {
@@ -32,6 +32,7 @@ fn decrypt(signature: [u8; 64], slot_index: u64) -> ServiceOperation {
             salt: vec![0; 16],
             slot_index,
             label: DecryptLabel::Transfer,
+            kdf: KdfMode::HkdfSha256Ctr,
         }],
     }
 }
@@ -73,7 +74,7 @@ fn the_request_digest_covers_everything_but_the_signature() {
     // The TypeScript client checks the same vector.
     assert_eq!(
         encode_lower_hex(&digest),
-        "f1479856c87095008ca817c54605886c5b33a3ad19e15877b149b02c8bbed0b8"
+        "9d79a45895d847e3d58ee9a0c52751de52e2848375ea82f38ffc4089691ad2b3"
     );
     assert_eq!(
         digest,
@@ -120,4 +121,18 @@ fn decrypt_items_reject_prerelease_fields() {
     let mut wire = serde_json::to_value(&request).unwrap();
     wire["operation"]["items"][0]["viewing_public_key"] = serde_json::json!("04".repeat(33));
     assert!(parse_service_request(&wire.to_string()).is_err());
+}
+
+#[test]
+fn a_decrypt_item_names_its_kdf() {
+    let request = request(decrypt([0; 64], 0));
+    let mut missing = serde_json::to_value(&request).unwrap();
+    missing["operation"]["items"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("kdf");
+    assert!(parse_service_request(&missing.to_string()).is_err());
+    let mut unknown = serde_json::to_value(&request).unwrap();
+    unknown["operation"]["items"][0]["kdf"] = serde_json::json!("PoseidonCtr");
+    assert!(parse_service_request(&unknown.to_string()).is_err());
 }

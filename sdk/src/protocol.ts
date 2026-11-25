@@ -1,5 +1,5 @@
 export type {
-  DecryptItem, DecryptLabel, Network, OperationKind, ReleasePolicy, SignedReleasePolicy,
+  DecryptItem, DecryptLabel, KdfMode, Network, OperationKind, ReleasePolicy, SignedReleasePolicy,
   PinnedReleaseAuthorities, ServiceInfo,
 } from "./protocol/types.js";
 export type { ServiceRequest, ServiceResult, ViewGrant } from "./protocol/decryption.js";

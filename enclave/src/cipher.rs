@@ -2,7 +2,7 @@
 
 use spr_keypair::viewing_key::Salt;
 use spr_keypair::{ViewingKey, X25519Pubkey};
-use spr_tvc_protocol::types::{DecryptItem, DecryptLabel};
+use spr_tvc_protocol::types::{DecryptItem, DecryptLabel, KdfMode};
 use zeroize::Zeroizing;
 
 use crate::request::Failure;
@@ -31,15 +31,15 @@ pub(crate) fn open_ciphertexts(
             .as_slice()
             .try_into()
             .map_err(|_| Failure::Invalid)?;
-        let plaintext = match item.label {
-            DecryptLabel::Transfer => {
+        let plaintext = match (item.kdf, item.label) {
+            (KdfMode::HkdfSha256Ctr, DecryptLabel::Transfer) => {
                 let slot = u32::try_from(item.slot_index).map_err(|_| Failure::Invalid)?;
                 viewing.decrypt_utxo(&item.ciphertext, &sender_key, salt, slot)
             }
-            DecryptLabel::RingDeposit if item.slot_index == 0 => {
+            (KdfMode::HkdfSha256Ctr, DecryptLabel::RingDeposit) if item.slot_index == 0 => {
                 viewing.decrypt_ring_deposit(&item.ciphertext, &sender_key, salt)
             }
-            DecryptLabel::RingDeposit => return Err(Failure::Invalid),
+            (KdfMode::HkdfSha256Ctr, DecryptLabel::RingDeposit) => return Err(Failure::Invalid),
         }
         .map_err(|_| Failure::Invalid)?;
         plaintexts.push(plaintext);

@@ -87,7 +87,7 @@ it("checks the serialized request ceiling before asking for a signature or sendi
     owner: { address: ownerAddress, signMessages },
     items: [{
       ciphertext: "aa".repeat(512), ephemeral_viewing_public_key: "04".repeat(33),
-      slot_index: "0", salt: "00".repeat(16), label: "Transfer",
+      slot_index: "0", salt: "00".repeat(16), label: "Transfer", kdf: "HkdfSha256Ctr",
     }],
   }, new AbortController().signal)).rejects.toMatchObject({ code: "RequestTooLarge" });
   expect(signMessages).not.toHaveBeenCalled();
