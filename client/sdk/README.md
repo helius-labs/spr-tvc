@@ -1,7 +1,6 @@
 # @heliuslabs/spr-decryption-service
 
-Connect to a hosted deployment with a matching signed release pin. Supply
-its [Boot Proof resolver](src/connection/backend.ts).
+The client checks a signed release, then the Boot Proof of the replica, before it sends a note.
 
 ```ts
 import { createDecryptionService } from "@heliuslabs/spr-decryption-service";
@@ -12,24 +11,14 @@ const service = createDecryptionService({
   resolveBootProof,
 });
 
-// The sender looks up the destination for an unregistered owner.
 const recipient = await service.address(recipientAddress);
-
-// The recipient supplies a Solana Kit MessagePartialSigner for recipientAddress.
 const keys = await service.keys(owner);
 ```
 
-`keys` returns SPR `ShieldedKeys` and does not call Decrypt. Sync opens notes
-through `keys.decrypt`; that response carries the plaintexts and the nullifier
-secret. A spend reads `nullifierSecret()` and gives it to the SPR prover. That
-read reaches the service only when no note has been opened. Call `keys.destroy()`
-when finished.
+`address` is the destination for an owner who has not registered a wallet. `keys` fetches the shielded keys and does not decrypt. `keys.decrypt` opens notes and returns the nullifier secret with the plaintexts. A spend that has not opened notes calls `nullifierSecret()` once and passes that secret to the SPR prover. Call `keys.destroy()` when finished.
 
-Pass `recipient` to the SPR transfer builder. The transfer publishes the
-recipient's Solana address as its owner tag.
+Pass `recipient` to the SPR transfer builder. The transfer publishes the recipient's Solana address.
 
-A relay can forward ciphertexts and return Boot Proofs. The SDK verifies the
-release and signing replica itself. Mainnet uses the SDK's [independent trust anchors](trust/mainnet.json)
-and system clock, including when a caller supplies a fresh signed policy.
+Mainnet ignores a policy that tries to choose its own trust anchors. The pins are in [trust/mainnet.json](trust/mainnet.json). A gateway can attach the Boot Proofs. The client still checks them. [`createGatekeeperDecryptionService`](src/client/decryption.ts) is that path.
 
-[TypeScript example](../../examples/typescript) · [Turnkey example](../../examples/turnkey) · [Security flow](../../decryption-service/SPEC.md)
+[Examples](../../examples/typescript) · [Turnkey flow](../../examples/turnkey) · [Specification](../../decryption-service/SPEC.md)

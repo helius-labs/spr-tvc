@@ -65,19 +65,15 @@ signs the request.
 4. **Open inside the enclave.** The enclave authenticates the envelope,
    checks that it targets the running release, and verifies the signer's
    Ed25519 signature. Without a grant, the signer address selects the
-   recipient viewing secret. With a grant, the grant owner selects it. The
-   enclave rejects a missing clock, a window outside 30 minutes, or a grant
-   for another network or Quorum key. Each item names its key schedule. The
-   only schedule is `HkdfSha256Ctr`: HKDF-SHA256 and AES-256-CTR. A missing
-   or unknown schedule is rejected. Each item's ephemeral viewing public key
-   is the sender's X25519 input. There is no item cap. One signature covers
-   one indexer page of 1,000 notes. An empty page, 50-byte ciphertexts and
-   `u64::MAX` slots, measures 675,814 bytes after the 97-byte QOS frame and
-   hex encoding. The service accepts 10 MiB, the same body cap as the indexer.
-   The encrypted result uses the same ceiling. A larger body is
-   rejected before any ciphertext is opened. Concurrent requests can multiply
-   the cap by the number of connections the process accepts. There is no
-   separate inflight limit. Any malformed item fails the entire batch.
+   viewing secret. With a grant, the grant's owner selects it. A missing
+   clock, a window longer than 30 minutes, or a grant for another network
+   or Quorum key is rejected. Each item names its key schedule. The only
+   schedule is `HkdfSha256Ctr`, HKDF-SHA256 and AES-256-CTR. The item's
+   ephemeral key is the sender's X25519 public key. One signature covers
+   an indexer page. There is no item cap and no separate in-flight limit,
+   so each accepted connection can carry its own 10 MiB body. The encrypted
+   result uses the same ceiling. A larger body is rejected before any
+   ciphertext is opened. A bad item fails the whole batch.
 5. **Return and verify.** The enclave seals the ordered plaintexts and the
    recipient's nullifier secret to the signed response public key. The
    replica signs an App Proof binding the request ID, operation, request
