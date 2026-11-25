@@ -10,8 +10,8 @@ import { API_VERSION, QOS_ENVELOPE_OVERHEAD, QOS_P256_PUBLIC_LEN,
   RAW_P256_SIGNATURE_LEN, SHA256_LEN, TVC_APP_PROOF_KEYS, TVC_APP_PROOF_SCHEME,
 } from "../wire/constants.js";
 import type { OperationKind, ServiceInfo } from "../wire/types.js";
-import type { TurnkeyAppProofWire } from "../attestation/turnkey.js";
-import { sendToEnclave, type EncryptedRequestWire } from "./backend.js";
+import type { TurnkeyAppProofWire, TurnkeyBootProofWire } from "../attestation/turnkey.js";
+import { sendOperation, type EncryptedRequestWire } from "./backend.js";
 import type { ConnectedTvcRuntime } from "./connect.js";
 import { awaitWithSignal } from "./request.js";
 
@@ -132,6 +132,7 @@ async function verifyOperationProof(
   response: EncryptedResponse,
   encryptedResult: Uint8Array,
   signal?: AbortSignal,
+  bootProof?: TurnkeyBootProofWire,
 ): Promise<void> {
   assertExactObjectKeys(response.tvc_app_proof, TVC_APP_PROOF_KEYS, "InvalidCanonicalJson");
   const proof = response.tvc_app_proof;
@@ -144,10 +145,10 @@ async function verifyOperationProof(
     te.encode(proof.proof_payload),
     requireHex(proof.signature, RAW_P256_SIGNATURE_LEN),
   );
-  await awaitWithSignal(
-    context.trustVerifier.verifyOperationAppProof(asAppProof(proof), signal),
-    signal,
-  );
+  const verified = bootProof === undefined
+    ? context.trustVerifier.verifyOperationAppProof(asAppProof(proof), signal)
+    : context.trustVerifier.verifyOperationAppProof(asAppProof(proof), signal, bootProof);
+  await awaitWithSignal(verified, signal);
   const payload = parseStrictJson<OperationProofPayload>(
     proof.proof_payload,
     OPERATION_PROOF_KEYS,
@@ -186,8 +187,8 @@ export async function sealedExchange(
   // The ciphertext is hex, so it cannot exceed twice the byte ceiling;
   // RESPONSE_ENVELOPE_SLACK covers the surrounding JSON and App Proof.
   const maxResponseBytes = BigInt(context.info.max_encrypted_response_bytes);
-  const responseText = await sendToEnclave(
-    context.backend.endpoint, encrypted, context.transport,
+  const { responseText, bootProof } = await sendOperation(
+    context.backend, encrypted, context.transport,
     maxResponseBytes * 2n + RESPONSE_ENVELOPE_SLACK, signal,
   );
   const response = parseStrictJson<EncryptedResponse>(responseText, ENCRYPTED_RESPONSE_KEYS);
@@ -204,9 +205,7 @@ export async function sealedExchange(
   if (BigInt(encryptedResult.length) > maxResponseBytes) {
     throw new DecryptionServiceError("ResponseTooLarge");
   }
-  if (context.authenticateReplies !== false) {
-    await verifyOperationProof(context, exchange, response, encryptedResult, signal);
-  }
+  await verifyOperationProof(context, exchange, response, encryptedResult, signal, bootProof);
   let plaintext: string;
   try {
     plaintext = td.decode(qosDecrypt(exchange.responseSecret, encryptedResult));

@@ -61,12 +61,13 @@ export type ConnectedTvcRuntime = {
   readonly releasePolicyValidFromMs: bigint;
   readonly releasePolicyExpiresAtMs: bigint;
   readonly nowMs: () => bigint;
-  readonly trustVerifier: { verifyOperationAppProof(proof: TurnkeyAppProofWire, signal?: AbortSignal): Promise<void> };
-  /**
-   * The gatekeeper client sets this false and posts `/v1/operations` only.
-   * Omitted means the reply's App Proof is checked.
-   */
-  readonly authenticateReplies?: boolean;
+  readonly trustVerifier: {
+    verifyOperationAppProof(
+      proof: TurnkeyAppProofWire,
+      signal?: AbortSignal,
+      bootProof?: TurnkeyBootProofWire,
+    ): Promise<void>;
+  };
 };
 
 export function parseServiceInfo(text: string): ServiceInfo {
@@ -197,9 +198,10 @@ export async function connectAndVerifyTvc(
     appProof: TurnkeyAppProofWire,
     verificationNow: bigint,
     verifySignal?: AbortSignal,
+    bootProof?: TurnkeyBootProofWire,
   ) => awaitWithSignal(verifyBootProof({
     ephemeralPublicKey: appProof.publicKey,
-    bootProof: await lookupBootProof(backend, appProof, verifySignal),
+    bootProof: bootProof ?? await lookupBootProof(backend, appProof, verifySignal),
     allowedManifestSha256: releasePolicy.policy.acceptedManifestDigests,
     expectedPcrs: qosIdentityPcrs,
     nowMs: verificationNow,
@@ -210,19 +212,19 @@ export async function connectAndVerifyTvc(
   const info = parseServiceInfo(session.infoText);
   bindDiscoveryToPolicy(info, releasePolicy);
   const appProof = verifyQosPingAnswer(session.pingText, challenge);
-  await verifyReplica(appProof, nowMs(), signal);
+  await verifyReplica(appProof, nowMs(), signal, session.bootProof);
 
   const releasePolicyValidFromMs = BigInt(releasePolicy.policy.validFromMs);
   const releasePolicyExpiresAtMs = BigInt(releasePolicy.policy.expiresAtMs);
-  const trustVerifier: { verifyOperationAppProof(proof: TurnkeyAppProofWire, signal?: AbortSignal): Promise<void> } = Object.freeze({
-    async verifyOperationAppProof(operationAppProof, operationSignal) {
+  const trustVerifier: ConnectedTvcRuntime["trustVerifier"] = Object.freeze({
+    async verifyOperationAppProof(operationAppProof, operationSignal, bootProof) {
       operationSignal?.throwIfAborted();
       const verificationNow = nowMs();
       requireCurrentReleasePolicy(
         { releasePolicyValidFromMs, releasePolicyExpiresAtMs },
         verificationNow,
       );
-      await verifyReplica(operationAppProof, verificationNow, operationSignal);
+      await verifyReplica(operationAppProof, verificationNow, operationSignal, bootProof);
     },
   });
 

@@ -2,16 +2,12 @@ import { ShieldedAddress, ShieldedPublicKey, type Bytes32 } from "@heliuslabs/sp
 import { X25519PublicKey, type Bytes31 } from "@heliuslabs/spr/keypair";
 import { address as solanaAddress, createSignableMessage, getAddressEncoder, type Address, type MessagePartialSigner } from "@solana/kit";
 
-import type { BootProofResolver } from "../connection/backend.js";
-import type { ConnectedTvcRuntime } from "../connection/connect.js";
-import { createDefaultTransport, type DecryptionServiceTransport } from "../connection/http.js";
+import type { BootProofResolver, EnclaveBackend } from "../connection/backend.js";
+import type { DecryptionServiceTransport } from "../connection/http.js";
 import { awaitWithSignal, requestScope, type DecryptionServiceRequestOptions } from "../connection/request.js";
 import { createDecryptionServiceSession, type DecryptionServiceSession } from "../connection/session.js";
-import { API_VERSION } from "../wire/constants.js";
-import { decodeDecimalU64 } from "../wire/decimal.js";
 import {
   acceptViewGrantWindow,
-  SERVICE_PROOF_TYPE,
   viewGrantDigest,
   viewGrantMessage,
   viewGrantWire,
@@ -21,7 +17,7 @@ import { DecryptionServiceError, DecryptionServiceHttpError } from "../wire/erro
 import { requireHex, decodeLowerHex, encodeLowerHex } from "../wire/hex.js";
 import { requireNetwork } from "../wire/network.js";
 import { releaseForConnection, type ReleaseTrust } from "../wire/releases.js";
-import type { DecryptItem, Network, ReleasePolicy, ServiceInfo } from "../wire/types.js";
+import type { DecryptItem, Network } from "../wire/types.js";
 import { batched, checkHexList } from "./items.js";
 import { executeServiceCall, type ServiceCall, type ServiceCallResult } from "./exchange.js";
 import { ServiceKeys, type DecryptionServiceKeys } from "./keys.js";
@@ -179,80 +175,51 @@ export function decryptionServiceFromSession(
   };
 }
 
-export type OperationsDecryptionConfig = {
-  readonly network: Network;
-  /** Gatekeeper URL. Only `/v1/operations` is called. */
-  readonly endpoint: URL;
-  /** The release the request names. Its quorum key encrypts the body. Mainnet uses the pinned policy. */
-  readonly release?: ReleaseTrust;
-  readonly nowMs?: () => bigint;
-  readonly transport?: DecryptionServiceTransport;
-  readonly requestTimeoutMs?: number;
+export type GatekeeperDecryptionServiceConfig = Omit<DecryptionServiceConfig, "resolveBootProof"> & {
+  /** Gatekeeper API key, sent as `x-api-key`. */
+  readonly apiKey: string;
 };
-
-/**
- * `keys` and `decrypt` through a gatekeeper that only exposes `/v1/operations`.
- * The request is encrypted to the release policy's quorum key. Replies are not authenticated.
- */
-export function createOperationsDecryptionService(config: OperationsDecryptionConfig): DecryptionService {
-  const network = requireNetwork(config.network);
-  const release = releaseForConnection(network, config.release);
-  const policy = release.releasePolicy.policy;
-  if (policy.network !== network) throw new DecryptionServiceError("NetworkMismatch");
-  const nowMs = config.nowMs ?? (() => BigInt(Date.now()));
-  const info = serviceInfoFromPolicy(policy);
-  const transport = config.transport ?? createDefaultTransport();
-  const runtime: ConnectedTvcRuntime = {
-    backend: { endpoint: config.endpoint },
-    info,
-    transport,
-    releasePolicyValidFromMs: decodeDecimalU64(policy.validFromMs),
-    releasePolicyExpiresAtMs: decodeDecimalU64(policy.expiresAtMs),
-    nowMs,
-    trustVerifier: { async verifyOperationAppProof() {} },
-    authenticateReplies: false,
-  };
-  return decryptionServiceFromSession({
-    async context(signal) {
-      signal.throwIfAborted();
-      return runtime;
-    },
-    forget() {},
-    reset() {},
-  }, config.requestTimeoutMs);
-}
-
-function serviceInfoFromPolicy(policy: ReleasePolicy): ServiceInfo {
-  return {
-    version: API_VERSION,
-    network: policy.network,
-    security_domain_id: policy.securityDomainId,
-    release_id: policy.releaseId,
-    manifest_digest: soleDigest(policy.acceptedManifestDigests),
-    executable_digest: soleDigest(policy.acceptedExecutableDigests),
-    quorum_public_key: policy.quorumPublicKey,
-    quorum_key_id: policy.quorumKeyId,
-    quorum_key_epoch: policy.quorumKeyEpoch,
-    supported_operations: [...policy.allowedOperations],
-    max_encrypted_request_bytes: String(policy.maxEncryptedRequestBytes),
-    max_encrypted_response_bytes: String(policy.maxEncryptedResponseBytes),
-    proof_type: SERVICE_PROOF_TYPE,
-  };
-}
-
-function soleDigest(digests: readonly string[]): string {
-  if (digests.length !== 1) throw new DecryptionServiceError("ReleaseBindingMismatch");
-  return digests[0]!;
-}
 
 /** A client of the decryption service at `config.endpoint`, verified against its release. */
 export function createDecryptionService(config: DecryptionServiceConfig): DecryptionService {
+  const { endpoint, resolveBootProof } = config;
+  return createClient(config, { endpoint, resolveBootProof });
+}
+
+/**
+ * `keys` and `decrypt` through the gatekeeper. The first call posts
+ * `/v1/decryption/session` and checks the bundled discovery, ping, and Boot
+ * Proof. Later calls post `/v1/decryption/operations` and check each reply's
+ * Boot Proof the same way.
+ */
+export function createGatekeeperDecryptionService(
+  config: GatekeeperDecryptionServiceConfig,
+): DecryptionService {
+  const endpoint = new URL(config.endpoint);
+  if (
+    endpoint.protocol !== "https:" ||
+    endpoint.username !== "" ||
+    endpoint.password !== "" ||
+    endpoint.search !== "" ||
+    endpoint.hash !== "" ||
+    (endpoint.pathname !== "/" && endpoint.pathname !== "") ||
+    !config.apiKey.trim()
+  ) {
+    throw new DecryptionServiceError("InvalidGatekeeperConfig");
+  }
+  return createClient(config, { endpoint, gatekeeperApiKey: config.apiKey });
+}
+
+function createClient(
+  config: Omit<DecryptionServiceConfig, "resolveBootProof">,
+  backend: EnclaveBackend,
+): DecryptionService {
   const network = requireNetwork(config.network);
-  const { endpoint, resolveBootProof, nowMs, transport, requestTimeoutMs } = config;
+  const { nowMs, transport, requestTimeoutMs } = config;
   return decryptionServiceFromSession(
     createDecryptionServiceSession({
       network,
-      backend: { endpoint, resolveBootProof },
+      backend,
       release: releaseForConnection(network, config.release),
       ...(network === "devnet" && nowMs !== undefined ? { nowMs } : {}),
       ...(transport === undefined ? {} : { transport }),
