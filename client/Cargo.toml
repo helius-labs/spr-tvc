@@ -1,0 +1,22 @@
+[package]
+name = "spr-tvc-client"
+version = "0.1.0"
+description = "Attested client for the SPR decryption service"
+edition.workspace = true
+license.workspace = true
+rust-version = "1.98"
+
+[dependencies]
+base64 = { version = "=0.22.1" }
+bs58 = { version = "=0.5.1" }
+getrandom = { version = "=0.2.17" }
+hex = { version = "=0.4.3" }
+hkdf = { version = "=0.12.4" }
+p384 = { version = "=0.13.1", default-features = false, features = ["arithmetic", "ecdsa", "std"] }
+qos_p256.workspace = true
+reqwest = { version = "=0.12.24", default-features = false, features = ["blocking", "charset", "rustls-tls"] }
+sha2 = { version = "=0.10.9" }
+spr-keypair.workspace = true
+spr-tvc-protocol = { path = "../protocol" }
+x509-cert = { version = "=0.2.5", default-features = false, features = ["std"] }
+zeroize = { version = "=1.9.0", features = ["zeroize_derive"] }
