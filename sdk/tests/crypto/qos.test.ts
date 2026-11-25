@@ -9,9 +9,9 @@ const RECEIVER = secret("qos-receiver");
 const RECEIVER_PUBLIC = p256.getPublicKey(RECEIVER, false);
 
 describe("QOS envelope", () => {
-  it("round-trips an envelope stored at a buffer offset", () => {
+  it("round-trips an envelope stored at a buffer offset", async () => {
     const plaintext = new TextEncoder().encode("wallet operation");
-    const envelope = qosEncrypt(RECEIVER_PUBLIC, plaintext);
+    const envelope = await qosEncrypt(RECEIVER_PUBLIC, plaintext);
     const backing = new Uint8Array(envelope.length + 2);
     backing.set(envelope, 1);
     expect(qosDecrypt(RECEIVER, backing.subarray(1, -1))).toEqual(plaintext);
@@ -35,8 +35,8 @@ describe("QOS envelope", () => {
     }
   });
 
-  it("rejects a declared message length that disagrees with the envelope", () => {
-    const envelope = qosEncrypt(RECEIVER_PUBLIC, new Uint8Array([1, 2, 3]));
+  it("rejects a declared message length that disagrees with the envelope", async () => {
+    const envelope = await qosEncrypt(RECEIVER_PUBLIC, new Uint8Array([1, 2, 3]));
     const shortened = envelope.slice(0, envelope.length - 1);
     expect(() => qosDecrypt(RECEIVER, shortened)).toThrowError("InvalidEncryptedEnvelope");
     const extended = new Uint8Array(envelope.length + 1);
@@ -44,8 +44,8 @@ describe("QOS envelope", () => {
     expect(() => qosDecrypt(RECEIVER, extended)).toThrowError("InvalidEncryptedEnvelope");
   });
 
-  it("rejects the wrong receiver and a corrupted tag", () => {
-    const envelope = qosEncrypt(RECEIVER_PUBLIC, new Uint8Array([1, 2, 3]));
+  it("rejects the wrong receiver and a corrupted tag", async () => {
+    const envelope = await qosEncrypt(RECEIVER_PUBLIC, new Uint8Array([1, 2, 3]));
     expect(() => qosDecrypt(secret("other-receiver"), envelope)).toThrowError(
       "InvalidEncryptedEnvelope",
     );

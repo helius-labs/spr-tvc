@@ -1,54 +1,49 @@
 import {
+  LocalShieldedKeys,
   NullifierKey,
   ShieldedAddress,
   ViewingKey,
   type Bytes32,
   type DecryptRequest,
   type DeriveRequest,
-  type ProofService,
   type RequestContext,
-  type WalletKeys,
+  type ShieldedKeys,
 } from "@heliuslabs/spr";
-import { LocalKeys } from "@heliuslabs/spr/client";
 import type { Bytes31, X25519PublicKey } from "@heliuslabs/spr/keypair";
 import type { TransactionKeyRequest } from "@heliuslabs/spr/transaction";
 import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha256";
 
-import { decodeLowerHex } from "../protocol/hex.js";
 import type { DecryptItem } from "../protocol/types.js";
 import { decryptItem } from "./items.js";
 
 const TRANSACTION_KEY_LABEL = new TextEncoder().encode("TSPP/decryption-service/tx_key/v1");
 
-/** Opens items with the service viewing key and returns one hex plaintext per item. */
-type Decrypt = (items: readonly DecryptItem[], context?: RequestContext) => Promise<readonly string[]>;
+/** Opens items with the service viewing key and returns one plaintext per item. */
+type Decrypt = (items: readonly DecryptItem[], context?: RequestContext) => Promise<readonly Uint8Array[]>;
 
-/** The SDK's `WalletKeys` for an address under its service keys. */
-export interface DecryptionServiceKeys extends WalletKeys {
+/** Shielded keys whose notes the decryption service opens. A spend uses the nullifier secret with the SPR prover. */
+export interface DecryptionServiceKeys extends ShieldedKeys {
+  /** A copy of the nullifier secret. The caller wipes it. */
+  nullifierSecret(): Bytes31;
   destroy(): void;
 }
 
-/** Delegates decryption to the service and derives transaction keys locally. */
+/** Delegates decryption to the service and derives from the nullifier secret locally. */
 export class ServiceKeys implements DecryptionServiceKeys {
   readonly #address: ShieldedAddress;
-  readonly #local: LocalKeys;
+  readonly #local: LocalShieldedKeys;
   readonly #transactionKey: X25519PublicKey;
   readonly #decrypt: Decrypt;
 
-  constructor(
-    address: ShieldedAddress,
-    nullifierSecret: Bytes31,
-    proofs: ProofService,
-    decrypt: Decrypt,
-  ) {
+  constructor(address: ShieldedAddress, nullifierSecret: Bytes31, decrypt: Decrypt) {
     const nullifierKey = NullifierKey.fromSecret(nullifierSecret);
     const transactionKey = ViewingKey.fromBytes(
       hkdf(sha256, nullifierSecret, undefined, TRANSACTION_KEY_LABEL, 32) as Bytes32,
     );
     try {
       this.#transactionKey = transactionKey.publicKey();
-      this.#local = LocalKeys.fromKeys({
+      this.#local = LocalShieldedKeys.fromKeys({
         address: ShieldedAddress.fromPublicKeys(
           address.signingPublicKey,
           address.nullifierPublicKey,
@@ -56,7 +51,7 @@ export class ServiceKeys implements DecryptionServiceKeys {
         ),
         viewingKeys: [transactionKey],
         nullifierKey,
-      }, proofs);
+      });
     } finally {
       nullifierKey.destroy();
       transactionKey.destroy();
@@ -73,28 +68,27 @@ export class ServiceKeys implements DecryptionServiceKeys {
     return [this.#address.viewingPublicKey];
   }
 
-  async decrypt(
-    requests: readonly DecryptRequest[],
-    context?: RequestContext,
-  ): Promise<readonly Uint8Array[]> {
-    if (requests.length === 0) return [];
-    const plaintexts = await this.#decrypt(requests.map(decryptItem), context);
-    return plaintexts.map(decodeLowerHex);
+  nullifierSecret(): Bytes31 {
+    return this.#local.withNullifierKey((key) => key.secretBytes());
   }
 
-  derive(requests: readonly DeriveRequest[]): Promise<readonly Bytes32[]> {
+  decrypt(requests: readonly DecryptRequest[], context?: RequestContext): Promise<readonly Uint8Array[]> {
+    if (requests.length === 0) return Promise.resolve([]);
+    return this.#decrypt(requests.map(decryptItem), context);
+  }
+
+  derive(requests: readonly DeriveRequest[], _context?: RequestContext): Promise<readonly Bytes32[]> {
     return this.#local.derive(requests);
   }
 
-  transactionKeys(requests: readonly TransactionKeyRequest[]): Promise<readonly ViewingKey[]> {
+  transactionKeys(
+    requests: readonly TransactionKeyRequest[],
+    _context?: RequestContext,
+  ): Promise<readonly ViewingKey[]> {
     return this.#local.transactionKeys(
       requests.map((request) => ({ ...request, viewingPublicKey: this.#transactionKey })),
     );
   }
-
-  prove: LocalKeys["prove"] = (inputs, context) => this.#local.prove(inputs, context);
-  proveMerge: LocalKeys["proveMerge"] = (inputs, context) => this.#local.proveMerge(inputs, context);
-  proveIndexed: LocalKeys["proveIndexed"] = (request, context) => this.#local.proveIndexed(request, context);
 
   destroy(): void {
     this.#local.destroy();

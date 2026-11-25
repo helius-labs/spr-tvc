@@ -1,4 +1,4 @@
-import { ShieldedAddress, ShieldedPublicKey, type Bytes32, type ProofService } from "@heliuslabs/spr";
+import { ShieldedAddress, ShieldedPublicKey, type Bytes32 } from "@heliuslabs/spr";
 import { X25519PublicKey, type Bytes31 } from "@heliuslabs/spr/keypair";
 import { address as solanaAddress, createSignableMessage, getAddressEncoder, type Address, type MessagePartialSigner } from "@solana/kit";
 
@@ -7,7 +7,7 @@ import { awaitWithSignal, requestScope, type DecryptionServiceRequestOptions } f
 import { createDecryptionServiceSession, type DecryptionServiceSession } from "../connection/session.js";
 import type { DecryptionServiceTransport } from "../connection/http.js";
 import { DecryptionServiceError, DecryptionServiceHttpError } from "../protocol/error.js";
-import { requireHex, encodeLowerHex } from "../protocol/hex.js";
+import { requireHex, decodeLowerHex, encodeLowerHex } from "../protocol/hex.js";
 import { requireNetwork } from "../protocol/network.js";
 import {
   acceptViewGrantWindow,
@@ -37,16 +37,22 @@ export type DecryptionServiceConfig = {
   readonly requestTimeoutMs?: number;
 };
 
+/** Plaintexts in item order, plus the address's nullifier secret. The caller owns `nullifierSecret` and wipes it. */
+type DecryptedNotes = {
+  readonly plaintexts: readonly Uint8Array[];
+  readonly nullifierSecret: Bytes31;
+};
+
 export type DecryptionService = {
   /** The shielded address a sender pays `owner` at before `owner` registers a wallet. */
   address(owner: Address, options?: DecryptionServiceRequestOptions): Promise<ShieldedAddress>;
   /**
-   * The keys of that address. `signer` is the owner, or a grantee named by
-   * `options.grant`. The signer authorizes the empty batch and every later batch.
+   * Shielded keys for this service. `signer` is the owner, or a grantee named by `options.grant`.
+   * The signer authorizes the empty batch and every later batch.
+   * A spend takes `nullifierSecret()` to the SPR prover.
    */
-  open(
+  decrypt(
     signer: MessagePartialSigner,
-    proofs: ProofService,
     options?: DecryptionServiceRequestOptions & { readonly grant?: ViewGrant },
   ): Promise<DecryptionServiceKeys>;
 };
@@ -122,40 +128,56 @@ export function decryptionServiceFromSession(
     );
   }
 
-  async function decrypt(
+  async function decryptItems(
     signer: MessagePartialSigner,
     items: readonly DecryptItem[],
     signal: AbortSignal,
-    grant?: ViewGrant,
-  ) {
-    const result = await call({
-      type: "Decrypt",
-      owner: signer,
-      items,
-      ...(grant === undefined ? {} : { grant }),
-    }, signal);
-    checkHexList(result.plaintexts, items.length);
-    return result;
+    grant: ViewGrant | undefined,
+  ): Promise<DecryptedNotes> {
+    let secret: Bytes31 | undefined;
+    try {
+      const take = async (batch: readonly DecryptItem[]): Promise<readonly Uint8Array[]> => {
+        const result = await call({
+          type: "Decrypt",
+          owner: signer,
+          items: batch,
+          ...(grant === undefined ? {} : { grant }),
+        }, signal);
+        checkHexList(result.plaintexts, batch.length);
+        const next = requireHex(result.nullifier_secret, 31) as Bytes31;
+        secret?.fill(0);
+        secret = next;
+        return result.plaintexts.map((plaintext) => decodeLowerHex(plaintext));
+      };
+      const plaintexts = items.length === 0 ? await take([]) : await batched(items, take);
+      if (secret === undefined) throw new DecryptionServiceError("ReleaseBindingMismatch");
+      const nullifierSecret = secret;
+      secret = undefined;
+      return { plaintexts, nullifierSecret };
+    } finally {
+      secret?.fill(0);
+    }
   }
 
   return {
     address(owner, options) {
       return withinRequest(options, (signal) => address(owner, signal));
     },
-    open(signer, proofs, options) {
+    decrypt(signer, options) {
       return withinRequest(options, async (signal) => {
         const grant = options?.grant;
         const owner = grant === undefined ? signer.address : solanaAddress(grant.owner);
         const shielded = await address(owner, signal);
-        const bootstrap = await decrypt(signer, [], signal, grant);
-        const nullifierSecret = requireHex(bootstrap.nullifier_secret, 31) as Bytes31;
+        const bootstrap = await decryptItems(signer, [], signal, grant);
         try {
-          return new ServiceKeys(shielded, nullifierSecret, proofs, (items, context) =>
-            withinRequest(context, (batchSignal) =>
-              batched(items, async (batch) => (await decrypt(signer, batch, batchSignal, grant)).plaintexts)),
-          );
+          return new ServiceKeys(shielded, bootstrap.nullifierSecret, (items, context) =>
+            withinRequest(context, async (batchSignal) => {
+              const decrypted = await decryptItems(signer, items, batchSignal, grant);
+              decrypted.nullifierSecret.fill(0);
+              return decrypted.plaintexts;
+            }));
         } finally {
-          nullifierSecret.fill(0);
+          bootstrap.nullifierSecret.fill(0);
         }
       });
     },

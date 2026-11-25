@@ -485,10 +485,11 @@ describe("a live replica, before its release is signed", () => {
     expect(fetchUnapproved).not.toHaveBeenCalled();
     expect(input.bootProof).not.toHaveBeenCalled();
     // An answer to another challenge.
-    const replayed = enclave(() => pingAnswer(encodeLowerHex(qosEncrypt(
+    const otherChallenge = encodeLowerHex(await qosEncrypt(
       p256.getPublicKey(secret("connect-quorum-encryption"), false),
       new TextEncoder().encode("another challenge"),
-    ))));
+    ));
+    const replayed = enclave(() => pingAnswer(otherChallenge));
     await expect(verifyLiveReplica({ ...input, transport: replayed })).rejects.toMatchObject({
       code: "TurnkeyEvidenceInvalid",
     });

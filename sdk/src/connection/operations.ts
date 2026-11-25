@@ -177,7 +177,7 @@ export async function sealedExchange(
   const quorum = parseQosP256Public(
     requireHex(context.info.quorum_public_key, QOS_P256_PUBLIC_LEN),
   );
-  const ciphertext = qosEncrypt(
+  const ciphertext = await qosEncrypt(
     quorum.encryption,
     te.encode(canonicalizeJsonValue(exchange.request)),
   );

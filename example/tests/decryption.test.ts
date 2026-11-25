@@ -28,8 +28,7 @@ test("the direct service opens signed batches and the SDK checks commitments", {
       return signer.signMessages(messages);
     },
   };
-  const unavailableProof = () => { throw new Error("this test only decrypts"); };
-  const keys = await service.open(owner, { prove: unavailableProof, proveMerge: unavailableProof });
+  const keys = await service.decrypt(owner);
   const sender = ViewingKey.generate();
   try {
     assert.equal(approvals.length, 1);

@@ -163,7 +163,6 @@ it.each(["caller", "client"])("uses one %s deadline across all decrypt batches",
   await initializePoseidon();
   const { context } = fixture();
   const owner = { address: ownerAddress, signMessages: vi.fn() };
-  const proofs = { prove: vi.fn(), proveMerge: vi.fn() };
   const secret = new Uint8Array(31).fill(5) as Bytes31;
   const nullifier = NullifierKey.fromSecret(secret);
   const viewing = ViewingKey.generate();
@@ -179,7 +178,7 @@ it.each(["caller", "client"])("uses one %s deadline across all decrypt batches",
     })
     .mockResolvedValueOnce({ type: "Decrypt", plaintexts: [], nullifier_secret: encodeLowerHex(secret) });
   try {
-    const keys = await service.open(owner, proofs);
+    const keys = await service.decrypt(owner);
     try {
       vi.useFakeTimers();
       operation

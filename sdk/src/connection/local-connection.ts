@@ -40,7 +40,7 @@ export async function connectLocalUnattestedTvc(
     throw new DecryptionServiceError("DiscoveryUntrusted", "local testkit must use a loopback HTTP endpoint");
   }
   const transport = config.transport ?? createDefaultTransport();
-  const challenge = qosPingChallenge(config.expectedQuorumPublicKey);
+  const challenge = await qosPingChallenge(config.expectedQuorumPublicKey);
   const session = await fetchSession(config.backend, challenge.body, transport, signal);
   const info = parseServiceInfo(session.infoText);
   if (

@@ -17,15 +17,17 @@ import {
 } from "@solana/kit";
 import {
   LocalKeys,
+  NullifierKey,
   createSprClient,
   initializePoseidon,
   type Bytes32,
   type SprClientConfig,
+  type WalletKeys,
 } from "@heliuslabs/spr";
-import { SignedTeePolicy } from "@heliuslabs/spr/client";
+import { NullifierKeyProofAuthority, SignedTeePolicy } from "@heliuslabs/spr/client";
 import { ed25519DerivationMessage } from "@heliuslabs/spr/keypair";
 import type { AssetBalance } from "@heliuslabs/spr/transaction";
-import { createDecryptionService, type Network } from "@heliuslabs/spr-decryption-service";
+import { createDecryptionService, type DecryptionServiceKeys, type Network } from "@heliuslabs/spr-decryption-service";
 import { createLocalDecryptionService } from "@heliuslabs/spr-decryption-service/testing";
 
 import { turnkeyClient, turnkeySigner, type OwnerSigner } from "./turnkey.js";
@@ -104,6 +106,28 @@ export async function setup() {
       (await tvc.getBootProof({ organizationId: tvcOrganization, ephemeralKey: bootProofLookupKey })).bootProof,
   });
   return { zolana, sender: signer, recipient: signer, service };
+}
+
+/** Spends notes `keys` opened. The prover is the SPR client's; the secret comes from the decrypt. */
+export function serviceSpendKeys(
+  keys: DecryptionServiceKeys,
+  proofService: Client["proofService"],
+): WalletKeys & { destroy(): void } {
+  const secret = keys.nullifierSecret();
+  const nullifier = NullifierKey.fromSecret(secret);
+  secret.fill(0);
+  const authority = new NullifierKeyProofAuthority(nullifier, proofService);
+  nullifier.destroy();
+  return {
+    address: () => keys.address(),
+    viewingPublicKeys: () => keys.viewingPublicKeys(),
+    decrypt: (requests, context) => keys.decrypt(requests, context),
+    derive: (requests, context) => keys.derive(requests, context),
+    transactionKeys: (requests, context) => keys.transactionKeys(requests, context),
+    prove: (inputs, context) => authority.prove(inputs, context),
+    proveMerge: (inputs, context) => authority.proveMerge(inputs, context),
+    destroy: () => authority.destroy(),
+  };
 }
 
 /** Derive wallet-local privacy keys from a Turnkey or local signer. */

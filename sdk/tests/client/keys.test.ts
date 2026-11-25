@@ -2,23 +2,22 @@ import { NullifierKey, ShieldedAddress, ShieldedPublicKey, initializePoseidon, t
 import { X25519Keypair, type Bytes31 } from "@heliuslabs/spr/keypair";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
-import { encodeLowerHex } from "../../src/protocol/hex.js";
+import { decodeLowerHex, encodeLowerHex } from "../../src/protocol/hex.js";
 import type { DecryptItem } from "../../src/protocol/types.js";
 import { ServiceKeys } from "../../src/client/keys.js";
 
-const proofs = { prove: vi.fn(), proveMerge: vi.fn() };
 const bytes = (fill: number, length = 32) => new Uint8Array(length).fill(fill);
 
 beforeAll(() => initializePoseidon());
 
-function keys(secret: Bytes31, decrypt = vi.fn(async (items: readonly DecryptItem[]) => items.map((item) => item.ciphertext))) {
+function keys(secret: Bytes31, decrypt = vi.fn(async (items: readonly DecryptItem[]) => items.map((item) => decodeLowerHex(item.ciphertext)))) {
   const nullifier = NullifierKey.fromSecret(secret);
   const address = ShieldedAddress.fromPublicKeys(
     ShieldedPublicKey.fromEd25519(bytes(1) as Bytes32),
     nullifier.publicKey(),
     X25519Keypair.generate().publicKey(),
   );
-  return { address, nullifier, decrypt, keys: new ServiceKeys(address, secret, proofs, decrypt) };
+  return { address, nullifier, decrypt, keys: new ServiceKeys(address, secret, decrypt) };
 }
 
 describe("the keys of an address under the service", () => {
