@@ -11,6 +11,8 @@ autobins = false
 [features]
 # The unattested local testkit; the enclave binary never enables it.
 local-dev = ["dep:serde"]
+# Bench inputs. `just bench` enables this. The enclave binary does not.
+bench = []
 
 [dependencies]
 axum = { version = "=0.8.8", default-features = false, features = ["http1", "tokio"] }
@@ -39,6 +41,7 @@ tower = { version = "=0.5.3", features = ["util"] }
 [[bench]]
 name = "decrypt"
 harness = false
+required-features = ["bench"]
 
 [[bin]]
 name = "spr-tvc-decryption-service"

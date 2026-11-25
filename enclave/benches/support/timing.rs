@@ -1,11 +1,14 @@
-//! Inputs for the decrypt bench. Not a supported API.
+//! Inputs for the decrypt bench. Compiled only with the `bench` feature, which
+//! the enclave binary does not enable.
 
 use qos_p256::P256Pair;
+use spr_keypair::constants::SALT_LEN;
 use spr_keypair::viewing_key::Salt;
 use spr_keypair::ViewingKey;
-use spr_tvc_protocol::body_limit::{max_inner_len, page_decrypt_request, page_inner_json};
-use spr_tvc_protocol::constants::{API_VERSION, QOS_ENVELOPE_OVERHEAD};
-use spr_tvc_protocol::decryption_service::ServiceOperation;
+use spr_tvc_protocol::constants::{
+    API_VERSION, MAX_ENCRYPTED_REQUEST_BYTES, QOS_ENVELOPE_OVERHEAD, SEC1_UNCOMPRESSED_LEN,
+};
+use spr_tvc_protocol::decryption_service::{ServiceOperation, X25519_PUBLIC_KEY_LEN};
 use spr_tvc_protocol::encoding::jcs_serialize;
 use spr_tvc_protocol::types::{DecryptItem, DecryptLabel, EncryptedRequest, ServiceInfo};
 
@@ -58,12 +61,32 @@ pub struct MaxEnvelope {
 impl MaxEnvelope {
     pub fn page() -> Self {
         let quorum = P256Pair::from_master_seed(&[7; 32].into()).expect("bench quorum");
-        let mut request = page_decrypt_request();
-        let ServiceOperation::Decrypt { items, .. } = &mut request.operation else {
-            unreachable!("page request is a Decrypt");
+        let mut request = spr_tvc_protocol::decryption_service::ServiceRequest {
+            version: API_VERSION,
+            request_id: [0; 32],
+            target_release_id: String::new(),
+            target_manifest_digest: [0; 32],
+            target_executable_digest: [0; 32],
+            quorum_key_id: String::new(),
+            quorum_key_epoch: u64::MAX,
+            client_response_public_key: vec![0x04; SEC1_UNCOMPRESSED_LEN],
+            operation: ServiceOperation::Decrypt {
+                signer: "1".repeat(44),
+                signature: [0; 64],
+                items: vec![DecryptItem {
+                    ciphertext: Vec::new(),
+                    ephemeral_viewing_public_key: vec![0x04; X25519_PUBLIC_KEY_LEN],
+                    salt: vec![0; SALT_LEN],
+                    slot_index: 0,
+                    label: DecryptLabel::Transfer,
+                }],
+            },
         };
-        let page_len = page_inner_json().expect("page json").len();
-        let extra = max_inner_len().expect("body cap").saturating_sub(page_len) / 2;
+        let base = jcs_serialize(&request).expect("bench request").len();
+        let extra = max_inner_len().saturating_sub(base) / 2;
+        let ServiceOperation::Decrypt { items, .. } = &mut request.operation else {
+            unreachable!("bench request is a Decrypt");
+        };
         items[0].ciphertext.extend(std::iter::repeat_n(0, extra));
         let plaintext = jcs_serialize(&request).expect("max request");
         let ciphertext = quorum
@@ -98,4 +121,17 @@ impl MaxEnvelope {
             .expect("bench decrypt")
             .len()
     }
+}
+
+/// Same bound as the enclave's inner-JSON cap: hex doubles each plaintext byte.
+fn max_inner_len() -> usize {
+    let wrapper = jcs_serialize(&EncryptedRequest {
+        version: API_VERSION,
+        quorum_key_id: String::new(),
+        quorum_key_epoch: u64::MAX,
+        ciphertext: vec![0; QOS_ENVELOPE_OVERHEAD],
+    })
+    .expect("bench wrapper")
+    .len();
+    (MAX_ENCRYPTED_REQUEST_BYTES as usize).saturating_sub(wrapper) / 2
 }

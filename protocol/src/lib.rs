@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-pub mod body_limit;
+mod body_limit;
 pub mod constants;
 pub mod crypto;
 pub mod decryption_service;

@@ -8,7 +8,7 @@ use p256::SecretKey;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use spr_tvc_protocol::body_limit::{page_encrypted_request_len, page_inner_json};
+use super::page::{page_encrypted_request_len, page_inner_json};
 use spr_tvc_protocol::constants::{
     API_VERSION, EMPTY_RECIPIENT_CIPHERTEXT_LEN, EXPECTED_TURNKEY_TRUST_ROOT_ID,
     MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES, NOTES_PER_SIGNATURE,

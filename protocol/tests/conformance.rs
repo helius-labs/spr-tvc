@@ -13,6 +13,7 @@ use spr_tvc_protocol::encoding::{
 };
 use spr_tvc_protocol::error::ErrorCode;
 mod fixtures;
+mod page;
 
 use fixtures::{
     bind_discovery_to_policy, reject_double_hashed_signature, verify_fixtures, write_fixtures,

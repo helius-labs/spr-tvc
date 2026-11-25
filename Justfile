@@ -23,7 +23,7 @@ test:
 
 # Times one transfer, one indexer page, and one max-size Quorum envelope. Not part of `just ci`.
 bench:
-    cargo bench -p spr-tvc-decryption-service --bench decrypt
+    cargo bench -p spr-tvc-decryption-service --bench decrypt --features bench
 
 regenerate-protocol-fixtures:
     cargo test --locked -p spr-tvc-protocol --test conformance regenerate_content_addressed_fixtures -- --ignored --exact

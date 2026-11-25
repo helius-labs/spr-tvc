@@ -22,7 +22,8 @@ pub use service::{serve, Service};
 /// QOS launch arguments override it with port 3000.
 pub const DEFAULT_BIND_PORT: u16 = 44030;
 
-#[doc(hidden)]
+#[cfg(feature = "bench")]
+#[path = "../benches/support/timing.rs"]
 pub mod timing;
 
 #[cfg(test)]

@@ -20,6 +20,7 @@ zeroize = { version = "=1.9.0", features = ["zeroize_derive"] }
 [dev-dependencies]
 # Test-only interop pin. AGPL-3.0-only; not a runtime dependency of this crate.
 qos_p256.workspace = true
+spr-keypair.workspace = true
 
 [[test]]
 name = "conformance"
