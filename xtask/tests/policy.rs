@@ -25,7 +25,8 @@ fn mainnet_args() -> Args {
 
 #[test]
 fn authentic_deployment_binds_app_runtime_image_and_manifest() {
-    let config = serde_json::from_str(include_str!("../../enclave/deploy/release.json")).unwrap();
+    let config =
+        serde_json::from_str(include_str!("../../decryption-service/deploy/release.json")).unwrap();
     let mut args = mainnet_args();
     args.network = Network::Devnet;
     let devnet = Release {
@@ -40,7 +41,7 @@ fn authentic_deployment_binds_app_runtime_image_and_manifest() {
         app: &config.networks.devnet,
     };
     let envelope: Value = serde_json::from_str(include_str!(
-        "../../enclave/tests/fixtures/qos-0.12.1-manifest-envelope.json"
+        "../../decryption-service/tests/fixtures/qos-0.12.1-manifest-envelope.json"
     ))
     .unwrap();
     let mut manifest = envelope["manifest"].clone();

@@ -34,6 +34,6 @@ signature used for the local shielded wallet is key material.
 
 `just headless-e2e` runs the same flow with local Solana signers and the
 loopback decryption testkit. It needs a sibling `zolana` checkout and the
-toolchain described by the [CI workflow](../.github/workflows/headless-local-e2e.yml).
+toolchain described by the [CI workflow](../../.github/workflows/headless-local-e2e.yml).
 `just decryption-e2e` exercises signed decrypt batches and commitment checks
 without a Solana validator.

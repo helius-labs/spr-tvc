@@ -151,7 +151,7 @@ impl TurnkeyDeployment {
 impl Release<'_> {
     pub(crate) fn production_trust(&self) -> Result<MainnetTrust> {
         let trust: MainnetTrust =
-            read_json::<Option<_>>(std::path::Path::new("sdk/trust/mainnet.json"))?
+            read_json::<Option<_>>(std::path::Path::new("client/sdk/trust/mainnet.json"))?
                 .context("mainnet trust anchors are unavailable")?;
         let mainnet = app_config(Network::Mainnet)?;
         let devnet = &self.config.networks.devnet;

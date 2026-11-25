@@ -6,7 +6,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/helius-labs/spr-tvc.git",
-    "directory": "sdk"
+    "directory": "client/sdk"
   },
   "type": "module",
   "engines": {

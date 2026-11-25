@@ -13,7 +13,7 @@ use spr_tvc_protocol::encoding::{decimal_u64, hex as wire_hex};
 use spr_tvc_protocol::types::Network;
 
 const APP: &str = "decryption-service";
-const DEPLOY_DIR: &str = "enclave/deploy";
+const DEPLOY_DIR: &str = "decryption-service/deploy";
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Phase {
@@ -156,7 +156,7 @@ impl Release<'_> {
     }
 
     fn pin_path(&self) -> PathBuf {
-        Path::new("sdk/releases").join(format!("{}.json", self.network()))
+        Path::new("client/sdk/releases").join(format!("{}.json", self.network()))
     }
 }
 

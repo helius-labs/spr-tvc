@@ -47,7 +47,7 @@ ci: fmt-check lint test setup
     bash tests/with-local-decryption.sh {{pnpm}} ci:ts
 
 image network="devnet":
-    docker build --platform linux/amd64 --provenance=false --build-arg SPR_NETWORK="$1" -f enclave/Dockerfile .
+    docker build --platform linux/amd64 --provenance=false --build-arg SPR_NETWORK="$1" -f decryption-service/Dockerfile .
 
 decryption-e2e: setup build-ts
     bash tests/with-local-decryption.sh {{pnpm}} --filter spr-tvc-typescript-client-example test

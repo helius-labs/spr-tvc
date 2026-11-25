@@ -10,8 +10,9 @@
 **/node_modules
 **/dist
 .github
-sdk
-example
+client
+examples
+gateway
 *.md
 package.json
 pnpm-lock.yaml
@@ -21,4 +22,4 @@ eslint.config.js
 tests/*.sh
 xtask/*.ts
 xtask/tsconfig.json
-enclave/deploy
+decryption-service/deploy

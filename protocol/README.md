@@ -116,7 +116,7 @@ The policy pins the release, network, security domain, manifest and
 executable digests, Quorum key identity and public key, operations, and
 byte limits. A threshold of distinct trusted release authorities signs the
 policy digest with P-256. The client enforces the policy's validity window
-and revocation floor. See the [trust and attestation flow](../enclave/SPEC.md#establish-trust-before-sending).
+and revocation floor. See the [trust and attestation flow](../decryption-service/SPEC.md#establish-trust-before-sending).
 
 - `GET /v1/info` returns discovery fields that the SDK checks against the policy.
 - `POST /v1/ping` takes `version` and `encrypted_challenge`. The decrypted

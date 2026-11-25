@@ -11,7 +11,7 @@
   },
   "scripts": {
     "build:ts": "pnpm --filter @heliuslabs/spr-decryption-service build",
-    "lint:ts": "eslint sdk example xtask eslint.config.js --max-warnings 0",
+    "lint:ts": "eslint client/sdk examples/turnkey xtask eslint.config.js --max-warnings 0",
     "test:ts": "pnpm --filter @heliuslabs/spr-decryption-service test",
     "typecheck:ts": "pnpm --filter @heliuslabs/spr-decryption-service typecheck",
     "ci:ts": "pnpm lint:ts && pnpm typecheck:ts && pnpm test:ts && pnpm build:ts && tsc -p xtask && pnpm typecheck:examples && pnpm test:examples",

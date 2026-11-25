@@ -7,7 +7,7 @@ import { sessionFromConnector } from "../src/connection/session.js";
 import { encodeLowerHex } from "../src/protocol/hex.js";
 import { requireNetwork } from "../src/protocol/network.js";
 import type { Network, OperationKind } from "../src/protocol/types.js";
-import localTestkit from "../../tests/fixtures/local-testkit.json";
+import localTestkit from "../../../tests/fixtures/local-testkit.json";
 
 const encoder = new TextEncoder();
 const digest = (label: string) => encodeLowerHex(sha256(encoder.encode(label)));

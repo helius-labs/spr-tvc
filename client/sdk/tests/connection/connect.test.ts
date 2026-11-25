@@ -317,7 +317,7 @@ describe("verification", () => {
       readFileSync(
         join(
           dirname(fileURLToPath(import.meta.url)),
-          "../../../protocol/fixtures/signed-release-policy.json",
+          "../../../../protocol/fixtures/signed-release-policy.json",
         ),
         "utf8",
       ),

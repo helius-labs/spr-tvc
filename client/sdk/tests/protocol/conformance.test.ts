@@ -44,7 +44,7 @@ import type {
 
 const fixturesDir = join(
   dirname(fileURLToPath(import.meta.url)),
-  "../../../protocol/fixtures"
+  "../../../../protocol/fixtures"
 );
 
 function readFixture(name: string): string {

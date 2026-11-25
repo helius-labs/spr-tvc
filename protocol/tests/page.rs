@@ -1,6 +1,7 @@
 //! The empty indexer page used to check that a normal decrypt fits in the 10 MiB body cap.
 
-use spr_keypair::constants::SALT_LEN;
+use spr_keypair::constants::{BLINDING_LEN, SALT_LEN};
+use spr_keypair::x25519::X25519_PUBKEY_LEN as SPR_X25519_PUBLIC_KEY_LEN;
 use spr_tvc_protocol::body_limit::{encrypted_request_http_len, max_inner_len, qos_frame_len};
 use spr_tvc_protocol::constants::{
     API_VERSION, EMPTY_RECIPIENT_CIPHERTEXT_LEN, NOTES_PER_SIGNATURE, QOS_P256_PUBLIC_LEN,
@@ -16,6 +17,15 @@ use spr_tvc_protocol::types::{
     AppProof, DecryptItem, DecryptLabel, EncryptedResponse, KdfMode, OperationKind,
     OperationProofPayload,
 };
+
+#[test]
+fn key_lengths_match_spr_keypair() {
+    assert_eq!(
+        spr_tvc_protocol::decryption_service::NULLIFIER_SECRET_LEN,
+        BLINDING_LEN
+    );
+    assert_eq!(X25519_PUBLIC_KEY_LEN, SPR_X25519_PUBLIC_KEY_LEN);
+}
 
 /// Longest base58 encoding of a 32-byte Solana address.
 const MAX_BASE58_ADDRESS_LEN: usize = 44;

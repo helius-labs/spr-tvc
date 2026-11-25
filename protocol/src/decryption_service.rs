@@ -22,8 +22,10 @@ pub const VIEW_GRANT_DIGEST_DOMAIN: &[u8] = b"SPR_TVC_VIEW_GRANT_V1";
 pub const MAX_VIEW_GRANT_MS: u64 = 30 * 60 * 1000;
 
 pub const ADDRESS_LEN: usize = 32;
-pub use spr_keypair::constants::BLINDING_LEN as NULLIFIER_SECRET_LEN;
-pub use spr_keypair::x25519::X25519_PUBKEY_LEN as X25519_PUBLIC_KEY_LEN;
+/// `spr_keypair::constants::BLINDING_LEN`. `key_lengths_match_spr_keypair` pins this.
+pub const NULLIFIER_SECRET_LEN: usize = 31;
+/// `spr_keypair::x25519::X25519_PUBKEY_LEN`. `key_lengths_match_spr_keypair` pins this.
+pub const X25519_PUBLIC_KEY_LEN: usize = 33;
 
 const OFFCHAIN_MESSAGE_MAGIC: &[u8; 16] = b"\xffsolana offchain";
 /// Solana off-chain message v0 prefix: magic, version, domain, format, signer count, signer, length.
