@@ -4,8 +4,9 @@
 //! pay an unregistered owner and [`DecryptionClient::keys`] to open those notes.
 //! [`DecryptionClient`] checks the Nitro document, PCR0–3, PCR17, and the
 //! manifest allowlist, and opens a reply only after the App Proof names that
-//! request. [`OperationsClient`] is the gatekeeper path: it posts `keys` and
-//! `decrypt` to `/v1/operations` and does not check the replica.
+//! request. [`OperationsClient`] is the gatekeeper path. It checks the Boot
+//! Proof bundled with `/v1/decryption/session`, then posts `keys` and `decrypt`
+//! to `/v1/decryption/operations` and checks the Boot Proof on each reply.
 
 #![forbid(unsafe_code)]
 
@@ -17,7 +18,7 @@ mod session;
 mod transport;
 
 pub use attestation::{BootProof, IdentityPcrs};
-pub use operations::OperationsClient;
+pub use operations::{Gatekeeper, OperationsClient};
 pub use service::{DecryptionClient, Note, ServiceKeys};
 pub use transport::{ReqwestTransport, Transport};
 
@@ -47,6 +48,8 @@ pub enum ClientError {
     Entropy,
     /// The response key could not open the ciphertext.
     InvalidEnvelope,
+    /// The gatekeeper URL or API key cannot be used.
+    InvalidGatekeeperConfig,
 }
 
 impl Display for ClientError {
@@ -57,6 +60,7 @@ impl Display for ClientError {
             Self::ResponseTooLarge => f.write_str("ResponseTooLarge"),
             Self::Entropy => f.write_str("Entropy"),
             Self::InvalidEnvelope => f.write_str("InvalidEncryptedEnvelope"),
+            Self::InvalidGatekeeperConfig => f.write_str("InvalidGatekeeperConfig"),
         }
     }
 }

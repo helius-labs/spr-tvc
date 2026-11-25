@@ -27,6 +27,12 @@ pub trait BootProofs {
     ) -> Result<BootProof, ClientError>;
 }
 
+impl BootProofs for () {
+    fn boot_proof(&self, _: &[u8; QOS_P256_PUBLIC_LEN]) -> Result<BootProof, ClientError> {
+        Err(TvcError::new(ErrorCode::BootProofUnverified).into())
+    }
+}
+
 pub struct ConnectConfig<T, B> {
     pub network: Network,
     pub endpoint: String,
@@ -119,6 +125,33 @@ impl<B: BootProofs> Session<B> {
             self.now_ms(),
         )
     }
+
+    pub(crate) fn release(&self) -> &SignedReleasePolicy {
+        &self.release
+    }
+
+    pub(crate) fn pcrs(&self) -> &IdentityPcrs {
+        &self.pcrs
+    }
+}
+
+impl Session<()> {
+    pub(crate) fn verified(
+        endpoint: String,
+        info: ServiceInfo,
+        release: SignedReleasePolicy,
+        pcrs: IdentityPcrs,
+        now_ms: fn() -> u64,
+    ) -> Self {
+        Self {
+            endpoint,
+            info,
+            release,
+            pcrs,
+            boot_proofs: (),
+            now_ms,
+        }
+    }
 }
 
 fn verify_key<B: BootProofs>(
@@ -140,7 +173,29 @@ fn verify_key<B: BootProofs>(
     Ok(())
 }
 
-fn bind_discovery(info: &ServiceInfo, signed: &SignedReleasePolicy) -> Result<(), TvcError> {
+pub(crate) fn verify_reply_boot(
+    release: &SignedReleasePolicy,
+    pcrs: &IdentityPcrs,
+    proof: &AppProof,
+    boot: &BootProof,
+    now: u64,
+) -> Result<(), ClientError> {
+    verify_app_signature(proof)?;
+    let key = ephemeral_key(&proof.public_key)?;
+    verify_boot_proof(
+        &key,
+        boot,
+        &release.policy.accepted_manifest_digests,
+        pcrs,
+        now,
+    )?;
+    Ok(())
+}
+
+pub(crate) fn bind_discovery(
+    info: &ServiceInfo,
+    signed: &SignedReleasePolicy,
+) -> Result<(), TvcError> {
     let policy = &signed.policy;
     if info.network != policy.network {
         return Err(TvcError::new(ErrorCode::NetworkMismatch));
@@ -173,7 +228,7 @@ fn bind_discovery(info: &ServiceInfo, signed: &SignedReleasePolicy) -> Result<()
     Ok(())
 }
 
-fn ping_challenge(quorum_public_key: &[u8]) -> Result<(String, String), ClientError> {
+pub(crate) fn ping_challenge(quorum_public_key: &[u8]) -> Result<(String, String), ClientError> {
     if quorum_public_key.len() != QOS_P256_PUBLIC_LEN {
         return Err(TvcError::new(ErrorCode::InvalidPublicKey).into());
     }
@@ -196,7 +251,7 @@ fn ping_challenge(quorum_public_key: &[u8]) -> Result<(String, String), ClientEr
     Ok((body, payload))
 }
 
-fn verify_ping(text: &str, payload: &str) -> Result<AppProof, TvcError> {
+pub(crate) fn verify_ping(text: &str, payload: &str) -> Result<AppProof, TvcError> {
     if !is_rfc8785(text) {
         return Err(TvcError::new(ErrorCode::InvalidCanonicalJson));
     }
@@ -243,7 +298,7 @@ pub(crate) fn decrypt_response(
         .map_err(|_| crate::ClientError::InvalidEnvelope)
 }
 
-fn join(endpoint: &str, path: &str) -> String {
+pub(crate) fn join(endpoint: &str, path: &str) -> String {
     format!("{}{}", endpoint.trim_end_matches('/'), path)
 }
 

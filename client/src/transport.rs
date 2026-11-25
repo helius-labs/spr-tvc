@@ -13,6 +13,13 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 pub trait Transport {
     fn get(&self, url: &str, max_bytes: usize) -> Result<Vec<u8>, ClientError>;
     fn post(&self, url: &str, body: &str, max_bytes: usize) -> Result<Vec<u8>, ClientError>;
+    fn post_with_api_key(
+        &self,
+        url: &str,
+        api_key: &str,
+        body: &str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ClientError>;
 }
 
 pub struct ReqwestTransport {
@@ -42,20 +49,48 @@ impl Transport for ReqwestTransport {
     }
 
     fn post(&self, url: &str, body: &str, max_bytes: usize) -> Result<Vec<u8>, ClientError> {
-        let failure = if url.ends_with("/v1/ping") {
+        self.send(url, body, None, max_bytes)
+    }
+
+    fn post_with_api_key(
+        &self,
+        url: &str,
+        api_key: &str,
+        body: &str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ClientError> {
+        self.send(url, body, Some(api_key), max_bytes)
+    }
+}
+
+impl ReqwestTransport {
+    fn send(
+        &self,
+        url: &str,
+        body: &str,
+        api_key: Option<&str>,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ClientError> {
+        let failure = if url.ends_with("/v1/ping") || url.ends_with("/v1/decryption/session") {
             ErrorCode::BootProofUnverified
         } else if url.ends_with("/v1/info") {
             ErrorCode::DiscoveryUntrusted
         } else {
             ErrorCode::TurnkeyEvidenceInvalid
         };
+        let mut request = self
+            .client
+            .post(url)
+            .header("content-type", "application/json")
+            .body(body.to_owned());
+        if let Some(api_key) = api_key {
+            let mut header = reqwest::header::HeaderValue::from_str(api_key)
+                .map_err(|_| ClientError::InvalidGatekeeperConfig)?;
+            header.set_sensitive(true);
+            request = request.header("x-api-key", header);
+        }
         read(
-            self.client
-                .post(url)
-                .header("content-type", "application/json")
-                .body(body.to_owned())
-                .send()
-                .map_err(|_| ClientError::Transport)?,
+            request.send().map_err(|_| ClientError::Transport)?,
             max_bytes,
             failure,
         )
@@ -87,4 +122,8 @@ fn read(
 
 pub(crate) fn discovery_limit() -> usize {
     MAX_DISCOVERY_BYTES
+}
+
+pub(crate) fn session_limit() -> usize {
+    MAX_DISCOVERY_BYTES * 2 + 512 * 1024
 }

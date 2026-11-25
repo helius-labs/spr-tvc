@@ -25,6 +25,7 @@ use spr_tvc_protocol::types::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
+use crate::attestation::BootProof;
 use crate::session::{
     decrypt_response, ensure_operation, response_keypair, verify_app_signature, Session,
 };
@@ -32,7 +33,7 @@ use crate::transport::Transport;
 use crate::{BootProofs, ClientError, OwnerSigner};
 
 const TX_KEY_LABEL: &[u8] = b"TSPP/decryption-service/tx_key/v1";
-const RESPONSE_ENVELOPE_SLACK: u64 = 65_536;
+pub(crate) const RESPONSE_ENVELOPE_SLACK: u64 = 65_536;
 
 /// One note the service can open.
 #[derive(Debug, Clone)]
@@ -82,8 +83,6 @@ impl<T: Transport, B: BootProofs> DecryptionClient<T, B> {
     ) -> Result<ServiceResult, ClientError> {
         let info = self.session.info();
         Exchange {
-            transport: &self.transport,
-            endpoint: self.session.endpoint(),
             target: Target::from_info(info),
             operation,
             signer,
@@ -91,32 +90,6 @@ impl<T: Transport, B: BootProofs> DecryptionClient<T, B> {
             checker: self,
         }
         .run()
-    }
-
-    fn verify_operation(
-        &self,
-        proof: &AppProof,
-        request_digest: &[u8; 32],
-        encrypted_result: &[u8],
-        request: &ServiceRequest,
-    ) -> Result<(), ClientError> {
-        verify_app_signature(proof)?;
-        self.session.verify_operation_key(proof)?;
-        if !is_rfc8785(&proof.proof_payload) {
-            return Err(TvcError::new(ErrorCode::TurnkeyEvidenceInvalid).into());
-        }
-        let payload: OperationProofPayload =
-            spr_tvc_protocol::encoding::parse_strict_json(&proof.proof_payload)?;
-        if payload.r#type != spr_tvc_protocol::decryption_service::SERVICE_PROOF_TYPE
-            || payload.version != API_VERSION
-            || payload.request_id != request.request_id
-            || payload.request_digest != *request_digest
-            || payload.result_digest != result_digest(encrypted_result)
-            || payload.operation != request.operation.kind()
-        {
-            return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch).into());
-        }
-        Ok(())
     }
 
     fn decrypt_items(
@@ -158,14 +131,41 @@ impl<T: Transport, B: BootProofs> CheckReply for DecryptionClient<T, B> {
         self.session.require_current()
     }
 
+    fn post_operation(&self, body: &str, limit: usize) -> Result<Vec<u8>, ClientError> {
+        self.transport.post(
+            &format!(
+                "{}/v1/operations",
+                self.session.endpoint().trim_end_matches('/')
+            ),
+            body,
+            limit,
+        )
+    }
+
+    fn open_http(
+        &self,
+        body: &[u8],
+    ) -> Result<(EncryptedResponse, Option<BootProof>), ClientError> {
+        let text = std::str::from_utf8(body)
+            .map_err(|_| TvcError::new(ErrorCode::InvalidCanonicalJson))?;
+        if !is_rfc8785(text) {
+            return Err(TvcError::new(ErrorCode::InvalidCanonicalJson).into());
+        }
+        let response = spr_tvc_protocol::encoding::parse_strict_json(text)?;
+        Ok((response, None))
+    }
+
     fn check_reply(
         &self,
         proof: &AppProof,
         request_digest: &[u8; 32],
         encrypted_result: &[u8],
         request: &ServiceRequest,
+        _: Option<&BootProof>,
     ) -> Result<(), ClientError> {
-        self.verify_operation(proof, request_digest, encrypted_result, request)
+        verify_app_signature(proof)?;
+        self.session.verify_operation_key(proof)?;
+        bind_operation_proof(proof, request_digest, encrypted_result, request)
     }
 }
 
@@ -300,18 +300,46 @@ impl<'a> Target<'a> {
 
 pub(crate) trait CheckReply {
     fn gate(&self) -> Result<(), TvcError>;
+    fn response_overhead(&self) -> u64 {
+        RESPONSE_ENVELOPE_SLACK
+    }
+    fn post_operation(&self, body: &str, limit: usize) -> Result<Vec<u8>, ClientError>;
+    fn open_http(&self, body: &[u8])
+        -> Result<(EncryptedResponse, Option<BootProof>), ClientError>;
     fn check_reply(
         &self,
         proof: &AppProof,
         request_digest: &[u8; 32],
         encrypted_result: &[u8],
         request: &ServiceRequest,
+        boot: Option<&BootProof>,
     ) -> Result<(), ClientError>;
 }
 
-pub(crate) struct Exchange<'a, T> {
-    pub(crate) transport: &'a T,
-    pub(crate) endpoint: &'a str,
+pub(crate) fn bind_operation_proof(
+    proof: &AppProof,
+    request_digest: &[u8; 32],
+    encrypted_result: &[u8],
+    request: &ServiceRequest,
+) -> Result<(), ClientError> {
+    if !is_rfc8785(&proof.proof_payload) {
+        return Err(TvcError::new(ErrorCode::TurnkeyEvidenceInvalid).into());
+    }
+    let payload: OperationProofPayload =
+        spr_tvc_protocol::encoding::parse_strict_json(&proof.proof_payload)?;
+    if payload.r#type != spr_tvc_protocol::decryption_service::SERVICE_PROOF_TYPE
+        || payload.version != API_VERSION
+        || payload.request_id != request.request_id
+        || payload.request_digest != *request_digest
+        || payload.result_digest != result_digest(encrypted_result)
+        || payload.operation != request.operation.kind()
+    {
+        return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch).into());
+    }
+    Ok(())
+}
+
+pub(crate) struct Exchange<'a> {
     pub(crate) target: Target<'a>,
     pub(crate) operation: ServiceOperation,
     pub(crate) signer: Option<&'a dyn OwnerSigner>,
@@ -319,11 +347,9 @@ pub(crate) struct Exchange<'a, T> {
     pub(crate) checker: &'a dyn CheckReply,
 }
 
-impl<T: Transport> Exchange<'_, T> {
+impl Exchange<'_> {
     pub(crate) fn run(self) -> Result<ServiceResult, ClientError> {
         let Exchange {
-            transport,
-            endpoint,
             target,
             operation,
             signer,
@@ -385,19 +411,10 @@ impl<T: Transport> Exchange<'_, T> {
         let max_response = target
             .max_response
             .saturating_mul(2)
-            .saturating_add(RESPONSE_ENVELOPE_SLACK);
+            .saturating_add(checker.response_overhead());
         let limit = usize::try_from(max_response).map_err(|_| ClientError::ResponseTooLarge)?;
-        let body = transport.post(
-            &format!("{}/v1/operations", endpoint.trim_end_matches('/')),
-            &wire,
-            limit,
-        )?;
-        let text = std::str::from_utf8(&body)
-            .map_err(|_| TvcError::new(ErrorCode::InvalidCanonicalJson))?;
-        if !is_rfc8785(text) {
-            return Err(TvcError::new(ErrorCode::InvalidCanonicalJson).into());
-        }
-        let response: EncryptedResponse = spr_tvc_protocol::encoding::parse_strict_json(text)?;
+        let body = checker.post_operation(&wire, limit)?;
+        let (response, boot) = checker.open_http(&body)?;
         if response.version != API_VERSION || response.request_id != request.request_id {
             return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch).into());
         }
@@ -409,6 +426,7 @@ impl<T: Transport> Exchange<'_, T> {
             &digest,
             &response.encrypted_result,
             &request,
+            boot.as_ref(),
         )?;
         let plaintext = decrypt_response(&pair, &response.encrypted_result)?;
         let plaintext = std::str::from_utf8(&plaintext)
