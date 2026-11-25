@@ -17,14 +17,14 @@ use crate::{ClientError, OwnerSigner};
 use base64::Engine;
 use serde::Deserialize;
 use spr_keypair::ShieldedAddress;
-use spr_tvc_protocol::constants::QOS_P256_PUBLIC_LEN;
-use spr_tvc_protocol::decryption_service::{
+use spr_tvc_wire::constants::QOS_P256_PUBLIC_LEN;
+use spr_tvc_wire::decryption_service::{
     DecryptedOutputs, ServiceOperation, ServiceRequest, ADDRESS_LEN,
 };
-use spr_tvc_protocol::encoding::{decode_lower_hex, jcs_serialize, parse_strict_json};
-use spr_tvc_protocol::error::{ErrorCode, TvcError};
-use spr_tvc_protocol::release::{verify_signed_release_policy, PinnedReleaseAuthorities};
-use spr_tvc_protocol::types::{
+use spr_tvc_wire::encoding::{decode_lower_hex, jcs_serialize, parse_strict_json};
+use spr_tvc_wire::error::{ErrorCode, TvcError};
+use spr_tvc_wire::release::{verify_signed_release_policy, PinnedReleaseAuthorities};
+use spr_tvc_wire::types::{
     AppProof, DecryptItem, EncryptedResponse, Network, OperationKind, QosPingResponse, ServiceInfo,
     SignedReleasePolicy,
 };
@@ -102,7 +102,7 @@ impl<T: Transport> OperationsClient<T> {
         operation: ServiceOperation,
         signer: Option<&dyn OwnerSigner>,
         owner: &[u8; ADDRESS_LEN],
-    ) -> Result<spr_tvc_protocol::decryption_service::ServiceResult, ClientError> {
+    ) -> Result<spr_tvc_wire::decryption_service::ServiceResult, ClientError> {
         Exchange {
             target: Target::from_info(self.session.info()),
             operation,
@@ -182,8 +182,8 @@ impl<T: Transport> OpenNotes for OperationsClient<T> {
             &owner,
         )?;
         match result {
-            spr_tvc_protocol::decryption_service::ServiceResult::Decrypt(outputs) => Ok(outputs),
-            spr_tvc_protocol::decryption_service::ServiceResult::PublicKeys { .. } => {
+            spr_tvc_wire::decryption_service::ServiceResult::Decrypt(outputs) => Ok(outputs),
+            spr_tvc_wire::decryption_service::ServiceResult::PublicKeys { .. } => {
                 Err(TvcError::new(ErrorCode::ReleaseBindingMismatch).into())
             }
         }
@@ -255,16 +255,16 @@ mod tests {
     use p256::ecdsa::SigningKey;
     use qos_p256::encrypt::P256EncryptPair;
     use serde::Serialize;
-    use spr_tvc_protocol::constants::{
+    use spr_tvc_wire::constants::{
         API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, TVC_APP_PROOF_SCHEME,
     };
-    use spr_tvc_protocol::crypto::sign_p256_message;
-    use spr_tvc_protocol::encoding::{encode_lower_hex, jcs_serialize, parse_strict_json};
-    use spr_tvc_protocol::error::ErrorCode;
-    use spr_tvc_protocol::release::{
+    use spr_tvc_wire::crypto::sign_p256_message;
+    use spr_tvc_wire::encoding::{encode_lower_hex, jcs_serialize, parse_strict_json};
+    use spr_tvc_wire::error::ErrorCode;
+    use spr_tvc_wire::release::{
         sign_release_policy, PinnedReleaseAuthorities, ReleaseAuthorityKey,
     };
-    use spr_tvc_protocol::types::{
+    use spr_tvc_wire::types::{
         AppProof, Network, OperationKind, QosPingRequest, QosPingResponse,
         ReleaseAuthoritySignature, ReleasePolicy, ServiceInfo, SignedReleasePolicy,
     };
@@ -360,7 +360,7 @@ mod tests {
             ],
             max_encrypted_request_bytes: 1_000_000,
             max_encrypted_response_bytes: 1_000_000,
-            proof_type: spr_tvc_protocol::decryption_service::SERVICE_PROOF_TYPE.into(),
+            proof_type: spr_tvc_wire::decryption_service::SERVICE_PROOF_TYPE.into(),
         }
     }
 

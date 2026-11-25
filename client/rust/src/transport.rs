@@ -3,7 +3,7 @@
 use std::io::Read;
 use std::time::Duration;
 
-use spr_tvc_protocol::error::{ErrorCode, TvcError};
+use spr_tvc_wire::error::{ErrorCode, TvcError};
 
 use crate::ClientError;
 

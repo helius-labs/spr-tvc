@@ -1,15 +1,15 @@
 //! Verify one replica, then check every later reply against the same release.
 
 use qos_p256::encrypt::{P256EncryptPair, P256EncryptPublic};
-use spr_tvc_protocol::constants::{
+use spr_tvc_wire::constants::{
     API_VERSION, QOS_P256_PUBLIC_LEN, TVC_APP_PROOF_SCHEME, TVC_QOS_PING_PROOF_TYPE,
 };
-use spr_tvc_protocol::crypto::verify_p256_message;
-use spr_tvc_protocol::decryption_service::SERVICE_PROOF_TYPE;
-use spr_tvc_protocol::encoding::{decode_lower_hex_array, is_rfc8785, jcs_serialize};
-use spr_tvc_protocol::error::{ErrorCode, TvcError};
-use spr_tvc_protocol::release::{verify_signed_release_policy, PinnedReleaseAuthorities};
-use spr_tvc_protocol::types::{
+use spr_tvc_wire::crypto::verify_p256_message;
+use spr_tvc_wire::decryption_service::SERVICE_PROOF_TYPE;
+use spr_tvc_wire::encoding::{decode_lower_hex_array, is_rfc8785, jcs_serialize};
+use spr_tvc_wire::error::{ErrorCode, TvcError};
+use spr_tvc_wire::release::{verify_signed_release_policy, PinnedReleaseAuthorities};
+use spr_tvc_wire::types::{
     AppProof, Network, OperationKind, QosPingChallenge, QosPingRequest, QosPingResponse,
     ServiceInfo, SignedReleasePolicy,
 };
@@ -66,7 +66,7 @@ impl<B: BootProofs> Session<B> {
             .get(&join(&config.endpoint, "/v1/info"), discovery_limit())?;
         let info_text = std::str::from_utf8(&info_bytes)
             .map_err(|_| TvcError::new(ErrorCode::DiscoveryUntrusted))?;
-        let info: ServiceInfo = spr_tvc_protocol::encoding::parse_strict_json(info_text)?;
+        let info: ServiceInfo = spr_tvc_wire::encoding::parse_strict_json(info_text)?;
         bind_discovery(&info, &config.release)?;
         let (body, payload) = ping_challenge(&info.quorum_public_key)?;
         let ping_bytes = config.transport.post(
@@ -297,7 +297,7 @@ fn ephemeral_key(bytes: &[u8]) -> Result<[u8; QOS_P256_PUBLIC_LEN], TvcError> {
 }
 
 fn parse_qos_ping_response(text: &str) -> Result<QosPingResponse, TvcError> {
-    spr_tvc_protocol::encoding::parse_strict_json(text)
+    spr_tvc_wire::encoding::parse_strict_json(text)
 }
 
 pub(crate) fn response_keypair() -> (P256EncryptPair, Vec<u8>) {

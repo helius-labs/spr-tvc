@@ -4,7 +4,7 @@
 //! accepts only the definite-length subset NSM emits, plus the one indefinite
 //! root map a real attestation document uses. Shortest-form arguments only.
 
-use spr_tvc_protocol::error::{ErrorCode, TvcError};
+use spr_tvc_wire::error::{ErrorCode, TvcError};
 
 const MAJOR_UNSIGNED: u8 = 0;
 const MAJOR_NEGATIVE: u8 = 1;

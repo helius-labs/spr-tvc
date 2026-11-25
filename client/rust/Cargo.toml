@@ -16,7 +16,7 @@ p256 = { version = "=0.14.0", default-features = false, features = ["arithmetic"
 qos_p256.workspace = true
 serde = { version = "=1.0.228", features = ["derive"] }
 spr-keypair.workspace = true
-spr-tvc-protocol = { path = "../protocol" }
+spr-tvc-wire = { path = "../../wire" }
 
 [dependencies]
 base64 = { version = "=0.22.1" }
@@ -30,7 +30,7 @@ reqwest = { version = "=0.12.24", default-features = false, features = ["blockin
 serde = { version = "=1.0.228", features = ["derive"] }
 sha2 = { version = "=0.10.9" }
 spr-keypair.workspace = true
-spr-tvc-protocol = { path = "../protocol" }
+spr-tvc-wire = { path = "../../wire" }
 x509-cert = { version = "=0.2.5", default-features = false, features = ["std"] }
 zeroize = { version = "=1.9.0", features = ["zeroize_derive"] }
 

@@ -3382,7 +3382,7 @@ dependencies = [
  "serde",
  "sha2 0.10.9",
  "spr-keypair",
- "spr-tvc-protocol",
+ "spr-tvc-wire",
  "x509-cert",
  "zeroize",
 ]

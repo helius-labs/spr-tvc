@@ -2,9 +2,9 @@
 mod support;
 
 use serde::Deserialize;
-use spr_tvc_protocol::encoding::{decode_lower_hex_array, parse_strict_json};
-use spr_tvc_protocol::release::PinnedReleaseAuthorities;
-use spr_tvc_protocol::SignedReleasePolicy;
+use spr_tvc_wire::encoding::{decode_lower_hex_array, parse_strict_json};
+use spr_tvc_wire::release::PinnedReleaseAuthorities;
+use spr_tvc_wire::SignedReleasePolicy;
 
 use spr_tvc_client::{Gatekeeper, IdentityPcrs, OperationsClient, ReqwestTransport};
 

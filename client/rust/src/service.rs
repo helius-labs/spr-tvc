@@ -10,16 +10,16 @@ use sha2::Sha256;
 use spr_keypair::pubkey::PublicKey;
 use spr_keypair::x25519::X25519Pubkey;
 use spr_keypair::ShieldedAddress;
-use spr_tvc_protocol::body_limit::encrypted_request_http_len;
-use spr_tvc_protocol::constants::{API_VERSION, QOS_P256_PUBLIC_LEN};
-use spr_tvc_protocol::decryption_service::{
+use spr_tvc_wire::body_limit::encrypted_request_http_len;
+use spr_tvc_wire::constants::{API_VERSION, QOS_P256_PUBLIC_LEN};
+use spr_tvc_wire::decryption_service::{
     decrypt_message, service_request_digest, DecryptedOutputs, ServiceOperation, ServiceRequest,
     ServiceResult, ADDRESS_LEN,
 };
-use spr_tvc_protocol::digest::result_digest;
-use spr_tvc_protocol::encoding::{is_rfc8785, jcs_serialize};
-use spr_tvc_protocol::error::{ErrorCode, TvcError};
-use spr_tvc_protocol::types::{
+use spr_tvc_wire::digest::result_digest;
+use spr_tvc_wire::encoding::{is_rfc8785, jcs_serialize};
+use spr_tvc_wire::error::{ErrorCode, TvcError};
+use spr_tvc_wire::types::{
     AppProof, DecryptItem, EncryptedRequest, EncryptedResponse, KdfMode, Network, OperationKind,
     OperationProofPayload, ServiceInfo,
 };
@@ -42,7 +42,7 @@ pub struct Note {
     pub ephemeral_viewing_public_key: [u8; 33],
     pub salt: Vec<u8>,
     pub slot_index: u64,
-    pub label: spr_tvc_protocol::DecryptLabel,
+    pub label: spr_tvc_wire::DecryptLabel,
 }
 
 pub struct DecryptionClient<T, B> {
@@ -151,7 +151,7 @@ impl<T: Transport, B: BootProofs> CheckReply for DecryptionClient<T, B> {
         if !is_rfc8785(text) {
             return Err(TvcError::new(ErrorCode::InvalidCanonicalJson).into());
         }
-        let response = spr_tvc_protocol::encoding::parse_strict_json(text)?;
+        let response = spr_tvc_wire::encoding::parse_strict_json(text)?;
         Ok((response, None))
     }
 
@@ -326,8 +326,8 @@ pub(crate) fn bind_operation_proof(
         return Err(TvcError::new(ErrorCode::TurnkeyEvidenceInvalid).into());
     }
     let payload: OperationProofPayload =
-        spr_tvc_protocol::encoding::parse_strict_json(&proof.proof_payload)?;
-    if payload.r#type != spr_tvc_protocol::decryption_service::SERVICE_PROOF_TYPE
+        spr_tvc_wire::encoding::parse_strict_json(&proof.proof_payload)?;
+    if payload.r#type != spr_tvc_wire::decryption_service::SERVICE_PROOF_TYPE
         || payload.version != API_VERSION
         || payload.request_id != request.request_id
         || payload.request_digest != *request_digest
@@ -434,7 +434,7 @@ impl Exchange<'_> {
         if !is_rfc8785(plaintext) {
             return Err(TvcError::new(ErrorCode::InvalidCanonicalJson).into());
         }
-        let result: ServiceResult = spr_tvc_protocol::encoding::parse_strict_json(plaintext)?;
+        let result: ServiceResult = spr_tvc_wire::encoding::parse_strict_json(plaintext)?;
         match (&request.operation, &result) {
             (ServiceOperation::PublicKeys { .. }, ServiceResult::PublicKeys { .. })
             | (ServiceOperation::Decrypt { .. }, ServiceResult::Decrypt(_)) => Ok(result),

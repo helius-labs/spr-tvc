@@ -11,8 +11,8 @@ use base64::Engine;
 use p384::ecdsa::signature::Verifier;
 use p384::ecdsa::{Signature, VerifyingKey};
 use sha2::{Digest, Sha256, Sha384};
-use spr_tvc_protocol::encoding::{decode_lower_hex, encode_lower_hex};
-use spr_tvc_protocol::error::{ErrorCode, TvcError};
+use spr_tvc_wire::encoding::{decode_lower_hex, encode_lower_hex};
+use spr_tvc_wire::error::{ErrorCode, TvcError};
 use x509_cert::der::{Decode, Encode};
 use x509_cert::Certificate;
 

@@ -4,9 +4,9 @@ use ed25519_dalek::Signer;
 use qos_p256::encrypt::P256EncryptPair;
 use serde::Deserialize;
 use spr_keypair::{random_salt, ShieldedAddress, ViewingKey};
-use spr_tvc_protocol::encoding::parse_strict_json;
-use spr_tvc_protocol::types::EncryptedResponse;
-use spr_tvc_protocol::DecryptLabel;
+use spr_tvc_wire::encoding::parse_strict_json;
+use spr_tvc_wire::types::EncryptedResponse;
+use spr_tvc_wire::DecryptLabel;
 
 use spr_tvc_client::{ClientError, Note, OwnerSigner, Transport};
 

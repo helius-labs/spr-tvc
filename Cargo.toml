@@ -1,5 +1,5 @@
 [workspace]
-members = ["client", "decryption-service", "wire", "xtask"]
+members = ["client/rust", "decryption-service", "wire", "xtask"]
 exclude = ["gateway"]
 resolver = "2"
 

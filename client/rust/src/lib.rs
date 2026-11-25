@@ -26,10 +26,10 @@ pub use transport::{ReqwestTransport, Transport};
 
 use std::fmt::{Display, Formatter, Result as FmtResult};
 
-use spr_tvc_protocol::error::TvcError;
-use spr_tvc_protocol::release::PinnedReleaseAuthorities;
-use spr_tvc_protocol::Network;
-use spr_tvc_protocol::SignedReleasePolicy;
+use spr_tvc_wire::error::TvcError;
+use spr_tvc_wire::release::PinnedReleaseAuthorities;
+use spr_tvc_wire::Network;
+use spr_tvc_wire::SignedReleasePolicy;
 
 use crate::session::ConnectConfig;
 

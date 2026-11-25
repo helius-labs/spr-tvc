@@ -2,12 +2,12 @@
 //! discovery has to match the shared testkit fixture.
 
 use serde::Deserialize;
-use spr_tvc_protocol::constants::{API_VERSION, QOS_P256_PUBLIC_LEN};
-use spr_tvc_protocol::decryption_service::SERVICE_PROOF_TYPE;
-use spr_tvc_protocol::digest::sha256;
-use spr_tvc_protocol::encoding::{decode_lower_hex, parse_strict_json};
-use spr_tvc_protocol::error::{ErrorCode, TvcError};
-use spr_tvc_protocol::types::{
+use spr_tvc_wire::constants::{API_VERSION, QOS_P256_PUBLIC_LEN};
+use spr_tvc_wire::decryption_service::SERVICE_PROOF_TYPE;
+use spr_tvc_wire::digest::sha256;
+use spr_tvc_wire::encoding::{decode_lower_hex, parse_strict_json};
+use spr_tvc_wire::error::{ErrorCode, TvcError};
+use spr_tvc_wire::types::{
     Network, OperationKind, ReleasePolicy, ServiceInfo, SignedReleasePolicy,
 };
 
@@ -16,7 +16,7 @@ use crate::session::{bind_discovery, join, ping_challenge, verify_ping, Session}
 use crate::transport::{discovery_limit, Transport};
 use crate::ClientError;
 
-const TESTKIT_JSON: &str = include_str!("../../tests/fixtures/local-testkit.json");
+const TESTKIT_JSON: &str = include_str!("../../../tests/fixtures/local-testkit.json");
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,10 +110,10 @@ fn release_for(testkit: &Testkit, info: &ServiceInfo) -> Result<SignedReleasePol
             release_id: info.release_id.clone(),
             network: info.network,
             security_domain_id: info.security_domain_id,
-            accepted_manifest_digests: vec![spr_tvc_protocol::encoding::encode_lower_hex(
+            accepted_manifest_digests: vec![spr_tvc_wire::encoding::encode_lower_hex(
                 &info.manifest_digest,
             )],
-            accepted_executable_digests: vec![spr_tvc_protocol::encoding::encode_lower_hex(
+            accepted_executable_digests: vec![spr_tvc_wire::encoding::encode_lower_hex(
                 &info.executable_digest,
             )],
             quorum_key_id: info.quorum_key_id.clone(),
