@@ -12,6 +12,6 @@ fn the_committed_openapi_document_is_current() {
     let committed = std::fs::read_to_string("openapi.json").unwrap_or_default();
     assert!(
         committed == current,
-        "openapi.json is stale; run `BLESS_OPENAPI=1 cargo test` in apps/tvc-gateway"
+        "openapi.json is stale; run `BLESS_OPENAPI=1 cargo test` in gateway"
     );
 }

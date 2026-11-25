@@ -1,6 +1,6 @@
 [workspace]
 members = ["enclave", "protocol", "xtask"]
-exclude = ["apps/tvc-gateway"]
+exclude = ["gateway"]
 resolver = "2"
 
 [workspace.package]

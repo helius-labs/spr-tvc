@@ -9,12 +9,12 @@ owner tag.
 | Start here | |
 | --- | --- |
 | [Security specification](enclave/SPEC.md) | Data flow, key custody, and trust assumptions |
-| [Decryption enclave](enclave) · [Gateway](apps/tvc-gateway) · [Wire protocol](protocol) | Implementation and exact cryptographic inputs |
+| [Decryption enclave](enclave) · [Gateway](gateway) · [Wire protocol](protocol) | Implementation and exact cryptographic inputs |
 | [TypeScript client](sdk) · [Turnkey example](example) | Connect, send, claim, and sweep |
 | [Test invariants](tests/README.md) · [Release runbook](xtask/README.md) | Audit coverage and deployment |
 
 Run `just ci` for Rust and TypeScript checks, including the SDK-to-enclave
 loopback test. Run `just headless-e2e` for send, claim, and sweep on localnet.
-`apps/tvc-gateway` is the decryption gateway: `/v1/decryption/session` and
+`gateway` is the decryption gateway: `/v1/decryption/session` and
 `/v1/decryption/operations`. `publish-tvc-gateway-image.yml` still publishes
 the private-wallet image from the `private-wallet` branch.

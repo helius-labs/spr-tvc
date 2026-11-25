@@ -39,5 +39,5 @@ The crate is outside the root workspace. `just fmt`, `just lint` and
 `just test` cover it.
 
 ```sh
-cargo test --manifest-path apps/tvc-gateway/Cargo.toml --all-targets --locked
+cargo test --manifest-path gateway/Cargo.toml --all-targets --locked
 ```

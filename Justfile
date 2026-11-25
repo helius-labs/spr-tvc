@@ -8,23 +8,23 @@ default:
 
 fmt:
     cargo fmt --all
-    cargo fmt --manifest-path apps/tvc-gateway/Cargo.toml --all
+    cargo fmt --manifest-path gateway/Cargo.toml --all
 
 fmt-check:
     cargo fmt --all -- --check
-    cargo fmt --manifest-path apps/tvc-gateway/Cargo.toml --all -- --check
+    cargo fmt --manifest-path gateway/Cargo.toml --all -- --check
 
 check:
     cargo check --workspace --all-targets --all-features --locked
-    cargo check --manifest-path apps/tvc-gateway/Cargo.toml --all-targets --locked
+    cargo check --manifest-path gateway/Cargo.toml --all-targets --locked
 
 lint:
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-    cargo clippy --manifest-path apps/tvc-gateway/Cargo.toml --all-targets --locked -- -D warnings
+    cargo clippy --manifest-path gateway/Cargo.toml --all-targets --locked -- -D warnings
 
 test:
     cargo test --workspace --all-targets --all-features --locked
-    cargo test --manifest-path apps/tvc-gateway/Cargo.toml --all-targets --locked
+    cargo test --manifest-path gateway/Cargo.toml --all-targets --locked
 
 # Times one transfer, one indexer page, and one max-size Quorum envelope. Not part of `just ci`.
 bench:
