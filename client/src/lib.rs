@@ -2,19 +2,22 @@
 //!
 //! The phone, or any other Rust caller, uses [`DecryptionClient::address`] to
 //! pay an unregistered owner and [`DecryptionClient::keys`] to open those notes.
-//! Every connection checks the Nitro document, PCR0–3, PCR17, and the manifest
-//! allowlist. A reply encrypted to a one-time key is opened only after the
-//! App Proof names that request.
+//! [`DecryptionClient`] checks the Nitro document, PCR0–3, PCR17, and the
+//! manifest allowlist, and opens a reply only after the App Proof names that
+//! request. [`OperationsClient`] is the gatekeeper path: it posts `keys` and
+//! `decrypt` to `/v1/operations` and does not check the replica.
 
 #![forbid(unsafe_code)]
 
 mod attestation;
 mod cbor;
+mod operations;
 mod service;
 mod session;
 mod transport;
 
 pub use attestation::{BootProof, IdentityPcrs};
+pub use operations::OperationsClient;
 pub use service::{DecryptionClient, Note, ServiceKeys};
 pub use transport::{ReqwestTransport, Transport};
 

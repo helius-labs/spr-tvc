@@ -20,8 +20,8 @@ use spr_tvc_protocol::digest::result_digest;
 use spr_tvc_protocol::encoding::{is_rfc8785, jcs_serialize};
 use spr_tvc_protocol::error::{ErrorCode, TvcError};
 use spr_tvc_protocol::types::{
-    AppProof, DecryptItem, EncryptedRequest, EncryptedResponse, KdfMode, OperationKind,
-    OperationProofPayload,
+    AppProof, DecryptItem, EncryptedRequest, EncryptedResponse, KdfMode, Network, OperationKind,
+    OperationProofPayload, ServiceInfo,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -64,34 +64,14 @@ impl<T: Transport, B: BootProofs> DecryptionClient<T, B> {
             None,
             owner,
         )?;
-        let ServiceResult::PublicKeys {
-            viewing_public_key,
-            nullifier_public_key,
-        } = result
-        else {
-            return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch).into());
-        };
-        Ok(ShieldedAddress {
-            signing_pubkey: PublicKey::from_ed25519(owner),
-            nullifier_pubkey: nullifier_public_key,
-            viewing_pubkey: X25519Pubkey::from_bytes(viewing_public_key)
-                .map_err(|_| TvcError::new(ErrorCode::InvalidPublicKey))?,
-        })
+        shielded_address(owner, result)
     }
 
     /// Keys for `signer`. Does not call `Decrypt`.
-    pub fn keys<'a>(
-        &'a self,
-        signer: &'a dyn OwnerSigner,
-    ) -> Result<ServiceKeys<'a, T, B>, ClientError> {
+    pub fn keys<'a>(&'a self, signer: &'a dyn OwnerSigner) -> Result<ServiceKeys<'a>, ClientError> {
         let owner = signer.pubkey();
         let address = self.address(&owner)?;
-        Ok(ServiceKeys {
-            client: self,
-            signer,
-            address,
-            secret: None,
-        })
+        Ok(ServiceKeys::new(self, signer, address))
     }
 
     fn call(
@@ -100,104 +80,17 @@ impl<T: Transport, B: BootProofs> DecryptionClient<T, B> {
         signer: Option<&dyn OwnerSigner>,
         owner: &[u8; ADDRESS_LEN],
     ) -> Result<ServiceResult, ClientError> {
-        self.session.require_current()?;
-        let (pair, public) = response_keypair();
-        let mut request = ServiceRequest {
-            version: API_VERSION,
-            request_id: random_32()?,
-            target_release_id: self.session.info().release_id.clone(),
-            target_manifest_digest: self.session.info().manifest_digest,
-            target_executable_digest: self.session.info().executable_digest,
-            quorum_key_id: self.session.info().quorum_key_id.clone(),
-            quorum_key_epoch: self.session.info().quorum_key_epoch,
-            client_response_public_key: public,
+        let info = self.session.info();
+        Exchange {
+            transport: &self.transport,
+            endpoint: self.session.endpoint(),
+            target: Target::from_info(info),
             operation,
-        };
-        let digest = service_request_digest(&request)?;
-        // A Decrypt signature is fixed at 64 bytes, so this length is the signed length.
-        let inner_len = jcs_serialize(&request)?.len();
-        let http_len = encrypted_request_http_len(
-            inner_len,
-            &request.quorum_key_id,
-            request.quorum_key_epoch,
-        )?;
-        if http_len as u64 > self.session.info().max_encrypted_request_bytes {
-            return Err(TvcError::new(ErrorCode::RequestTooLarge).into());
+            signer,
+            owner,
+            checker: self,
         }
-        if let Some(signer) = signer {
-            if signer.pubkey() != *owner {
-                return Err(TvcError::new(ErrorCode::InvalidSignature).into());
-            }
-            let message = decrypt_message(owner, self.session.info().network, &digest);
-            let signature = signer.sign_offchain(&message)?;
-            if let ServiceOperation::Decrypt {
-                signature: slot, ..
-            } = &mut request.operation
-            {
-                *slot = signature;
-            }
-        }
-        let inner = jcs_serialize(&request)?;
-        self.session.require_current()?;
-        let quorum = quorum_encryption_key(&self.session.info().quorum_public_key)?;
-        let ciphertext = quorum
-            .encrypt(inner.as_bytes())
-            .map_err(|_| TvcError::new(ErrorCode::InvalidPublicKey))?;
-        let wire = jcs_serialize(&EncryptedRequest {
-            version: API_VERSION,
-            quorum_key_id: request.quorum_key_id.clone(),
-            quorum_key_epoch: request.quorum_key_epoch,
-            ciphertext,
-        })?;
-        if wire.len() as u64 > self.session.info().max_encrypted_request_bytes {
-            return Err(TvcError::new(ErrorCode::RequestTooLarge).into());
-        }
-        let max_response = self
-            .session
-            .info()
-            .max_encrypted_response_bytes
-            .saturating_mul(2)
-            .saturating_add(RESPONSE_ENVELOPE_SLACK);
-        let limit = usize::try_from(max_response).map_err(|_| ClientError::ResponseTooLarge)?;
-        let body = self.transport.post(
-            &format!(
-                "{}/v1/operations",
-                self.session.endpoint().trim_end_matches('/')
-            ),
-            &wire,
-            limit,
-        )?;
-        let text = std::str::from_utf8(&body)
-            .map_err(|_| TvcError::new(ErrorCode::InvalidCanonicalJson))?;
-        if !is_rfc8785(text) {
-            return Err(TvcError::new(ErrorCode::InvalidCanonicalJson).into());
-        }
-        let response: EncryptedResponse = spr_tvc_protocol::encoding::parse_strict_json(text)?;
-        if response.version != API_VERSION || response.request_id != request.request_id {
-            return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch).into());
-        }
-        if response.encrypted_result.len() as u64 > self.session.info().max_encrypted_response_bytes
-        {
-            return Err(ClientError::ResponseTooLarge);
-        }
-        self.verify_operation(
-            &response.tvc_app_proof,
-            &digest,
-            &response.encrypted_result,
-            &request,
-        )?;
-        let plaintext = decrypt_response(&pair, &response.encrypted_result)?;
-        let plaintext = std::str::from_utf8(&plaintext)
-            .map_err(|_| TvcError::new(ErrorCode::InvalidCanonicalJson))?;
-        if !is_rfc8785(plaintext) {
-            return Err(TvcError::new(ErrorCode::InvalidCanonicalJson).into());
-        }
-        let result: ServiceResult = spr_tvc_protocol::encoding::parse_strict_json(plaintext)?;
-        match (&request.operation, &result) {
-            (ServiceOperation::PublicKeys { .. }, ServiceResult::PublicKeys { .. })
-            | (ServiceOperation::Decrypt { .. }, ServiceResult::Decrypt(_)) => Ok(result),
-            _ => Err(TvcError::new(ErrorCode::ReleaseBindingMismatch).into()),
-        }
+        .run()
     }
 
     fn verify_operation(
@@ -252,15 +145,64 @@ impl<T: Transport, B: BootProofs> DecryptionClient<T, B> {
     }
 }
 
+pub(crate) trait OpenNotes {
+    fn decrypt_items(
+        &self,
+        signer: &dyn OwnerSigner,
+        items: Vec<DecryptItem>,
+    ) -> Result<DecryptedOutputs, ClientError>;
+}
+
+impl<T: Transport, B: BootProofs> CheckReply for DecryptionClient<T, B> {
+    fn gate(&self) -> Result<(), TvcError> {
+        self.session.require_current()
+    }
+
+    fn check_reply(
+        &self,
+        proof: &AppProof,
+        request_digest: &[u8; 32],
+        encrypted_result: &[u8],
+        request: &ServiceRequest,
+    ) -> Result<(), ClientError> {
+        self.verify_operation(proof, request_digest, encrypted_result, request)
+    }
+}
+
+impl<T: Transport, B: BootProofs> OpenNotes for DecryptionClient<T, B> {
+    fn decrypt_items(
+        &self,
+        signer: &dyn OwnerSigner,
+        items: Vec<DecryptItem>,
+    ) -> Result<DecryptedOutputs, ClientError> {
+        DecryptionClient::decrypt_items(self, signer, items)
+    }
+}
+
 /// Shielded keys whose notes the service opens.
-pub struct ServiceKeys<'a, T, B> {
-    client: &'a DecryptionClient<T, B>,
+pub struct ServiceKeys<'a> {
+    opener: &'a dyn OpenNotes,
     signer: &'a dyn OwnerSigner,
     address: ShieldedAddress,
     secret: Option<Zeroizing<[u8; 31]>>,
 }
 
-impl<T: Transport, B: BootProofs> ServiceKeys<'_, T, B> {
+impl<'a> ServiceKeys<'a> {
+    pub(crate) fn new(
+        opener: &'a dyn OpenNotes,
+        signer: &'a dyn OwnerSigner,
+        address: ShieldedAddress,
+    ) -> Self {
+        Self {
+            opener,
+            signer,
+            address,
+            secret: None,
+        }
+    }
+}
+
+impl ServiceKeys<'_> {
     pub fn address(&self) -> ShieldedAddress {
         self.address
     }
@@ -303,9 +245,9 @@ impl<T: Transport, B: BootProofs> ServiceKeys<'_, T, B> {
 
     fn open(&self, items: Vec<DecryptItem>) -> Result<DecryptedOutputs, ClientError> {
         if items.len() < 2 {
-            return self.client.decrypt_items(self.signer, items);
+            return self.opener.decrypt_items(self.signer, items);
         }
-        match self.client.decrypt_items(self.signer, items.clone()) {
+        match self.opener.decrypt_items(self.signer, items.clone()) {
             Err(ClientError::Protocol(error)) if error.code == ErrorCode::RequestTooLarge => {
                 let middle = items.len() / 2;
                 let mut left = self.open(items[..middle].to_vec())?;
@@ -326,6 +268,180 @@ impl<T: Transport, B: BootProofs> ServiceKeys<'_, T, B> {
         self.secret = Some(Zeroizing::new(secret));
         secret.zeroize();
     }
+}
+
+pub(crate) struct Target<'a> {
+    pub(crate) network: Network,
+    pub(crate) release_id: &'a str,
+    pub(crate) manifest_digest: [u8; 32],
+    pub(crate) executable_digest: [u8; 32],
+    pub(crate) quorum_key_id: &'a str,
+    pub(crate) quorum_key_epoch: u64,
+    pub(crate) quorum_public_key: &'a [u8],
+    pub(crate) max_request: u64,
+    pub(crate) max_response: u64,
+}
+
+impl<'a> Target<'a> {
+    pub(crate) fn from_info(info: &'a ServiceInfo) -> Self {
+        Self {
+            network: info.network,
+            release_id: &info.release_id,
+            manifest_digest: info.manifest_digest,
+            executable_digest: info.executable_digest,
+            quorum_key_id: &info.quorum_key_id,
+            quorum_key_epoch: info.quorum_key_epoch,
+            quorum_public_key: &info.quorum_public_key,
+            max_request: info.max_encrypted_request_bytes,
+            max_response: info.max_encrypted_response_bytes,
+        }
+    }
+}
+
+pub(crate) trait CheckReply {
+    fn gate(&self) -> Result<(), TvcError>;
+    fn check_reply(
+        &self,
+        proof: &AppProof,
+        request_digest: &[u8; 32],
+        encrypted_result: &[u8],
+        request: &ServiceRequest,
+    ) -> Result<(), ClientError>;
+}
+
+pub(crate) struct Exchange<'a, T> {
+    pub(crate) transport: &'a T,
+    pub(crate) endpoint: &'a str,
+    pub(crate) target: Target<'a>,
+    pub(crate) operation: ServiceOperation,
+    pub(crate) signer: Option<&'a dyn OwnerSigner>,
+    pub(crate) owner: &'a [u8; ADDRESS_LEN],
+    pub(crate) checker: &'a dyn CheckReply,
+}
+
+impl<T: Transport> Exchange<'_, T> {
+    pub(crate) fn run(self) -> Result<ServiceResult, ClientError> {
+        let Exchange {
+            transport,
+            endpoint,
+            target,
+            operation,
+            signer,
+            owner,
+            checker,
+        } = self;
+        checker.gate()?;
+        let (pair, public) = response_keypair();
+        let mut request = ServiceRequest {
+            version: API_VERSION,
+            request_id: random_32()?,
+            target_release_id: target.release_id.to_owned(),
+            target_manifest_digest: target.manifest_digest,
+            target_executable_digest: target.executable_digest,
+            quorum_key_id: target.quorum_key_id.to_owned(),
+            quorum_key_epoch: target.quorum_key_epoch,
+            client_response_public_key: public,
+            operation,
+        };
+        let digest = service_request_digest(&request)?;
+        // A Decrypt signature is fixed at 64 bytes, so this length is the signed length.
+        let inner_len = jcs_serialize(&request)?.len();
+        let http_len = encrypted_request_http_len(
+            inner_len,
+            &request.quorum_key_id,
+            request.quorum_key_epoch,
+        )?;
+        if http_len as u64 > target.max_request {
+            return Err(TvcError::new(ErrorCode::RequestTooLarge).into());
+        }
+        if let Some(signer) = signer {
+            if signer.pubkey() != *owner {
+                return Err(TvcError::new(ErrorCode::InvalidSignature).into());
+            }
+            let message = decrypt_message(owner, target.network, &digest);
+            let signature = signer.sign_offchain(&message)?;
+            if let ServiceOperation::Decrypt {
+                signature: slot, ..
+            } = &mut request.operation
+            {
+                *slot = signature;
+            }
+        }
+        let inner = jcs_serialize(&request)?;
+        checker.gate()?;
+        let quorum = quorum_encryption_key(target.quorum_public_key)?;
+        let ciphertext = quorum
+            .encrypt(inner.as_bytes())
+            .map_err(|_| TvcError::new(ErrorCode::InvalidPublicKey))?;
+        let wire = jcs_serialize(&EncryptedRequest {
+            version: API_VERSION,
+            quorum_key_id: request.quorum_key_id.clone(),
+            quorum_key_epoch: request.quorum_key_epoch,
+            ciphertext,
+        })?;
+        if wire.len() as u64 > target.max_request {
+            return Err(TvcError::new(ErrorCode::RequestTooLarge).into());
+        }
+        let max_response = target
+            .max_response
+            .saturating_mul(2)
+            .saturating_add(RESPONSE_ENVELOPE_SLACK);
+        let limit = usize::try_from(max_response).map_err(|_| ClientError::ResponseTooLarge)?;
+        let body = transport.post(
+            &format!("{}/v1/operations", endpoint.trim_end_matches('/')),
+            &wire,
+            limit,
+        )?;
+        let text = std::str::from_utf8(&body)
+            .map_err(|_| TvcError::new(ErrorCode::InvalidCanonicalJson))?;
+        if !is_rfc8785(text) {
+            return Err(TvcError::new(ErrorCode::InvalidCanonicalJson).into());
+        }
+        let response: EncryptedResponse = spr_tvc_protocol::encoding::parse_strict_json(text)?;
+        if response.version != API_VERSION || response.request_id != request.request_id {
+            return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch).into());
+        }
+        if response.encrypted_result.len() as u64 > target.max_response {
+            return Err(ClientError::ResponseTooLarge);
+        }
+        checker.check_reply(
+            &response.tvc_app_proof,
+            &digest,
+            &response.encrypted_result,
+            &request,
+        )?;
+        let plaintext = decrypt_response(&pair, &response.encrypted_result)?;
+        let plaintext = std::str::from_utf8(&plaintext)
+            .map_err(|_| TvcError::new(ErrorCode::InvalidCanonicalJson))?;
+        if !is_rfc8785(plaintext) {
+            return Err(TvcError::new(ErrorCode::InvalidCanonicalJson).into());
+        }
+        let result: ServiceResult = spr_tvc_protocol::encoding::parse_strict_json(plaintext)?;
+        match (&request.operation, &result) {
+            (ServiceOperation::PublicKeys { .. }, ServiceResult::PublicKeys { .. })
+            | (ServiceOperation::Decrypt { .. }, ServiceResult::Decrypt(_)) => Ok(result),
+            _ => Err(TvcError::new(ErrorCode::ReleaseBindingMismatch).into()),
+        }
+    }
+}
+
+pub(crate) fn shielded_address(
+    owner: &[u8; ADDRESS_LEN],
+    result: ServiceResult,
+) -> Result<ShieldedAddress, ClientError> {
+    let ServiceResult::PublicKeys {
+        viewing_public_key,
+        nullifier_public_key,
+    } = result
+    else {
+        return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch).into());
+    };
+    Ok(ShieldedAddress {
+        signing_pubkey: PublicKey::from_ed25519(owner),
+        nullifier_pubkey: nullifier_public_key,
+        viewing_pubkey: X25519Pubkey::from_bytes(viewing_public_key)
+            .map_err(|_| TvcError::new(ErrorCode::InvalidPublicKey))?,
+    })
 }
 
 fn note_item(note: &Note) -> DecryptItem {
