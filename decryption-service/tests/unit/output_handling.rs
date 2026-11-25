@@ -120,7 +120,7 @@ fn a_ring_deposit_uses_its_own_cipher_and_requires_slot_zero() {
         salt: salt.to_vec(),
         slot_index: 0,
         label: DecryptLabel::RingDeposit,
-        kdf: spr_tvc_protocol::KdfMode::HkdfSha256Ctr,
+        kdf: spr_tvc_wire::KdfMode::HkdfSha256Ctr,
     };
     let transfer = DecryptItem {
         label: DecryptLabel::Transfer,

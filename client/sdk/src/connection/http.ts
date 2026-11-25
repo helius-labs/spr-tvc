@@ -1,5 +1,5 @@
 import { awaitWithSignal } from "./request.js";
-import { DecryptionServiceError, DecryptionServiceHttpError } from "../protocol/error.js";
+import { DecryptionServiceError, DecryptionServiceHttpError } from "../wire/error.js";
 
 /** Fetch implementation used for enclave HTTP requests. */
 export type DecryptionServiceTransport = {

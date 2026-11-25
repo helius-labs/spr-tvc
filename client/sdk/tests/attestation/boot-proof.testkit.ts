@@ -3,9 +3,9 @@
 import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha256";
 import { signP256Message } from "../../src/crypto/p256.js";
-import { TVC_APP_PROOF_SCHEME } from "../../src/protocol/constants.js";
-import { encodeLowerHex } from "../../src/protocol/hex.js";
-import { canonicalizeJsonValue } from "../../src/protocol/jcs.js";
+import { TVC_APP_PROOF_SCHEME } from "../../src/wire/constants.js";
+import { encodeLowerHex } from "../../src/wire/hex.js";
+import { canonicalizeJsonValue } from "../../src/wire/jcs.js";
 import type { CborValue } from "../../src/attestation/cbor.js";
 import type {
   TurnkeyAppProofWire,

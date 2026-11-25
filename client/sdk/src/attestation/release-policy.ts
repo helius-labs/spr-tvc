@@ -1,19 +1,19 @@
 import {
   API_VERSION,
   EXPECTED_TURNKEY_TRUST_ROOT_ID,
-} from "../protocol/constants.js";
-import { canonicalizeJsonValue } from "../protocol/jcs.js";
-import { releasePolicyDigest } from "../protocol/digest.js";
-import { decodeDecimalU64 } from "../protocol/decimal.js";
-import { decodeLowerHex } from "../protocol/hex.js";
-import { DecryptionServiceError } from "../protocol/error.js";
+} from "../wire/constants.js";
+import { canonicalizeJsonValue } from "../wire/jcs.js";
+import { releasePolicyDigest } from "../wire/digest.js";
+import { decodeDecimalU64 } from "../wire/decimal.js";
+import { decodeLowerHex } from "../wire/hex.js";
+import { DecryptionServiceError } from "../wire/error.js";
 import type {
   Network,
   PinnedReleaseAuthorities,
   ServiceInfo,
   SignedReleasePolicy,
-} from "../protocol/types.js";
-import { SERVICE_PROOF_TYPE } from "../protocol/decryption.js";
+} from "../wire/types.js";
+import { SERVICE_PROOF_TYPE } from "../wire/decryption.js";
 import { verifyP256Prehash } from "../crypto/p256.js";
 
 export function policySigningDigest(policy: unknown): Uint8Array {
@@ -23,7 +23,7 @@ export function policySigningDigest(policy: unknown): Uint8Array {
 /**
  * Accepts `signed` only for `network`, at a threshold of `authorities`, while
  * `nowMs` is inside its validity window. Mirrors `verify_signed_release_policy`
- * in `protocol/`, check for check.
+ * in `wire/`, check for check.
  */
 export function verifySignedReleasePolicy(
   signed: SignedReleasePolicy,

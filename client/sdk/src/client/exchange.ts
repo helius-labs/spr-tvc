@@ -8,12 +8,12 @@ import {
   sealedExchange,
 } from "../connection/operations.js";
 import { awaitWithSignal } from "../connection/request.js";
-import { API_VERSION } from "../protocol/constants.js";
-import { DecryptionServiceError } from "../protocol/error.js";
-import { encodeLowerHex } from "../protocol/hex.js";
-import { parseStrictJson } from "../protocol/json.js";
-import type { DecryptItem } from "../protocol/types.js";
-import { decodeDecimalU64 } from "../protocol/decimal.js";
+import { API_VERSION } from "../wire/constants.js";
+import { DecryptionServiceError } from "../wire/error.js";
+import { encodeLowerHex } from "../wire/hex.js";
+import { parseStrictJson } from "../wire/json.js";
+import type { DecryptItem } from "../wire/types.js";
+import { decodeDecimalU64 } from "../wire/decimal.js";
 import {
   acceptViewGrantWindow,
   decryptMessage,
@@ -22,7 +22,7 @@ import {
   type ServiceRequest,
   type ServiceResult,
   type ViewGrant,
-} from "../protocol/decryption.js";
+} from "../wire/decryption.js";
 
 const ED25519_SIGNATURE_BYTES = 64;
 const EMPTY_SIGNATURE = "00".repeat(ED25519_SIGNATURE_BYTES);

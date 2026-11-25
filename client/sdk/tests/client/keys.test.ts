@@ -2,8 +2,8 @@ import { NullifierKey, ShieldedAddress, ShieldedPublicKey, initializePoseidon, t
 import { X25519Keypair, type Bytes31 } from "@heliuslabs/spr/keypair";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
-import { decodeLowerHex, encodeLowerHex } from "../../src/protocol/hex.js";
-import type { DecryptItem } from "../../src/protocol/types.js";
+import { decodeLowerHex, encodeLowerHex } from "../../src/wire/hex.js";
+import type { DecryptItem } from "../../src/wire/types.js";
 import { ServiceKeys, type OpenedNotes } from "../../src/client/keys.js";
 
 const bytes = (fill: number, length = 32) => new Uint8Array(length).fill(fill);

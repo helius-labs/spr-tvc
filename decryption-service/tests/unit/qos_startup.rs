@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use qos_core::protocol::services::boot::manifest::ManifestEnvelopeV2;
-use spr_tvc_protocol::encoding::encode_lower_hex;
+use spr_tvc_wire::encoding::encode_lower_hex;
 
 use std::io;
 

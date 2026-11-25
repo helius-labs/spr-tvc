@@ -7,7 +7,7 @@ import { defineConfig } from "tsup";
 const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url));
 
 function verifyProductionBoundary(): void {
-  const roots = ["dist/index.js", "dist/protocol.js", "dist/release.js"];
+  const roots = ["dist/index.js", "dist/wire.js", "dist/release.js"];
   // Names that exist only in the testkit: its session factory and its pinned
   // key fixture.
   const localTestkitMarkers = /LocalTvcSession|local-testkit/;
@@ -33,7 +33,7 @@ function verifyProductionBoundary(): void {
 export default defineConfig({
   entry: {
     index: "src/index.ts",
-    protocol: "src/protocol.ts",
+    wire: "src/wire.ts",
     release: "src/release.ts",
     testing: "tests/local-service.ts",
   },

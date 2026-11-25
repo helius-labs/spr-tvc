@@ -2986,7 +2986,7 @@ dependencies = [
  "sha2 0.10.9",
  "solana-pubkey",
  "spr-keypair",
- "spr-tvc-protocol",
+ "spr-tvc-wire",
  "strum",
  "tokio",
  "tower",
@@ -2994,7 +2994,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "spr-tvc-protocol"
+name = "spr-tvc-wire"
 version = "0.1.0"
 dependencies = [
  "hex",
@@ -3703,7 +3703,7 @@ dependencies = [
  "qos_p256",
  "serde",
  "serde_json",
- "spr-tvc-protocol",
+ "spr-tvc-wire",
  "tempfile",
  "toml_edit",
  "wait-timeout",

@@ -9,7 +9,7 @@ use std::path::Path;
 use figment::Figment;
 use figment::providers::{Env, Format, Yaml};
 use serde::Deserialize;
-use spr_tvc_protocol::Network;
+use spr_tvc_wire::Network;
 
 /// The shared settings every network overlay sits on, in the overlay's directory.
 pub const BASE_FILE: &str = "config.yaml";

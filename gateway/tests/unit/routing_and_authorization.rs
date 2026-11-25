@@ -68,7 +68,7 @@ async fn call(state: &Arc<AppState>, request: HttpRequest<Body>) -> (StatusCode,
 
 fn operation(ciphertext: &str) -> String {
     serde_json::json!({
-        "version": spr_tvc_protocol::constants::API_VERSION,
+        "version": spr_tvc_wire::constants::API_VERSION,
         "quorum_key_id": "q",
         "quorum_key_epoch": "1",
         "ciphertext": ciphertext,

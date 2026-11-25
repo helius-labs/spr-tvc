@@ -6,13 +6,11 @@ use axum::response::IntoResponse;
 use p256::ecdsa::Signature;
 use qos_p256::encrypt::P256EncryptPublic;
 use qos_p256::P256Pair;
-use spr_tvc_protocol::constants::{
-    API_VERSION, MAX_ENCRYPTED_RESPONSE_BYTES, TVC_APP_PROOF_SCHEME,
-};
-use spr_tvc_protocol::decryption_service::{ServiceRequest, ServiceResult, SERVICE_PROOF_TYPE};
-use spr_tvc_protocol::digest::result_digest;
-use spr_tvc_protocol::encoding::{is_rfc8785, jcs_serialize};
-use spr_tvc_protocol::types::{
+use spr_tvc_wire::constants::{API_VERSION, MAX_ENCRYPTED_RESPONSE_BYTES, TVC_APP_PROOF_SCHEME};
+use spr_tvc_wire::decryption_service::{ServiceRequest, ServiceResult, SERVICE_PROOF_TYPE};
+use spr_tvc_wire::digest::result_digest;
+use spr_tvc_wire::encoding::{is_rfc8785, jcs_serialize};
+use spr_tvc_wire::types::{
     parse_encrypted_request, AppProof, EncryptedResponse, OperationProofPayload, ServiceInfo,
 };
 use zeroize::Zeroizing;

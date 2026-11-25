@@ -1,6 +1,6 @@
 import { awaitWithSignal } from "./request.js";
-import { DecryptionServiceError } from "../protocol/error.js";
-import { canonicalizeJsonValue } from "../protocol/jcs.js";
+import { DecryptionServiceError } from "../wire/error.js";
+import { canonicalizeJsonValue } from "../wire/jcs.js";
 import type {
   TurnkeyAppProofWire,
   TurnkeyBootProofWire,

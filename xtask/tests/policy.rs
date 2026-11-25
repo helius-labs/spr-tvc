@@ -1,17 +1,15 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use p256::ecdsa::SigningKey;
 use serde_json::{json, Value};
-use spr_tvc_protocol::constants::{
+use spr_tvc_wire::constants::{
     API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, MAX_ENCRYPTED_POLICY_BYTES,
 };
-use spr_tvc_protocol::crypto::public_key_uncompressed;
-use spr_tvc_protocol::release::{
+use spr_tvc_wire::crypto::public_key_uncompressed;
+use spr_tvc_wire::release::{
     sign_release_policy, verify_signed_release_policy, PinnedReleaseAuthorities,
     ReleaseAuthorityKey,
 };
-use spr_tvc_protocol::types::{
-    Network, ReleaseAuthoritySignature, ReleasePolicy, SignedReleasePolicy,
-};
+use spr_tvc_wire::types::{Network, ReleaseAuthoritySignature, ReleasePolicy, SignedReleasePolicy};
 
 use crate::policy::{
     devnet_sign, verify_mainnet_policy, MainnetTrust, TurnkeyDeployment, OPERATIONS,

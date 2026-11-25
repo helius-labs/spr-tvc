@@ -3,11 +3,11 @@
 use crate::request::Failure;
 use ed25519_dalek::{Signature, VerifyingKey};
 use solana_pubkey::Pubkey;
-use spr_tvc_protocol::decryption_service::{
+use spr_tvc_wire::decryption_service::{
     accept_view_grant_window, decrypt_message, view_grant_digest, view_grant_message, ViewGrant,
     ADDRESS_LEN,
 };
-use spr_tvc_protocol::types::{Network, ServiceInfo};
+use spr_tvc_wire::types::{Network, ServiceInfo};
 
 /// Decode an on-curve Ed25519 address and reject small-order keys.
 pub(crate) fn address_key(address: &str) -> Result<VerifyingKey, Failure> {

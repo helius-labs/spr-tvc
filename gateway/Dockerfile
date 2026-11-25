@@ -1,20 +1,20 @@
 # syntax=docker/dockerfile:1
 # Build from the repository root: docker build -f gateway/Dockerfile .
-# protocol inherits its edition and license from the root Cargo.toml.
+# wire inherits its edition and license from the root Cargo.toml.
 
 FROM lukemathwalker/cargo-chef:latest-rust-1.98.0-bookworm@sha256:b1ed45bf65418f5daa5348b39f05ec6a6f5950996e0b797dbe38326d18d42e41 AS chef
 WORKDIR /src/gateway
 
 FROM chef AS planner
 COPY Cargo.toml /src/Cargo.toml
-COPY protocol /src/protocol
+COPY wire /src/wire
 COPY gateway/Cargo.toml gateway/Cargo.lock ./
 COPY gateway/src ./src
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 COPY Cargo.toml /src/Cargo.toml
-COPY protocol /src/protocol
+COPY wire /src/wire
 COPY --from=planner /src/gateway/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \

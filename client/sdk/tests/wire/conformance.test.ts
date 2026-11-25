@@ -3,20 +3,20 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sha256 } from "@noble/hashes/sha256";
 import { describe, expect, it } from "vitest";
-import { canonicalizeJsonValue, isRfc8785 } from "../../src/protocol/jcs.js";
-import { decodeDecimalU64, encodeDecimalU64 } from "../../src/protocol/decimal.js";
-import { decodeLowerHex, encodeLowerHex } from "../../src/protocol/hex.js";
-import { parseStrictJson } from "../../src/protocol/json.js";
-import { resultDigest } from "../../src/protocol/digest.js";
+import { canonicalizeJsonValue, isRfc8785 } from "../../src/wire/jcs.js";
+import { decodeDecimalU64, encodeDecimalU64 } from "../../src/wire/decimal.js";
+import { decodeLowerHex, encodeLowerHex } from "../../src/wire/hex.js";
+import { parseStrictJson } from "../../src/wire/json.js";
+import { resultDigest } from "../../src/wire/digest.js";
 import {
   MAX_ENCRYPTED_REQUEST_BYTES,
   MAX_ENCRYPTED_RESPONSE_BYTES,
   NOTES_PER_SIGNATURE,
   QOS_ENVELOPE_OVERHEAD,
-} from "../../src/protocol/constants.js";
-import { DecryptionServiceError } from "../../src/protocol/error.js";
-import type { HealthResponse, ServiceInfo } from "../../src/protocol/types.js";
-import { SERVICE_INFO_KEYS } from "../../src/protocol/types.js";
+} from "../../src/wire/constants.js";
+import { DecryptionServiceError } from "../../src/wire/error.js";
+import type { HealthResponse, ServiceInfo } from "../../src/wire/types.js";
+import { SERVICE_INFO_KEYS } from "../../src/wire/types.js";
 import {
   parseUncompressedSec1,
   verifyP256Message,
@@ -40,11 +40,11 @@ import type {
   Network,
   PinnedReleaseAuthorities,
   SignedReleasePolicy,
-} from "../../src/protocol/types.js";
+} from "../../src/wire/types.js";
 
 const fixturesDir = join(
   dirname(fileURLToPath(import.meta.url)),
-  "../../../../protocol/fixtures"
+  "../../../../wire/fixtures"
 );
 
 function readFixture(name: string): string {

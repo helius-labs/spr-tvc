@@ -1,4 +1,4 @@
-import { DecryptionServiceError } from "../protocol/error.js";
+import { DecryptionServiceError } from "../wire/error.js";
 
 /** Applies to the whole SDK call, including verification and any decrypt batches. */
 export interface DecryptionServiceRequestOptions {

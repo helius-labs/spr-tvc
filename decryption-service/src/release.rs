@@ -1,12 +1,12 @@
 //! What a release is, and what it advertises at `/v1/info`.
 
 use qos_p256::P256Pair;
-use spr_tvc_protocol::constants::{
+use spr_tvc_wire::constants::{
     API_VERSION, MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES,
 };
-use spr_tvc_protocol::decryption_service::SERVICE_PROOF_TYPE;
-use spr_tvc_protocol::encoding::decode_lower_hex_array;
-use spr_tvc_protocol::types::{Network, OperationKind, ServiceInfo};
+use spr_tvc_wire::decryption_service::SERVICE_PROOF_TYPE;
+use spr_tvc_wire::encoding::decode_lower_hex_array;
+use spr_tvc_wire::types::{Network, OperationKind, ServiceInfo};
 
 const SPR_NETWORK: &str = match option_env!("SPR_NETWORK") {
     Some(network) => network,

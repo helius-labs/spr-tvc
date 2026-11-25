@@ -6,18 +6,18 @@ import type { BootProofResolver } from "../connection/backend.js";
 import { awaitWithSignal, requestScope, type DecryptionServiceRequestOptions } from "../connection/request.js";
 import { createDecryptionServiceSession, type DecryptionServiceSession } from "../connection/session.js";
 import type { DecryptionServiceTransport } from "../connection/http.js";
-import { DecryptionServiceError, DecryptionServiceHttpError } from "../protocol/error.js";
-import { requireHex, decodeLowerHex, encodeLowerHex } from "../protocol/hex.js";
-import { requireNetwork } from "../protocol/network.js";
+import { DecryptionServiceError, DecryptionServiceHttpError } from "../wire/error.js";
+import { requireHex, decodeLowerHex, encodeLowerHex } from "../wire/hex.js";
+import { requireNetwork } from "../wire/network.js";
 import {
   acceptViewGrantWindow,
   viewGrantDigest,
   viewGrantMessage,
   viewGrantWire,
   type ViewGrant,
-} from "../protocol/decryption.js";
-import { releaseForConnection, type ReleaseTrust } from "../protocol/releases.js";
-import type { DecryptItem, Network } from "../protocol/types.js";
+} from "../wire/decryption.js";
+import { releaseForConnection, type ReleaseTrust } from "../wire/releases.js";
+import type { DecryptItem, Network } from "../wire/types.js";
 import { batched, checkHexList } from "./items.js";
 import { executeServiceCall, type ServiceCall, type ServiceCallResult } from "./exchange.js";
 import { ServiceKeys, type DecryptionServiceKeys } from "./keys.js";

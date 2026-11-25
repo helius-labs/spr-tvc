@@ -9,8 +9,8 @@ use anyhow::{ensure, Context, Result};
 use clap::{Parser, ValueEnum};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use spr_tvc_protocol::encoding::{decimal_u64, hex as wire_hex};
-use spr_tvc_protocol::types::Network;
+use spr_tvc_wire::encoding::{decimal_u64, hex as wire_hex};
+use spr_tvc_wire::types::Network;
 
 const APP: &str = "decryption-service";
 const DEPLOY_DIR: &str = "decryption-service/deploy";

@@ -30,7 +30,7 @@ strum = { version = "=0.28.0", features = ["derive"] }
 tokio = { version = "=1.48.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal"] }
 zeroize = "=1.9.0"
 spr-keypair.workspace = true
-spr-tvc-protocol = { path = "../protocol" }
+spr-tvc-wire = { path = "../wire" }
 
 [dev-dependencies]
 criterion = { version = "=0.5.1", default-features = false, features = ["cargo_bench_support"] }

@@ -9,7 +9,7 @@ owner tag.
 | Start here | |
 | --- | --- |
 | [Security specification](decryption-service/SPEC.md) | Data flow, key custody, and trust assumptions |
-| [Decryption service](decryption-service) · [Gateway](gateway) · [Wire protocol](protocol) | Implementation and exact cryptographic inputs |
+| [Decryption service](decryption-service) · [Gateway](gateway) · [Wire](wire) | Implementation and exact cryptographic inputs |
 | [TypeScript client](client/sdk) · [Turnkey example](examples/turnkey) | Connect, send, claim, and sweep |
 | [Test invariants](tests/README.md) · [Release runbook](xtask/README.md) | Audit coverage and deployment |
 

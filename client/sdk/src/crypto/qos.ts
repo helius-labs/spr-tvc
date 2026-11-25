@@ -10,8 +10,8 @@ import {
   QOS_ENVELOPE_OVERHEAD,
   QOS_P256_PUBLIC_LEN,
   SEC1_UNCOMPRESSED_LEN,
-} from "../protocol/constants.js";
-import { DecryptionServiceError } from "../protocol/error.js";
+} from "../wire/constants.js";
+import { DecryptionServiceError } from "../wire/error.js";
 import { parseUncompressedSec1 } from "./p256.js";
 
 const te = new TextEncoder();

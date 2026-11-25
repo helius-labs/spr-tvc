@@ -3,7 +3,7 @@
 use qos_p256::encrypt::P256EncryptPair;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use spr_tvc_protocol::encoding::decode_lower_hex;
+use spr_tvc_wire::encoding::decode_lower_hex;
 use zeroize::Zeroizing;
 
 fn bytes(value: &Value) -> Vec<u8> {

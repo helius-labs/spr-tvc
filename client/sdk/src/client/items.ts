@@ -1,8 +1,8 @@
 import type { DecryptRequest } from "@heliuslabs/spr";
 
-import { DecryptionServiceError } from "../protocol/error.js";
-import { encodeLowerHex, requireHex } from "../protocol/hex.js";
-import type { DecryptItem, DecryptLabel } from "../protocol/types.js";
+import { DecryptionServiceError } from "../wire/error.js";
+import { encodeLowerHex, requireHex } from "../wire/hex.js";
+import type { DecryptItem, DecryptLabel } from "../wire/types.js";
 
 const LABELS: Record<DecryptRequest["label"], DecryptLabel> = {
   transfer: "Transfer",

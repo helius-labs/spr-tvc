@@ -9,27 +9,27 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::page::{page_encrypted_request_len, page_inner_json};
-use spr_tvc_protocol::constants::{
+use spr_tvc_wire::constants::{
     API_VERSION, EMPTY_RECIPIENT_CIPHERTEXT_LEN, EXPECTED_TURNKEY_TRUST_ROOT_ID,
     MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES, NOTES_PER_SIGNATURE,
     QOS_ENVELOPE_OVERHEAD, QOS_P256_PUBLIC_LEN,
 };
-use spr_tvc_protocol::crypto::{
+use spr_tvc_wire::crypto::{
     public_key_uncompressed, sign_p256_prehash, verify_p256_message, verify_p256_prehash,
 };
-use spr_tvc_protocol::decryption_service::{
+use spr_tvc_wire::decryption_service::{
     NULLIFIER_SECRET_LEN, SERVICE_PROOF_TYPE, X25519_PUBLIC_KEY_LEN,
 };
-use spr_tvc_protocol::digest::result_digest;
-use spr_tvc_protocol::encoding::{
+use spr_tvc_wire::digest::result_digest;
+use spr_tvc_wire::encoding::{
     canonicalize_json_value, decode_lower_hex, encode_decimal_u64, encode_lower_hex, jcs_serialize,
 };
-use spr_tvc_protocol::error::{ErrorCode, TvcError};
-use spr_tvc_protocol::release::{
+use spr_tvc_wire::error::{ErrorCode, TvcError};
+use spr_tvc_wire::release::{
     sign_release_policy, verify_signed_release_policy, PinnedReleaseAuthorities,
     ReleaseAuthorityKey,
 };
-use spr_tvc_protocol::types::{
+use spr_tvc_wire::types::{
     HealthResponse, HealthStatus, Network, OperationKind, OperationProofPayload,
     ReleaseAuthoritySignature, ReleasePolicy, ServiceInfo, SignedReleasePolicy,
 };
@@ -243,7 +243,7 @@ fn authority_public(secret: &[u8; 32]) -> Vec<u8> {
 }
 
 /// Build the committed fixture set. File bodies are compact JSON objects.
-pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::error::TvcError> {
+pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_wire::error::TvcError> {
     let client_sk = sha256_label("spr-tvc-test-client-sk");
     let encryption_sk = sha256_label("spr-tvc-test-encryption-sk");
     let signing_sk = sha256_label("spr-tvc-test-signing-sk");
@@ -375,12 +375,11 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
         operation: OperationKind::ServiceDecrypt,
     };
     let proof_payload = jcs_serialize(&proof)?;
-    let proof_sig =
-        spr_tvc_protocol::crypto::sign_p256_message(&signing_sk, proof_payload.as_bytes())?;
+    let proof_sig = spr_tvc_wire::crypto::sign_p256_message(&signing_sk, proof_payload.as_bytes())?;
     let high_s_sig = high_s_signature(&proof_sig);
     let non_jcs_payload = serde_json::to_string(&proof).unwrap();
     let non_jcs_sig =
-        spr_tvc_protocol::crypto::sign_p256_message(&signing_sk, non_jcs_payload.as_bytes())?;
+        spr_tvc_wire::crypto::sign_p256_message(&signing_sk, non_jcs_payload.as_bytes())?;
     files.insert(
         "proof-payload-utf8.json".to_owned(),
         fixture_json(&json!({
@@ -496,7 +495,7 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
             "network": Network::Devnet,
             "authorities": authorities,
             "signed": signed,
-            "policy_digest": encode_lower_hex(&spr_tvc_protocol::release::policy_signing_digest(&policy)?),
+            "policy_digest": encode_lower_hex(&spr_tvc_wire::release::policy_signing_digest(&policy)?),
             "empty_signatures": verify(&unsigned, &authorities, Network::Devnet, 1_750_000_000_000),
             "empty_signatures_input": unsigned,
             "duplicate_key_id": verify(&duplicate, &authorities, Network::Devnet, 1_750_000_000_000),
@@ -649,7 +648,7 @@ pub fn manifest_for(files: &BTreeMap<String, String>) -> Value {
     })
 }
 
-pub fn write_fixtures(dir: &Path) -> Result<(), spr_tvc_protocol::error::TvcError> {
+pub fn write_fixtures(dir: &Path) -> Result<(), spr_tvc_wire::error::TvcError> {
     std::fs::create_dir_all(dir).expect("create fixtures dir");
     let files = fixture_files()?;
     let manifest = serde_json::to_string_pretty(&manifest_for(&files)).expect("manifest");
@@ -660,7 +659,7 @@ pub fn write_fixtures(dir: &Path) -> Result<(), spr_tvc_protocol::error::TvcErro
     Ok(())
 }
 
-pub fn verify_fixtures(dir: &Path) -> Result<(), spr_tvc_protocol::error::TvcError> {
+pub fn verify_fixtures(dir: &Path) -> Result<(), spr_tvc_wire::error::TvcError> {
     let files = fixture_files()?;
     let committed_manifest: Value =
         serde_json::from_slice(&std::fs::read(dir.join("MANIFEST.json")).expect("read manifest"))

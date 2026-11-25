@@ -1,11 +1,11 @@
 import { sha384 } from "@noble/hashes/sha512";
-import { DecryptionServiceError } from "../protocol/error.js";
+import { DecryptionServiceError } from "../wire/error.js";
 import {
   MAX_CLOCK_SKEW_MS,
   SHA256_LEN,
   SHA384_LEN,
-} from "../protocol/constants.js";
-import { bytesEqual, decodeLowerHex, encodeLowerHex } from "../protocol/hex.js";
+} from "../wire/constants.js";
+import { bytesEqual, decodeLowerHex, encodeLowerHex } from "../wire/hex.js";
 import {
   type CborValue,
   decodeAwsNitroAttestationCbor,

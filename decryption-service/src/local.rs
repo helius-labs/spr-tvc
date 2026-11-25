@@ -3,8 +3,8 @@
 
 use qos_p256::P256Pair;
 use serde::Deserialize;
-use spr_tvc_protocol::digest::sha256;
-use spr_tvc_protocol::encoding::{decode_lower_hex_array, encode_lower_hex};
+use spr_tvc_wire::digest::sha256;
+use spr_tvc_wire::encoding::{decode_lower_hex_array, encode_lower_hex};
 
 use crate::{Release, Service};
 

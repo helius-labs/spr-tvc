@@ -6,21 +6,21 @@ use std::sync::OnceLock;
 use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::SecretKey;
 use sha2::{Digest, Sha256};
-use spr_tvc_protocol::constants::API_VERSION;
-use spr_tvc_protocol::crypto::{parse_uncompressed_sec1, sign_p256_prehash, verify_p256_prehash};
-use spr_tvc_protocol::encoding::{
+use spr_tvc_wire::constants::API_VERSION;
+use spr_tvc_wire::crypto::{parse_uncompressed_sec1, sign_p256_prehash, verify_p256_prehash};
+use spr_tvc_wire::encoding::{
     canonicalize_json_str, decode_decimal_u64, decode_lower_hex, parse_strict_json,
 };
-use spr_tvc_protocol::error::ErrorCode;
+use spr_tvc_wire::error::ErrorCode;
 mod fixtures;
 mod page;
 
 use fixtures::{
     bind_discovery_to_policy, reject_double_hashed_signature, verify_fixtures, write_fixtures,
 };
-use spr_tvc_protocol::release::verify_signed_release_policy;
-use spr_tvc_protocol::types::{HealthResponse, Network, ServiceInfo};
-use spr_tvc_protocol::{PinnedReleaseAuthorities, ReleasePolicy, SignedReleasePolicy};
+use spr_tvc_wire::release::verify_signed_release_policy;
+use spr_tvc_wire::types::{HealthResponse, Network, ServiceInfo};
+use spr_tvc_wire::{PinnedReleaseAuthorities, ReleasePolicy, SignedReleasePolicy};
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures")
@@ -37,7 +37,7 @@ fn verifies_committed_content_addressed_fixtures() {
 }
 
 #[test]
-#[ignore = "run explicitly through `just regenerate-protocol-fixtures`"]
+#[ignore = "run explicitly through `just regenerate-wire-fixtures`"]
 fn regenerate_content_addressed_fixtures() {
     write_fixtures(&fixtures_dir()).unwrap();
     verify_fixtures(&fixtures_dir()).unwrap();

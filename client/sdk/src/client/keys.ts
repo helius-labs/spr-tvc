@@ -15,8 +15,8 @@ import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha256";
 
 import { awaitWithSignal } from "../connection/request.js";
-import { DecryptionServiceError } from "../protocol/error.js";
-import type { DecryptItem } from "../protocol/types.js";
+import { DecryptionServiceError } from "../wire/error.js";
+import type { DecryptItem } from "../wire/types.js";
 import { decryptItem } from "./items.js";
 
 const TRANSACTION_KEY_LABEL = new TextEncoder().encode("TSPP/decryption-service/tx_key/v1");

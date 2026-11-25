@@ -1,4 +1,4 @@
-use spr_tvc_protocol::types::EncryptedResponse;
+use spr_tvc_wire::types::EncryptedResponse;
 
 use super::*;
 use crate::tests::testing::response_key;

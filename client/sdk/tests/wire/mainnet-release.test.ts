@@ -3,10 +3,10 @@ import { describe, expect, it } from "vitest";
 
 import { policySigningDigest, verifySignedReleasePolicy } from "../../src/attestation/release-policy.js";
 import { signP256Prehash } from "../../src/crypto/p256.js";
-import { MAX_ENCRYPTED_REQUEST_BYTES } from "../../src/protocol/constants.js";
-import { encodeLowerHex } from "../../src/protocol/hex.js";
-import { bindMainnetRelease, releaseForConnection, type MainnetTrust } from "../../src/protocol/releases.js";
-import type { ReleasePolicy, SignedReleasePolicy } from "../../src/protocol/types.js";
+import { MAX_ENCRYPTED_REQUEST_BYTES } from "../../src/wire/constants.js";
+import { encodeLowerHex } from "../../src/wire/hex.js";
+import { bindMainnetRelease, releaseForConnection, type MainnetTrust } from "../../src/wire/releases.js";
+import type { ReleasePolicy, SignedReleasePolicy } from "../../src/wire/types.js";
 
 const now = 1_800_000_000_000n;
 const secrets = [new Uint8Array(32).fill(1), new Uint8Array(32).fill(2)];

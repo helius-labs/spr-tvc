@@ -2,11 +2,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::Signer as _;
 use spr_keypair::NullifierKey;
-use spr_tvc_protocol::decryption_service::{
+use spr_tvc_wire::decryption_service::{
     decrypt_message, service_request_digest, view_grant_digest, view_grant_message, ViewGrant,
     MAX_VIEW_GRANT_MS,
 };
-use spr_tvc_protocol::types::DecryptItem;
+use spr_tvc_wire::types::DecryptItem;
 
 use super::{
     base58, decrypted, refused, request, service, service_keys, transfer_output, Service,

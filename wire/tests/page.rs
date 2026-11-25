@@ -2,18 +2,18 @@
 
 use spr_keypair::constants::{BLINDING_LEN, SALT_LEN};
 use spr_keypair::x25519::X25519_PUBKEY_LEN as SPR_X25519_PUBLIC_KEY_LEN;
-use spr_tvc_protocol::body_limit::{encrypted_request_http_len, max_inner_len, qos_frame_len};
-use spr_tvc_protocol::constants::{
+use spr_tvc_wire::body_limit::{encrypted_request_http_len, max_inner_len, qos_frame_len};
+use spr_tvc_wire::constants::{
     API_VERSION, EMPTY_RECIPIENT_CIPHERTEXT_LEN, NOTES_PER_SIGNATURE, QOS_P256_PUBLIC_LEN,
     RAW_P256_SIGNATURE_LEN, SEC1_UNCOMPRESSED_LEN, TVC_APP_PROOF_SCHEME,
 };
-use spr_tvc_protocol::decryption_service::{
+use spr_tvc_wire::decryption_service::{
     parse_service_request, ServiceOperation, ServiceRequest, ServiceResult, SERVICE_PROOF_TYPE,
     X25519_PUBLIC_KEY_LEN,
 };
-use spr_tvc_protocol::encoding::jcs_serialize;
-use spr_tvc_protocol::error::{ErrorCode, TvcError};
-use spr_tvc_protocol::types::{
+use spr_tvc_wire::encoding::jcs_serialize;
+use spr_tvc_wire::error::{ErrorCode, TvcError};
+use spr_tvc_wire::types::{
     AppProof, DecryptItem, DecryptLabel, EncryptedResponse, KdfMode, OperationKind,
     OperationProofPayload,
 };
@@ -21,7 +21,7 @@ use spr_tvc_protocol::types::{
 #[test]
 fn key_lengths_match_spr_keypair() {
     assert_eq!(
-        spr_tvc_protocol::decryption_service::NULLIFIER_SECRET_LEN,
+        spr_tvc_wire::decryption_service::NULLIFIER_SECRET_LEN,
         BLINDING_LEN
     );
     assert_eq!(X25519_PUBLIC_KEY_LEN, SPR_X25519_PUBLIC_KEY_LEN);
@@ -63,8 +63,8 @@ pub fn page_decrypt_request() -> ServiceRequest {
 
 /// Canonical result for the same page: 50-byte plaintexts and the nullifier secret.
 fn page_decrypt_result() -> ServiceResult {
-    ServiceResult::Decrypt(spr_tvc_protocol::decryption_service::DecryptedOutputs {
-        nullifier_secret: [0; spr_tvc_protocol::decryption_service::NULLIFIER_SECRET_LEN],
+    ServiceResult::Decrypt(spr_tvc_wire::decryption_service::DecryptedOutputs {
+        nullifier_secret: [0; spr_tvc_wire::decryption_service::NULLIFIER_SECRET_LEN],
         plaintexts: vec![vec![0; EMPTY_RECIPIENT_CIPHERTEXT_LEN]; NOTES_PER_SIGNATURE],
     })
 }
@@ -104,7 +104,7 @@ fn page_encrypted_response_len() -> Result<usize, TvcError> {
 
 #[test]
 fn an_empty_page_fits_under_the_cap_and_the_reply_is_smaller() {
-    use spr_tvc_protocol::constants::{MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES};
+    use spr_tvc_wire::constants::{MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES};
 
     let request = page_encrypted_request_len().unwrap();
     let response = page_encrypted_response_len().unwrap();

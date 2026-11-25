@@ -1,7 +1,7 @@
 import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha256";
-import { RAW_P256_SIGNATURE_LEN, SEC1_UNCOMPRESSED_LEN } from "../protocol/constants.js";
-import { DecryptionServiceError } from "../protocol/error.js";
+import { RAW_P256_SIGNATURE_LEN, SEC1_UNCOMPRESSED_LEN } from "../wire/constants.js";
+import { DecryptionServiceError } from "../wire/error.js";
 
 export function parseUncompressedSec1(bytes: Uint8Array): Uint8Array {
   if (bytes.length === 33 && (bytes[0] === 0x02 || bytes[0] === 0x03)) {

@@ -1,15 +1,15 @@
 import { parseQosP256Public, qosDecrypt, qosEncrypt } from "../crypto/qos.js";
 import { verifyP256Message } from "../crypto/p256.js";
-import { SERVICE_PROOF_TYPE } from "../protocol/decryption.js";
-import { resultDigest } from "../protocol/digest.js";
-import { DecryptionServiceError } from "../protocol/error.js";
-import { bytesEqual, encodeLowerHex, requireHex } from "../protocol/hex.js";
-import { canonicalizeJsonValue, isRfc8785 } from "../protocol/jcs.js";
-import { assertExactObjectKeys, parseStrictJson } from "../protocol/json.js";
+import { SERVICE_PROOF_TYPE } from "../wire/decryption.js";
+import { resultDigest } from "../wire/digest.js";
+import { DecryptionServiceError } from "../wire/error.js";
+import { bytesEqual, encodeLowerHex, requireHex } from "../wire/hex.js";
+import { canonicalizeJsonValue, isRfc8785 } from "../wire/jcs.js";
+import { assertExactObjectKeys, parseStrictJson } from "../wire/json.js";
 import { API_VERSION, QOS_ENVELOPE_OVERHEAD, QOS_P256_PUBLIC_LEN,
   RAW_P256_SIGNATURE_LEN, SHA256_LEN, TVC_APP_PROOF_KEYS, TVC_APP_PROOF_SCHEME,
-} from "../protocol/constants.js";
-import type { OperationKind, ServiceInfo } from "../protocol/types.js";
+} from "../wire/constants.js";
+import type { OperationKind, ServiceInfo } from "../wire/types.js";
 import type { TurnkeyAppProofWire } from "../attestation/turnkey.js";
 import { sendToEnclave, type EncryptedRequestWire } from "./backend.js";
 import type { ConnectedTvcRuntime } from "./connect.js";

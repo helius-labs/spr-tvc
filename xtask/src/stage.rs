@@ -2,7 +2,7 @@ use std::process::Command;
 
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
-use spr_tvc_protocol::types::{Network, ServiceInfo};
+use spr_tvc_wire::types::{Network, ServiceInfo};
 
 use crate::tools::{bridge, capture, capture_check, run, tvc, tvc_json, Credentials};
 use crate::{lower_hex, read_json, write_json, Release, APP};

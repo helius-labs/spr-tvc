@@ -4,7 +4,7 @@ import {
   decodeAwsNitroAttestationCbor,
   decodeCbor,
 } from "../../src/attestation/cbor.js";
-import { decodeLowerHex, encodeLowerHex } from "../../src/protocol/hex.js";
+import { decodeLowerHex, encodeLowerHex } from "../../src/wire/hex.js";
 
 function decodeHex(hex: string) {
   return decodeCbor(decodeLowerHex(hex));

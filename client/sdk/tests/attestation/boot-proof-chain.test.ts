@@ -11,7 +11,7 @@ import {
   MANIFEST_DIGEST,
   NOW_MS,
 } from "./boot-proof.testkit.js";
-import { encodeLowerHex } from "../../src/protocol/hex.js";
+import { encodeLowerHex } from "../../src/wire/hex.js";
 
 describe("Boot Proof AWS Nitro chain", () => {
   it("fails closed on an attestation that is not chained to the pinned AWS root", async () => {

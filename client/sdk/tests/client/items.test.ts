@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 
-import { DecryptionServiceError } from "../../src/protocol/error.js";
+import { DecryptionServiceError } from "../../src/wire/error.js";
 import { batched } from "../../src/client/items.js";
 
 it("sends a full indexer page as one batch and preserves the result order", async () => {

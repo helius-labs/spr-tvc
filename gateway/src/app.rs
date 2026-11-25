@@ -10,7 +10,7 @@ use axum::routing::{get, post};
 use cadence_macros::statsd_time;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
-use spr_tvc_protocol::{EncryptedRequest, QosPingRequest};
+use spr_tvc_wire::{EncryptedRequest, QosPingRequest};
 use tower_http::set_header::SetResponseHeaderLayer;
 use utoipa::ToSchema;
 

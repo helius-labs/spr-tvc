@@ -4,9 +4,9 @@ import { decryptionServiceFromSession, type DecryptionService } from "../src/cli
 import type { DecryptionServiceTransport } from "../src/connection/http.js";
 import { connectLocalUnattestedTvc } from "../src/connection/local-connection.js";
 import { sessionFromConnector } from "../src/connection/session.js";
-import { encodeLowerHex } from "../src/protocol/hex.js";
-import { requireNetwork } from "../src/protocol/network.js";
-import type { Network, OperationKind } from "../src/protocol/types.js";
+import { encodeLowerHex } from "../src/wire/hex.js";
+import { requireNetwork } from "../src/wire/network.js";
+import type { Network, OperationKind } from "../src/wire/types.js";
 import localTestkit from "../../../tests/fixtures/local-testkit.json";
 
 const encoder = new TextEncoder();

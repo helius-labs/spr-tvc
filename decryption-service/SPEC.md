@@ -138,5 +138,5 @@ transfers.
   Cached public keys let senders create outputs without a service call,
   so exposure limits belong at admission.
 
-[Wire encodings and derivations](../protocol/README.md) ·
+[Wire encodings and derivations](../wire/README.md) ·
 [Test invariants](../tests/README.md) · [Release runbook](../xtask/README.md)

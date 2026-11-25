@@ -4,11 +4,11 @@ use axum::body::Body;
 use axum::http::Response;
 use http_body_util::BodyExt as _;
 use qos_p256::{encrypt::P256EncryptPair, P256Public};
-use spr_tvc_protocol::constants::API_VERSION;
-use spr_tvc_protocol::crypto::verify_p256_message;
-use spr_tvc_protocol::digest::result_digest;
-use spr_tvc_protocol::encoding::parse_strict_json;
-use spr_tvc_protocol::types::{
+use spr_tvc_wire::constants::API_VERSION;
+use spr_tvc_wire::crypto::verify_p256_message;
+use spr_tvc_wire::digest::result_digest;
+use spr_tvc_wire::encoding::parse_strict_json;
+use spr_tvc_wire::types::{
     EncryptedRequest, EncryptedResponse, OperationProofPayload, ServiceInfo,
 };
 use zeroize::Zeroizing;

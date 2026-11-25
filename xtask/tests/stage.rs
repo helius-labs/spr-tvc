@@ -1,4 +1,4 @@
-use spr_tvc_protocol::types::Network;
+use spr_tvc_wire::types::Network;
 
 use crate::stage::{image_digest, provenance_command, require_candidate};
 

@@ -17,11 +17,11 @@ use qos_core::protocol::services::boot::manifest::{
 use qos_core::protocol::services::boot::PivotConfigV2;
 use qos_core::{EPHEMERAL_KEY_FILE, MANIFEST_FILE, QUORUM_FILE};
 use qos_p256::P256Pair;
-use spr_tvc_protocol::constants::{
+use spr_tvc_wire::constants::{
     API_VERSION, MAX_ENCRYPTED_REQUEST_BYTES, TVC_APP_PROOF_SCHEME, TVC_QOS_PING_PROOF_TYPE,
 };
-use spr_tvc_protocol::encoding::{is_rfc8785, jcs_serialize};
-use spr_tvc_protocol::types::{
+use spr_tvc_wire::encoding::{is_rfc8785, jcs_serialize};
+use spr_tvc_wire::types::{
     parse_qos_ping_challenge, parse_qos_ping_request, AppProof, HealthResponse, HealthStatus,
     QosPingResponse, ServiceInfo,
 };

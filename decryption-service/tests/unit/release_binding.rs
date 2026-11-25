@@ -51,8 +51,8 @@ async fn the_router_advertises_the_operations_and_serves_them() {
     assert_eq!(
         info.supported_operations,
         [
-            spr_tvc_protocol::types::OperationKind::ServicePublicKeys,
-            spr_tvc_protocol::types::OperationKind::ServiceDecrypt
+            spr_tvc_wire::types::OperationKind::ServicePublicKeys,
+            spr_tvc_wire::types::OperationKind::ServiceDecrypt
         ]
     );
     assert_eq!(info.proof_type, SERVICE_PROOF_TYPE);

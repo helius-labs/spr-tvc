@@ -5,11 +5,11 @@ use qos_p256::P256Pair;
 use spr_keypair::constants::SALT_LEN;
 use spr_keypair::viewing_key::Salt;
 use spr_keypair::ViewingKey;
-use spr_tvc_protocol::body_limit::max_inner_len;
-use spr_tvc_protocol::constants::{API_VERSION, QOS_ENVELOPE_OVERHEAD, SEC1_UNCOMPRESSED_LEN};
-use spr_tvc_protocol::decryption_service::{ServiceOperation, X25519_PUBLIC_KEY_LEN};
-use spr_tvc_protocol::encoding::jcs_serialize;
-use spr_tvc_protocol::types::{DecryptItem, DecryptLabel, EncryptedRequest, ServiceInfo};
+use spr_tvc_wire::body_limit::max_inner_len;
+use spr_tvc_wire::constants::{API_VERSION, QOS_ENVELOPE_OVERHEAD, SEC1_UNCOMPRESSED_LEN};
+use spr_tvc_wire::decryption_service::{ServiceOperation, X25519_PUBLIC_KEY_LEN};
+use spr_tvc_wire::encoding::jcs_serialize;
+use spr_tvc_wire::types::{DecryptItem, DecryptLabel, EncryptedRequest, ServiceInfo};
 
 use crate::cipher::open_ciphertexts;
 use crate::release::NETWORK;
@@ -36,7 +36,7 @@ impl TransferBatch {
             salt: salt.to_vec(),
             slot_index: 0,
             label: DecryptLabel::Transfer,
-            kdf: spr_tvc_protocol::KdfMode::HkdfSha256Ctr,
+            kdf: spr_tvc_wire::KdfMode::HkdfSha256Ctr,
         };
         Self {
             viewing,
@@ -61,7 +61,7 @@ pub struct MaxEnvelope {
 impl MaxEnvelope {
     pub fn page() -> Self {
         let quorum = P256Pair::from_master_seed(&[7; 32].into()).expect("bench quorum");
-        let mut request = spr_tvc_protocol::decryption_service::ServiceRequest {
+        let mut request = spr_tvc_wire::decryption_service::ServiceRequest {
             version: API_VERSION,
             request_id: [0; 32],
             target_release_id: String::new(),
@@ -80,7 +80,7 @@ impl MaxEnvelope {
                     salt: vec![0; SALT_LEN],
                     slot_index: 0,
                     label: DecryptLabel::Transfer,
-                    kdf: spr_tvc_protocol::KdfMode::HkdfSha256Ctr,
+                    kdf: spr_tvc_wire::KdfMode::HkdfSha256Ctr,
                 }],
             },
         };

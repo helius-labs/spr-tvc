@@ -1,8 +1,8 @@
 use axum::http::StatusCode;
-use spr_tvc_protocol::constants::{QOS_P256_PUBLIC_LEN, RAW_P256_SIGNATURE_LEN};
-use spr_tvc_protocol::crypto::verify_p256_message;
-use spr_tvc_protocol::encoding::{jcs_serialize, parse_strict_json};
-use spr_tvc_protocol::types::{QosPingChallenge, QosPingRequest};
+use spr_tvc_wire::constants::{QOS_P256_PUBLIC_LEN, RAW_P256_SIGNATURE_LEN};
+use spr_tvc_wire::crypto::verify_p256_message;
+use spr_tvc_wire::encoding::{jcs_serialize, parse_strict_json};
+use spr_tvc_wire::types::{QosPingChallenge, QosPingRequest};
 use tower::ServiceExt as _;
 
 use std::sync::Arc;
@@ -12,10 +12,10 @@ use axum::http::header::CONTENT_TYPE;
 use axum::http::Request;
 use axum::Router;
 use qos_p256::P256Pair;
-use spr_tvc_protocol::constants::{
+use spr_tvc_wire::constants::{
     API_VERSION, MAX_ENCRYPTED_REQUEST_BYTES, TVC_APP_PROOF_SCHEME, TVC_QOS_PING_PROOF_TYPE,
 };
-use spr_tvc_protocol::types::{QosPingResponse, ServiceInfo};
+use spr_tvc_wire::types::{QosPingResponse, ServiceInfo};
 
 use crate::release::NETWORK;
 use crate::service::{router, Service};

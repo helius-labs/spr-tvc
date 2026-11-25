@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { encodeLowerHex } from "../../src/protocol/hex.js";
+import { encodeLowerHex } from "../../src/wire/hex.js";
 import {
   acceptViewGrantWindow,
   decryptMessage,
   MAX_VIEW_GRANT_MS,
   serviceRequestDigest,
   type ServiceRequest,
-} from "../../src/protocol/decryption.js";
+} from "../../src/wire/decryption.js";
 
-// The same request and vectors as `protocol/tests/unit/decryption_request_binding.rs`.
+// The same request and vectors as `wire/tests/unit/decryption_request_binding.rs`.
 const request: ServiceRequest = {
   version: 1,
   request_id: "01".repeat(32),

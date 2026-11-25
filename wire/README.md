@@ -1,4 +1,4 @@
-# Decryption wire protocol v1
+# Decryption wire v1
 
 ## Encoding
 
@@ -77,7 +77,7 @@ and all bindings before opening the result. The HTTP request body and the
 binary encrypted result are each limited to 10 MiB, the same cap as the
 indexer. An empty indexer page of 1,000 50-byte recipient notes measures
 675,814 bytes (`plaintext + 12 + 65 + 4 + 16`, then hex).
-`protocol/fixtures/page-limit.json` records both lengths.
+`wire/fixtures/page-limit.json` records both lengths.
 
 ## Key derivation and SPR note cipher
 
@@ -127,6 +127,6 @@ and revocation floor. See the [trust and attestation flow](../decryption-service
 
 ## Fixtures
 
-`just regenerate-protocol-fixtures` updates the shared byte vectors in
+`just regenerate-wire-fixtures` updates the shared byte vectors in
 [`fixtures/`](fixtures) and their [SHA-256 manifest](fixtures/MANIFEST.json).
 Rust and TypeScript check the committed bytes.

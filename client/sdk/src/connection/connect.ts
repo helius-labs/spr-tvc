@@ -8,13 +8,13 @@ import {
   TVC_APP_PROOF_KEYS,
   TVC_APP_PROOF_SCHEME,
   TVC_QOS_PING_PROOF_TYPE,
-} from "../protocol/constants.js";
-import { DecryptionServiceError } from "../protocol/error.js";
-import { decodeLowerHex, encodeLowerHex } from "../protocol/hex.js";
-import { canonicalizeJsonValue } from "../protocol/jcs.js";
-import { assertExactObjectKeys, parseStrictJson } from "../protocol/json.js";
-import type { ReleaseTrust } from "../protocol/releases.js";
-import { SERVICE_INFO_KEYS, type Network, type ServiceInfo } from "../protocol/types.js";
+} from "../wire/constants.js";
+import { DecryptionServiceError } from "../wire/error.js";
+import { decodeLowerHex, encodeLowerHex } from "../wire/hex.js";
+import { canonicalizeJsonValue } from "../wire/jcs.js";
+import { assertExactObjectKeys, parseStrictJson } from "../wire/json.js";
+import type { ReleaseTrust } from "../wire/releases.js";
+import { SERVICE_INFO_KEYS, type Network, type ServiceInfo } from "../wire/types.js";
 import { createDefaultTransport, type DecryptionServiceTransport } from "./http.js";
 import { verifyBootProof, type QosIdentityPcrs } from "../attestation/boot-proof.js";
 import type {

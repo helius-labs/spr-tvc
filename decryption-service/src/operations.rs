@@ -6,12 +6,12 @@ use axum::body::Body;
 use axum::http::Response;
 use axum::response::IntoResponse;
 use qos_p256::encrypt::P256EncryptPublic;
-use spr_tvc_protocol::constants::API_VERSION;
-use spr_tvc_protocol::decryption_service::{
+use spr_tvc_wire::constants::API_VERSION;
+use spr_tvc_wire::decryption_service::{
     parse_service_request, service_request_digest, DecryptedOutputs, ServiceOperation,
     ServiceRequest, ServiceResult,
 };
-use spr_tvc_protocol::types::ServiceInfo;
+use spr_tvc_wire::types::ServiceInfo;
 
 use crate::cipher::open_ciphertexts;
 use crate::request::{open_envelope, respond, Failure};

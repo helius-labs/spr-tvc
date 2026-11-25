@@ -6,14 +6,14 @@ use qos_p256::P256Pair;
 use solana_pubkey::Pubkey;
 use spr_keypair::viewing_key::random_salt;
 use spr_keypair::{NullifierKey, ViewingKey, X25519Pubkey};
-use spr_tvc_protocol::constants::API_VERSION;
-use spr_tvc_protocol::crypto::public_key_uncompressed;
-use spr_tvc_protocol::decryption_service::{
+use spr_tvc_wire::constants::API_VERSION;
+use spr_tvc_wire::crypto::public_key_uncompressed;
+use spr_tvc_wire::decryption_service::{
     decrypt_message, service_request_digest, DecryptedOutputs, ServiceOperation, ServiceRequest,
     ServiceResult, SERVICE_PROOF_TYPE,
 };
-use spr_tvc_protocol::encoding::{jcs_serialize, parse_strict_json};
-use spr_tvc_protocol::types::{DecryptItem, DecryptLabel, EncryptedRequest, Network, ServiceInfo};
+use spr_tvc_wire::encoding::{jcs_serialize, parse_strict_json};
+use spr_tvc_wire::types::{DecryptItem, DecryptLabel, EncryptedRequest, Network, ServiceInfo};
 use tower::ServiceExt as _;
 use zeroize::Zeroizing;
 
@@ -181,7 +181,7 @@ fn transfer_output(viewing_public_key: [u8; 33], plaintext: &[u8], slot: u32) ->
         salt: salt.to_vec(),
         slot_index: slot.into(),
         label: DecryptLabel::Transfer,
-        kdf: spr_tvc_protocol::KdfMode::HkdfSha256Ctr,
+        kdf: spr_tvc_wire::KdfMode::HkdfSha256Ctr,
     }
 }
 

@@ -8,13 +8,13 @@ import type { ConnectedTvcRuntime } from "../../src/connection/connect.js";
 import { awaitWithSignal } from "../../src/connection/request.js";
 import { sessionFromConnector } from "../../src/connection/session.js";
 import { qosDecrypt } from "../../src/crypto/qos.js";
-import { decodeLowerHex, encodeLowerHex } from "../../src/protocol/hex.js";
-import { MAX_ENCRYPTED_REQUEST_BYTES } from "../../src/protocol/constants.js";
-import { DecryptionServiceError, DecryptionServiceHttpError } from "../../src/protocol/error.js";
-import type { ServiceInfo } from "../../src/protocol/types.js";
+import { decodeLowerHex, encodeLowerHex } from "../../src/wire/hex.js";
+import { MAX_ENCRYPTED_REQUEST_BYTES } from "../../src/wire/constants.js";
+import { DecryptionServiceError, DecryptionServiceHttpError } from "../../src/wire/error.js";
+import type { ServiceInfo } from "../../src/wire/types.js";
 import * as exchange from "../../src/client/exchange.js";
 import { decryptionServiceFromSession } from "../../src/client/decryption.js";
-import type { ServiceRequest } from "../../src/protocol/decryption.js";
+import type { ServiceRequest } from "../../src/wire/decryption.js";
 
 const ownerAddress = address("11111111111111111111111111111111");
 

@@ -2733,7 +2733,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "spr-tvc-protocol",
+ "spr-tvc-wire",
  "strum",
  "subtle",
  "thiserror",
@@ -2747,7 +2747,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "spr-tvc-protocol"
+name = "spr-tvc-wire"
 version = "0.1.0"
 dependencies = [
  "hex",

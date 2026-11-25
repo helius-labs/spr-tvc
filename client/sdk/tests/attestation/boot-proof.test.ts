@@ -1,6 +1,6 @@
 import { p256 } from "@noble/curves/p256";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { encodeLowerHex } from "../../src/protocol/hex.js";
+import { encodeLowerHex } from "../../src/wire/hex.js";
 import {
   appProof,
   bootProof,

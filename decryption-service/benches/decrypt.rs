@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use spr_tvc_decryption_service::timing::{MaxEnvelope, TransferBatch};
-use spr_tvc_protocol::constants::NOTES_PER_SIGNATURE;
+use spr_tvc_wire::constants::NOTES_PER_SIGNATURE;
 
 fn decrypt(c: &mut Criterion) {
     let one = TransferBatch::new(1);

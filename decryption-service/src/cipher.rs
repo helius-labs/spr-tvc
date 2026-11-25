@@ -2,7 +2,7 @@
 
 use spr_keypair::viewing_key::Salt;
 use spr_keypair::{ViewingKey, X25519Pubkey};
-use spr_tvc_protocol::types::{DecryptItem, DecryptLabel, KdfMode};
+use spr_tvc_wire::types::{DecryptItem, DecryptLabel, KdfMode};
 use zeroize::Zeroizing;
 
 use crate::request::Failure;

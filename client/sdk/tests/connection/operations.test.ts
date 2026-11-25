@@ -3,11 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import { signP256Message } from "../../src/crypto/p256.js";
 import { qosEncrypt } from "../../src/crypto/qos.js";
-import { API_VERSION, MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES, TVC_APP_PROOF_SCHEME } from "../../src/protocol/constants.js";
-import { SERVICE_PROOF_TYPE } from "../../src/protocol/decryption.js";
-import { resultDigest } from "../../src/protocol/digest.js";
-import { encodeLowerHex } from "../../src/protocol/hex.js";
-import { canonicalizeJsonValue } from "../../src/protocol/jcs.js";
+import { API_VERSION, MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES, TVC_APP_PROOF_SCHEME } from "../../src/wire/constants.js";
+import { SERVICE_PROOF_TYPE } from "../../src/wire/decryption.js";
+import { resultDigest } from "../../src/wire/digest.js";
+import { encodeLowerHex } from "../../src/wire/hex.js";
+import { canonicalizeJsonValue } from "../../src/wire/jcs.js";
 import type { ConnectedTvcRuntime } from "../../src/connection/connect.js";
 import { sealedExchange, type Exchange } from "../../src/connection/operations.js";
 

@@ -6,15 +6,15 @@ import { sha256 } from "@noble/hashes/sha256";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { qosDecrypt, qosEncrypt } from "../../src/crypto/qos.js";
 import { signP256Message, signP256Prehash } from "../../src/crypto/p256.js";
-import { MAX_ENCRYPTED_REQUEST_BYTES } from "../../src/protocol/constants.js";
-import { canonicalizeJsonValue } from "../../src/protocol/jcs.js";
-import { decodeLowerHex, encodeLowerHex } from "../../src/protocol/hex.js";
+import { MAX_ENCRYPTED_REQUEST_BYTES } from "../../src/wire/constants.js";
+import { canonicalizeJsonValue } from "../../src/wire/jcs.js";
+import { decodeLowerHex, encodeLowerHex } from "../../src/wire/hex.js";
 import type {
   PinnedReleaseAuthorities,
   ReleasePolicy,
   ServiceInfo,
   SignedReleasePolicy,
-} from "../../src/protocol/types.js";
+} from "../../src/wire/types.js";
 import { policySigningDigest } from "../../src/attestation/release-policy.js";
 import { fetchLiveServiceInfo, verifyLiveReplica, type DecryptionServiceConnectionConfig } from "../../src/connection/connect.js";
 import { requestScope, type DecryptionServiceRequestOptions } from "../../src/connection/request.js";
@@ -317,7 +317,7 @@ describe("verification", () => {
       readFileSync(
         join(
           dirname(fileURLToPath(import.meta.url)),
-          "../../../../protocol/fixtures/signed-release-policy.json",
+          "../../../../wire/fixtures/signed-release-policy.json",
         ),
         "utf8",
       ),

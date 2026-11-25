@@ -1,7 +1,7 @@
-import { API_VERSION } from "../protocol/constants.js";
-import { SERVICE_PROOF_TYPE } from "../protocol/decryption.js";
-import { DecryptionServiceError } from "../protocol/error.js";
-import type { Network, OperationKind } from "../protocol/types.js";
+import { API_VERSION } from "../wire/constants.js";
+import { SERVICE_PROOF_TYPE } from "../wire/decryption.js";
+import { DecryptionServiceError } from "../wire/error.js";
+import type { Network, OperationKind } from "../wire/types.js";
 import { fetchSession, type EnclaveBackend } from "./backend.js";
 import {
   parseServiceInfo,

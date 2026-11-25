@@ -4,13 +4,13 @@ import { fileURLToPath } from "node:url";
 import { p256 } from "@noble/curves/p256";
 import { describe, expect, it } from "vitest";
 
-import { assertExactObjectKeys } from "../../src/protocol/json.js";
+import { assertExactObjectKeys } from "../../src/wire/json.js";
 import { signP256Prehash } from "../../src/crypto/p256.js";
 import { policySigningDigest, verifySignedReleasePolicy } from "../../src/attestation/release-policy.js";
-import { MAX_ENCRYPTED_REQUEST_BYTES } from "../../src/protocol/constants.js";
-import { encodeLowerHex } from "../../src/protocol/hex.js";
-import { DECRYPTION_SERVICE_RELEASES as RELEASES, releaseFor, type ReleaseTrust } from "../../src/protocol/releases.js";
-import type { Network, ReleasePolicy } from "../../src/protocol/types.js";
+import { MAX_ENCRYPTED_REQUEST_BYTES } from "../../src/wire/constants.js";
+import { encodeLowerHex } from "../../src/wire/hex.js";
+import { DECRYPTION_SERVICE_RELEASES as RELEASES, releaseFor, type ReleaseTrust } from "../../src/wire/releases.js";
+import type { Network, ReleasePolicy } from "../../src/wire/types.js";
 
 const RELEASES_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../releases");
 const NETWORKS: readonly Network[] = ["devnet", "mainnet"];
