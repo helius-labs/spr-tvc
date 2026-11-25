@@ -12,6 +12,8 @@
 
 mod attestation;
 mod cbor;
+#[cfg(feature = "local-dev")]
+mod local;
 mod operations;
 mod service;
 mod session;
@@ -93,6 +95,15 @@ impl<T: Transport, B: BootProofs> DecryptionClient<T, B> {
             boot_proofs,
             now_ms: None,
         })?;
+        Ok(Self::new(session, transport))
+    }
+}
+
+#[cfg(feature = "local-dev")]
+impl<T: Transport> DecryptionClient<T, ()> {
+    /// Connects to the unattested loopback testkit. The endpoint must be loopback HTTP.
+    pub fn connect_local(endpoint: impl Into<String>, transport: T) -> Result<Self, ClientError> {
+        let (session, transport) = local::connect(endpoint.into(), transport)?;
         Ok(Self::new(session, transport))
     }
 }

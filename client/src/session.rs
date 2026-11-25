@@ -51,6 +51,8 @@ pub(crate) struct Session<B> {
     pcrs: IdentityPcrs,
     boot_proofs: B,
     now_ms: fn() -> u64,
+    /// Set only by the loopback testkit. A reply must come from this key.
+    expected_ephemeral: Option<[u8; QOS_P256_PUBLIC_LEN]>,
 }
 
 impl<B: BootProofs> Session<B> {
@@ -90,6 +92,7 @@ impl<B: BootProofs> Session<B> {
                 pcrs: config.pcrs,
                 boot_proofs: config.boot_proofs,
                 now_ms: now,
+                expected_ephemeral: None,
             },
             config.transport,
         ))
@@ -117,6 +120,13 @@ impl<B: BootProofs> Session<B> {
 
     pub(crate) fn verify_operation_key(&self, proof: &AppProof) -> Result<(), ClientError> {
         self.require_current()?;
+        if let Some(expected) = self.expected_ephemeral {
+            let key = ephemeral_key(&proof.public_key)?;
+            if key != expected {
+                return Err(TvcError::new(ErrorCode::TurnkeyEvidenceInvalid).into());
+            }
+            return Ok(());
+        }
         verify_key(
             &self.boot_proofs,
             &self.release,
@@ -150,7 +160,13 @@ impl Session<()> {
             pcrs,
             boot_proofs: (),
             now_ms,
+            expected_ephemeral: None,
         }
+    }
+
+    pub(crate) fn with_loopback_key(mut self, key: [u8; QOS_P256_PUBLIC_LEN]) -> Self {
+        self.expected_ephemeral = Some(key);
+        self
     }
 }
 

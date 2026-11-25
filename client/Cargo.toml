@@ -6,8 +6,17 @@ edition.workspace = true
 license.workspace = true
 rust-version = "1.98"
 
+[features]
+# Unattested loopback connector for `just decryption-e2e`. Not a deployment configuration.
+local-dev = []
+
 [dev-dependencies]
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std"] }
 p256 = { version = "=0.14.0", default-features = false, features = ["arithmetic", "ecdsa", "std"] }
+qos_p256.workspace = true
+serde = { version = "=1.0.228", features = ["derive"] }
+spr-keypair.workspace = true
+spr-tvc-protocol = { path = "../protocol" }
 
 [dependencies]
 base64 = { version = "=0.22.1" }
@@ -24,3 +33,12 @@ spr-keypair.workspace = true
 spr-tvc-protocol = { path = "../protocol" }
 x509-cert = { version = "=0.2.5", default-features = false, features = ["std"] }
 zeroize = { version = "=1.9.0", features = ["zeroize_derive"] }
+
+[[test]]
+name = "loopback"
+path = "tests/loopback.rs"
+required-features = ["local-dev"]
+
+[[test]]
+name = "gatekeeper"
+path = "tests/gatekeeper.rs"

@@ -44,10 +44,10 @@ headless-e2e port_offset="200": setup build-ts
     bash tests/localnet.sh "$1" bash tests/with-local-decryption.sh {{pnpm}} --filter spr-tvc-typescript-client-example example
 
 ci: fmt-check lint test setup
-    bash tests/with-local-decryption.sh {{pnpm}} ci:ts
+    bash tests/with-local-decryption.sh bash -c '{{pnpm}} ci:ts && cargo test -p spr-tvc-client --features local-dev --test loopback --locked -- --nocapture'
 
 image network="devnet":
     docker build --platform linux/amd64 --provenance=false --build-arg SPR_NETWORK="$1" -f decryption-service/Dockerfile .
 
 decryption-e2e: setup build-ts
-    bash tests/with-local-decryption.sh bash -c '{{pnpm}} --filter @heliuslabs/spr-decryption-service exec vitest run tests/client/loopback.test.ts && {{pnpm}} --filter spr-tvc-typescript-client-example test'
+    bash tests/with-local-decryption.sh bash -c '{{pnpm}} --filter @heliuslabs/spr-decryption-service exec vitest run tests/client/loopback.test.ts && {{pnpm}} --filter spr-tvc-typescript-client-example test && cargo test -p spr-tvc-client --features local-dev --test loopback --locked -- --nocapture'
