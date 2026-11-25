@@ -15,3 +15,5 @@ owner tag.
 
 Run `just ci` for Rust and TypeScript checks, including the SDK-to-enclave
 loopback test. Run `just headless-e2e` for send, claim, and sweep on localnet.
+`publish-tvc-gateway-image.yml` checks out `private-wallet` and builds
+`apps/tvc-gateway/Dockerfile`, which is not in this tree.

@@ -68,7 +68,7 @@ export function decryptionServiceFromSession(
     try {
       return await executeServiceCall(context, operation, signal);
     } catch (error) {
-      if (error instanceof DecryptionServiceHttpError && error.status !== 429) session.forget(context);
+      if (error instanceof DecryptionServiceHttpError) session.forget(context);
       throw error;
     }
   }

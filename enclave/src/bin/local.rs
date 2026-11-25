@@ -4,7 +4,7 @@ use std::io;
 use std::net::{IpAddr, SocketAddr};
 
 use clap::Parser;
-use spr_tvc_decryption_service::{local_unattested_service, serve};
+use spr_tvc_decryption_service::{local_unattested_service, serve, DEFAULT_BIND_PORT};
 
 #[derive(Debug, Parser)]
 #[command(name = "spr-tvc-decryption-service-local")]
@@ -12,7 +12,7 @@ struct Cli {
     #[arg(long, default_value = "127.0.0.1")]
     host: IpAddr,
 
-    #[arg(long, default_value_t = 44030)]
+    #[arg(long, default_value_t = DEFAULT_BIND_PORT)]
     port: u16,
 }
 

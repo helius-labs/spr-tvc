@@ -47,7 +47,7 @@ and `ciphertext`. Its envelope contains canonical JSON with `version`,
 | Operation | Result |
 | --- | --- |
 | `PublicKeys { address }` | `viewing_public_key` and `nullifier_public_key` (32 bytes for the nullifier key) |
-| `Decrypt { signer, signature, items }` | `plaintexts` (one per item in order) and `nullifier_secret` (31 bytes). Accepts 0–256 items. |
+| `Decrypt { signer, signature, items }` | `plaintexts` (one per item in order) and `nullifier_secret` (31 bytes). Any item count that fits in the encrypted body. |
 
 The operation and its result each carry a `type` tag. `Decrypt` requires the
 signer's 64-byte Ed25519 signature over a Solana off-chain message v0, format
@@ -64,7 +64,10 @@ signing key signs the exact UTF-8 payload with P-256/SHA-256. The payload carrie
 `request_digest`, `result_digest`, and `operation` (`ServicePublicKeys`
 or `ServiceDecrypt`). The SDK verifies the signature, replica attestation,
 and all bindings before opening the result. The HTTP request body and the
-binary encrypted result each have a 262,144-byte limit.
+binary encrypted result are each limited to 10 MiB, the same cap as the
+indexer. An empty indexer page of 1,000 50-byte recipient notes measures
+631,814 bytes (`plaintext + 12 + 65 + 4 + 16`, then hex).
+`protocol/fixtures/page-limit.json` records both lengths.
 
 ## Key derivation and SPR note cipher
 

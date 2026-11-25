@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { assertExactObjectKeys } from "./json.js";
 import { signP256Prehash } from "../crypto/p256.js";
 import { policySigningDigest, verifySignedReleasePolicy } from "../attestation/release-policy.js";
+import { MAX_ENCRYPTED_REQUEST_BYTES } from "./constants.js";
 import { encodeLowerHex } from "./hex.js";
 import { DECRYPTION_SERVICE_RELEASES as RELEASES, releaseFor, type ReleaseTrust } from "./releases.js";
 import type { Network, ReleasePolicy } from "./types.js";
@@ -82,8 +83,8 @@ describe("a release file", () => {
     quorumKeyEpoch: "1",
     quorumPublicKey: "04".repeat(130),
     allowedOperations: ["ServicePublicKeys", "ServiceDecrypt"],
-    maxEncryptedRequestBytes: 262_144,
-    maxEncryptedResponseBytes: 262_144,
+    maxEncryptedRequestBytes: MAX_ENCRYPTED_REQUEST_BYTES,
+    maxEncryptedResponseBytes: MAX_ENCRYPTED_REQUEST_BYTES,
     turnkeyTrustRootId: "aws-nitro-root-g1",
     validFromMs: "1700000000000",
     expiresAtMs: "1900000000000",

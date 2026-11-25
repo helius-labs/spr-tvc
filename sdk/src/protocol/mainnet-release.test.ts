@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { policySigningDigest, verifySignedReleasePolicy } from "../attestation/release-policy.js";
 import { signP256Prehash } from "../crypto/p256.js";
+import { MAX_ENCRYPTED_REQUEST_BYTES } from "./constants.js";
 import { encodeLowerHex } from "./hex.js";
 import { bindMainnetRelease, releaseForConnection, type MainnetTrust } from "./releases.js";
 import type { ReleasePolicy, SignedReleasePolicy } from "./types.js";
@@ -28,7 +29,7 @@ const policy: ReleasePolicy = {
   quorumKeyId: "quorum", quorumKeyEpoch: "1", revocationEpoch: "2",
   acceptedManifestDigests: ["aa".repeat(32)], acceptedExecutableDigests: ["bb".repeat(32)],
   allowedOperations: ["ServicePublicKeys", "ServiceDecrypt"],
-  maxEncryptedRequestBytes: 262_144, maxEncryptedResponseBytes: 262_144,
+  maxEncryptedRequestBytes: MAX_ENCRYPTED_REQUEST_BYTES, maxEncryptedResponseBytes: MAX_ENCRYPTED_REQUEST_BYTES,
   turnkeyTrustRootId: "aws-nitro-root-g1",
   validFromMs: String(now - 60_000n), expiresAtMs: String(now),
 };

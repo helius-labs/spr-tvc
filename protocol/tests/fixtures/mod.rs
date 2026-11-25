@@ -8,14 +8,18 @@ use p256::SecretKey;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use spr_tvc_protocol::body_limit::{page_encrypted_request_len, page_inner_json};
 use spr_tvc_protocol::constants::{
-    API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, MAX_ENCRYPTED_REQUEST_BYTES,
-    MAX_ENCRYPTED_RESPONSE_BYTES, QOS_P256_PUBLIC_LEN,
+    API_VERSION, EMPTY_RECIPIENT_CIPHERTEXT_LEN, EXPECTED_TURNKEY_TRUST_ROOT_ID,
+    MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES, NOTES_PER_SIGNATURE,
+    QOS_ENVELOPE_OVERHEAD, QOS_P256_PUBLIC_LEN,
 };
 use spr_tvc_protocol::crypto::{
     public_key_uncompressed, sign_p256_prehash, verify_p256_message, verify_p256_prehash,
 };
-use spr_tvc_protocol::decryption_service::SERVICE_PROOF_TYPE;
+use spr_tvc_protocol::decryption_service::{
+    NULLIFIER_SECRET_LEN, SERVICE_PROOF_TYPE, X25519_PUBLIC_KEY_LEN,
+};
 use spr_tvc_protocol::digest::result_digest;
 use spr_tvc_protocol::encoding::{
     canonicalize_json_value, decode_lower_hex, encode_decimal_u64, encode_lower_hex, jcs_serialize,
@@ -604,6 +608,21 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_protocol::err
             "policy": policy,
             "info": info,
             "cases": binding_cases,
+        })),
+    );
+    let page_inner = page_inner_json()?;
+    files.insert(
+        "page-limit.json".to_owned(),
+        fixture_json(&json!({
+            "notes_per_signature": NOTES_PER_SIGNATURE,
+            "empty_recipient_ciphertext_len": EMPTY_RECIPIENT_CIPHERTEXT_LEN,
+            "qos_envelope_overhead": QOS_ENVELOPE_OVERHEAD,
+            "page_inner_json_len": page_inner.len(),
+            "empty_page_encrypted_request_bytes": page_encrypted_request_len()?,
+            "max_encrypted_request_bytes": MAX_ENCRYPTED_REQUEST_BYTES,
+            "max_encrypted_response_bytes": MAX_ENCRYPTED_RESPONSE_BYTES,
+            "nullifier_secret_len": NULLIFIER_SECRET_LEN,
+            "x25519_public_key_len": X25519_PUBLIC_KEY_LEN,
         })),
     );
 

@@ -8,3 +8,4 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 qos_p256 = { version = "=0.16.3", default-features = false }
+spr-keypair = { git = "https://github.com/helius-labs/zolana.git", rev = "c5297afa13e8bfb6edadf6408304ef3fc2f8c676" }

@@ -94,17 +94,14 @@ fn a_signed_empty_batch_returns_the_nullifier_secret() {
 }
 
 #[test]
-fn accepts_256_outputs_and_rejects_257() {
+fn a_batch_past_the_old_item_cap_still_opens() {
     let service = service();
     let owner = recipient_signer();
     let (viewing, _) = service_keys(&service, &owner);
     let output = transfer_output(viewing, b"amount", 0);
-    let full = decrypt(&service, &owner, NETWORK, vec![output.clone(); 256]);
-    let result = decrypted(&service, &full);
-    assert_eq!(result.plaintexts, vec![b"amount".to_vec(); 256]);
-
-    let overflow = decrypt(&service, &owner, NETWORK, vec![output; 257]);
-    refused(&service, &overflow);
+    let batch = decrypt(&service, &owner, NETWORK, vec![output; 300]);
+    let result = decrypted(&service, &batch);
+    assert_eq!(result.plaintexts, vec![b"amount".to_vec(); 300]);
 }
 
 #[test]

@@ -1,4 +1,10 @@
 export const API_VERSION = 1;
+
+/** One SPR indexer page. An empty page fits in the encrypted body cap. */
+export const NOTES_PER_SIGNATURE = 1000;
+/** Photon's body cap, and the SPR SDK indexer client's. Pinned by `protocol/fixtures/page-limit.json`. */
+export const MAX_ENCRYPTED_REQUEST_BYTES = 10 * 1024 * 1024;
+export const MAX_ENCRYPTED_RESPONSE_BYTES = MAX_ENCRYPTED_REQUEST_BYTES;
 export const EXPECTED_TURNKEY_TRUST_ROOT_ID = "aws-nitro-root-g1";
 export const TVC_APP_PROOF_SCHEME = "SIGNATURE_SCHEME_EPHEMERAL_KEY_P256";
 export const TVC_QOS_PING_PROOF_TYPE = "spr.tvc.qos_ping.v1";

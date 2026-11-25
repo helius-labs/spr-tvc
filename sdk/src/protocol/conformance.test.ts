@@ -8,6 +8,11 @@ import { decodeDecimalU64, encodeDecimalU64 } from "./decimal.js";
 import { decodeLowerHex, encodeLowerHex } from "./hex.js";
 import { parseStrictJson } from "./json.js";
 import { resultDigest } from "./digest.js";
+import {
+  MAX_ENCRYPTED_REQUEST_BYTES,
+  MAX_ENCRYPTED_RESPONSE_BYTES,
+  NOTES_PER_SIGNATURE,
+} from "./constants.js";
 import { DecryptionServiceError } from "./error.js";
 import type { HealthResponse, ServiceInfo } from "./types.js";
 import { SERVICE_INFO_KEYS } from "./types.js";
@@ -62,6 +67,20 @@ describe("content-addressed fixtures", () => {
         digest
       );
     }
+  });
+});
+
+describe("page limit", () => {
+  it("matches the encoded indexer page", () => {
+    const page = readJson("page-limit.json");
+    expect(page.notes_per_signature).toBe(NOTES_PER_SIGNATURE);
+    expect(page.empty_recipient_ciphertext_len).toBe(50);
+    expect(page.qos_envelope_overhead).toBe(12 + 65 + 4 + 16);
+    expect(page.empty_page_encrypted_request_bytes).toBeLessThan(MAX_ENCRYPTED_REQUEST_BYTES);
+    expect(page.max_encrypted_request_bytes).toBe(MAX_ENCRYPTED_REQUEST_BYTES);
+    expect(page.max_encrypted_response_bytes).toBe(MAX_ENCRYPTED_RESPONSE_BYTES);
+    expect(page.nullifier_secret_len).toBe(31);
+    expect(page.x25519_public_key_len).toBe(33);
   });
 });
 

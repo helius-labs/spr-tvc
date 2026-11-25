@@ -4,8 +4,6 @@ import { DecryptionServiceError } from "../protocol/error.js";
 import { encodeLowerHex, requireHex } from "../protocol/hex.js";
 import type { DecryptItem, DecryptLabel } from "../protocol/types.js";
 
-const MAX_ITEMS_PER_BATCH = 256;
-
 const LABELS: Record<DecryptRequest["label"], DecryptLabel> = {
   transfer: "Transfer",
   ringDeposit: "RingDeposit",
@@ -22,7 +20,7 @@ export function decryptItem(request: DecryptRequest): DecryptItem {
   };
 }
 
-/** Respect both the item ceiling and the executor's serialized byte budget. */
+/** Split when the serialized request would exceed the executor's byte budget. */
 export async function batched<TItem, TAnswer>(
   items: readonly TItem[],
   call: (batch: readonly TItem[]) => Promise<readonly TAnswer[]>,
@@ -46,9 +44,7 @@ export async function batched<TItem, TAnswer>(
     if (answer.length !== batch.length) throw new Error("BatchMismatch");
     answers.push(...answer);
   };
-  for (let start = 0; start < items.length; start += MAX_ITEMS_PER_BATCH) {
-    await send(items.slice(start, start + MAX_ITEMS_PER_BATCH));
-  }
+  if (items.length > 0) await send(items);
   return answers;
 }
 

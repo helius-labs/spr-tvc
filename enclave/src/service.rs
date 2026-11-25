@@ -11,7 +11,10 @@ use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, Response};
 use axum::response::IntoResponse;
 use axum::Router;
-use qos_core::protocol::services::boot::manifest::{canonical_json_hash, ManifestEnvelopeV2};
+use qos_core::protocol::services::boot::manifest::{
+    canonical_json_hash, ManifestEnvelopeV2, VersionedManifestEnvelope,
+};
+use qos_core::protocol::services::boot::PivotConfigV2;
 use qos_core::{EPHEMERAL_KEY_FILE, MANIFEST_FILE, QUORUM_FILE};
 use qos_p256::P256Pair;
 use spr_tvc_protocol::constants::{
@@ -44,12 +47,16 @@ impl Service {
     }
 
     /// Loads the QOS keys from the canonical paths and binds discovery to the approved manifest.
+    ///
+    /// `argv` is `std::env::args().skip(1)`. It must equal the manifest's pivot arguments.
     pub fn load(release: Release) -> io::Result<Self> {
+        let argv: Vec<String> = std::env::args().skip(1).collect();
         Self::load_from(
             release,
             Path::new(EPHEMERAL_KEY_FILE),
             Path::new(QUORUM_FILE),
             Path::new(MANIFEST_FILE),
+            &argv,
         )
     }
 
@@ -58,23 +65,43 @@ impl Service {
         ephemeral_path: &Path,
         quorum_path: &Path,
         manifest_path: &Path,
+        argv: &[String],
     ) -> io::Result<Self> {
         let ephemeral = P256Pair::from_hex_file(ephemeral_path)
             .map_err(|_| io::Error::other("failed to load QOS ephemeral key"))?;
         let quorum = P256Pair::from_hex_file(quorum_path)
             .map_err(|_| io::Error::other("failed to load QOS quorum key"))?;
-        let envelope: ManifestEnvelopeV2 = serde_json::from_slice(&fs::read(manifest_path)?)
+        let versioned = VersionedManifestEnvelope::try_from_slice_compat(&fs::read(manifest_path)?)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let manifest = envelope.manifest;
+        versioned
+            .check_approvals()
+            .map_err(|_| io::Error::other("QOS manifest approvals do not meet the threshold"))?;
+        let VersionedManifestEnvelope::V2(ManifestEnvelopeV2 { manifest, .. }) = versioned else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "QOS manifest envelope must be schema v2",
+            ));
+        };
         if manifest.namespace.quorum_key != quorum.public_key().to_bytes() {
             return Err(io::Error::other(
                 "QOS quorum key does not match the approved manifest",
             ));
         }
+        require_hosted_pivot(&manifest.pivot, argv)?;
         let info =
             release.service_info(canonical_json_hash(&manifest), manifest.pivot.hash, &quorum);
         Ok(Self::new(info, ephemeral, quorum))
     }
+}
+
+/// The process may boot only with the launch configuration the manifest approved.
+fn require_hosted_pivot(pivot: &PivotConfigV2, argv: &[String]) -> io::Result<()> {
+    if pivot.debug_mode || !pivot.env.is_empty() || pivot.args.as_slice() != argv {
+        return Err(io::Error::other(
+            "QOS launch arguments do not match the approved manifest",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn router(service: Arc<Service>) -> Router {
@@ -83,13 +110,14 @@ pub(crate) fn router(service: Arc<Service>) -> Router {
 
 async fn dispatch(State(service): State<Arc<Service>>, request: Request<Body>) -> Response<Body> {
     let (parts, body) = request.into_parts();
-    let body_limit = usize::try_from(
+    let Ok(body_limit) = usize::try_from(
         service
             .info
             .max_encrypted_request_bytes
             .min(MAX_ENCRYPTED_REQUEST_BYTES),
-    )
-    .unwrap_or(usize::MAX);
+    ) else {
+        return PublicError::Unavailable.into_response();
+    };
     let Ok(body) = to_bytes(body, body_limit).await else {
         return PublicError::RequestTooLarge.into_response();
     };

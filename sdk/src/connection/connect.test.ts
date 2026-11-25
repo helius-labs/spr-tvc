@@ -6,6 +6,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { qosDecrypt, qosEncrypt } from "../crypto/qos.js";
 import { signP256Message, signP256Prehash } from "../crypto/p256.js";
+import { MAX_ENCRYPTED_REQUEST_BYTES } from "../protocol/constants.js";
 import { canonicalizeJsonValue } from "../protocol/jcs.js";
 import { decodeLowerHex, encodeLowerHex } from "../protocol/hex.js";
 import type {
@@ -95,8 +96,8 @@ function connectFixture() {
     quorumKeyEpoch: "1",
     quorumPublicKey,
     allowedOperations: ["ServicePublicKeys", "ServiceDecrypt"],
-    maxEncryptedRequestBytes: 262_144,
-    maxEncryptedResponseBytes: 262_144,
+    maxEncryptedRequestBytes: MAX_ENCRYPTED_REQUEST_BYTES,
+    maxEncryptedResponseBytes: MAX_ENCRYPTED_REQUEST_BYTES,
     turnkeyTrustRootId: "aws-nitro-root-g1",
     validFromMs: "1700000000000",
     expiresAtMs: "1800000000000",
@@ -137,8 +138,8 @@ function connectFixture() {
     quorum_key_epoch: policy.quorumKeyEpoch,
     // /v1/info and /v1/ping may be served by different healthy replicas.
     supported_operations: ["ServicePublicKeys", "ServiceDecrypt"],
-    max_encrypted_request_bytes: "262144",
-    max_encrypted_response_bytes: "262144",
+    max_encrypted_request_bytes: String(MAX_ENCRYPTED_REQUEST_BYTES),
+    max_encrypted_response_bytes: String(MAX_ENCRYPTED_REQUEST_BYTES),
     proof_type: "spr.tvc.decryption_service.v1",
   };
   const expectedPcrs = {
