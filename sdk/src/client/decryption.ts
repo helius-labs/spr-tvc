@@ -51,7 +51,7 @@ export type DecryptionService = {
    * Fetches the public keys only. The signer authorizes each later Decrypt, and the first one
    * also returns the nullifier secret.
    */
-  decrypt(
+  keys(
     signer: MessagePartialSigner,
     options?: DecryptionServiceRequestOptions & { readonly grant?: ViewGrant },
   ): Promise<DecryptionServiceKeys>;
@@ -163,7 +163,7 @@ export function decryptionServiceFromSession(
     address(owner, options) {
       return withinRequest(options, (signal) => address(owner, signal));
     },
-    decrypt(signer, options) {
+    keys(signer, options) {
       return withinRequest(options, async (signal) => {
         const grant = options?.grant;
         const owner = grant === undefined ? signer.address : solanaAddress(grant.owner);

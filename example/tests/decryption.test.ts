@@ -28,7 +28,7 @@ test("the direct service opens signed batches and the SDK checks commitments", {
       return signer.signMessages(messages);
     },
   };
-  const keys = await service.decrypt(owner);
+  const keys = await service.keys(owner);
   const sender = ViewingKey.generate();
   try {
     assert.equal(approvals.length, 0);

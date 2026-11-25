@@ -177,7 +177,7 @@ it.each(["caller", "client"])("uses one %s deadline across all decrypt batches",
       nullifier_public_key: encodeLowerHex(nullifier.publicKey()),
     });
   try {
-    const keys = await service.decrypt(owner);
+    const keys = await service.keys(owner);
     try {
       vi.useFakeTimers();
       operation

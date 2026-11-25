@@ -16,10 +16,10 @@ const service = createDecryptionService({
 const recipient = await service.address(recipientAddress);
 
 // The recipient supplies a Solana Kit MessagePartialSigner for recipientAddress.
-const keys = await service.decrypt(owner);
+const keys = await service.keys(owner);
 ```
 
-`decrypt` returns SPR `ShieldedKeys` and does not call Decrypt. Sync opens notes
+`keys` returns SPR `ShieldedKeys` and does not call Decrypt. Sync opens notes
 through `keys.decrypt`; that response carries the plaintexts and the nullifier
 secret. A spend reads `nullifierSecret()` and gives it to the SPR prover. That
 read reaches the service only when no note has been opened. Call `keys.destroy()`

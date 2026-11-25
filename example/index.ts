@@ -16,7 +16,7 @@ async function main(): Promise<void> {
   if (await isWalletRegistered({ rpc: zolana, owner: recipient.address })) {
     throw new Error("the example requires a recipient without a registry record");
   }
-  const serviceKeys = await service.decrypt(recipient);
+  const serviceKeys = await service.keys(recipient);
   let keys: Awaited<ReturnType<typeof localWalletKeys>> | undefined;
   let ownKeys: typeof keys;
   let spendKeys: Awaited<ReturnType<typeof serviceSpendKeys>> | undefined;
