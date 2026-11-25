@@ -1,0 +1,48 @@
+//! Opening pool ciphertexts with a viewing key held in the enclave.
+
+use spr_keypair::viewing_key::Salt;
+use spr_keypair::{ViewingKey, X25519Pubkey};
+use spr_tvc_wire::types::{DecryptItem, DecryptLabel, KdfMode};
+use zeroize::Zeroizing;
+
+use crate::request::Failure;
+
+/// Open every item under the supplied key.
+///
+/// The pool cipher is `spr-keypair`'s `ctr_apply` at the commit pinned in the
+/// workspace: HKDF-SHA256 yields 44 bytes, and AES-256-CTR starts at
+/// `nonce || 2`. It has no authentication tag.
+pub(crate) fn open_ciphertexts(
+    viewing: &ViewingKey,
+    items: &[DecryptItem],
+) -> Result<Vec<Vec<u8>>, Failure> {
+    // Wipe plaintexts already opened if a later item fails.
+    let mut plaintexts = Zeroizing::new(Vec::with_capacity(items.len()));
+    for item in items {
+        let sender_key_bytes = item
+            .ephemeral_viewing_public_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| Failure::Invalid)?;
+        let sender_key =
+            X25519Pubkey::from_bytes(sender_key_bytes).map_err(|_| Failure::Invalid)?;
+        let salt: Salt = item
+            .salt
+            .as_slice()
+            .try_into()
+            .map_err(|_| Failure::Invalid)?;
+        let plaintext = match (item.kdf, item.label) {
+            (KdfMode::HkdfSha256Ctr, DecryptLabel::Transfer) => {
+                let slot = u32::try_from(item.slot_index).map_err(|_| Failure::Invalid)?;
+                viewing.decrypt_utxo(&item.ciphertext, &sender_key, salt, slot)
+            }
+            (KdfMode::HkdfSha256Ctr, DecryptLabel::RingDeposit) if item.slot_index == 0 => {
+                viewing.decrypt_ring_deposit(&item.ciphertext, &sender_key, salt)
+            }
+            (KdfMode::HkdfSha256Ctr, DecryptLabel::RingDeposit) => return Err(Failure::Invalid),
+        }
+        .map_err(|_| Failure::Invalid)?;
+        plaintexts.push(plaintext);
+    }
+    Ok(std::mem::take(&mut *plaintexts))
+}

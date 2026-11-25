@@ -8,18 +8,18 @@ use qos_core::protocol::services::boot::manifest::{canonical_json_hash, Manifest
 use qos_p256::P256Public;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use spr_tvc_protocol::constants::{
+use spr_tvc_wire::constants::{
     API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, MAX_ENCRYPTED_POLICY_BYTES,
     MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES,
 };
-use spr_tvc_protocol::crypto::{parse_uncompressed_sec1, public_key_uncompressed};
-use spr_tvc_protocol::decryption_service::SERVICE_PROOF_TYPE;
-use spr_tvc_protocol::encoding::hex as wire_hex;
-use spr_tvc_protocol::release::{
+use spr_tvc_wire::crypto::{parse_uncompressed_sec1, public_key_uncompressed};
+use spr_tvc_wire::decryption_service::SERVICE_PROOF_TYPE;
+use spr_tvc_wire::encoding::hex as wire_hex;
+use spr_tvc_wire::release::{
     policy_signing_digest, sign_release_policy, verify_signed_release_policy,
     PinnedReleaseAuthorities, ReleaseAuthorityKey,
 };
-use spr_tvc_protocol::types::{
+use spr_tvc_wire::types::{
     Network, OperationKind, ReleaseAuthoritySignature, ReleasePolicy, ServiceInfo,
     SignedReleasePolicy,
 };
@@ -151,7 +151,7 @@ impl TurnkeyDeployment {
 impl Release<'_> {
     pub(crate) fn production_trust(&self) -> Result<MainnetTrust> {
         let trust: MainnetTrust =
-            read_json::<Option<_>>(std::path::Path::new("sdk/trust/mainnet.json"))?
+            read_json::<Option<_>>(std::path::Path::new("client/sdk/trust/mainnet.json"))?
                 .context("mainnet trust anchors are unavailable")?;
         let mainnet = app_config(Network::Mainnet)?;
         let devnet = &self.config.networks.devnet;

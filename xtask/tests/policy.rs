@@ -1,17 +1,15 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use p256::ecdsa::SigningKey;
 use serde_json::{json, Value};
-use spr_tvc_protocol::constants::{
+use spr_tvc_wire::constants::{
     API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, MAX_ENCRYPTED_POLICY_BYTES,
 };
-use spr_tvc_protocol::crypto::public_key_uncompressed;
-use spr_tvc_protocol::release::{
+use spr_tvc_wire::crypto::public_key_uncompressed;
+use spr_tvc_wire::release::{
     sign_release_policy, verify_signed_release_policy, PinnedReleaseAuthorities,
     ReleaseAuthorityKey,
 };
-use spr_tvc_protocol::types::{
-    Network, ReleaseAuthoritySignature, ReleasePolicy, SignedReleasePolicy,
-};
+use spr_tvc_wire::types::{Network, ReleaseAuthoritySignature, ReleasePolicy, SignedReleasePolicy};
 
 use crate::policy::{
     devnet_sign, verify_mainnet_policy, MainnetTrust, TurnkeyDeployment, OPERATIONS,
@@ -25,7 +23,8 @@ fn mainnet_args() -> Args {
 
 #[test]
 fn authentic_deployment_binds_app_runtime_image_and_manifest() {
-    let config = serde_json::from_str(include_str!("../../enclave/deploy/release.json")).unwrap();
+    let config =
+        serde_json::from_str(include_str!("../../decryption-service/deploy/release.json")).unwrap();
     let mut args = mainnet_args();
     args.network = Network::Devnet;
     let devnet = Release {
@@ -40,7 +39,7 @@ fn authentic_deployment_binds_app_runtime_image_and_manifest() {
         app: &config.networks.devnet,
     };
     let envelope: Value = serde_json::from_str(include_str!(
-        "../../enclave/tests/fixtures/qos-0.12.1-manifest-envelope.json"
+        "../../decryption-service/tests/fixtures/qos-0.12.1-manifest-envelope.json"
     ))
     .unwrap();
     let mut manifest = envelope["manifest"].clone();

@@ -1,5 +1,6 @@
 [workspace]
-members = ["enclave", "protocol", "xtask"]
+members = ["decryption-service", "wire", "xtask"]
+exclude = ["gateway"]
 resolver = "2"
 
 [workspace.package]

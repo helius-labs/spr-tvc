@@ -1,6 +1,7 @@
 # workflow_dispatch on protected main. Checks that gateway_commit is the
 # private-wallet tip, checks out that commit, and builds
-# apps/tvc-gateway/Dockerfile. That Dockerfile is not in the main tree.
+# apps/tvc-gateway/Dockerfile from that branch. Main's decryption gateway
+# is gateway/ and is not the image this job publishes.
 name: publish-tvc-gateway-image
 run-name: Publish gateway ${{ inputs.gateway_commit }}
 

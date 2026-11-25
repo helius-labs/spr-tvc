@@ -48,7 +48,7 @@ cargo xtask pin "$release" --network devnet
 
 Run this after the endpoint serves the staged deployment. The tool checks the
 live deployment and Boot Proof before signing with a one-time devnet
-authority and writing `sdk/releases/devnet.json`. Record the deployment and
+authority and writing `client/sdk/releases/devnet.json`. Record the deployment and
 pin together.
 
 Discovery and ping responses are capped at 64 KiB each. Discovery has 10
@@ -61,10 +61,10 @@ is still running after 60 seconds.
 Use independently held operator keys and a threshold for both manifest
 approval and share recovery.
 Configure the app, Quorum key, and domain in
-[release.json](../enclave/deploy/release.json) and
-`enclave/deploy/mainnet/spr-decryption-service-mainnet.app.json`. Pin the
+[release.json](../decryption-service/deploy/release.json) and
+`decryption-service/deploy/mainnet/spr-decryption-service-mainnet.app.json`. Pin the
 same `quorumPublicKey` and `securityDomainId`, approved `qosIdentityPcrs`
-(PCR0–3), and `maximumPolicyLifetimeMs` in `sdk/trust/mainnet.json`.
+(PCR0–3), and `maximumPolicyLifetimeMs` in `client/sdk/trust/mainnet.json`.
 Use the deployed QOS release's published `nitro.pcrs` for PCR0–2.
 Turnkey's [QOS 0.12.1 release](https://github.com/tkhq/qos/releases/tag/qos_core-v0.12.1)
 publishes matching PCR0 and PCR1. Pin PCR3 separately for the intended
@@ -92,7 +92,7 @@ and sign its digest using P-256 with prehashed input. The signed JSON holds
 `policy`, `authoritySetId`, and `signatures`. Each signature entry holds
 `keyId` and a lowercase hex 64-byte raw low-S `signature`.
 `pin` rechecks attestation and threshold signatures before writing
-`sdk/releases/mainnet.json`. Distribute the reviewed pin with its matching
+`client/sdk/releases/mainnet.json`. Distribute the reviewed pin with its matching
 service endpoint.
 
 ### Recovery and exposure

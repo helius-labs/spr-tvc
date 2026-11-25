@@ -2,8 +2,7 @@ import js from "@eslint/js";
 import tsPlugin from "@typescript-eslint/eslint-plugin";
 import tsParser from "@typescript-eslint/parser";
 
-const TURNKEY_PROOF_SEAM =
-  "sdk/src/attestation/turnkey.ts";
+const TURNKEY_PROOF_SEAM = "client/sdk/src/attestation/turnkey.ts";
 
 export default [
   {
@@ -12,8 +11,8 @@ export default [
   js.configs.recommended,
   {
     files: [
-      "sdk/**/*.{ts,tsx}",
-      "example/**/*.{ts,tsx}",
+      "client/sdk/**/*.{ts,tsx}",
+      "examples/turnkey/**/*.{ts,tsx}",
       "xtask/*.ts",
     ],
     languageOptions: {
@@ -55,7 +54,7 @@ export default [
     },
   },
   {
-    files: ["example/turnkey.ts", "xtask/release-api.ts"],
+    files: ["examples/turnkey/turnkey.ts", "xtask/release-api.ts"],
     rules: {
       "no-restricted-imports": "off",
     },

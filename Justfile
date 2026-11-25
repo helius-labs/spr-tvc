@@ -8,25 +8,30 @@ default:
 
 fmt:
     cargo fmt --all
+    cargo fmt --manifest-path gateway/Cargo.toml --all
 
 fmt-check:
     cargo fmt --all -- --check
+    cargo fmt --manifest-path gateway/Cargo.toml --all -- --check
 
 check:
     cargo check --workspace --all-targets --all-features --locked
+    cargo check --manifest-path gateway/Cargo.toml --all-targets --locked
 
 lint:
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    cargo clippy --manifest-path gateway/Cargo.toml --all-targets --locked -- -D warnings
 
 test:
     cargo test --workspace --all-targets --all-features --locked
+    cargo test --manifest-path gateway/Cargo.toml --all-targets --locked
 
 # Times one transfer, one indexer page, and one max-size Quorum envelope. Not part of `just ci`.
 bench:
     cargo bench -p spr-tvc-decryption-service --bench decrypt --features bench
 
-regenerate-protocol-fixtures:
-    cargo test --locked -p spr-tvc-protocol --test conformance regenerate_content_addressed_fixtures -- --ignored --exact
+regenerate-wire-fixtures:
+    cargo test --locked -p spr-tvc-wire --test conformance regenerate_content_addressed_fixtures -- --ignored --exact
 
 setup:
     {{pnpm}} install --frozen-lockfile
@@ -42,7 +47,7 @@ ci: fmt-check lint test setup
     bash tests/with-local-decryption.sh {{pnpm}} ci:ts
 
 image network="devnet":
-    docker build --platform linux/amd64 --provenance=false --build-arg SPR_NETWORK="$1" -f enclave/Dockerfile .
+    docker build --platform linux/amd64 --provenance=false --build-arg SPR_NETWORK="$1" -f decryption-service/Dockerfile .
 
 decryption-e2e: setup build-ts
     bash tests/with-local-decryption.sh {{pnpm}} --filter spr-tvc-typescript-client-example test

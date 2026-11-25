@@ -1,0 +1,53 @@
+[package]
+name = "spr-tvc-decryption-service"
+version = "0.1.0"
+description = "Attested decryption for Solana addresses without a registered private wallet"
+edition = "2021"
+rust-version = "1.98"
+license = "AGPL-3.0-only"
+publish = false
+autobins = false
+
+[features]
+# The unattested local testkit; the enclave binary never enables it.
+local-dev = ["dep:serde"]
+# Bench inputs. `just bench` enables this. The enclave binary does not.
+bench = []
+
+[dependencies]
+axum = { version = "=0.8.8", default-features = false, features = ["http1", "tokio"] }
+clap = { version = "=4.5.53", features = ["derive"] }
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "zeroize"] }
+hkdf = "=0.12.4"
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
+qos_core = { version = "=0.16.3", default-features = false }
+qos_p256.workspace = true
+serde = { version = "=1.0.228", features = ["derive"], optional = true }
+serde_json = "=1.0.150"
+sha2 = "=0.10.9"
+solana-pubkey = "=4.2.0"
+strum = { version = "=0.28.0", features = ["derive"] }
+tokio = { version = "=1.48.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal"] }
+zeroize = "=1.9.0"
+spr-keypair.workspace = true
+spr-tvc-wire = { path = "../wire" }
+
+[dev-dependencies]
+criterion = { version = "=0.5.1", default-features = false, features = ["cargo_bench_support"] }
+hex = "=0.4.3"
+http-body-util = "=0.1.3"
+tower = { version = "=0.5.3", features = ["util"] }
+
+[[bench]]
+name = "decrypt"
+harness = false
+required-features = ["bench"]
+
+[[bin]]
+name = "spr-tvc-decryption-service"
+path = "src/main.rs"
+
+[[bin]]
+name = "spr-tvc-decryption-service-local"
+path = "src/bin/local.rs"
+required-features = ["local-dev"]

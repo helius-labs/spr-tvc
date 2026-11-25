@@ -1,0 +1,21 @@
+# Settings every network shares. Run with one network's overlay beside this
+# file, `--config configs/devnet.yaml` or `--config configs/mainnet.yaml`.
+# Secrets come from the environment:
+#   TVC_GATEWAY_ORIGIN_AUTH_HEADER
+#   TVC_GATEWAY_TURNKEY__BOOT_PROOF_API_KEY__PUBLIC_KEY / __PRIVATE_KEY
+stage: dev
+listen: 127.0.0.1:8940
+metrics:
+    statsd_endpoint: 127.0.0.1:8125
+    prefix: tvc_gateway
+dev_api:
+    base_url: https://dev-api.helius.xyz/v0
+    project_cache_secs: 300
+enclave:
+    request_timeout_ms: 55000
+    max_body_bytes: 524288
+    max_in_flight_per_project: 16
+    replay_window_secs: 360
+    replay_max_entries: 200000
+turnkey:
+    api_base_url: https://api.turnkey.com

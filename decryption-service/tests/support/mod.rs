@@ -1,0 +1,79 @@
+//! What tests of an application here share: a release, and a client's half of the envelope.
+
+use axum::body::Body;
+use axum::http::Response;
+use http_body_util::BodyExt as _;
+use qos_p256::{encrypt::P256EncryptPair, P256Public};
+use spr_tvc_wire::constants::API_VERSION;
+use spr_tvc_wire::crypto::verify_p256_message;
+use spr_tvc_wire::digest::result_digest;
+use spr_tvc_wire::encoding::parse_strict_json;
+use spr_tvc_wire::types::{
+    EncryptedRequest, EncryptedResponse, OperationProofPayload, ServiceInfo,
+};
+use zeroize::Zeroizing;
+
+use crate::Release;
+
+pub fn release() -> Release {
+    Release {
+        security_domain_id: [0x11; 32],
+        release_id: "release-test".to_owned(),
+        quorum_key_id: "quorum-test".to_owned(),
+        quorum_key_epoch: 1,
+    }
+}
+
+/// `plaintext` encrypted to the running Quorum key, as a client sends it.
+pub fn encrypt_request(info: &ServiceInfo, plaintext: &str) -> EncryptedRequest {
+    let quorum = P256Public::from_bytes(&info.quorum_public_key).expect("quorum key");
+    EncryptedRequest {
+        version: API_VERSION,
+        quorum_key_id: info.quorum_key_id.clone(),
+        quorum_key_epoch: info.quorum_key_epoch,
+        ciphertext: quorum.encrypt(plaintext.as_bytes()).expect("encrypt"),
+    }
+}
+
+/// Opens an answer as a client does: checks the App Proof, then decrypts.
+pub fn open_response(
+    expected_ephemeral: &[u8],
+    response: &str,
+    response_secret: &[u8; 32],
+) -> (OperationProofPayload, Zeroizing<Vec<u8>>) {
+    let response: EncryptedResponse = parse_strict_json(response).expect("response");
+    let proof = response.tvc_app_proof;
+    assert_eq!(proof.public_key, expected_ephemeral);
+    let ephemeral = P256Public::from_bytes(&proof.public_key).expect("ephemeral key");
+    verify_p256_message(
+        &ephemeral.signing_public_key_bytes(),
+        proof.proof_payload.as_bytes(),
+        &proof.signature,
+    )
+    .expect("app proof signature");
+    let payload: OperationProofPayload =
+        parse_strict_json(&proof.proof_payload).expect("proof payload");
+    assert_eq!(payload.request_id, response.request_id);
+    assert_eq!(
+        payload.result_digest,
+        result_digest(&response.encrypted_result)
+    );
+    let plaintext = response_key(response_secret)
+        .decrypt(&response.encrypted_result)
+        .expect("result");
+    (payload, plaintext)
+}
+
+pub fn response_key(secret: &[u8; 32]) -> P256EncryptPair {
+    P256EncryptPair::from_bytes(&Zeroizing::new(secret.to_vec())).expect("response key")
+}
+
+pub async fn body(response: Response<Body>) -> String {
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    String::from_utf8(bytes.to_vec()).expect("utf8")
+}

@@ -44,7 +44,7 @@ jobs:
         env:
           NETWORK: ${{ inputs.network }}
         run: |
-          release="enclave/deploy/release.json"
+          release="decryption-service/deploy/release.json"
           repository="$(jq -er .imageRepository "$release")"
           echo "repository=$repository" >> "$GITHUB_OUTPUT"
           echo "tag=$repository:decryption-service-${NETWORK}-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
@@ -62,7 +62,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: enclave/Dockerfile
+          file: decryption-service/Dockerfile
           platforms: linux/amd64
           provenance: false
           sbom: false
