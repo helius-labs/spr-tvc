@@ -1,9 +1,10 @@
 //! The empty indexer page used to check that a normal decrypt fits in the 10 MiB body cap.
 
 use spr_keypair::constants::SALT_LEN;
+use spr_tvc_protocol::body_limit::{encrypted_request_http_len, max_inner_len, qos_frame_len};
 use spr_tvc_protocol::constants::{
-    API_VERSION, EMPTY_RECIPIENT_CIPHERTEXT_LEN, NOTES_PER_SIGNATURE, QOS_ENVELOPE_OVERHEAD,
-    QOS_P256_PUBLIC_LEN, RAW_P256_SIGNATURE_LEN, SEC1_UNCOMPRESSED_LEN, TVC_APP_PROOF_SCHEME,
+    API_VERSION, EMPTY_RECIPIENT_CIPHERTEXT_LEN, NOTES_PER_SIGNATURE, QOS_P256_PUBLIC_LEN,
+    RAW_P256_SIGNATURE_LEN, SEC1_UNCOMPRESSED_LEN, TVC_APP_PROOF_SCHEME,
 };
 use spr_tvc_protocol::decryption_service::{
     parse_service_request, ServiceOperation, ServiceRequest, ServiceResult, SERVICE_PROOF_TYPE,
@@ -12,8 +13,7 @@ use spr_tvc_protocol::decryption_service::{
 use spr_tvc_protocol::encoding::jcs_serialize;
 use spr_tvc_protocol::error::{ErrorCode, TvcError};
 use spr_tvc_protocol::types::{
-    AppProof, DecryptItem, DecryptLabel, EncryptedRequest, EncryptedResponse, OperationKind,
-    OperationProofPayload,
+    AppProof, DecryptItem, DecryptLabel, EncryptedResponse, OperationKind, OperationProofPayload,
 };
 
 /// Longest base58 encoding of a 32-byte Solana address.
@@ -60,25 +60,6 @@ pub fn page_inner_json() -> Result<String, TvcError> {
     jcs_serialize(&page_decrypt_request())
 }
 
-fn qos_frame_len(plaintext_len: usize) -> usize {
-    plaintext_len + QOS_ENVELOPE_OVERHEAD
-}
-
-/// HTTP body of an `EncryptedRequest` whose ciphertext is a QOS frame of `inner_len`.
-fn encrypted_request_http_len(
-    inner_len: usize,
-    quorum_key_id: &str,
-    quorum_key_epoch: u64,
-) -> Result<usize, TvcError> {
-    let request = EncryptedRequest {
-        version: API_VERSION,
-        quorum_key_id: quorum_key_id.to_owned(),
-        quorum_key_epoch,
-        ciphertext: vec![0; qos_frame_len(inner_len)],
-    };
-    Ok(jcs_serialize(&request)?.len())
-}
-
 pub fn page_encrypted_request_len() -> Result<usize, TvcError> {
     let inner = page_inner_json()?;
     encrypted_request_http_len(inner.len(), "", u64::MAX)
@@ -106,14 +87,6 @@ fn page_encrypted_response_len() -> Result<usize, TvcError> {
         },
     };
     Ok(jcs_serialize(&response)?.len())
-}
-
-/// Largest canonical inner JSON whose encrypted HTTP body fits in the cap.
-fn max_inner_len() -> Result<usize, TvcError> {
-    let wrapper = encrypted_request_http_len(0, "", u64::MAX)?;
-    let cap = usize::try_from(spr_tvc_protocol::constants::MAX_ENCRYPTED_REQUEST_BYTES)
-        .expect("the body cap fits in usize");
-    Ok(cap.saturating_sub(wrapper) / 2)
 }
 
 #[test]

@@ -9,8 +9,8 @@ use qos_p256::P256Public;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use spr_tvc_protocol::constants::{
-    API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, MAX_ENCRYPTED_REQUEST_BYTES,
-    MAX_ENCRYPTED_RESPONSE_BYTES,
+    API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, MAX_ENCRYPTED_POLICY_BYTES,
+    MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES,
 };
 use spr_tvc_protocol::crypto::{parse_uncompressed_sec1, public_key_uncompressed};
 use spr_tvc_protocol::decryption_service::SERVICE_PROOF_TYPE;
@@ -265,8 +265,8 @@ impl Release<'_> {
             quorum_key_epoch: self.app.quorum_key_epoch,
             quorum_public_key: approved.quorum_public_key.clone(),
             allowed_operations: OPERATIONS.to_vec(),
-            max_encrypted_request_bytes: MAX_ENCRYPTED_REQUEST_BYTES as u32,
-            max_encrypted_response_bytes: MAX_ENCRYPTED_RESPONSE_BYTES as u32,
+            max_encrypted_request_bytes: MAX_ENCRYPTED_POLICY_BYTES,
+            max_encrypted_response_bytes: MAX_ENCRYPTED_POLICY_BYTES,
             turnkey_trust_root_id: self.config.turnkey_trust_root_id.clone(),
             valid_from_ms,
             expires_at_ms,

@@ -6,8 +6,8 @@ import { DecryptionServiceError } from "../protocol/error.js";
 import { bytesEqual, encodeLowerHex, requireHex } from "../protocol/hex.js";
 import { canonicalizeJsonValue, isRfc8785 } from "../protocol/jcs.js";
 import { assertExactObjectKeys, parseStrictJson } from "../protocol/json.js";
-import { API_VERSION, AES_GCM_NONCE_LEN, AES_GCM_TAG_LEN, QOS_P256_PUBLIC_LEN,
-  RAW_P256_SIGNATURE_LEN, SEC1_UNCOMPRESSED_LEN, SHA256_LEN, TVC_APP_PROOF_KEYS, TVC_APP_PROOF_SCHEME,
+import { API_VERSION, QOS_ENVELOPE_OVERHEAD, QOS_P256_PUBLIC_LEN,
+  RAW_P256_SIGNATURE_LEN, SHA256_LEN, TVC_APP_PROOF_KEYS, TVC_APP_PROOF_SCHEME,
 } from "../protocol/constants.js";
 import type { OperationKind, ServiceInfo } from "../protocol/types.js";
 import type { TurnkeyAppProofWire } from "../attestation/turnkey.js";
@@ -109,8 +109,8 @@ export function checkSignedRequestSize(
   context: ConnectedTvcRuntime,
   signed: object,
 ): void {
-  const ciphertextBytes = te.encode(canonicalizeJsonValue(signed)).length +
-    AES_GCM_NONCE_LEN + SEC1_UNCOMPRESSED_LEN + 4 + AES_GCM_TAG_LEN;
+  const ciphertextBytes =
+    te.encode(canonicalizeJsonValue(signed)).length + QOS_ENVELOPE_OVERHEAD;
   checkRequestSize(
     context.info,
     enclaveRequestBytes(encryptedRequest(context.info, "")) + 2 * ciphertextBytes,

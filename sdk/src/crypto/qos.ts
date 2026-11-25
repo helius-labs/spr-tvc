@@ -6,6 +6,7 @@ import {
   AES_GCM_NONCE_LEN,
   AES_GCM_TAG_LEN,
   QOS_ENCRYPTION_HMAC_MESSAGE,
+  QOS_ENVELOPE_OVERHEAD,
   QOS_P256_PUBLIC_LEN,
   SEC1_UNCOMPRESSED_LEN,
 } from "../protocol/constants.js";
@@ -13,7 +14,8 @@ import { DecryptionServiceError } from "../protocol/error.js";
 import { parseUncompressedSec1 } from "./p256.js";
 
 const te = new TextEncoder();
-const ENVELOPE_HEADER_LEN = AES_GCM_NONCE_LEN + SEC1_UNCOMPRESSED_LEN + 4;
+const ENVELOPE_HEADER_LEN = QOS_ENVELOPE_OVERHEAD - AES_GCM_TAG_LEN;
+const SEALED_LEN_OFFSET = ENVELOPE_HEADER_LEN - 4;
 
 type QosP256Public = {
   encryption: Uint8Array;
@@ -85,7 +87,7 @@ function encodeQosEnvelope(
   const out = new Uint8Array(ENVELOPE_HEADER_LEN + encryptedMessage.length);
   out.set(nonce, 0);
   out.set(ephemeralPublic, AES_GCM_NONCE_LEN);
-  out.set(encodeU32Le(encryptedMessage.length), AES_GCM_NONCE_LEN + SEC1_UNCOMPRESSED_LEN);
+  out.set(encodeU32Le(encryptedMessage.length), SEALED_LEN_OFFSET);
   out.set(encryptedMessage, ENVELOPE_HEADER_LEN);
   return out;
 }
@@ -96,15 +98,14 @@ function decodeQosEnvelope(bytes: Uint8Array): {
   encryptedMessage: Uint8Array;
 } {
   if (bytes.length < ENVELOPE_HEADER_LEN) throw new DecryptionServiceError("InvalidEncryptedEnvelope");
-  const lengthOffset = AES_GCM_NONCE_LEN + SEC1_UNCOMPRESSED_LEN;
   const frame = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const messageLen = frame.getUint32(lengthOffset, true);
+  const messageLen = frame.getUint32(SEALED_LEN_OFFSET, true);
   if (messageLen < AES_GCM_TAG_LEN || bytes.length !== ENVELOPE_HEADER_LEN + messageLen) {
     throw new DecryptionServiceError("InvalidEncryptedEnvelope");
   }
   return {
     nonce: bytes.slice(0, AES_GCM_NONCE_LEN),
-    ephemeralSenderPublic: bytes.slice(AES_GCM_NONCE_LEN, lengthOffset),
+    ephemeralSenderPublic: bytes.slice(AES_GCM_NONCE_LEN, SEALED_LEN_OFFSET),
     encryptedMessage: bytes.slice(ENVELOPE_HEADER_LEN),
   };
 }

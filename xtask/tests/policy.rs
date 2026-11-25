@@ -2,8 +2,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use p256::ecdsa::SigningKey;
 use serde_json::{json, Value};
 use spr_tvc_protocol::constants::{
-    API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, MAX_ENCRYPTED_REQUEST_BYTES,
-    MAX_ENCRYPTED_RESPONSE_BYTES,
+    API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, MAX_ENCRYPTED_POLICY_BYTES,
 };
 use spr_tvc_protocol::crypto::public_key_uncompressed;
 use spr_tvc_protocol::release::{
@@ -136,8 +135,8 @@ fn signed_mainnet_policy_requires_the_exact_candidate_and_distinct_authorities()
         quorum_key_epoch: 1,
         quorum_public_key: vec![4; 130],
         allowed_operations: OPERATIONS.to_vec(),
-        max_encrypted_request_bytes: MAX_ENCRYPTED_REQUEST_BYTES as u32,
-        max_encrypted_response_bytes: MAX_ENCRYPTED_RESPONSE_BYTES as u32,
+        max_encrypted_request_bytes: MAX_ENCRYPTED_POLICY_BYTES,
+        max_encrypted_response_bytes: MAX_ENCRYPTED_POLICY_BYTES,
         turnkey_trust_root_id: EXPECTED_TURNKEY_TRUST_ROOT_ID.into(),
         valid_from_ms: now,
         expires_at_ms: now + 10,

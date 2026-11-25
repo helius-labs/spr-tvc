@@ -12,6 +12,7 @@ import {
   MAX_ENCRYPTED_REQUEST_BYTES,
   MAX_ENCRYPTED_RESPONSE_BYTES,
   NOTES_PER_SIGNATURE,
+  QOS_ENVELOPE_OVERHEAD,
 } from "../../src/protocol/constants.js";
 import { DecryptionServiceError } from "../../src/protocol/error.js";
 import type { HealthResponse, ServiceInfo } from "../../src/protocol/types.js";
@@ -75,7 +76,7 @@ describe("page limit", () => {
     const page = readJson("page-limit.json");
     expect(page.notes_per_signature).toBe(NOTES_PER_SIGNATURE);
     expect(page.empty_recipient_ciphertext_len).toBe(50);
-    expect(page.qos_envelope_overhead).toBe(12 + 65 + 4 + 16);
+    expect(page.qos_envelope_overhead).toBe(QOS_ENVELOPE_OVERHEAD);
     expect(page.empty_page_encrypted_request_bytes).toBeLessThan(MAX_ENCRYPTED_REQUEST_BYTES);
     expect(page.max_encrypted_request_bytes).toBe(MAX_ENCRYPTED_REQUEST_BYTES);
     expect(page.max_encrypted_response_bytes).toBe(MAX_ENCRYPTED_RESPONSE_BYTES);

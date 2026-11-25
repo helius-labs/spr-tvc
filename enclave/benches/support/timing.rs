@@ -5,9 +5,8 @@ use qos_p256::P256Pair;
 use spr_keypair::constants::SALT_LEN;
 use spr_keypair::viewing_key::Salt;
 use spr_keypair::ViewingKey;
-use spr_tvc_protocol::constants::{
-    API_VERSION, MAX_ENCRYPTED_REQUEST_BYTES, QOS_ENVELOPE_OVERHEAD, SEC1_UNCOMPRESSED_LEN,
-};
+use spr_tvc_protocol::body_limit::max_inner_len;
+use spr_tvc_protocol::constants::{API_VERSION, QOS_ENVELOPE_OVERHEAD, SEC1_UNCOMPRESSED_LEN};
 use spr_tvc_protocol::decryption_service::{ServiceOperation, X25519_PUBLIC_KEY_LEN};
 use spr_tvc_protocol::encoding::jcs_serialize;
 use spr_tvc_protocol::types::{DecryptItem, DecryptLabel, EncryptedRequest, ServiceInfo};
@@ -83,7 +82,7 @@ impl MaxEnvelope {
             },
         };
         let base = jcs_serialize(&request).expect("bench request").len();
-        let extra = max_inner_len().saturating_sub(base) / 2;
+        let extra = max_inner_len().expect("inner cap").saturating_sub(base) / 2;
         let ServiceOperation::Decrypt { items, .. } = &mut request.operation else {
             unreachable!("bench request is a Decrypt");
         };
@@ -121,17 +120,4 @@ impl MaxEnvelope {
             .expect("bench decrypt")
             .len()
     }
-}
-
-/// Same bound as the enclave's inner-JSON cap: hex doubles each plaintext byte.
-fn max_inner_len() -> usize {
-    let wrapper = jcs_serialize(&EncryptedRequest {
-        version: API_VERSION,
-        quorum_key_id: String::new(),
-        quorum_key_epoch: u64::MAX,
-        ciphertext: vec![0; QOS_ENVELOPE_OVERHEAD],
-    })
-    .expect("bench wrapper")
-    .len();
-    (MAX_ENCRYPTED_REQUEST_BYTES as usize).saturating_sub(wrapper) / 2
 }
