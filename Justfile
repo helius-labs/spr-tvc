@@ -50,4 +50,4 @@ image network="devnet":
     docker build --platform linux/amd64 --provenance=false --build-arg SPR_NETWORK="$1" -f decryption-service/Dockerfile .
 
 decryption-e2e: setup build-ts
-    bash tests/with-local-decryption.sh bash -c '{{pnpm}} --filter @heliuslabs/spr-decryption-service exec vitest run tests/client/loopback.test.ts && {{pnpm}} --filter spr-tvc-typescript-client-example test && cargo test -p spr-tvc-client --features local-dev --test loopback --locked -- --nocapture'
+    bash tests/with-local-decryption.sh bash -c '{{pnpm}} --filter @heliuslabs/spr-decryption-service exec vitest run tests/client/loopback.test.ts && {{pnpm}} --filter spr-tvc-typescript-client-example test && for example in service_address open_note open_batch nullifier_secret; do {{pnpm}} --filter spr-tvc-typescript-sdk-example example examples/$example.ts && cargo run -p spr-tvc-rust-example --locked --quiet --example $example; done && cargo test -p spr-tvc-client --features local-dev --test loopback --locked -- --nocapture'

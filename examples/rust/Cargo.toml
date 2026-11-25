@@ -1,0 +1,17 @@
+[package]
+name = "spr-tvc-rust-example"
+version = "0.0.0"
+description = "Open one note with the Rust decryption client"
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version = "1.98"
+
+[dependencies]
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std"] }
+spr-keypair.workspace = true
+spr-tvc-client = { path = "../../client/rust", features = ["local-dev"] }
+spr-tvc-wire = { path = "../../wire" }
+
+[dev-dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }

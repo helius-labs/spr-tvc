@@ -1,11 +1,11 @@
 [workspace]
-members = ["client/rust", "decryption-service", "wire", "xtask"]
+members = ["client/rust", "decryption-service", "examples/rust", "wire", "xtask"]
 exclude = ["gateway"]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
-license = "Apache-2.0"
+license = "AGPL-3.0-only"
 
 [workspace.dependencies]
 qos_p256 = { version = "=0.16.3", default-features = false }

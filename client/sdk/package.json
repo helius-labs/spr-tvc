@@ -2,7 +2,7 @@
   "name": "@heliuslabs/spr-decryption-service",
   "version": "0.2.0-alpha.0",
   "description": "Client for the attested Solana Privacy Rings decryption service",
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/helius-labs/spr-tvc.git",

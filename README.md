@@ -10,7 +10,9 @@ owner tag.
 | --- | --- |
 | [Security specification](decryption-service/SPEC.md) | Data flow, key custody, and trust assumptions |
 | [Decryption service](decryption-service) · [Gateway](gateway) · [Wire](wire) | Implementation and exact cryptographic inputs |
-| [TypeScript client](client/sdk) · [Turnkey example](examples/turnkey) | Connect, send, claim, and sweep |
+| [TypeScript client](client/sdk) · [Rust client](client/rust) | Attested decryption clients |
+| [Rust examples](examples/rust) · [TypeScript examples](examples/typescript) | Service address, open notes, nullifier secret |
+| [Turnkey example](examples/turnkey) | Connect, send, claim, and sweep |
 | [Test invariants](tests/README.md) · [Release runbook](xtask/README.md) | Audit coverage and deployment |
 
 Run `just ci` for Rust and TypeScript checks, including the SDK-to-enclave

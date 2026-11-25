@@ -32,4 +32,4 @@ A relay can forward ciphertexts and return Boot Proofs. The SDK verifies the
 release and signing replica itself. Mainnet uses the SDK's [independent trust anchors](trust/mainnet.json)
 and system clock, including when a caller supplies a fresh signed policy.
 
-[Direct Turnkey example](../../examples/turnkey) · [Security flow](../../decryption-service/SPEC.md)
+[TypeScript example](../../examples/typescript) · [Turnkey example](../../examples/turnkey) · [Security flow](../../decryption-service/SPEC.md)
