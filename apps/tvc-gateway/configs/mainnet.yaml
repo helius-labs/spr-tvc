@@ -1,0 +1,5 @@
+# Mainnet, over config.yaml. The enclave URL is set when a mainnet app exists:
+# TVC_GATEWAY_ENCLAVE__BASE_URL.
+network: mainnet
+turnkey:
+    tvc_organization_id: 9b98a0d8-04a4-47a3-9dc3-afa84c686de4
