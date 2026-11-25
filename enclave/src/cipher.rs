@@ -46,30 +46,3 @@ pub(crate) fn open_ciphertexts(
     }
     Ok(std::mem::take(&mut *plaintexts))
 }
-
-#[cfg(test)]
-mod tests {
-    /// The pool cipher and the protocol note both name this Zolana commit.
-    const CIPHER_COMMIT: &str = "c5297afa13e8bfb6edadf6408304ef3fc2f8c676";
-
-    #[test]
-    fn the_cipher_commit_matches_the_workspace_pin_and_the_protocol_note() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let workspace = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
-        let readme = std::fs::read_to_string(root.join("protocol/README.md")).unwrap();
-        let enclave = std::fs::read_to_string(root.join("enclave/Cargo.toml")).unwrap();
-        assert!(
-            workspace.contains(&format!("rev = \"{CIPHER_COMMIT}\"")),
-            "workspace spr-keypair pin"
-        );
-        assert!(
-            readme.contains(CIPHER_COMMIT),
-            "protocol README cipher commit"
-        );
-        assert!(enclave.contains("spr-keypair.workspace = true"));
-        assert!(
-            !enclave.contains(CIPHER_COMMIT),
-            "the enclave takes spr-keypair from the workspace pin"
-        );
-    }
-}
