@@ -1,4 +1,7 @@
-use super::*;
+use std::process::Command;
+use std::time::Duration;
+
+use crate::tools::{capture_check, wait_for_check};
 
 #[test]
 fn a_timed_out_release_check_is_killed_and_reaped() {

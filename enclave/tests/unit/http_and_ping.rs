@@ -1,15 +1,28 @@
 use axum::http::StatusCode;
 use spr_tvc_protocol::constants::{QOS_P256_PUBLIC_LEN, RAW_P256_SIGNATURE_LEN};
 use spr_tvc_protocol::crypto::verify_p256_message;
-use spr_tvc_protocol::encoding::parse_strict_json;
+use spr_tvc_protocol::encoding::{jcs_serialize, parse_strict_json};
 use spr_tvc_protocol::types::{QosPingChallenge, QosPingRequest};
 use tower::ServiceExt as _;
 
-use super::*;
+use std::sync::Arc;
+
+use axum::body::Body;
+use axum::http::header::CONTENT_TYPE;
+use axum::http::Request;
+use axum::Router;
+use qos_p256::P256Pair;
+use spr_tvc_protocol::constants::{
+    API_VERSION, MAX_ENCRYPTED_REQUEST_BYTES, TVC_APP_PROOF_SCHEME, TVC_QOS_PING_PROOF_TYPE,
+};
+use spr_tvc_protocol::types::{QosPingResponse, ServiceInfo};
+
 use crate::release::NETWORK;
+use crate::service::{router, Service};
+use crate::tests::testing;
 
 fn info(quorum: &P256Pair) -> ServiceInfo {
-    crate::testing::release().service_info([0x22; 32], [0x33; 32], quorum)
+    testing::release().service_info([0x22; 32], [0x33; 32], quorum)
 }
 
 fn app(quorum: P256Pair, ephemeral: P256Pair) -> Router {
@@ -26,10 +39,7 @@ async fn health_is_exact() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[CONTENT_TYPE], "application/json");
-    assert_eq!(
-        crate::testing::body(response).await,
-        r#"{"status":"Healthy"}"#
-    );
+    assert_eq!(testing::body(response).await, r#"{"status":"Healthy"}"#);
 }
 
 #[tokio::test]
@@ -43,7 +53,7 @@ async fn info_is_untrusted_discovery_bound_to_runtime_public_keys() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let actual: ServiceInfo = parse_strict_json(&crate::testing::body(response).await).unwrap();
+    let actual: ServiceInfo = parse_strict_json(&testing::body(response).await).unwrap();
     assert_eq!(actual, expected);
     assert_eq!(actual.network, NETWORK);
 }
@@ -77,8 +87,7 @@ async fn ping_decrypts_with_quorum_and_signs_exact_utf8_with_ephemeral() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let response: QosPingResponse =
-        parse_strict_json(&crate::testing::body(response).await).unwrap();
+    let response: QosPingResponse = parse_strict_json(&testing::body(response).await).unwrap();
     let proof = response.tvc_app_proof;
     assert_eq!(proof.scheme, TVC_APP_PROOF_SCHEME);
     assert_eq!(proof.public_key, ephemeral_public.to_bytes());
@@ -137,7 +146,7 @@ async fn ping_rejects_ephemeral_encryption_and_noncanonical_plaintext_genericall
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
-            crate::testing::body(response).await,
+            testing::body(response).await,
             r#"{"error":"InvalidRequest"}"#
         );
     }
@@ -223,7 +232,7 @@ async fn every_other_request_gets_a_generic_json_error() {
         assert_eq!(response.status(), status, "{target}");
         assert_eq!(response.headers()[CONTENT_TYPE], "application/json");
         assert_eq!(
-            crate::testing::body(response).await,
+            testing::body(response).await,
             format!(r#"{{"error":"{error}"}}"#),
             "{target}"
         );

@@ -70,7 +70,3 @@ impl From<ErrorCode> for TvcError {
         Self::new(code)
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/unit/wire_errors.rs"]
-mod tests;

@@ -60,7 +60,7 @@ impl Service {
         )
     }
 
-    fn load_from(
+    pub(crate) fn load_from(
         release: Release,
         ephemeral_path: &Path,
         quorum_path: &Path,
@@ -95,7 +95,7 @@ impl Service {
 }
 
 /// The process may boot only with the launch configuration the manifest approved.
-fn require_hosted_pivot(pivot: &PivotConfigV2, argv: &[String]) -> io::Result<()> {
+pub(crate) fn require_hosted_pivot(pivot: &PivotConfigV2, argv: &[String]) -> io::Result<()> {
     if pivot.debug_mode || !pivot.env.is_empty() || pivot.args.as_slice() != argv {
         return Err(io::Error::other(
             "QOS launch arguments do not match the approved manifest",
@@ -212,11 +212,3 @@ pub async fn serve(listener: tokio::net::TcpListener, service: Service) -> io::R
         })
         .await
 }
-
-#[cfg(test)]
-#[path = "../tests/unit/http_and_ping.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "../tests/unit/qos_startup.rs"]
-mod startup_tests;

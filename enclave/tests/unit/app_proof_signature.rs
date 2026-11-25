@@ -1,6 +1,11 @@
+use p256::ecdsa::Signature;
+use qos_p256::encrypt::P256EncryptPublic;
+use qos_p256::P256Pair;
+use spr_tvc_protocol::constants::{API_VERSION, MAX_ENCRYPTED_RESPONSE_BYTES};
+use spr_tvc_protocol::decryption_service::{ServiceRequest, ServiceResult};
 use zeroize::Zeroizing;
 
-use super::*;
+use crate::request::{respond, sign_ephemeral_low_s, Failure};
 
 #[test]
 fn qos_signatures_are_normalized_to_low_s_for_the_wire() {

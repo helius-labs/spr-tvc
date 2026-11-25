@@ -27,5 +27,5 @@ pub const DEFAULT_BIND_PORT: u16 = 44030;
 pub mod timing;
 
 #[cfg(test)]
-#[path = "../tests/support/mod.rs"]
-mod testing;
+#[path = "../tests/unit/harness.rs"]
+mod tests;

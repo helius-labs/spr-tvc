@@ -4,7 +4,13 @@ use std::path::PathBuf;
 use qos_core::protocol::services::boot::manifest::ManifestEnvelopeV2;
 use spr_tvc_protocol::encoding::encode_lower_hex;
 
-use super::{require_hosted_pivot, *};
+use std::io;
+
+use qos_core::{EPHEMERAL_KEY_FILE, MANIFEST_FILE, QUORUM_FILE};
+use qos_p256::P256Pair;
+
+use crate::service::{require_hosted_pivot, Service};
+use crate::tests::testing;
 
 // Synthetic v2 envelope serialized by qos_core 0.12.1's storage writer.
 // The embedded manifest uses the Quorum key derived from seed [0x11; 32].
@@ -36,13 +42,7 @@ fn load_with(quorum_seed: u8, envelope: &[u8], argv: &[String]) -> io::Result<Se
     fs::write(&quorum, encode_lower_hex(&[quorum_seed; 32])).unwrap();
     fs::write(&manifest, envelope).unwrap();
 
-    Service::load_from(
-        crate::testing::release(),
-        &ephemeral,
-        &quorum,
-        &manifest,
-        argv,
-    )
+    Service::load_from(testing::release(), &ephemeral, &quorum, &manifest, argv)
 }
 
 #[test]

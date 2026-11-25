@@ -137,7 +137,3 @@ pub fn decrypt_message(
     message.extend_from_slice(payload.as_bytes());
     message
 }
-
-#[cfg(test)]
-#[path = "../tests/unit/decryption_request_binding.rs"]
-mod tests;

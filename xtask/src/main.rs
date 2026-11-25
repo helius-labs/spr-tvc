@@ -237,5 +237,5 @@ fn main() -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "../tests/release.rs"]
+#[path = "../tests/harness.rs"]
 mod tests;

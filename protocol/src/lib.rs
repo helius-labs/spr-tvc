@@ -22,3 +22,7 @@ pub use types::{
     HealthStatus, Network, OperationKind, OperationProofPayload, QosPingChallenge, QosPingRequest,
     QosPingResponse, ReleaseAuthoritySignature, ReleasePolicy, ServiceInfo, SignedReleasePolicy,
 };
+
+#[cfg(test)]
+#[path = "../tests/unit/harness.rs"]
+mod unit_tests;

@@ -1,3 +1,4 @@
+use axum::body::Body;
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, StatusCode};
 use ed25519_dalek::{Signer as _, SigningKey};
@@ -5,17 +6,22 @@ use qos_p256::P256Pair;
 use solana_pubkey::Pubkey;
 use spr_keypair::viewing_key::random_salt;
 use spr_keypair::{NullifierKey, ViewingKey, X25519Pubkey};
+use spr_tvc_protocol::constants::API_VERSION;
 use spr_tvc_protocol::crypto::public_key_uncompressed;
-use spr_tvc_protocol::decryption_service::{decrypt_message, SERVICE_PROOF_TYPE};
+use spr_tvc_protocol::decryption_service::{
+    decrypt_message, service_request_digest, DecryptedOutputs, ServiceOperation, ServiceRequest,
+    ServiceResult, SERVICE_PROOF_TYPE,
+};
 use spr_tvc_protocol::encoding::{jcs_serialize, parse_strict_json};
 use spr_tvc_protocol::types::{DecryptItem, DecryptLabel, EncryptedRequest, Network, ServiceInfo};
 use tower::ServiceExt as _;
 use zeroize::Zeroizing;
 
-use super::*;
+use crate::operations::execute;
 use crate::release::NETWORK;
-use crate::service::router;
-use crate::testing;
+use crate::request::Failure;
+use crate::service::{router, Service};
+use crate::tests::testing;
 
 const RESPONSE_SECRET: [u8; 32] = [0x42; 32];
 

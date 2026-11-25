@@ -1,5 +1,11 @@
-use super::*;
-use crate::types::DecryptLabel;
+use sha2::{Digest, Sha256};
+
+use crate::decryption_service::{
+    decrypt_message, parse_service_request, service_request_digest, ServiceOperation,
+    ServiceRequest,
+};
+use crate::encoding::{encode_lower_hex, jcs_serialize};
+use crate::types::{DecryptItem, DecryptLabel, Network};
 
 fn request(operation: ServiceOperation) -> ServiceRequest {
     ServiceRequest {
@@ -89,7 +95,7 @@ fn a_request_parses_strictly() {
     let request = request(ServiceOperation::PublicKeys {
         address: "11111111111111111111111111111111".to_owned(),
     });
-    let json = encoding::jcs_serialize(&request).unwrap();
+    let json = jcs_serialize(&request).unwrap();
     assert_eq!(parse_service_request(&json).unwrap(), request);
     assert!(parse_service_request(&json.replacen('{', r#"{"extra":1,"#, 1)).is_err());
 }

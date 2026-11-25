@@ -1,7 +1,24 @@
-use super::*;
-use crate::Args;
+use base64::{engine::general_purpose::STANDARD, Engine};
+use p256::ecdsa::SigningKey;
+use serde_json::{json, Value};
+use spr_tvc_protocol::constants::{
+    API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, MAX_ENCRYPTED_REQUEST_BYTES,
+    MAX_ENCRYPTED_RESPONSE_BYTES,
+};
+use spr_tvc_protocol::crypto::public_key_uncompressed;
+use spr_tvc_protocol::release::{
+    sign_release_policy, verify_signed_release_policy, PinnedReleaseAuthorities,
+    ReleaseAuthorityKey,
+};
+use spr_tvc_protocol::types::{
+    Network, ReleaseAuthoritySignature, ReleasePolicy, SignedReleasePolicy,
+};
+
+use crate::policy::{
+    devnet_sign, verify_mainnet_policy, MainnetTrust, TurnkeyDeployment, OPERATIONS,
+};
+use crate::{Args, Release};
 use clap::Parser;
-use serde_json::Value;
 
 fn mainnet_args() -> Args {
     Args::parse_from(["xtask", "prepare", "candidate", "--network", "mainnet"])

@@ -1,6 +1,6 @@
 use strum::VariantArray;
 
-use super::ErrorCode;
+use crate::error::ErrorCode;
 
 #[test]
 fn every_code_is_its_variant_name() {

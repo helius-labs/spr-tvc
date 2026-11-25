@@ -16,7 +16,7 @@ use crate::read_json;
 const CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_CHECK_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 
-fn wait_for_check(child: &mut Child, timeout: Duration) -> Result<ExitStatus> {
+pub(crate) fn wait_for_check(child: &mut Child, timeout: Duration) -> Result<ExitStatus> {
     let status = child.wait_timeout(timeout);
     if let Ok(Some(status)) = status {
         return Ok(status);
@@ -206,7 +206,3 @@ pub(crate) fn verify_live(credentials: &Credentials, input: &impl Serialize) -> 
     ensure!(status.success(), "live attestation did not verify");
     Ok(())
 }
-
-#[cfg(all(test, unix))]
-#[path = "../tests/tools.rs"]
-mod tests;

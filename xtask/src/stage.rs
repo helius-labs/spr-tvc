@@ -30,7 +30,7 @@ pub(crate) struct Deployment {
     pub(crate) deploy_id: String,
 }
 
-fn image_digest<'a>(
+pub(crate) fn image_digest<'a>(
     image: &'a str,
     repository: &str,
     network: Network,
@@ -56,7 +56,7 @@ fn image_digest<'a>(
     Ok(digest)
 }
 
-fn require_candidate(live: Option<&str>, recorded: Option<&str>) -> Result<()> {
+pub(crate) fn require_candidate(live: Option<&str>, recorded: Option<&str>) -> Result<()> {
     ensure!(
         live.is_none() || live == recorded,
         "stage mainnet releases in a separate Turnkey app"
@@ -64,7 +64,7 @@ fn require_candidate(live: Option<&str>, recorded: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn provenance_command(repository: &str, digest: &str, commit: &str) -> Command {
+pub(crate) fn provenance_command(repository: &str, digest: &str, commit: &str) -> Command {
     let mut command = Command::new("gh");
     command.args([
         "attestation",
@@ -245,7 +245,3 @@ impl Release<'_> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/stage.rs"]
-mod tests;
