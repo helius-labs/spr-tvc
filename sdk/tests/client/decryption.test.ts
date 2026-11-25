@@ -175,8 +175,7 @@ it.each(["caller", "client"])("uses one %s deadline across all decrypt batches",
       type: "PublicKeys",
       viewing_public_key: encodeLowerHex(viewingPublicKey.toBytes()),
       nullifier_public_key: encodeLowerHex(nullifier.publicKey()),
-    })
-    .mockResolvedValueOnce({ type: "Decrypt", plaintexts: [], nullifier_secret: encodeLowerHex(secret) });
+    });
   try {
     const keys = await service.decrypt(owner);
     try {
@@ -201,7 +200,7 @@ it.each(["caller", "client"])("uses one %s deadline across all decrypt batches",
       );
       const rejected = expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
       await vi.advanceTimersByTimeAsync(6);
-      const calls = operation.mock.calls.slice(2);
+      const calls = operation.mock.calls.slice(1);
       const first = calls[1];
       const second = calls[2];
       expect(calls.map(([, call]) =>

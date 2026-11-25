@@ -109,11 +109,11 @@ export async function setup() {
 }
 
 /** Spends notes `keys` opened. The prover is the SPR client's; the secret comes from the decrypt. */
-export function serviceSpendKeys(
+export async function serviceSpendKeys(
   keys: DecryptionServiceKeys,
   proofService: Client["proofService"],
-): WalletKeys & { destroy(): void } {
-  const secret = keys.nullifierSecret();
+): Promise<WalletKeys & { destroy(): void }> {
+  const secret = await keys.nullifierSecret();
   const nullifier = NullifierKey.fromSecret(secret);
   secret.fill(0);
   const authority = new NullifierKeyProofAuthority(nullifier, proofService);

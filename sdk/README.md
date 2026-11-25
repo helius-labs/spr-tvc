@@ -19,8 +19,10 @@ const recipient = await service.address(recipientAddress);
 const keys = await service.decrypt(owner);
 ```
 
-`decrypt` returns SPR `ShieldedKeys`. Sync opens notes through `keys.decrypt`.
-A spend takes `keys.nullifierSecret()` to the SPR prover. Call `keys.destroy()`
+`decrypt` returns SPR `ShieldedKeys` and does not call Decrypt. Sync opens notes
+through `keys.decrypt`; that response carries the plaintexts and the nullifier
+secret. A spend reads `nullifierSecret()` and gives it to the SPR prover. That
+read reaches the service only when no note has been opened. Call `keys.destroy()`
 when finished.
 
 Pass `recipient` to the SPR transfer builder. The transfer publishes the

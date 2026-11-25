@@ -19,7 +19,7 @@ async function main(): Promise<void> {
   const serviceKeys = await service.decrypt(recipient);
   let keys: Awaited<ReturnType<typeof localWalletKeys>> | undefined;
   let ownKeys: typeof keys;
-  let spendKeys: ReturnType<typeof serviceSpendKeys> | undefined;
+  let spendKeys: Awaited<ReturnType<typeof serviceSpendKeys>> | undefined;
   try {
     keys = await localWalletKeys(sender, zolana.proofService);
     const send = sendAndConfirmFactory(zolana, sender);
@@ -57,7 +57,7 @@ async function main(): Promise<void> {
     ownKeys = sender.address === recipient.address
       ? keys
       : await localWalletKeys(recipient, zolana.proofService);
-    spendKeys = serviceSpendKeys(serviceKeys, zolana.proofService);
+    spendKeys = await serviceSpendKeys(serviceKeys, zolana.proofService);
     const sweep = await buildTransferTransaction({
       client: zolana,
       wallet: received,

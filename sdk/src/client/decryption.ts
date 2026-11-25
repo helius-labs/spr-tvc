@@ -48,8 +48,8 @@ export type DecryptionService = {
   address(owner: Address, options?: DecryptionServiceRequestOptions): Promise<ShieldedAddress>;
   /**
    * Shielded keys for this service. `signer` is the owner, or a grantee named by `options.grant`.
-   * The signer authorizes the empty batch and every later batch.
-   * A spend takes `nullifierSecret()` to the SPR prover.
+   * Fetches the public keys only. The signer authorizes each later Decrypt, and the first one
+   * also returns the nullifier secret.
    */
   decrypt(
     signer: MessagePartialSigner,
@@ -168,17 +168,8 @@ export function decryptionServiceFromSession(
         const grant = options?.grant;
         const owner = grant === undefined ? signer.address : solanaAddress(grant.owner);
         const shielded = await address(owner, signal);
-        const bootstrap = await decryptItems(signer, [], signal, grant);
-        try {
-          return new ServiceKeys(shielded, bootstrap.nullifierSecret, (items, context) =>
-            withinRequest(context, async (batchSignal) => {
-              const decrypted = await decryptItems(signer, items, batchSignal, grant);
-              decrypted.nullifierSecret.fill(0);
-              return decrypted.plaintexts;
-            }));
-        } finally {
-          bootstrap.nullifierSecret.fill(0);
-        }
+        return new ServiceKeys(shielded, (items, context) =>
+          withinRequest(context, (batchSignal) => decryptItems(signer, items, batchSignal, grant)));
       });
     },
   };
