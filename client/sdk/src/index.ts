@@ -1,8 +1,10 @@
 export {
   createDecryptionService,
+  createGatekeeperDecryptionService,
   signViewGrant,
   type DecryptionService,
   type DecryptionServiceConfig,
+  type GatekeeperDecryptionServiceConfig,
 } from "./client/decryption.js";
 export { MAX_VIEW_GRANT_MS, type ViewGrant } from "./wire/decryption.js";
 export { DECRYPTION_SERVICE_RELEASES } from "./wire/releases.js";

@@ -2,6 +2,10 @@
 
 `just ci` runs Rust and TypeScript suites, including the SDK-to-enclave
 loopback test. Run `just decryption-e2e` to repeat that test on its own.
+The loopback test opens one note for its owner, checks that another owner
+cannot, and resends the ciphertext. The same script against a deployed
+gatekeeper runs when `SPR_E2E_GATEKEEPER_URL`, `HELIUS_API_KEY` or `API_KEY`,
+and `SPR_E2E_RELEASE_PIN` are set.
 Rust tests live under each crate's `tests/`. SDK unit tests sit beside the
 implementation.
 

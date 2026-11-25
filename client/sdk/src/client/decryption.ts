@@ -2,13 +2,10 @@ import { ShieldedAddress, ShieldedPublicKey, type Bytes32 } from "@heliuslabs/sp
 import { X25519PublicKey, type Bytes31 } from "@heliuslabs/spr/keypair";
 import { address as solanaAddress, createSignableMessage, getAddressEncoder, type Address, type MessagePartialSigner } from "@solana/kit";
 
-import type { BootProofResolver } from "../connection/backend.js";
+import type { BootProofResolver, EnclaveBackend } from "../connection/backend.js";
+import type { DecryptionServiceTransport } from "../connection/http.js";
 import { awaitWithSignal, requestScope, type DecryptionServiceRequestOptions } from "../connection/request.js";
 import { createDecryptionServiceSession, type DecryptionServiceSession } from "../connection/session.js";
-import type { DecryptionServiceTransport } from "../connection/http.js";
-import { DecryptionServiceError, DecryptionServiceHttpError } from "../wire/error.js";
-import { requireHex, decodeLowerHex, encodeLowerHex } from "../wire/hex.js";
-import { requireNetwork } from "../wire/network.js";
 import {
   acceptViewGrantWindow,
   viewGrantDigest,
@@ -16,6 +13,9 @@ import {
   viewGrantWire,
   type ViewGrant,
 } from "../wire/decryption.js";
+import { DecryptionServiceError, DecryptionServiceHttpError } from "../wire/error.js";
+import { requireHex, decodeLowerHex, encodeLowerHex } from "../wire/hex.js";
+import { requireNetwork } from "../wire/network.js";
 import { releaseForConnection, type ReleaseTrust } from "../wire/releases.js";
 import type { DecryptItem, Network } from "../wire/types.js";
 import { batched, checkHexList } from "./items.js";
@@ -175,14 +175,51 @@ export function decryptionServiceFromSession(
   };
 }
 
+export type GatekeeperDecryptionServiceConfig = Omit<DecryptionServiceConfig, "resolveBootProof"> & {
+  /** Gatekeeper API key, sent as `x-api-key`. */
+  readonly apiKey: string;
+};
+
 /** A client of the decryption service at `config.endpoint`, verified against its release. */
 export function createDecryptionService(config: DecryptionServiceConfig): DecryptionService {
+  const { endpoint, resolveBootProof } = config;
+  return createClient(config, { endpoint, resolveBootProof });
+}
+
+/**
+ * `keys` and `decrypt` through the gatekeeper. The first call posts
+ * `/v1/decryption/session` and checks the bundled discovery, ping, and Boot
+ * Proof. Later calls post `/v1/decryption/operations` and check each reply's
+ * Boot Proof the same way.
+ */
+export function createGatekeeperDecryptionService(
+  config: GatekeeperDecryptionServiceConfig,
+): DecryptionService {
+  const endpoint = new URL(config.endpoint);
+  if (
+    endpoint.protocol !== "https:" ||
+    endpoint.username !== "" ||
+    endpoint.password !== "" ||
+    endpoint.search !== "" ||
+    endpoint.hash !== "" ||
+    (endpoint.pathname !== "/" && endpoint.pathname !== "") ||
+    !config.apiKey.trim()
+  ) {
+    throw new DecryptionServiceError("InvalidGatekeeperConfig");
+  }
+  return createClient(config, { endpoint, gatekeeperApiKey: config.apiKey });
+}
+
+function createClient(
+  config: Omit<DecryptionServiceConfig, "resolveBootProof">,
+  backend: EnclaveBackend,
+): DecryptionService {
   const network = requireNetwork(config.network);
-  const { endpoint, resolveBootProof, nowMs, transport, requestTimeoutMs } = config;
+  const { nowMs, transport, requestTimeoutMs } = config;
   return decryptionServiceFromSession(
     createDecryptionServiceSession({
       network,
-      backend: { endpoint, resolveBootProof },
+      backend,
       release: releaseForConnection(network, config.release),
       ...(network === "devnet" && nowMs !== undefined ? { nowMs } : {}),
       ...(transport === undefined ? {} : { transport }),
