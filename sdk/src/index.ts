@@ -1,8 +1,10 @@
 export {
   createDecryptionService,
+  signViewGrant,
   type DecryptionService,
   type DecryptionServiceConfig,
 } from "./client/decryption.js";
+export { MAX_VIEW_GRANT_MS, type ViewGrant } from "./protocol/decryption.js";
 export { DECRYPTION_SERVICE_RELEASES } from "./protocol/releases.js";
 export type { DecryptionServiceKeys } from "./client/keys.js";
 export type { BootProofResolver, ResolveBootProofInput } from "./connection/backend.js";

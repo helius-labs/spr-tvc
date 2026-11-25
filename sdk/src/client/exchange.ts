@@ -13,12 +13,15 @@ import { DecryptionServiceError } from "../protocol/error.js";
 import { encodeLowerHex } from "../protocol/hex.js";
 import { parseStrictJson } from "../protocol/json.js";
 import type { DecryptItem } from "../protocol/types.js";
+import { decodeDecimalU64 } from "../protocol/decimal.js";
 import {
+  acceptViewGrantWindow,
   decryptMessage,
   serviceRequestDigest,
   type ServiceOperation,
   type ServiceRequest,
   type ServiceResult,
+  type ViewGrant,
 } from "../protocol/decryption.js";
 
 const ED25519_SIGNATURE_BYTES = 64;
@@ -35,6 +38,7 @@ type DecryptCall = {
   readonly type: "Decrypt";
   readonly owner: MessagePartialSigner;
   readonly items: readonly DecryptItem[];
+  readonly grant?: ViewGrant;
 };
 
 export type ServiceCall = Extract<ServiceOperation, { type: "PublicKeys" }> | DecryptCall;
@@ -51,6 +55,16 @@ export async function executeServiceCall<T extends ServiceCall>(
   requireCurrentReleasePolicy(context, context.nowMs());
   const responseSecret = p256.utils.randomPrivateKey();
   try {
+    if (call.type === "Decrypt" && call.grant) {
+      if (call.grant.grantee !== call.owner.address) {
+        throw new DecryptionServiceError("InvalidSignature");
+      }
+      acceptViewGrantWindow(
+        decodeDecimalU64(call.grant.not_before_ms),
+        decodeDecimalU64(call.grant.expiry_ms),
+        context.nowMs(),
+      );
+    }
     const { owner, operation } = call.type === "Decrypt"
       ? {
           owner: call.owner,
@@ -59,6 +73,7 @@ export async function executeServiceCall<T extends ServiceCall>(
             signer: call.owner.address,
             signature: EMPTY_SIGNATURE,
             items: call.items,
+            ...(call.grant === undefined ? {} : { grant: call.grant }),
           },
         }
       : { owner: undefined, operation: call };

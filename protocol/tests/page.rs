@@ -44,6 +44,7 @@ pub fn page_decrypt_request() -> ServiceRequest {
             signer: "1".repeat(MAX_BASE58_ADDRESS_LEN),
             signature: [0; 64],
             items: vec![item; NOTES_PER_SIGNATURE],
+            grant: None,
         },
     }
 }

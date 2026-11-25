@@ -150,6 +150,7 @@ fn decrypt(
             signer: base58(owner),
             signature: [0; 64],
             items,
+            grant: None,
         },
     );
     let message = decrypt_message(
@@ -185,6 +186,9 @@ fn transfer_output(viewing_public_key: [u8; 33], plaintext: &[u8], slot: u32) ->
 
 #[path = "owner_authorization.rs"]
 mod owner_authorization;
+
+#[path = "view_grant.rs"]
+mod view_grant;
 
 #[path = "output_handling.rs"]
 mod output_handling;

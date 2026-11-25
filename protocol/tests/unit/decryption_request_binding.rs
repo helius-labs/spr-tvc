@@ -1,8 +1,8 @@
 use sha2::{Digest, Sha256};
 
 use crate::decryption_service::{
-    decrypt_message, parse_service_request, service_request_digest, ServiceOperation,
-    ServiceRequest,
+    accept_view_grant_window, decrypt_message, parse_service_request, service_request_digest,
+    ServiceOperation, ServiceRequest, MAX_VIEW_GRANT_MS,
 };
 use crate::encoding::{encode_lower_hex, jcs_serialize};
 use crate::types::{DecryptItem, DecryptLabel, Network};
@@ -25,6 +25,7 @@ fn decrypt(signature: [u8; 64], slot_index: u64) -> ServiceOperation {
     ServiceOperation::Decrypt {
         signer: "11111111111111111111111111111111".to_owned(),
         signature,
+        grant: None,
         items: vec![DecryptItem {
             ciphertext: vec![1, 2, 3],
             ephemeral_viewing_public_key: vec![4; 33],
@@ -98,6 +99,19 @@ fn a_request_parses_strictly() {
     let json = jcs_serialize(&request).unwrap();
     assert_eq!(parse_service_request(&json).unwrap(), request);
     assert!(parse_service_request(&json.replacen('{', r#"{"extra":1,"#, 1)).is_err());
+}
+
+#[test]
+fn the_view_grant_window_is_half_open_and_at_most_thirty_minutes() {
+    let now = 1_000_000;
+    assert!(accept_view_grant_window(now, now + MAX_VIEW_GRANT_MS, now).is_ok());
+    assert!(accept_view_grant_window(now, now + MAX_VIEW_GRANT_MS, now + 1).is_ok());
+    assert!(
+        accept_view_grant_window(now, now + MAX_VIEW_GRANT_MS, now + MAX_VIEW_GRANT_MS).is_err()
+    );
+    assert!(accept_view_grant_window(now, now, now).is_err());
+    assert!(accept_view_grant_window(now, now + MAX_VIEW_GRANT_MS + 1, now).is_err());
+    assert!(accept_view_grant_window(now + 1, now + 2, now).is_err());
 }
 
 #[test]
