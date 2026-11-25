@@ -67,10 +67,12 @@ signs the request.
    Ed25519 signature. Without a grant, the signer address selects the
    recipient viewing secret. With a grant, the grant owner selects it. The
    enclave rejects a missing clock, a window outside 30 minutes, or a grant
-   for another network or Quorum key. Each item's ephemeral viewing public key
+   for another network or Quorum key. Each item names its key schedule. The
+   only schedule is `HkdfSha256Ctr`: HKDF-SHA256 and AES-256-CTR. A missing
+   or unknown schedule is rejected. Each item's ephemeral viewing public key
    is the sender's X25519 input. There is no item cap. One signature covers
    one indexer page of 1,000 notes. An empty page, 50-byte ciphertexts and
-   `u64::MAX` slots, measures 631,814 bytes after the 97-byte QOS frame and
+   `u64::MAX` slots, measures 675,814 bytes after the 97-byte QOS frame and
    hex encoding. The service accepts 10 MiB, the same body cap as the indexer.
    The encrypted result uses the same ceiling. A larger body is
    rejected before any ciphertext is opened. Concurrent requests can multiply

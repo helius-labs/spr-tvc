@@ -76,7 +76,7 @@ or `ServiceDecrypt`). The SDK verifies the signature, replica attestation,
 and all bindings before opening the result. The HTTP request body and the
 binary encrypted result are each limited to 10 MiB, the same cap as the
 indexer. An empty indexer page of 1,000 50-byte recipient notes measures
-631,814 bytes (`plaintext + 12 + 65 + 4 + 16`, then hex).
+675,814 bytes (`plaintext + 12 + 65 + 4 + 16`, then hex).
 `protocol/fixtures/page-limit.json` records both lengths.
 
 ## Key derivation and SPR note cipher
@@ -93,7 +93,8 @@ The following derivations use HKDF-SHA256 with no salt. The address in
 | Nullifier secret | `TSPP/decryption-service/tx_key/v1` | 32-byte seed the wallet uses to derive local transaction viewing keys |
 
 A decrypt item carries `ciphertext`, `ephemeral_viewing_public_key`, a
-16-byte `salt`, `slot_index`, and `label`. The enclave derives the
+16-byte `salt`, `slot_index`, `label`, and `kdf`. The only mode is
+`HkdfSha256Ctr`. A missing or unknown mode is rejected. The enclave derives the
 recipient viewing key from the verified signer. SPR rejects an all-zero
 X25519 shared secret and uses the following key schedule.
 

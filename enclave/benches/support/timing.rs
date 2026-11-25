@@ -36,6 +36,7 @@ impl TransferBatch {
             salt: salt.to_vec(),
             slot_index: 0,
             label: DecryptLabel::Transfer,
+            kdf: spr_tvc_protocol::KdfMode::HkdfSha256Ctr,
         };
         Self {
             viewing,
@@ -79,6 +80,7 @@ impl MaxEnvelope {
                     salt: vec![0; SALT_LEN],
                     slot_index: 0,
                     label: DecryptLabel::Transfer,
+                    kdf: spr_tvc_protocol::KdfMode::HkdfSha256Ctr,
                 }],
             },
         };

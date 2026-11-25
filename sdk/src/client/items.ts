@@ -17,6 +17,7 @@ export function decryptItem(request: DecryptRequest): DecryptItem {
     salt: encodeLowerHex(request.salt),
     slot_index: String(request.slotIndex),
     label: LABELS[request.label],
+    kdf: "HkdfSha256Ctr",
   };
 }
 

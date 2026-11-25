@@ -76,6 +76,9 @@ export type PinnedReleaseAuthorities = {
 
 export type DecryptLabel = "Transfer" | "RingDeposit";
 
+/** Key schedule for one recipient ciphertext. The ciphertext bytes do not carry it. */
+export type KdfMode = "HkdfSha256Ctr";
+
 /**
  * One ciphertext to open with the wallet's viewing key. The answer is the
  * cipher's output, which the caller decodes; the enclave interprets nothing.
@@ -88,6 +91,7 @@ export type DecryptItem = {
   /** Zero for a ring deposit, which carries one envelope. */
   slot_index: string;
   label: DecryptLabel;
+  kdf: KdfMode;
 };
 
 export const SERVICE_INFO_KEYS = [

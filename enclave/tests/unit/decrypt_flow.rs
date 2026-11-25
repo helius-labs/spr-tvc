@@ -181,6 +181,7 @@ fn transfer_output(viewing_public_key: [u8; 33], plaintext: &[u8], slot: u32) ->
         salt: salt.to_vec(),
         slot_index: slot.into(),
         label: DecryptLabel::Transfer,
+        kdf: spr_tvc_protocol::KdfMode::HkdfSha256Ctr,
     }
 }
 

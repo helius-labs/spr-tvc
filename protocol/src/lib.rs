@@ -19,8 +19,9 @@ pub use release::{
 };
 pub use types::{
     AppProof, DecryptItem, DecryptLabel, EncryptedRequest, EncryptedResponse, HealthResponse,
-    HealthStatus, Network, OperationKind, OperationProofPayload, QosPingChallenge, QosPingRequest,
-    QosPingResponse, ReleaseAuthoritySignature, ReleasePolicy, ServiceInfo, SignedReleasePolicy,
+    HealthStatus, KdfMode, Network, OperationKind, OperationProofPayload, QosPingChallenge,
+    QosPingRequest, QosPingResponse, ReleaseAuthoritySignature, ReleasePolicy, ServiceInfo,
+    SignedReleasePolicy,
 };
 
 #[cfg(test)]
