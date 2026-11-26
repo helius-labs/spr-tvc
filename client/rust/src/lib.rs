@@ -5,8 +5,9 @@
 //! [`DecryptionClient`] builds each request from the signed release pin. It
 //! checks the Nitro document, PCR0–3, PCR17, and the manifest allowlist on the
 //! reply, and opens that reply only after the App Proof names the request.
-//! [`OperationsClient`] is the gatekeeper path. It posts `keys` and `decrypt`
-//! to `/v1/decryption/operations` and checks the bundled Boot Proof the same way.
+//! [`OperationsClient`] posts `keys` and `decrypt` to
+//! `/v1/decryption/operations` and checks the Boot Proof bundled in that reply
+//! the same way.
 
 #![forbid(unsafe_code)]
 
@@ -50,7 +51,7 @@ pub enum ClientError {
     Entropy,
     /// The response key could not open the ciphertext.
     InvalidEnvelope,
-    /// The gatekeeper URL or API key cannot be used.
+    /// The HTTPS origin or API key cannot be used.
     InvalidGatekeeperConfig,
 }
 

@@ -19,7 +19,7 @@ export type BootProofResolver = (input: ResolveBootProofInput) => Promise<Turnke
 export type EnclaveBackend = {
   readonly endpoint: URL;
   readonly resolveBootProof?: BootProofResolver;
-  /** Set when the endpoint is the gatekeeper. Session and operations then carry the Boot Proof. */
+  /** Sent as `x-api-key`. The reply then includes the Boot Proof. */
   readonly gatekeeperApiKey?: string;
 };
 
@@ -121,7 +121,7 @@ export async function sendToEnclave(
   return readAnswer(response, code, maxAnswerBytes, signal);
 }
 
-/** Posts one operation. A gatekeeper answer is the enclave response plus that replica's Boot Proof. */
+/** Posts one operation. With an API key, the answer is the enclave response plus that replica's Boot Proof. */
 export async function sendOperation(
   backend: EnclaveBackend,
   request: EncryptedRequestWire,

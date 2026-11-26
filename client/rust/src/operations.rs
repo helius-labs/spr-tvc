@@ -1,5 +1,3 @@
-//! Gatekeeper client.
-//!
 //! `keys` and `decrypt` go to `POST /v1/decryption/operations`. The request
 //! names the release in the signed pin. Each reply carries the Boot Proof of
 //! the replica that signed it, checked with the App Proof before the result opens.
@@ -28,13 +26,13 @@ use spr_tvc_wire::types::{
 
 const BOOT_PROOF_SLACK: u64 = 512 * 1024;
 
-/// Where the gatekeeper is, and the API key it expects.
+/// HTTPS origin and the API key sent as `x-api-key`.
 pub struct Gatekeeper {
     pub endpoint: String,
     pub api_key: String,
 }
 
-/// Public keys and decrypt through the gatekeeper, with the bundled Boot Proofs checked.
+/// `keys` and `decrypt` at an HTTPS origin. Each reply's Boot Proof is checked.
 pub struct OperationsClient<T> {
     session: Session<()>,
     transport: T,

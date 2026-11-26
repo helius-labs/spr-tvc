@@ -176,7 +176,7 @@ export function decryptionServiceFromSession(
 }
 
 export type GatekeeperDecryptionServiceConfig = Omit<DecryptionServiceConfig, "resolveBootProof"> & {
-  /** Gatekeeper API key, sent as `x-api-key`. */
+  /** Sent as `x-api-key`. */
   readonly apiKey: string;
 };
 
@@ -187,7 +187,7 @@ export function createDecryptionService(config: DecryptionServiceConfig): Decryp
 }
 
 /**
- * `keys` and `decrypt` through the gatekeeper. The request names the release
+ * `keys` and `decrypt`. The request names the release
  * in the signed pin. Each call posts `/v1/decryption/operations` and checks
  * that reply's Boot Proof together with its App Proof.
  */
