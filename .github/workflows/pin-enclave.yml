@@ -1,0 +1,178 @@
+# Pins a live deployment. Devnet opens a pull request with the signed pin.
+# Mainnet uploads the policy for the release authorities. A pull request that
+# changes the mainnet pin is checked against the live Boot Proof.
+
+name: pin-enclave
+
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: Network
+        type: choice
+        options: [devnet, mainnet]
+        required: true
+      image:
+        description: Image reference from publish-enclave-image
+        type: string
+        required: true
+      source_commit:
+        description: Full commit the image was built from
+        type: string
+        required: true
+      deploy_id:
+        description: Deployment that is already live
+        type: string
+        required: true
+      minimum_manifest_nonce:
+        description: Manifest nonce floor. Starts at zero.
+        type: string
+        required: false
+        default: "0"
+  pull_request:
+    paths:
+      - client/sdk/releases/mainnet.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pin-enclave-${{ github.event_name }}-${{ inputs.network || 'mainnet' }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pin:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: image-publish
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+      attestations: read
+    env:
+      TVC_ORG_ID: ${{ secrets.TVC_ORG_ID }}
+      TVC_API_KEY_PUBLIC: ${{ secrets.TVC_API_KEY_PUBLIC }}
+      TVC_API_KEY_PRIVATE: ${{ secrets.TVC_API_KEY_PRIVATE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: true
+
+      - name: Require a full commit
+        env:
+          COMMIT: ${{ inputs.source_commit }}
+        run: printf '%s' "$COMMIT" | grep -Eq '^[0-9a-f]{40}$'
+
+      - run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+
+      - run: just setup build-ts
+
+      - name: Install tvc
+        run: cargo install tvc --version 0.17.1 --locked
+
+      - name: Check the live deployment
+        env:
+          NETWORK: ${{ inputs.network }}
+          IMAGE: ${{ inputs.image }}
+          COMMIT: ${{ inputs.source_commit }}
+          DEPLOY_ID: ${{ inputs.deploy_id }}
+          NONCE: ${{ inputs.minimum_manifest_nonce }}
+        run: |
+          printf '%s' "$NONCE" | grep -Eq '^[0-9]+$'
+          args=(
+            pin
+            --network "$NETWORK"
+            --image "$IMAGE"
+            --deploy-id "$DEPLOY_ID"
+            --minimum-manifest-nonce "$NONCE"
+          )
+          if [ "$NETWORK" = mainnet ]; then
+            args+=(--source-commit "$COMMIT")
+          fi
+          cargo xtask "${args[@]}"
+
+      - name: Open the devnet pin pull request
+        if: inputs.network == 'devnet'
+        env:
+          IMAGE: ${{ inputs.image }}
+          DEPLOY_ID: ${{ inputs.deploy_id }}
+          BRANCH: pin-devnet-${{ github.run_id }}
+        run: |
+          cp client/sdk/releases/devnet.json "$RUNNER_TEMP/devnet.json"
+          git checkout -- client/sdk/releases/devnet.json
+          git fetch --depth=1 origin main
+          git checkout -B "$BRANCH" origin/main
+          cp "$RUNNER_TEMP/devnet.json" client/sdk/releases/devnet.json
+          git add client/sdk/releases/devnet.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Pin the devnet decryption enclave."
+          git push origin "$BRANCH"
+          gh pr create --base main --head "$BRANCH" \
+            --title "Pin the devnet decryption enclave" \
+            --body "Checked deploy \`$DEPLOY_ID\` for \`$IMAGE\` before writing the pin."
+
+      - name: Record the mainnet policy request
+        if: inputs.network == 'mainnet'
+        run: |
+          {
+            echo "### Mainnet policy request"
+            echo '```'
+            echo "digest: $(jq -r .digest policy-request.json)"
+            echo '```'
+            echo
+            echo "Release authorities sign this digest. The signed policy is \`client/sdk/releases/mainnet.json\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: inputs.network == 'mainnet'
+        with:
+          name: mainnet-policy-request
+          path: policy-request.json
+
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: image-publish
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+    env:
+      TVC_ORG_ID: ${{ secrets.TVC_ORG_ID }}
+      TVC_API_KEY_PUBLIC: ${{ secrets.TVC_API_KEY_PUBLIC }}
+      TVC_API_KEY_PRIVATE: ${{ secrets.TVC_API_KEY_PRIVATE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+
+      - run: just setup build-ts
+
+      - name: Install tvc
+        run: cargo install tvc --version 0.17.1 --locked
+
+      - name: Check the signed mainnet pin
+        run: cargo xtask pin --network mainnet --signed-policy client/sdk/releases/mainnet.json

@@ -17,8 +17,7 @@ use spr_tvc_wire::types::{
 use crate::policy::{
     devnet_sign, verify_mainnet_policy, MainnetTrust, TurnkeyDeployment, OPERATIONS,
 };
-use crate::{Args, Release};
-use clap::Parser;
+use crate::{Inputs, Release};
 
 fn pinned_manifest_set() -> ManifestSetPolicy {
     const GENERATOR: [u8; 65] = [
@@ -37,8 +36,17 @@ fn pinned_manifest_set() -> ManifestSetPolicy {
     }
 }
 
-fn mainnet_args() -> Args {
-    Args::parse_from(["xtask", "prepare", "candidate", "--network", "mainnet"])
+fn mainnet_args() -> Inputs {
+    Inputs {
+        network: Network::Mainnet,
+        image: String::new(),
+        source_commit: None,
+        deploy_id: None,
+        signed_policy: None,
+        out: None,
+        release_id: "candidate".into(),
+        minimum_manifest_nonce: 0,
+    }
 }
 
 #[test]

@@ -115,7 +115,7 @@ authorities signs the policy digest with P-256. The client enforces the
 policy's validity window and revocation floor. See
 [Establish trust before sending](../docs/spec.md#establish-trust-before-sending).
 
-- `GET /v1/info` is for the release tool and the local testkit. A wallet does not read it.
+- `GET /v1/info` is for the release workflow and the local testkit. A wallet does not read it.
 - `POST /v1/ping` takes `version` and `encrypted_challenge`. The decrypted
   JSON has `type = spr.tvc.qos_ping.v1`, `version`, and a random 32-byte
   `challenge`. The response contains `version` and an App Proof on the
