@@ -1,21 +1,8 @@
 # Test invariants
 
-`just ci` runs Rust and TypeScript suites, including the SDK-to-enclave
-loopback test. Run `just decryption-e2e` to repeat that test on its own.
-The loopback test opens one note for its owner, checks that another owner
-cannot, and resends the ciphertext. The same script against a deployed
-gatekeeper runs when `SPR_E2E_GATEKEEPER_URL`, `HELIUS_API_KEY` or `API_KEY`,
-and `SPR_E2E_RELEASE_PIN` are set. The Rust client runs it with
-`cargo test -p spr-tvc-client --test gatekeeper -- --ignored`.
-Rust tests live under each crate's `tests/`. SDK unit tests sit beside the
-implementation.
+`just ci` runs the Rust and TypeScript suites. `just decryption-e2e` runs the client examples against the loopback enclave. `just headless-e2e` adds a local validator, indexer, and prover. Point `ZOLANA_DIR` at the zolana checkout when it is not `../zolana`. Pass a port offset to run a second localnet.
 
-`just headless-e2e` adds the local Solana validator, indexer, and prover.
-Use a sibling `../zolana` checkout, or set `ZOLANA_DIR`. CI builds
-`c5297afa13e8bfb6edadf6408304ef3fc2f8c676`, which includes the process
-ownership support used for cleanup. The run owns its ledger and service
-processes. The loopback enclave binds an ephemeral port and publishes it to
-the test. Pass a port offset to run another Solana localnet.
+The gatekeeper script stays ignored unless `SPR_E2E_GATEKEEPER_URL`, an API key, and `SPR_E2E_RELEASE_PIN` are set. The Rust form is `cargo test -p spr-tvc-client --test gatekeeper -- --ignored`.
 
 ## Decryption service
 

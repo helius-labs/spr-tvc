@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Attested decryption for Solana addresses without a registered private wallet"
 edition = "2021"
 rust-version = "1.98"
-license = "AGPL-3.0-only"
+license.workspace = true
 publish = false
 autobins = false
 

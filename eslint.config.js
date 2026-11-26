@@ -13,6 +13,7 @@ export default [
     files: [
       "client/sdk/**/*.{ts,tsx}",
       "examples/turnkey/**/*.{ts,tsx}",
+      "examples/typescript/**/*.{ts,tsx}",
       "xtask/*.ts",
     ],
     languageOptions: {

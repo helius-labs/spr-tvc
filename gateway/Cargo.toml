@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Helius-hosted decryption gateway behind gatekeeper: enclave pass-through and Boot Proofs"
 edition = "2024"
 rust-version = "1.98"
-license = "Apache-2.0"
+license = "AGPL-3.0-only"
 publish = false
 
 [[bin]]

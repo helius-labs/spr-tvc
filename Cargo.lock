@@ -3414,6 +3414,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "spr-tvc-rust-example"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "serde",
+ "spr-keypair",
+ "spr-tvc-client",
+ "spr-tvc-wire",
+]
+
+[[package]]
 name = "spr-tvc-wire"
 version = "0.1.0"
 dependencies = [

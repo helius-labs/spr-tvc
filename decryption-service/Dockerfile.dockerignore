@@ -1,7 +1,8 @@
 # The build context is the repository root (`just image`). The
 # image builds only the Cargo workspace. The TypeScript package stays out so
 # unrelated edits do not bust the build cache. The Rust client is a workspace
-# member, so its manifest has to be present for `cargo fetch`.
+# member, so its manifest has to be present for `cargo fetch`. The Rust
+# example is a workspace member too. The TypeScript examples stay out.
 **/.git
 **/.DS_Store
 **/.env
@@ -12,7 +13,8 @@
 **/dist
 .github
 client/sdk
-examples
+examples/turnkey
+examples/typescript
 gateway
 *.md
 package.json

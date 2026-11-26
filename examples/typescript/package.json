@@ -1,0 +1,22 @@
+{
+  "name": "spr-tvc-typescript-sdk-example",
+  "version": "0.0.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "description": "Open one note with the TypeScript decryption client",
+  "scripts": {
+    "example": "tsx",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@heliuslabs/spr": "0.9.0-alpha",
+    "@heliuslabs/spr-decryption-service": "workspace:*",
+    "@solana/kit": "^8.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.7.2"
+  }
+}

@@ -32,8 +32,4 @@ signature used for the local shielded wallet is key material.
 
 ## Localnet
 
-`just headless-e2e` runs the same flow with local Solana signers and the
-loopback decryption testkit. It needs a sibling `zolana` checkout and the
-toolchain described by the [CI workflow](../../.github/workflows/headless-local-e2e.yml).
-`just decryption-e2e` opens one note from the TypeScript and Rust clients and
-repeats the signed-batch commitment check, without a Solana validator.
+`just headless-e2e` runs the same deposit, claim, and sweep with local signers. It needs a sibling `zolana` checkout. The [CI workflow](../../.github/workflows/headless-local-e2e.yml) lists the toolchain.

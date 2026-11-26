@@ -75,9 +75,7 @@ signing key signs the exact UTF-8 payload with P-256/SHA-256. The payload carrie
 or `ServiceDecrypt`). The SDK verifies the signature, replica attestation,
 and all bindings before opening the result. The HTTP request body and the
 binary encrypted result are each limited to 10 MiB, the same cap as the
-indexer. An empty indexer page of 1,000 50-byte recipient notes measures
-675,814 bytes (`plaintext + 12 + 65 + 4 + 16`, then hex).
-`wire/fixtures/page-limit.json` records both lengths.
+indexer.
 
 ## Key derivation and SPR note cipher
 

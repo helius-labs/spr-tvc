@@ -4,8 +4,8 @@
     "title": "Helius Decryption Service API",
     "description": "The gatekeeper front of the decryption enclave. A session returns discovery, the ping, and the Boot Proof of the replica that answered. An operation forwards the encrypted request and returns that replica's Boot Proof. The client verifies both against the release it pins.",
     "license": {
-      "name": "Apache-2.0",
-      "identifier": "Apache-2.0"
+      "name": "AGPL-3.0-only",
+      "identifier": "AGPL-3.0-only"
     },
     "version": "1"
   },

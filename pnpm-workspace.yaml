@@ -1,3 +1,4 @@
 packages:
   - client/sdk
   - examples/turnkey
+  - examples/typescript
