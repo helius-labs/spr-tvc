@@ -28,12 +28,10 @@ This document specifies that path, the two operations inside the encrypted envel
 ```mermaid
 flowchart LR
   Wallet[Wallet]
-  Gatekeeper[Gatekeeper<br/>public]
   Gateway[Gateway<br/>private]
   Service["TVC decryption service<br/>firewalled"]
 
-  Wallet -->|x-api-key| Gatekeeper
-  Gatekeeper -->|origin credential| Gateway
+  Wallet --> Gateway
   Gateway --> Service
 ```
 
