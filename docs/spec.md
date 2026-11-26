@@ -61,13 +61,14 @@ A request that reaches the gateway without the gatekeeper's `Authorization` head
 
 ## Operations
 
-| # | Call | Who | Result |
-| --- | --- | --- | --- |
-| 1 | `POST /v1/decryption/operations` | Wallet, through the gatekeeper | The encrypted enclave response and that replica's Boot Proof |
-| 2 | `PublicKeys` | Inside the encrypted envelope | Viewing public key and nullifier public key for one address |
-| 3 | `Decrypt` | Inside the encrypted envelope | Plaintexts in order, and the nullifier secret |
+Both calls are the `operation` inside one `POST /v1/decryption/operations`. The wallet sends that request through the gatekeeper. The reply is the encrypted response and that replica's Boot Proof.
 
-`PublicKeys` is public in the sense that anyone who can form the envelope can ask. It still rides inside a request sealed to the Quorum key, because that is the only request the enclave accepts on `/v1/operations`. `Decrypt` additionally requires the owner's Ed25519 signature, or a grantee's signature plus the owner's grant.
+| Call | Who may ask | Result |
+| --- | --- | --- |
+| `PublicKeys` | Anyone who can seal a request to the Quorum key | Viewing public key and nullifier public key for one address |
+| `Decrypt` | The owner, or a grantee named in the owner's grant | Plaintexts in order, and the nullifier secret |
+
+`PublicKeys` is sealed to the Quorum key, because that is the only request the service accepts on `/v1/operations`. `Decrypt` also requires the owner's Ed25519 signature, or a grantee's signature plus the owner's grant.
 
 The gateway forwards the operations ciphertext unchanged. It keys a replay ledger by project and ciphertext under the prefix `/v1/decryption`. The configured window is 360 seconds. A repeat returns the first answer and sets `Idempotent-Replayed: true`. The current admission limits are a 512 KiB body and 16 in-flight calls per project (`gateway/configs/config.yaml`).
 
@@ -80,14 +81,12 @@ sequenceDiagram
     participant Wallet
     participant Gatekeeper
     participant Gateway
-    participant Enclave
-    participant Turnkey
+    participant Service as TVC decryption service
 
     Wallet->>Gatekeeper: POST /v1/decryption/operations
     Gatekeeper->>Gateway: origin credential, project id
-    Gateway->>Enclave: ciphertext unchanged
-    Enclave-->>Gateway: encrypted response, App Proof
-    Gateway->>Turnkey: Boot Proof for the replica that signed it
+    Gateway->>Service: ciphertext unchanged
+    Service-->>Gateway: encrypted response, App Proof
     Gateway-->>Wallet: response, bootProof
 ```
 
