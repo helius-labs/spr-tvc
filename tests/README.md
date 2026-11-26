@@ -30,7 +30,7 @@ The gatekeeper script stays ignored unless `SPR_E2E_GATEKEEPER_URL`, an API key,
 | Turnkey signs the exact SDK bytes for the expected account. | The adapter uses raw Ed25519 for approvals. It refuses another account's signature and changed transaction messages. [Turnkey signer](../examples/turnkey/tests/turnkey.test.ts) |
 
 The tests use fixtures and simulated attestation inputs. The
-[service spec](../decryption-service/SPEC.md#key-custody-and-trust) describes the trust
+[service spec](../docs/spec.md#key-custody-and-trust) describes the trust
 required of Quorum operators and the release authorities.
 
 ## Mainnet release controls

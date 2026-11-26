@@ -4,7 +4,7 @@ The example uses a Turnkey-managed Solana account to sign transactions and
 decrypt approvals. It deposits SOL, sends to the address's service keys,
 claims the note, then sweeps it into the account's locally derived shielded
 wallet. The on-chain transfer publishes the recipient's Solana owner tag.
-The code verifies the recipient and the decryption service before depositing.
+The code verifies the recipient and the decryption service before depositing. The [spec](../../docs/spec.md) is that service.
 
 ## Devnet
 

@@ -1,8 +1,10 @@
 # Gateway
 
-Callers with a Helius API key talk to this process, not to the enclave.
+The gatekeeper is the public edge. It checks a Helius API key and calls this process with its origin credential and the project id. This process calls the firewalled enclave and Turnkey.
 
-`POST /v1/decryption/session` asks the enclave for discovery and a ping, then attaches the Boot Proof of the replica that answered. `POST /v1/decryption/operations` forwards the encrypted request unchanged and attaches the Boot Proof of the replica that signed the reply. Sending the same ciphertext again returns the first answer, with `Idempotent-Replayed: true`.
+`POST /v1/decryption/session` returns discovery, the ping, and the Boot Proof of the replica that answered. `POST /v1/decryption/operations` forwards the encrypted request unchanged and attaches the Boot Proof of the replica that signed the reply. The same ciphertext returns the first answer, with `Idempotent-Replayed: true`.
+
+The [spec](../docs/spec.md) is the full path. The HTTP contract is [openapi.json](openapi.json).
 
 Wallet enrollment stays on the `private-wallet` branch.
 

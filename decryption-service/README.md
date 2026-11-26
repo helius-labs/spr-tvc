@@ -1,10 +1,8 @@
 # Decryption enclave
 
-`PublicKeys` returns the viewing and nullifier public keys for a Solana address. Anyone can ask. `Decrypt` checks the owner's signature, opens the notes with that address's viewing key, and seals the plaintexts and the nullifier secret to the response key in the request.
+This process derives a viewing key and a nullifier key for a Solana address, opens notes for an owner who signed the batch, and seals the reply to the wallet's response key. It starts only after Quorum OS has loaded an approved manifest and the configured Quorum key.
 
-The process starts only after Turnkey's Quorum OS has loaded an approved manifest and the configured Quorum key. From there it serves discovery, an encrypted ping, and operations.
-
-The [security specification](SPEC.md) is who is trusted with what. [Wire](../wire/README.md) is the byte layout.
+Production callers reach it through the gatekeeper and the gateway. The [spec](../docs/spec.md) is that path and the trust assumptions. [Wire](../wire/README.md) is the byte layout.
 
 ```sh
 cargo test --locked -p spr-tvc-decryption-service
