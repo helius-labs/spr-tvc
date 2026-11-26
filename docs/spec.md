@@ -150,21 +150,23 @@ A wallet does not read `/v1/info` or `/v1/ping`. The release tool does, before i
 ```mermaid
 sequenceDiagram
     participant Sender
-    participant Gatekeeper
+    participant Gateway
     participant Service as TVC decryption service
     participant Chain
     participant Wallet
 
-    Sender->>Gatekeeper: PublicKeys(address)
-    Gatekeeper->>Service: sealed request
-    Service-->>Sender: viewing key, nullifier key
+    Sender->>Gateway: PublicKeys(address)
+    Gateway->>Service: sealed request
+    Service-->>Gateway: viewing key, nullifier key
+    Gateway-->>Sender: viewing key, nullifier key
     Note over Sender: encrypt the note to the viewing key
     Sender->>Chain: transfer, owner tag = address
     Wallet->>Chain: read notes for that tag
     Note over Wallet: sign the batch, seal it to the Quorum key
-    Wallet->>Gatekeeper: Decrypt
-    Gatekeeper->>Service: ciphertext unchanged
-    Service-->>Wallet: plaintexts, nullifier secret, Boot Proof
+    Wallet->>Gateway: Decrypt
+    Gateway->>Service: ciphertext unchanged
+    Service-->>Gateway: plaintexts, nullifier secret, Boot Proof
+    Gateway-->>Wallet: plaintexts, nullifier secret, Boot Proof
 ```
 
 ### Send
