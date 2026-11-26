@@ -27,7 +27,7 @@ use spr_tvc_wire::types::{
 const BOOT_PROOF_SLACK: u64 = 512 * 1024;
 
 /// HTTPS origin and the API key sent as `x-api-key`.
-pub struct Gatekeeper {
+pub struct OperationsConfig {
     pub endpoint: String,
     pub api_key: String,
 }
@@ -42,20 +42,20 @@ pub struct OperationsClient<T> {
 impl<T: Transport> OperationsClient<T> {
     pub fn connect(
         network: Network,
-        gatekeeper: Gatekeeper,
+        config: OperationsConfig,
         release: SignedReleasePolicy,
         authorities: PinnedReleaseAuthorities,
         pcrs: IdentityPcrs,
         transport: T,
     ) -> Result<Self, ClientError> {
-        require_gatekeeper(&gatekeeper.endpoint, &gatekeeper.api_key)?;
+        require_https_origin(&config.endpoint, &config.api_key)?;
         let now = now_ms;
         verify_signed_release_policy(&release, &authorities, network, now())?;
         let info = info_from_policy(&release.policy)?;
         Ok(Self {
-            session: Session::verified(gatekeeper.endpoint, info, release, pcrs, now),
+            session: Session::verified(config.endpoint, info, release, pcrs, now),
             transport,
-            api_key: gatekeeper.api_key,
+            api_key: config.api_key,
         })
     }
 
@@ -203,8 +203,8 @@ fn decode_boot_proof(wire: &WireBootProof) -> Result<BootProof, TvcError> {
     })
 }
 
-fn require_gatekeeper(endpoint: &str, api_key: &str) -> Result<(), ClientError> {
-    let url = reqwest::Url::parse(endpoint).map_err(|_| ClientError::InvalidGatekeeperConfig)?;
+fn require_https_origin(endpoint: &str, api_key: &str) -> Result<(), ClientError> {
+    let url = reqwest::Url::parse(endpoint).map_err(|_| ClientError::InvalidServiceConfig)?;
     if url.scheme() != "https"
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -215,7 +215,7 @@ fn require_gatekeeper(endpoint: &str, api_key: &str) -> Result<(), ClientError> 
         || api_key.trim().is_empty()
         || reqwest::header::HeaderValue::from_str(api_key).is_err()
     {
-        return Err(ClientError::InvalidGatekeeperConfig);
+        return Err(ClientError::InvalidServiceConfig);
     }
     Ok(())
 }
@@ -396,12 +396,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_gatekeeper_that_is_not_an_https_origin() {
+    fn rejects_an_endpoint_that_is_not_an_https_origin() {
         let (transport, urls) = gate();
         let (release, authorities) = signed_policy(&transport);
         let Err(error) = OperationsClient::connect(
             Network::Devnet,
-            Gatekeeper {
+            OperationsConfig {
                 endpoint: "http://gate.example".into(),
                 api_key: "test-key".into(),
             },
@@ -410,9 +410,9 @@ mod tests {
             pcrs(),
             transport,
         ) else {
-            panic!("expected the gatekeeper call to fail");
+            panic!("expected the endpoint to be refused");
         };
-        assert!(matches!(error, ClientError::InvalidGatekeeperConfig));
+        assert!(matches!(error, ClientError::InvalidServiceConfig));
         assert!(urls.borrow().is_empty());
     }
 
@@ -423,7 +423,7 @@ mod tests {
         let owner = [7u8; 32];
         let client = OperationsClient::connect(
             Network::Devnet,
-            Gatekeeper {
+            OperationsConfig {
                 endpoint: "https://gate.example".into(),
                 api_key: "test-key".into(),
             },

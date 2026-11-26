@@ -6,7 +6,7 @@ use spr_tvc_wire::encoding::{decode_lower_hex_array, parse_strict_json};
 use spr_tvc_wire::release::PinnedReleaseAuthorities;
 use spr_tvc_wire::SignedReleasePolicy;
 
-use spr_tvc_client::{Gatekeeper, IdentityPcrs, OperationsClient, ReqwestTransport};
+use spr_tvc_client::{IdentityPcrs, OperationsClient, OperationsConfig, ReqwestTransport};
 
 use support::{one_note, replay, Key, Tape};
 
@@ -50,7 +50,7 @@ fn operations_open_one_note() {
     let tape = Tape::new(ReqwestTransport::new().expect("client"));
     let client = OperationsClient::connect(
         network,
-        Gatekeeper {
+        OperationsConfig {
             endpoint,
             api_key: api_key.clone(),
         },

@@ -4,7 +4,7 @@ import { address } from "@solana/kit";
 import { beforeEach, expect, it, vi } from "vitest";
 
 import { policySigningDigest } from "../../src/attestation/release-policy.js";
-import { createGatekeeperDecryptionService } from "../../src/client/decryption.js";
+import { createDecryptionService } from "../../src/client/decryption.js";
 import { signP256Message, signP256Prehash } from "../../src/crypto/p256.js";
 import { qosDecrypt } from "../../src/crypto/qos.js";
 import { MAX_ENCRYPTED_REQUEST_BYTES, TVC_APP_PROOF_SCHEME } from "../../src/wire/constants.js";
@@ -114,20 +114,20 @@ beforeEach(() => {
   verifyBootProofMock.mockReset().mockResolvedValue(undefined);
 });
 
-it("refuses a gatekeeper endpoint that is not an https origin", () => {
+it("refuses an endpoint that is not an https origin", () => {
   const { release } = fixture();
-  expect(() => createGatekeeperDecryptionService({
+  expect(() => createDecryptionService({
     network: "devnet",
     endpoint: new URL("http://gate.example"),
     apiKey: "test-key",
     release,
-  })).toThrow(expect.objectContaining({ code: "InvalidGatekeeperConfig" }));
+  })).toThrow(expect.objectContaining({ code: "InvalidServiceConfig" }));
 });
 
 it("checks the boot proof on the operation reply", async () => {
   const { release, operationBoot, quorumEncryptionSecret, ephemeralPublicKey, ephemeralSigningSecret } = fixture();
   const urls: string[] = [];
-  const service = createGatekeeperDecryptionService({
+  const service = createDecryptionService({
     network: "devnet",
     endpoint: new URL("https://gate.example"),
     apiKey: "test-key",

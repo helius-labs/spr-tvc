@@ -20,7 +20,7 @@ export type EnclaveBackend = {
   readonly endpoint: URL;
   readonly resolveBootProof?: BootProofResolver;
   /** Sent as `x-api-key`. The reply then includes the Boot Proof. */
-  readonly gatekeeperApiKey?: string;
+  readonly apiKey?: string;
 };
 
 /** The enclave's request fields around the ciphertext. */
@@ -35,15 +35,15 @@ const MAX_DISCOVERY_RESPONSE_BYTES = 64n * 1024n;
 const MAX_PING_RESPONSE_BYTES = 64n * 1024n;
 const MAX_BOOT_PROOF_BYTES = 512n * 1024n;
 
-function postGatekeeper(
+function postOperation(
   backend: EnclaveBackend,
   route: "operations",
   transport: DecryptionServiceTransport,
   body: string,
   signal?: AbortSignal,
 ): Promise<Response> {
-  const apiKey = backend.gatekeeperApiKey;
-  if (apiKey === undefined || !apiKey.trim()) throw new DecryptionServiceError("InvalidGatekeeperConfig");
+  const apiKey = backend.apiKey;
+  if (apiKey === undefined || !apiKey.trim()) throw new DecryptionServiceError("InvalidServiceConfig");
   return fetchWithSignal(transport, endpointUrl(backend.endpoint, `/v1/decryption/${route}`), {
     method: "POST",
     redirect: "error",
@@ -129,10 +129,10 @@ export async function sendOperation(
   maxAnswerBytes: bigint,
   signal?: AbortSignal,
 ): Promise<{ responseText: string; bootProof?: TurnkeyBootProofWire }> {
-  if (backend.gatekeeperApiKey === undefined) {
+  if (backend.apiKey === undefined) {
     return { responseText: await sendToEnclave(backend.endpoint, request, transport, maxAnswerBytes, signal) };
   }
-  const response = await postGatekeeper(
+  const response = await postOperation(
     backend, "operations", transport, canonicalizeJsonValue(request), signal,
   );
   const code = response.status >= 500 ? "OperationUnavailable" : "OperationRejected";

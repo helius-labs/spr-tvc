@@ -86,7 +86,7 @@ impl ReqwestTransport {
             .body(body.to_owned());
         if let Some(api_key) = api_key {
             let mut header = reqwest::header::HeaderValue::from_str(api_key)
-                .map_err(|_| ClientError::InvalidGatekeeperConfig)?;
+                .map_err(|_| ClientError::InvalidServiceConfig)?;
             header.set_sensitive(true);
             request = request.header("x-api-key", header);
         }

@@ -21,7 +21,7 @@ mod session;
 mod transport;
 
 pub use attestation::{BootProof, IdentityPcrs};
-pub use operations::{Gatekeeper, OperationsClient};
+pub use operations::{OperationsClient, OperationsConfig};
 pub use service::{DecryptionClient, Note, ServiceKeys};
 pub use transport::{ReqwestTransport, Transport};
 
@@ -52,7 +52,7 @@ pub enum ClientError {
     /// The response key could not open the ciphertext.
     InvalidEnvelope,
     /// The HTTPS origin or API key cannot be used.
-    InvalidGatekeeperConfig,
+    InvalidServiceConfig,
 }
 
 impl Display for ClientError {
@@ -63,7 +63,7 @@ impl Display for ClientError {
             Self::ResponseTooLarge => f.write_str("ResponseTooLarge"),
             Self::Entropy => f.write_str("Entropy"),
             Self::InvalidEnvelope => f.write_str("InvalidEncryptedEnvelope"),
-            Self::InvalidGatekeeperConfig => f.write_str("InvalidGatekeeperConfig"),
+            Self::InvalidServiceConfig => f.write_str("InvalidServiceConfig"),
         }
     }
 }

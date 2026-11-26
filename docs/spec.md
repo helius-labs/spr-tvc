@@ -124,12 +124,12 @@ The plaintext inside `ciphertext` is a `ServiceRequest`. Its release fields are 
 }
 ```
 
-A client opens the gatekeeper path with the release pin it trusts:
+A client opens the service with the release pin it trusts:
 
 ```ts
-import { createGatekeeperDecryptionService } from "@heliuslabs/spr-decryption-service";
+import { createDecryptionService } from "@heliuslabs/spr-decryption-service";
 
-const service = createGatekeeperDecryptionService({
+const service = createDecryptionService({
   network: "devnet",
   endpoint: new URL("https://devnet.helius-rpc.com"),
   apiKey,
