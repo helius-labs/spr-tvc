@@ -1,14 +1,14 @@
 //! The signed pin is the request target. Each reply is checked on its own.
 
 use qos_p256::encrypt::{P256EncryptPair, P256EncryptPublic};
-use spr_tvc_wire::constants::{API_VERSION, QOS_P256_PUBLIC_LEN, TVC_APP_PROOF_SCHEME};
 #[cfg(feature = "local-dev")]
 use spr_tvc_wire::constants::TVC_QOS_PING_PROOF_TYPE;
+use spr_tvc_wire::constants::{API_VERSION, QOS_P256_PUBLIC_LEN, TVC_APP_PROOF_SCHEME};
 use spr_tvc_wire::crypto::verify_p256_message;
 use spr_tvc_wire::decryption_service::SERVICE_PROOF_TYPE;
-use spr_tvc_wire::encoding::{decode_lower_hex_array, is_rfc8785};
 #[cfg(feature = "local-dev")]
 use spr_tvc_wire::encoding::jcs_serialize;
+use spr_tvc_wire::encoding::{decode_lower_hex_array, is_rfc8785};
 use spr_tvc_wire::error::{ErrorCode, TvcError};
 use spr_tvc_wire::release::{verify_signed_release_policy, PinnedReleaseAuthorities};
 use spr_tvc_wire::types::{

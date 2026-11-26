@@ -237,14 +237,13 @@ mod tests {
     use spr_tvc_wire::crypto::sign_p256_message;
     use spr_tvc_wire::decryption_service::parse_service_request;
     use spr_tvc_wire::encoding::{encode_lower_hex, jcs_serialize, parse_strict_json};
-    use spr_tvc_wire::types::EncryptedRequest;
     use spr_tvc_wire::error::ErrorCode;
     use spr_tvc_wire::release::{
         sign_release_policy, PinnedReleaseAuthorities, ReleaseAuthorityKey,
     };
     use spr_tvc_wire::types::{
-        AppProof, EncryptedResponse, Network, OperationKind, ReleaseAuthoritySignature,
-        ReleasePolicy, SignedReleasePolicy,
+        AppProof, EncryptedRequest, EncryptedResponse, Network, OperationKind,
+        ReleaseAuthoritySignature, ReleasePolicy, SignedReleasePolicy,
     };
 
     use super::*;
