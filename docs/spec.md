@@ -208,19 +208,16 @@ A view grant is the owner's signature that a second key may decrypt for that own
 sequenceDiagram
     participant Owner
     participant Grantee
-    participant Gatekeeper
     participant Service as TVC decryption service
 
     Note over Owner: sign the grant on the owner's device
     Owner->>Grantee: signed grant
-    Grantee->>Gatekeeper: POST /v1/decryption/operations
-    Note over Grantee,Gatekeeper: Decrypt signed by the grantee, grant inside the ciphertext
-    Gatekeeper->>Service: ciphertext unchanged
+    Grantee->>Service: Decrypt, signed by the grantee, grant inside the ciphertext
     Note over Service: grantee signature, then the owner's grant, then the owner's notes
-    Service-->>Grantee: plaintexts, nullifier secret, Boot Proof
+    Service-->>Grantee: plaintexts, nullifier secret
 ```
 
-The gateway is the same hop as in [Operations](#operations). It forwards the ciphertext and can replay the first answer for 360 seconds.
+The request still travels the [Operations](#operations) path. The gatekeeper and the gateway forward the ciphertext. The gateway can replay the first answer for 360 seconds. Neither one reads the grant.
 
 ### Who signs what
 
