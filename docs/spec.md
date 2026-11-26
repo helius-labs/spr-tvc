@@ -8,6 +8,7 @@
 - [Operations](#operations)
 - [Establish trust before sending](#establish-trust-before-sending)
 - [Send, claim, and sweep](#send-claim-and-sweep)
+- [View grant](#view-grant)
 - [What crosses each boundary](#what-crosses-each-boundary)
 - [What protects the data](#what-protects-the-data)
 - [Key custody and trust](#key-custody-and-trust)
@@ -56,7 +57,7 @@ A request that reaches the gateway without the gatekeeper's `Authorization` head
 | Response key | A fresh P-256 key the wallet creates for one call and keeps. The enclave seals the reply to it. |
 | Viewing key | X25519 key the enclave derives for one Solana address. Senders encrypt notes to the public half. |
 | Nullifier secret | 31-byte spend secret for that address. An authorized decrypt returns it. The viewing secret stays inside. |
-| View grant | An owner-signed window of at most 30 minutes in which a grantee may decrypt. The enclave does not store it. |
+| View grant | An owner-signed window of at most 30 minutes in which a grantee may decrypt. The enclave keeps no copy. [View grant](#view-grant). |
 | Owner tag | The recipient's Solana address, published on the transfer so a wallet can find its notes. |
 
 ## Operations
@@ -180,15 +181,15 @@ Senders can cache the public keys and create outputs without calling the service
 
 ### Claim
 
-The recipient wallet finds candidate outputs from the owner tag. It generates a fresh P-256 response key and keeps the private half. The signer is the owner, or a grantee named in a view grant the owner signed on a device. A grant lasts at most 30 minutes, is checked against the enclave clock, and is not stored.
+The recipient wallet finds candidate outputs from the owner tag. It generates a fresh P-256 response key and keeps the private half. The owner signs the batch. A second key does the same under a [view grant](#view-grant) the owner signed.
 
 The signature is a Solana off-chain message. Its payload names the network and the request digest. That digest covers the Quorum key id and epoch, the request id, the ordered items, the response public key, and the grant when there is one. The SDK seals that signed request to the pinned Quorum encryption key and posts it to `/v1/decryption/operations`.
 
-An empty batch is the same authorization, used to fetch the nullifier secret. A grantee receives that secret too. Ending the grant does not wipe a secret already returned. Spending a note still takes the owner's Solana signature.
+An empty batch is the same authorization, used to fetch the nullifier secret.
 
-Inside the enclave the envelope is authenticated, the request's version and Quorum key are checked against the replica, and the Ed25519 signature is verified. With no grant, the signer address selects the viewing secret. With a grant, the grant's owner selects it. The enclave rejects the request when any of these fail:
+Inside the enclave the envelope is authenticated, the request's version and Quorum key are checked against the replica, and the Ed25519 signature is verified. With no grant, the signer address selects the viewing secret. With a grant, the [view-grant checks](#view-grant) select the grant's owner. The enclave rejects the request when any of these fail:
 
-1. The clock cannot be read, the grant window is longer than 30 minutes, or the grant names another network or Quorum key.
+1. A grant is present and fails the [view-grant checks](#view-grant).
 2. The signature or the response public key is missing or malformed, or the request names another version or Quorum key.
 3. An item names a key schedule other than `HkdfSha256Ctr`, or its ephemeral key, salt, or slot is malformed.
 4. One item in the batch fails. The enclave returns no partial plaintext.
@@ -197,7 +198,134 @@ One signature covers an indexer page. The enclave seals the ordered plaintexts a
 
 ### Sweep
 
-The wallet derives transaction viewing keys from the nullifier secret and moves the notes into its shielded wallet with `transact`. `merge_transact` needs the registered nullifier public key. The wallet gives the witness to its prover. For a service note that witness includes the nullifier secret. The owner signs the Solana transaction.
+The wallet derives transaction viewing keys from the nullifier secret and moves the notes into its shielded wallet with `transact`. `merge_transact` needs the registered nullifier public key. The wallet gives the witness to its prover. For a service note that witness includes the nullifier secret. The owner signs the Solana transaction. A grantee who holds the secret can prepare that witness. The owner's signature is still the one on the transaction.
+
+## View grant
+
+A view grant is the owner's signature that a second key may decrypt for that owner. The window is at most 30 minutes. The enclave keeps no copy, so the window is the revocation. One grant covers every later `Decrypt` until it ends. It names no notes: the grantee chooses the items.
+
+```mermaid
+sequenceDiagram
+    participant Owner
+    participant Grantee
+    participant Gatekeeper
+    participant Service as TVC decryption service
+
+    Note over Owner: sign the grant on the owner's device
+    Owner->>Grantee: signed grant
+    Grantee->>Gatekeeper: POST /v1/decryption/operations
+    Note over Grantee,Gatekeeper: Decrypt signed by the grantee, grant inside the ciphertext
+    Gatekeeper->>Service: ciphertext unchanged
+    Note over Service: grantee signature, then the owner's grant, then the owner's notes
+    Service-->>Grantee: plaintexts, nullifier secret, Boot Proof
+```
+
+The gateway is the same hop as in [Operations](#operations). It forwards the ciphertext and can replay the first answer for 360 seconds.
+
+### Who signs what
+
+Two Ed25519 signatures. Each is a Solana off-chain message v0 with one signer, and a non-canonical signature is rejected.
+
+```mermaid
+flowchart TB
+  fields["grant fields, signature omitted"] --> gdigest["H of SPR_TVC_VIEW_GRANT_V1 and JCS"]
+  gdigest --> gmsg["off-chain message, view-grant/v1"]
+  owner["owner key"] --> gsig["owner signature"]
+  gmsg --> gsig
+  gsig --> request["ServiceRequest, decrypt signature omitted"]
+  request --> rdigest["H of SPR_TVC_DECRYPTION_SERVICE_REQUEST_V1 and JCS"]
+  rdigest --> rmsg["off-chain message, decrypt/v1 and the network"]
+  grantee["grantee key"] --> rsig["grantee signature"]
+  rmsg --> rsig
+```
+
+| Signature | Who | What it covers |
+| --- | --- | --- |
+| Grant | The owner | `owner`, `grantee`, `network`, `quorum_key_id`, `quorum_key_epoch`, `not_before_ms`, and `expiry_ms`. The digest is `H(SPR_TVC_VIEW_GRANT_V1, JCS(grant))` with `signature` removed. The message domain is `SHA256("TSPP/decryption-service/view-grant/v1")`. The payload is `TSPP/decryption-service/view-grant/v1/<hex digest>`. |
+| Decrypt | The grantee | Quorum key id and epoch, request id, ordered items, response public key, and the grant, including the owner's signature. The digest is `H(SPR_TVC_DECRYPTION_SERVICE_REQUEST_V1, JCS(request))` with the decrypt `signature` removed. The message domain is `SHA256("TSPP/decryption-service/decrypt/v1")`. The payload is `TSPP/decryption-service/decrypt/v1/<network>/<hex digest>`. |
+
+The owner's message names the owner. The grantee's message names the grantee and the network.
+
+### Fields
+
+The grant rides inside `Decrypt`. `signer` is the grantee.
+
+```json
+{
+  "type": "Decrypt",
+  "signer": "<grantee base58>",
+  "signature": "<64-byte hex>",
+  "items": [],
+  "grant": {
+    "owner": "<owner base58>",
+    "grantee": "<grantee base58>",
+    "network": "devnet",
+    "quorum_key_id": "<id>",
+    "quorum_key_epoch": "1",
+    "not_before_ms": "1710000000000",
+    "expiry_ms": "1710001800000",
+    "signature": "<64-byte hex>"
+  }
+}
+```
+
+Integer fields are decimal strings. Both `signature` fields are 64-byte hex. An empty `items` list returns the owner's nullifier secret and no plaintext.
+
+The enclave admits the grant when all of these hold. The enclave clock is the one that counts:
+
+1. The clock can be read, and `now` is inside `[not_before_ms, expiry_ms)`. The span is from 1 ms through 30 minutes.
+2. `owner` and `grantee` are distinct on-curve Ed25519 addresses. A small-order key is rejected.
+3. `grantee` is the decrypt signer.
+4. `network`, `quorum_key_id`, and `quorum_key_epoch` match this replica.
+5. The owner's signature verifies over the grant digest.
+
+Any failure rejects the whole request. The enclave returns no plaintext.
+
+### Security assumptions
+
+| Assumption | What follows |
+| --- | --- |
+| Expiry is the only revocation | The owner stops handing out new grants. A request whose window still contains the enclave clock succeeds. There is no revoke call. |
+| The grant names no notes | The grantee opens any note of that owner, and can ask for the nullifier secret alone. |
+| The reply carries the nullifier secret | The grantee keeps that secret after the window ends. Known notes of that owner can be linked. A Solana spend still needs the owner's signature on the transaction. |
+| The gateway replays one ciphertext for 360 seconds | That repeat returns the first answer and does not ask the enclave again. After the ledger drops it, the enclave checks the clock. A replay opens only for the response key inside the signed request. |
+| The grantee signature covers the grant bytes | Replacing the grant, or the owner's signature on it, breaks the grantee signature. |
+| `PublicKeys` takes no grant | Anyone who can seal a request to the Quorum key can read the viewing public key and the nullifier public key. |
+
+The SDKs check the window, and that the signer is the grantee, before the grantee signs. The Rust client also checks the network and the Quorum key. Signing the grant checks the span, so an owner can sign a window that opens later.
+
+### Calling it
+
+```ts
+import { signViewGrant } from "@heliuslabs/spr-decryption-service";
+
+const grant = await signViewGrant(owner, {
+  grantee,
+  network: "devnet",
+  quorumKeyId,
+  quorumKeyEpoch,
+  notBeforeMs,
+  expiryMs,
+});
+
+const keys = await service.keys(grantee, { grant });
+```
+
+```rust
+let grant = SignViewGrant {
+    grantee: grantee.pubkey(),
+    network,
+    quorum_key_id,
+    quorum_key_epoch,
+    not_before_ms,
+    expiry_ms,
+}
+.sign(&owner)?;
+
+let mut keys = client.keys_for(&grantee, &grant)?;
+```
+
+`keys` with no grant is the owner. `OperationsClient::keys_for` is the same grant at the gatekeeper.
 
 ## What crosses each boundary
 
@@ -207,7 +335,8 @@ The wallet derives transaction viewing keys from the nullifier secret and moves 
 | API key, project id, body sizes, timing | Gatekeeper and gateway | Admission, project limits, and the replay ledger |
 | Quorum key id, epoch, App Proof | Gatekeeper, gateway, and anyone who sees the request or reply | They are outside the QOS envelope |
 | Note plaintext, viewing secret | The enclave, then the wallet that holds the response key | The viewing secret is derived inside the enclave and is not in the reply |
-| Nullifier secret | The enclave, the authorized caller, and the prover at sweep | `Decrypt` returns it so the owner can spend |
+| Nullifier secret | The enclave, the authorized caller, and the prover at sweep | `Decrypt` returns it so the owner can spend. A grantee receives the same secret |
+| View grant | The owner, the grantee, and the enclave | It rides inside the sealed request. The enclave keeps no copy |
 | Quorum seed | The enclave | Every service key under this release is derived from it |
 
 The indexer sees the wallet's queries. Deposits, withdrawals, and timing reveal more than the ciphertext does.
@@ -216,7 +345,7 @@ The indexer sees the wallet's queries. Deposits, withdrawals, and timing reveal 
 
 The note on chain is X25519 between the sender and the enclave. SPR runs HKDF-SHA256 over that shared secret, both public keys, the cipher domain, the salt, and the slot, and uses the output as an AES-256-CTR key and nonce. Confidentiality needs the X25519 private keys and a fresh key and nonce for every plaintext. CTR does not authenticate a ciphertext. The wallet checks the decoded note against the published commitment before accepting it. Encrypted memos sit outside that commitment and are not trusted. `Transfer` uses the domain `TSPP/tx`. `RingDeposit` uses `TSPP/ring_deposit` and slot zero.
 
-The request is a QOS envelope. Its AES-256-GCM key comes from ephemeral P-256 ECDH, and GCM covers the ciphertext and both public keys. Anyone can encrypt to the Quorum public key, which is why the enclave still checks the owner's signature on `Decrypt`. A v1 signature does not expire. Replaying the request at the enclave only produces another ciphertext for the original response key. The gateway's ledger returns the first of those answers.
+The request is a QOS envelope. Its AES-256-GCM key comes from ephemeral P-256 ECDH, and GCM covers the ciphertext and both public keys. Anyone can encrypt to the Quorum public key, which is why `Decrypt` still requires the owner's signature, or a grantee's signature plus the owner's grant. A v1 signature does not expire. Replaying the request at the enclave only produces another ciphertext for the original response key. The gateway's ledger returns the first of those answers.
 
 The reply is a QOS envelope to the one-time response key. A relay cannot swap that key without breaking the owner's signature. The App Proof authenticates the reply. The response private key opens it.
 
@@ -226,6 +355,6 @@ The prover sees the transaction witness, and for a service note that includes th
 
 The owner's Ed25519 key authorizes decrypt batches and, separately, Solana transactions. In the example that key is Turnkey. The wallet creates the response key for its own approval and has to keep the private half.
 
-Replicas approved under the same Quorum seed derive the same service keys across releases. HKDF binds each key to the address and keeps the viewing secret and the nullifier secret apart. The viewing secret stays in the enclave. An authorized reply exports the nullifier secret. If that secret leaks, spends of known notes can be linked. A view grant hands the grantee the same secret for notes opened during the window. Spending still requires the owner's signature.
+Replicas approved under the same Quorum seed derive the same service keys across releases. HKDF binds each key to the address and keeps the viewing secret and the nullifier secret apart. The viewing secret stays in the enclave. An authorized reply exports the nullifier secret. If that secret leaks, spends of known notes can be linked. A [view grant](#view-grant) hands the grantee that secret for the whole address, and the grantee keeps it after the window ends. Spending still requires the owner's signature.
 
 Confidentiality is the approved image, Nitro isolation, custody of the Quorum seed, and the firewall in front of the enclave. An approved image can read the seed. Whoever has the seed can open recorded requests and derive every service viewing key under it, which opens historical notes. Losing the seed makes notes that were never swept unreadable. Rotation changes the service keys, so recipients need the previous service until they sweep.
