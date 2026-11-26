@@ -83,8 +83,8 @@ sequenceDiagram
 
     Wallet->>Gateway: POST /v1/decryption/operations
     Gateway->>Service: ciphertext unchanged
-    Service-->>Gateway: encrypted response, App Proof
-    Gateway-->>Wallet: response, bootProof
+    Service-->>Gateway: response, App Proof inside
+    Gateway-->>Wallet: response, Boot Proof added
 ```
 
 ```json
@@ -157,19 +157,19 @@ sequenceDiagram
 
     Sender->>Gateway: PublicKeys(address)
     Gateway->>Service: sealed request
-    Service-->>Gateway: encrypted response, App Proof
-    Gateway-->>Sender: encrypted response, Boot Proof
+    Service-->>Gateway: response, App Proof inside
+    Gateway-->>Sender: response, Boot Proof added
     Note over Sender: open the reply, encrypt the note to the viewing public key
     Sender->>Chain: transfer, owner tag = address
     Wallet->>Chain: read notes for that tag
     Note over Wallet: sign the batch, seal it to the Quorum key
     Wallet->>Gateway: Decrypt
     Gateway->>Service: ciphertext unchanged
-    Service-->>Gateway: encrypted response, App Proof
-    Gateway-->>Wallet: encrypted response, Boot Proof
+    Service-->>Gateway: response, App Proof inside
+    Gateway-->>Wallet: response, Boot Proof added
 ```
 
-The gateway carries the sealed reply. It sees the ciphertext, the App Proof, and the Boot Proof. `PublicKeys` opens to the viewing public key and the nullifier public key. The viewing secret stays in the enclave.
+The gateway forwards that response and adds the Boot Proof of the replica that signed the App Proof. The App Proof stays inside the response. `PublicKeys` opens to the viewing public key and the nullifier public key. The viewing secret stays in the enclave.
 
 ### Send
 
