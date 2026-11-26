@@ -151,7 +151,7 @@ impl<T: Transport> CheckReply for OperationsClient<T> {
         request: &ServiceRequest,
         boot: Option<&BootProof>,
     ) -> Result<(), ClientError> {
-        let boot = boot.ok_or_else(|| TvcError::new(ErrorCode::BootProofUnverified))?;
+        let boot = boot.ok_or_else(|| TvcError::boot("decode"))?;
         verify_reply_boot(
             self.session.release(),
             self.session.pcrs(),
@@ -214,17 +214,17 @@ struct OperationAnswer {
 fn decode_boot_proof(wire: &WireBootProof) -> Result<BootProof, TvcError> {
     let attestation = base64::engine::general_purpose::STANDARD
         .decode(wire.aws_attestation_doc_b64.as_bytes())
-        .map_err(|_| TvcError::new(ErrorCode::BootProofUnverified))?;
-    let key = decode_lower_hex(&wire.ephemeral_public_key_hex)
-        .map_err(|_| TvcError::new(ErrorCode::BootProofUnverified))?;
+        .map_err(|_| TvcError::boot("decode"))?;
+    let key =
+        decode_lower_hex(&wire.ephemeral_public_key_hex).map_err(|_| TvcError::boot("decode"))?;
     if key.len() != QOS_P256_PUBLIC_LEN {
-        return Err(TvcError::new(ErrorCode::BootProofUnverified));
+        return Err(TvcError::boot("decode"));
     }
     let mut ephemeral_public_key = [0u8; QOS_P256_PUBLIC_LEN];
     ephemeral_public_key.copy_from_slice(&key);
     let manifest_envelope = base64::engine::general_purpose::STANDARD
         .decode(wire.qos_manifest_envelope_b64.as_bytes())
-        .map_err(|_| TvcError::new(ErrorCode::BootProofUnverified))?;
+        .map_err(|_| TvcError::boot("decode"))?;
     Ok(BootProof {
         attestation,
         ephemeral_public_key,

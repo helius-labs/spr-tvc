@@ -46,14 +46,26 @@ impl Display for ErrorCode {
 }
 
 /// Typed error. Display is the code name only: no IDs, payloads, or secrets.
+///
+/// `detail` is set only for [`ErrorCode::BootProofUnverified`]. It is one of
+/// `decode`, `shape`, `timestamp`, `bindings`, and `aws-chain`, the same stage
+/// names the TypeScript client reports. It is not a second error code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TvcError {
     pub code: ErrorCode,
+    pub detail: Option<&'static str>,
 }
 
 impl TvcError {
     pub const fn new(code: ErrorCode) -> Self {
-        Self { code }
+        Self { code, detail: None }
+    }
+
+    pub const fn boot(detail: &'static str) -> Self {
+        Self {
+            code: ErrorCode::BootProofUnverified,
+            detail: Some(detail),
+        }
     }
 }
 

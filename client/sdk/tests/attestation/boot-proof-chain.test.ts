@@ -23,6 +23,9 @@ describe("Boot Proof AWS Nitro chain", () => {
         expectedPcrs: EXPECTED_PCRS,
         nowMs: NOW_MS,
       }),
-    ).rejects.toThrowError(/BootProofUnverified/);
+    ).rejects.toMatchObject({
+      code: "BootProofUnverified",
+      message: "BootProofUnverified: aws-chain",
+    });
   });
 });

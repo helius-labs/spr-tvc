@@ -48,19 +48,24 @@ describe("verifyBootProof", () => {
   });
 
   it("rejects an attestation timestamped beyond the allowed clock skew", async () => {
-    await expect(verify({}, { nowMs: NOW_MS - 3_600_000n })).rejects.toThrowError(
-      /BootProofUnverified/,
-    );
+    await expect(verify({}, { nowMs: NOW_MS - 3_600_000n })).rejects.toMatchObject({
+      code: "BootProofUnverified",
+      message: "BootProofUnverified: timestamp",
+    });
     expect(verifyChainMock).not.toHaveBeenCalled();
   });
 
   it("rejects a manifest digest that is not the attested user data", async () => {
     await expect(
       verify({}, { expectedManifestSha256: encodeLowerHex(label("other-manifest")) }),
-    ).rejects.toThrowError(/BootProofUnverified/);
-    await expect(verify({}, { expectedManifestSha256: "" })).rejects.toThrowError(
-      /BootProofUnverified/,
-    );
+    ).rejects.toMatchObject({
+      code: "BootProofUnverified",
+      message: "BootProofUnverified: bindings",
+    });
+    await expect(verify({}, { expectedManifestSha256: "" })).rejects.toMatchObject({
+      code: "BootProofUnverified",
+      message: "BootProofUnverified: bindings",
+    });
     expect(verifyChainMock).not.toHaveBeenCalled();
   });
 
@@ -69,15 +74,19 @@ describe("verifyBootProof", () => {
       verifyChainMock.mockClear();
       await expect(
         verify({ pcrOverrides: { [index]: pcr(0xee) } }),
-      ).rejects.toThrowError(/BootProofUnverified/);
+      ).rejects.toMatchObject({
+        code: "BootProofUnverified",
+        message: "BootProofUnverified: bindings",
+      });
       expect(verifyChainMock).not.toHaveBeenCalled();
     }
   });
 
   it("rejects a live-manifest PCR17 that does not commit to this manifest and key", async () => {
-    await expect(verify({ pcrOverrides: { 17: pcr(0x99) } })).rejects.toThrowError(
-      /BootProofUnverified/,
-    );
+    await expect(verify({ pcrOverrides: { 17: pcr(0x99) } })).rejects.toMatchObject({
+      code: "BootProofUnverified",
+      message: "BootProofUnverified: bindings",
+    });
   });
 
   it("rejects an attested key that differs from the App Proof key", async () => {
@@ -85,40 +94,59 @@ describe("verifyBootProof", () => {
       ...p256.getPublicKey(label("other-encryption"), false),
       ...p256.getPublicKey(label("other-signing"), false),
     ]);
-    await expect(verify({ entries: { public_key: other } })).rejects.toThrowError(
-      /BootProofUnverified/,
-    );
+    await expect(verify({ entries: { public_key: other } })).rejects.toMatchObject({
+      code: "BootProofUnverified",
+      message: "BootProofUnverified: bindings",
+    });
   });
 
   it("rejects a Boot Proof whose advertised ephemeral key is not the attested one", async () => {
     const proof = bootProof();
     await expect(
       verify({}, { bootProof: { ...proof, ephemeralPublicKeyHex: "04".padEnd(260, "9") } }),
-    ).rejects.toThrowError(/BootProofUnverified/);
+    ).rejects.toMatchObject({
+      code: "BootProofUnverified",
+      message: "BootProofUnverified: bindings",
+    });
   });
 
   it("rejects a non-null nonce, a non-SHA384 digest, and a missing module id", async () => {
-    await expect(verify({ entries: { nonce: label("n") } })).rejects.toThrowError(
-      /BootProofUnverified/,
-    );
-    await expect(verify({ entries: { digest: "SHA256" } })).rejects.toThrowError(
-      /BootProofUnverified/,
-    );
-    await expect(verify({ entries: { module_id: "" } })).rejects.toThrowError(
-      /BootProofUnverified/,
-    );
+    await expect(verify({ entries: { nonce: label("n") } })).rejects.toMatchObject({
+      code: "BootProofUnverified",
+      message: "BootProofUnverified: shape",
+    });
+    await expect(verify({ entries: { digest: "SHA256" } })).rejects.toMatchObject({
+      code: "BootProofUnverified",
+      message: "BootProofUnverified: shape",
+    });
+    await expect(verify({ entries: { module_id: "" } })).rejects.toMatchObject({
+      code: "BootProofUnverified",
+      message: "BootProofUnverified: shape",
+    });
   });
 
   it("rejects an attestation that does not carry all 32 attestable PCRs", async () => {
-    await expect(verify({ pcrCount: 31 })).rejects.toThrowError(/BootProofUnverified/);
-    await expect(verify({ pcrCount: 33 })).rejects.toThrowError(/BootProofUnverified/);
+    await expect(verify({ pcrCount: 31 })).rejects.toMatchObject({
+      code: "BootProofUnverified",
+      message: "BootProofUnverified: shape",
+    });
+    await expect(verify({ pcrCount: 33 })).rejects.toMatchObject({
+      code: "BootProofUnverified",
+      message: "BootProofUnverified: shape",
+    });
   });
 
   it("rejects a truncated COSE_Sign1 envelope and undecodable base64", async () => {
-    await expect(verify({ coseLength: 3 })).rejects.toThrowError(/BootProofUnverified/);
+    await expect(verify({ coseLength: 3 })).rejects.toMatchObject({
+      code: "BootProofUnverified",
+      message: "BootProofUnverified: decode",
+    });
     await expect(
       verify({}, { bootProof: { ...bootProof(), awsAttestationDocB64: "!!!not base64!!!" } }),
-    ).rejects.toThrowError(/BootProofUnverified/);
+    ).rejects.toMatchObject({
+      code: "BootProofUnverified",
+      message: "BootProofUnverified: decode",
+    });
     expect(verifyChainMock).not.toHaveBeenCalled();
   });
 

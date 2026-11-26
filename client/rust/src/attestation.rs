@@ -118,24 +118,55 @@ pub(crate) fn verify_boot_proof(
     expected: &IdentityPcrs,
     now_ms: u64,
 ) -> Result<(), TvcError> {
+    let decoded = decode_attestation(boot).map_err(|_| TvcError::boot("decode"))?;
+    validate_shape(&decoded.document).map_err(|_| TvcError::boot("shape"))?;
+    assert_fresh(&decoded.document, now_ms).map_err(|_| TvcError::boot("timestamp"))?;
+    verify_bindings(
+        app_ephemeral_public_key,
+        boot,
+        &decoded.document,
+        manifest_digest,
+        expected,
+    )
+    .map_err(|_| TvcError::boot("bindings"))?;
+    verify_aws(
+        &decoded.protected,
+        &decoded.payload,
+        &decoded.signature,
+        &decoded.document,
+        now_ms,
+    )
+    .map_err(|_| TvcError::boot("aws-chain"))
+}
+
+struct DecodedAttestation {
+    protected: Vec<u8>,
+    payload: Vec<u8>,
+    signature: Vec<u8>,
+    document: Cbor,
+}
+
+fn decode_attestation(boot: &BootProof) -> Result<DecodedAttestation, TvcError> {
     let decoded = decode_cbor(&boot.attestation)?;
     let cose = decoded.as_array()?;
     if cose.len() != 4 {
         return Err(unverified());
     }
-    let protected = cose[0].as_bytes()?.to_vec();
-    let payload = cose[2].as_bytes()?.to_vec();
-    let signature = cose[3].as_bytes()?.to_vec();
-    let attestation = decode_nitro_cbor(&payload)?;
-    validate_shape(&attestation)?;
-    assert_fresh(&attestation, now_ms)?;
-    verify_bindings(
-        app_ephemeral_public_key,
-        boot,
-        &attestation,
-        manifest_digest,
-        expected,
-    )?;
+    Ok(DecodedAttestation {
+        protected: cose[0].as_bytes()?.to_vec(),
+        payload: cose[2].as_bytes()?.to_vec(),
+        signature: cose[3].as_bytes()?.to_vec(),
+        document: decode_nitro_cbor(cose[2].as_bytes()?)?,
+    })
+}
+
+fn verify_aws(
+    protected: &[u8],
+    payload: &[u8],
+    signature: &[u8],
+    attestation: &Cbor,
+    now_ms: u64,
+) -> Result<(), TvcError> {
     let certificate = attestation
         .map_get(&CborKey::Text("certificate".into()))?
         .as_bytes()?;
@@ -149,7 +180,7 @@ pub(crate) fn verify_boot_proof(
         .iter()
         .map(|item| item.as_bytes().map(ToOwned::to_owned))
         .collect::<Result<Vec<_>, _>>()?;
-    verify_cose(&protected, &payload, &signature, certificate)?;
+    verify_cose(protected, payload, signature, certificate)?;
     verify_certificate_chain(certificate, &cabundle, now_ms)
 }
 
@@ -372,6 +403,7 @@ pub(crate) fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ClientError;
 
     #[test]
     fn pinned_aws_root_matches_the_fingerprint_and_signs_itself() {
@@ -403,7 +435,12 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::BootProofUnverified);
+        assert_eq!(error.detail, Some("bindings"));
         assert_eq!(error.to_string(), "BootProofUnverified");
+        assert_eq!(
+            ClientError::from(error).to_string(),
+            "BootProofUnverified: bindings"
+        );
     }
 
     #[test]
@@ -426,6 +463,83 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::BootProofUnverified);
+        assert_eq!(error.detail, Some("aws-chain"));
+        assert_eq!(
+            ClientError::from(error).to_string(),
+            "BootProofUnverified: aws-chain"
+        );
+    }
+
+    #[test]
+    fn a_boot_proof_that_does_not_decode_names_that_stage() {
+        let error = verify_boot_proof(
+            &[0x04; EPHEMERAL_PUBLIC_KEY_LEN],
+            &BootProof {
+                attestation: Vec::new(),
+                ephemeral_public_key: [0x04; EPHEMERAL_PUBLIC_KEY_LEN],
+                manifest_envelope: Vec::new(),
+            },
+            &[0x11; 32],
+            &IdentityPcrs {
+                pcr0: [0; PCR_LEN],
+                pcr1: [0; PCR_LEN],
+                pcr2: [0; PCR_LEN],
+                pcr3: [0; PCR_LEN],
+            },
+            1_000_000,
+        )
+        .unwrap_err();
+        assert_eq!(error.detail, Some("decode"));
+    }
+
+    #[test]
+    fn a_non_sha384_digest_is_the_shape_stage() {
+        let manifest = [0x11; 32];
+        let ephemeral = [0x04; EPHEMERAL_PUBLIC_KEY_LEN];
+        let pcr0 = [0x22; PCR_LEN];
+        let mut proof = synthetic_boot(&manifest, &ephemeral, &pcr0);
+        let digest = b"SHA384";
+        let offset = proof
+            .attestation
+            .windows(digest.len())
+            .position(|window| window == digest)
+            .unwrap();
+        proof.attestation[offset..offset + digest.len()].copy_from_slice(b"SHA256");
+        let error = verify_boot_proof(
+            &ephemeral,
+            &proof,
+            &manifest,
+            &IdentityPcrs {
+                pcr0,
+                pcr1: [0; PCR_LEN],
+                pcr2: [0; PCR_LEN],
+                pcr3: [0; PCR_LEN],
+            },
+            1_000_000,
+        )
+        .unwrap_err();
+        assert_eq!(error.detail, Some("shape"));
+    }
+
+    #[test]
+    fn a_clock_reading_of_zero_is_the_timestamp_stage() {
+        let manifest = [0x11; 32];
+        let ephemeral = [0x04; EPHEMERAL_PUBLIC_KEY_LEN];
+        let pcr0 = [0x22; PCR_LEN];
+        let error = verify_boot_proof(
+            &ephemeral,
+            &synthetic_boot(&manifest, &ephemeral, &pcr0),
+            &manifest,
+            &IdentityPcrs {
+                pcr0,
+                pcr1: [0; PCR_LEN],
+                pcr2: [0; PCR_LEN],
+                pcr3: [0; PCR_LEN],
+            },
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(error.detail, Some("timestamp"));
     }
 
     #[test]
@@ -589,6 +703,9 @@ mod tests {
         if argument < 24 {
             return vec![prefix | argument as u8];
         }
-        vec![prefix | 24, argument as u8]
+        if argument < 0x100 {
+            return vec![prefix | 24, argument as u8];
+        }
+        vec![prefix | 25, (argument >> 8) as u8, argument as u8]
     }
 }
