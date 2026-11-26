@@ -60,7 +60,7 @@ A request that reaches the gateway without the gatekeeper's `Authorization` head
 
 ## Operations
 
-Both calls are the `operation` inside one `POST /v1/decryption/operations`. The wallet sends that request through the gatekeeper. The reply is the encrypted response and that replica's Boot Proof.
+Both calls are the `operation` inside one `POST /v1/decryption/operations`. The reply is the encrypted response and that replica's Boot Proof.
 
 | Call | Who may ask | Result |
 | --- | --- | --- |
@@ -78,12 +78,10 @@ The enclave's own ceiling is 10 MiB for the encrypted request and the encrypted 
 ```mermaid
 sequenceDiagram
     participant Wallet
-    participant Gatekeeper
     participant Gateway
     participant Service as TVC decryption service
 
-    Wallet->>Gatekeeper: POST /v1/decryption/operations
-    Gatekeeper->>Gateway: origin credential, project id
+    Wallet->>Gateway: POST /v1/decryption/operations
     Gateway->>Service: ciphertext unchanged
     Service-->>Gateway: encrypted response, App Proof
     Gateway-->>Wallet: response, bootProof
