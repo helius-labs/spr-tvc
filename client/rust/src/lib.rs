@@ -3,8 +3,9 @@
 //! The phone, or any other Rust caller, uses [`DecryptionClient::address`] to
 //! pay an unregistered owner and [`DecryptionClient::keys`] to open those notes.
 //! [`DecryptionClient`] builds each request from the signed release pin. It
-//! checks the Nitro document, PCR0–3, PCR17, and the manifest allowlist on the
-//! reply, and opens that reply only after the App Proof names the request.
+//! checks that the pinned manifest set approved the manifest in the reply,
+//! then the Nitro document, PCR0–3, and PCR17, and opens the reply only after
+//! the App Proof names the request.
 //! [`OperationsClient`] posts `keys` and `decrypt` to
 //! `/v1/decryption/operations` and checks the Boot Proof bundled in that reply
 //! the same way.

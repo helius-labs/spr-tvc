@@ -1,9 +1,9 @@
-//! Boot Proof checks that Turnkey's combined verifier does not make.
+//! Boot Proof checks beyond Turnkey's combined verifier.
 //!
-//! The COSE signature and the Nitro certificate chain are checked here, then
-//! PCR0–3, PCR17, the manifest allowlist, the replica key, and freshness.
-//! Turnkey's `verify` skips the image pins and expects a `timestampMs` field
-//! these proofs do not carry.
+//! This module checks the COSE signature, the Nitro certificate chain,
+//! PCR0–3, PCR17, the manifest the pinned set approved, the replica key, and
+//! freshness. Turnkey's `verify` skips the image pins and expects a
+//! `timestampMs` field these proofs do not carry.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -11,8 +11,9 @@ use base64::Engine;
 use p384::ecdsa::signature::Verifier;
 use p384::ecdsa::{Signature, VerifyingKey};
 use sha2::{Digest, Sha256, Sha384};
-use spr_tvc_wire::encoding::{decode_lower_hex, encode_lower_hex};
+use spr_tvc_wire::encoding::encode_lower_hex;
 use spr_tvc_wire::error::{ErrorCode, TvcError};
+use spr_tvc_wire::types::ReleasePolicy;
 use x509_cert::der::{Decode, Encode};
 use x509_cert::Certificate;
 
@@ -54,12 +55,66 @@ pub struct IdentityPcrs {
 pub struct BootProof {
     pub attestation: Vec<u8>,
     pub ephemeral_public_key: [u8; EPHEMERAL_PUBLIC_KEY_LEN],
+    /// QOS manifest envelope. Empty on the synthetic documents the chain tests build.
+    pub manifest_envelope: Vec<u8>,
+}
+
+/// The manifest hash when the pinned manifest set approved this envelope.
+pub(crate) fn approved_manifest_digest(
+    envelope: &[u8],
+    policy: &ReleasePolicy,
+    pcrs: &IdentityPcrs,
+) -> Result<[u8; 32], TvcError> {
+    use qos_core::protocol::services::boot::manifest::{
+        canonical_json_hash, VersionedManifestEnvelope,
+    };
+
+    let versioned =
+        VersionedManifestEnvelope::try_from_slice_compat(envelope).map_err(|_| unverified())?;
+    let VersionedManifestEnvelope::V2(parsed) = &versioned else {
+        return Err(unverified());
+    };
+    let manifest = &parsed.manifest;
+    let set = &manifest.manifest_set;
+    if set.threshold != policy.manifest_set.threshold
+        || !same_manifest_set(&policy.manifest_set.members, &set.members)
+    {
+        return Err(unverified());
+    }
+    versioned.check_approvals().map_err(|_| unverified())?;
+    let floor = u32::try_from(policy.minimum_manifest_nonce).map_err(|_| unverified())?;
+    if manifest.namespace.name != policy.namespace
+        || manifest.namespace.nonce < floor
+        || manifest.namespace.quorum_key != policy.quorum_public_key
+        || !pcr_bytes(&manifest.enclave.pcr0, &pcrs.pcr0)
+        || !pcr_bytes(&manifest.enclave.pcr1, &pcrs.pcr1)
+        || !pcr_bytes(&manifest.enclave.pcr2, &pcrs.pcr2)
+        || !pcr_bytes(&manifest.enclave.pcr3, &pcrs.pcr3)
+    {
+        return Err(unverified());
+    }
+    Ok(canonical_json_hash(manifest))
+}
+
+fn same_manifest_set(
+    pinned: &[spr_tvc_wire::types::ManifestSetMember],
+    live: &[qos_core::protocol::services::boot::QuorumMember],
+) -> bool {
+    pinned.len() == live.len()
+        && pinned.iter().all(|member| {
+            live.iter()
+                .any(|live| live.alias == member.alias && live.pub_key == member.public_key)
+        })
+}
+
+fn pcr_bytes(live: &[u8], pinned: &[u8; PCR_LEN]) -> bool {
+    live == pinned.as_slice()
 }
 
 pub(crate) fn verify_boot_proof(
     app_ephemeral_public_key: &[u8],
     boot: &BootProof,
-    allowed_manifests: &[String],
+    manifest_digest: &[u8; 32],
     expected: &IdentityPcrs,
     now_ms: u64,
 ) -> Result<(), TvcError> {
@@ -78,7 +133,7 @@ pub(crate) fn verify_boot_proof(
         app_ephemeral_public_key,
         boot,
         &attestation,
-        allowed_manifests,
+        manifest_digest,
         expected,
     )?;
     let certificate = attestation
@@ -159,20 +214,13 @@ fn verify_bindings(
     app_ephemeral_public_key: &[u8],
     boot: &BootProof,
     attestation: &Cbor,
-    allowed_manifests: &[String],
+    manifest_digest: &[u8; 32],
     expected: &IdentityPcrs,
 ) -> Result<(), TvcError> {
-    if allowed_manifests.is_empty() {
-        return Err(unverified());
-    }
     let manifest = attestation
         .map_get(&CborKey::Text("user_data".into()))?
         .as_bytes()?;
-    if manifest.len() != 32
-        || !allowed_manifests
-            .iter()
-            .any(|digest| decode_lower_hex(digest).ok().as_deref() == Some(manifest))
-    {
+    if manifest != manifest_digest.as_slice() {
         return Err(unverified());
     }
     let attested = attestation
@@ -344,7 +392,7 @@ mod tests {
         let error = verify_boot_proof(
             &ephemeral,
             &proof,
-            &[encode_lower_hex(&manifest)],
+            &manifest,
             &IdentityPcrs {
                 pcr0: [0xff; PCR_LEN],
                 pcr1: [0; PCR_LEN],
@@ -367,7 +415,7 @@ mod tests {
         let error = verify_boot_proof(
             &ephemeral,
             &proof,
-            &[encode_lower_hex(&manifest)],
+            &manifest,
             &IdentityPcrs {
                 pcr0,
                 pcr1: [0; PCR_LEN],
@@ -378,6 +426,81 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::BootProofUnverified);
+    }
+
+    #[test]
+    fn the_pinned_manifest_set_approves_the_boot_manifest() {
+        use qos_core::protocol::services::boot::manifest::{
+            canonical_json_hash, VersionedManifestEnvelope,
+        };
+        use spr_tvc_wire::constants::{API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID};
+        use spr_tvc_wire::types::{ManifestSetMember, ManifestSetPolicy, Network, ReleasePolicy};
+
+        let bytes = include_bytes!(
+            "../../../decryption-service/tests/fixtures/qos-0.12.1-manifest-envelope.json"
+        );
+        let versioned = VersionedManifestEnvelope::try_from_slice_compat(bytes).unwrap();
+        let VersionedManifestEnvelope::V2(envelope) = &versioned else {
+            panic!("fixture envelope is v2");
+        };
+        let manifest = &envelope.manifest;
+        let pcr = |bytes: &[u8]| -> [u8; PCR_LEN] { bytes.try_into().unwrap() };
+        let pcrs = IdentityPcrs {
+            pcr0: pcr(&manifest.enclave.pcr0),
+            pcr1: pcr(&manifest.enclave.pcr1),
+            pcr2: pcr(&manifest.enclave.pcr2),
+            pcr3: pcr(&manifest.enclave.pcr3),
+        };
+        let policy = ReleasePolicy {
+            version: API_VERSION,
+            network: Network::Devnet,
+            security_domain_id: [0; 32],
+            namespace: manifest.namespace.name.clone(),
+            manifest_set: ManifestSetPolicy {
+                threshold: manifest.manifest_set.threshold,
+                members: manifest
+                    .manifest_set
+                    .members
+                    .iter()
+                    .map(|member| ManifestSetMember {
+                        alias: member.alias.clone(),
+                        public_key: member.pub_key.clone(),
+                    })
+                    .collect(),
+            },
+            minimum_manifest_nonce: 0,
+            quorum_key_id: "quorum".into(),
+            quorum_key_epoch: 1,
+            quorum_public_key: manifest.namespace.quorum_key.clone(),
+            allowed_operations: Vec::new(),
+            max_encrypted_request_bytes: 1,
+            max_encrypted_response_bytes: 1,
+            turnkey_trust_root_id: EXPECTED_TURNKEY_TRUST_ROOT_ID.into(),
+            valid_from_ms: 0,
+            expires_at_ms: 1,
+            revocation_epoch: 0,
+        };
+        let digest = approved_manifest_digest(bytes, &policy, &pcrs).unwrap();
+        assert_eq!(digest, canonical_json_hash(manifest));
+
+        let mut foreign = policy.clone();
+        foreign.manifest_set.members[0].alias = "someone-else".into();
+        assert!(approved_manifest_digest(bytes, &foreign, &pcrs).is_err());
+
+        let mut raised = policy.clone();
+        raised.minimum_manifest_nonce = u64::from(manifest.namespace.nonce) + 1;
+        assert!(approved_manifest_digest(bytes, &raised, &pcrs).is_err());
+
+        let mut parsed: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        parsed["manifest"]["namespace"]["name"] = serde_json::json!("other-namespace");
+        let mutated = serde_json::to_vec(&parsed).unwrap();
+        assert!(approved_manifest_digest(&mutated, &policy, &pcrs).is_err());
+
+        parsed["manifest"]["namespace"]["name"] =
+            serde_json::json!(manifest.namespace.name.clone());
+        parsed["manifestSetApprovals"] = serde_json::json!([]);
+        let missing = serde_json::to_vec(&parsed).unwrap();
+        assert!(approved_manifest_digest(&missing, &policy, &pcrs).is_err());
     }
 
     fn synthetic_boot(
@@ -429,6 +552,7 @@ mod tests {
         BootProof {
             attestation: [vec![0xd2], cose].concat(),
             ephemeral_public_key: *ephemeral,
+            manifest_envelope: Vec::new(),
         }
     }
 

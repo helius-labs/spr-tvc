@@ -43,9 +43,6 @@ export type ViewGrant = {
 export type ServiceRequest = {
   readonly version: number;
   readonly request_id: string;
-  readonly target_release_id: string;
-  readonly target_manifest_digest: string;
-  readonly target_executable_digest: string;
   readonly quorum_key_id: string;
   readonly quorum_key_epoch: string;
   readonly client_response_public_key: string;

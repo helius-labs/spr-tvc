@@ -21,7 +21,7 @@ use spr_tvc_wire::encoding::{is_rfc8785, jcs_serialize};
 use spr_tvc_wire::error::{ErrorCode, TvcError};
 use spr_tvc_wire::types::{
     AppProof, DecryptItem, EncryptedRequest, EncryptedResponse, KdfMode, Network, OperationKind,
-    OperationProofPayload, ServiceInfo,
+    OperationProofPayload, ReleasePolicy,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -57,7 +57,10 @@ impl<T: Transport, B: BootProofs> DecryptionClient<T, B> {
 
     /// The shielded address a sender pays `owner` at before that owner registers.
     pub fn address(&self, owner: &[u8; ADDRESS_LEN]) -> Result<ShieldedAddress, ClientError> {
-        ensure_operation(self.session.info(), OperationKind::ServicePublicKeys)?;
+        ensure_operation(
+            &self.session.release().policy,
+            OperationKind::ServicePublicKeys,
+        )?;
         let result = self.call(
             ServiceOperation::PublicKeys {
                 address: bs58::encode(owner).into_string(),
@@ -81,9 +84,8 @@ impl<T: Transport, B: BootProofs> DecryptionClient<T, B> {
         signer: Option<&dyn OwnerSigner>,
         owner: &[u8; ADDRESS_LEN],
     ) -> Result<ServiceResult, ClientError> {
-        let info = self.session.info();
         Exchange {
-            target: Target::from_info(info),
+            target: Target::from_policy(&self.session.release().policy),
             operation,
             signer,
             owner,
@@ -97,7 +99,10 @@ impl<T: Transport, B: BootProofs> DecryptionClient<T, B> {
         signer: &dyn OwnerSigner,
         items: Vec<DecryptItem>,
     ) -> Result<DecryptedOutputs, ClientError> {
-        ensure_operation(self.session.info(), OperationKind::ServiceDecrypt)?;
+        ensure_operation(
+            &self.session.release().policy,
+            OperationKind::ServiceDecrypt,
+        )?;
         let owner = signer.pubkey();
         let result = self.call(
             ServiceOperation::Decrypt {
@@ -272,9 +277,6 @@ impl ServiceKeys<'_> {
 
 pub(crate) struct Target<'a> {
     pub(crate) network: Network,
-    pub(crate) release_id: &'a str,
-    pub(crate) manifest_digest: [u8; 32],
-    pub(crate) executable_digest: [u8; 32],
     pub(crate) quorum_key_id: &'a str,
     pub(crate) quorum_key_epoch: u64,
     pub(crate) quorum_public_key: &'a [u8],
@@ -283,17 +285,14 @@ pub(crate) struct Target<'a> {
 }
 
 impl<'a> Target<'a> {
-    pub(crate) fn from_info(info: &'a ServiceInfo) -> Self {
+    pub(crate) fn from_policy(policy: &'a ReleasePolicy) -> Self {
         Self {
-            network: info.network,
-            release_id: &info.release_id,
-            manifest_digest: info.manifest_digest,
-            executable_digest: info.executable_digest,
-            quorum_key_id: &info.quorum_key_id,
-            quorum_key_epoch: info.quorum_key_epoch,
-            quorum_public_key: &info.quorum_public_key,
-            max_request: info.max_encrypted_request_bytes,
-            max_response: info.max_encrypted_response_bytes,
+            network: policy.network,
+            quorum_key_id: &policy.quorum_key_id,
+            quorum_key_epoch: policy.quorum_key_epoch,
+            quorum_public_key: &policy.quorum_public_key,
+            max_request: u64::from(policy.max_encrypted_request_bytes),
+            max_response: u64::from(policy.max_encrypted_response_bytes),
         }
     }
 }
@@ -361,9 +360,6 @@ impl Exchange<'_> {
         let mut request = ServiceRequest {
             version: API_VERSION,
             request_id: random_32()?,
-            target_release_id: target.release_id.to_owned(),
-            target_manifest_digest: target.manifest_digest,
-            target_executable_digest: target.executable_digest,
             quorum_key_id: target.quorum_key_id.to_owned(),
             quorum_key_epoch: target.quorum_key_epoch,
             client_response_public_key: public,

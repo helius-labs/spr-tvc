@@ -56,9 +56,6 @@ fn request(service: &Service, operation: ServiceOperation) -> ServiceRequest {
     ServiceRequest {
         version: API_VERSION,
         request_id: [0x77; 32],
-        target_release_id: info.release_id.clone(),
-        target_manifest_digest: info.manifest_digest,
-        target_executable_digest: info.executable_digest,
         quorum_key_id: info.quorum_key_id.clone(),
         quorum_key_epoch: info.quorum_key_epoch,
         client_response_public_key: public_key_uncompressed(&response_public_key(&RESPONSE_SECRET))

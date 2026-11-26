@@ -1,0 +1,115 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+import { sha256 } from "@noble/hashes/sha256";
+
+import { approvedManifestSha256 } from "../../src/attestation/manifest.js";
+import { qosJsonHash } from "../../src/attestation/qos-json.js";
+import type { TurnkeyBootProofWire } from "../../src/attestation/turnkey.js";
+import type { QosIdentityPcrs } from "../../src/attestation/boot-proof.js";
+import type { ReleasePolicy } from "../../src/wire/types.js";
+import { encodeLowerHex } from "../../src/wire/hex.js";
+
+const FIXTURE = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../../decryption-service/tests/fixtures/qos-0.12.1-manifest-envelope.json",
+);
+const MANIFEST_SHA256 = "016748a03b94269ade9b75c7b4231a2940cc3c85aabade226a956ea80ab374b0";
+
+type Envelope = {
+  manifest: {
+    namespace: { name: string; nonce: string | number; quorumKey: string };
+    manifestSet: { threshold: string | number; members: { alias: string; pubKey: string }[] };
+    enclave: { pcr0: string; pcr1: string; pcr2: string; pcr3: string };
+  };
+  manifestSetApprovals: unknown[];
+};
+
+function load(): Envelope {
+  return JSON.parse(readFileSync(FIXTURE, "utf8")) as Envelope;
+}
+
+function policyFor(envelope: Envelope): ReleasePolicy {
+  const { namespace, manifestSet } = envelope.manifest;
+  return {
+    version: 1,
+    network: "devnet",
+    securityDomainId: "00".repeat(32),
+    namespace: namespace.name,
+    manifestSet: {
+      threshold: Number(manifestSet.threshold),
+      members: manifestSet.members.map((member) => ({
+        alias: member.alias,
+        publicKey: member.pubKey,
+      })),
+    },
+    minimumManifestNonce: "0",
+    quorumKeyId: "quorum",
+    quorumKeyEpoch: "1",
+    quorumPublicKey: namespace.quorumKey,
+    allowedOperations: [],
+    maxEncryptedRequestBytes: 1,
+    maxEncryptedResponseBytes: 1,
+    turnkeyTrustRootId: "aws-nitro-root-g1",
+    validFromMs: "0",
+    expiresAtMs: "1",
+    revocationEpoch: "0",
+  };
+}
+
+function pcrsFor(envelope: Envelope): QosIdentityPcrs {
+  const { enclave } = envelope.manifest;
+  return { 0: enclave.pcr0, 1: enclave.pcr1, 2: enclave.pcr2, 3: enclave.pcr3 };
+}
+
+function boot(envelope: unknown): TurnkeyBootProofWire {
+  return {
+    qosManifestEnvelopeB64: Buffer.from(JSON.stringify(envelope)).toString("base64"),
+  } as TurnkeyBootProofWire;
+}
+
+describe("QOS canonical JSON", () => {
+  it("matches the published vectors", () => {
+    expect(encodeLowerHex(qosJsonHash({}))).toBe(
+      "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    );
+    expect(encodeLowerHex(qosJsonHash({ name: "test", threshold: "3", version: "1" }))).toBe(
+      "898eaf2263b3ca34a9fb0b59615a16e5819b43c53fabc44396f92128f72ccc7e",
+    );
+    expect(encodeLowerHex(qosJsonHash({ data: "deadbeef" }))).toBe(
+      "03fe564ceddcb54a7a742bd7a4db57318a068cecd22ae44435ce68d35e754e13",
+    );
+    expect(encodeLowerHex(sha256(new TextEncoder().encode('{"threshold":"1"}')))).toBe(
+      encodeLowerHex(qosJsonHash({ threshold: 1 })),
+    );
+  });
+});
+
+describe("approved manifest", () => {
+  const envelope = load();
+  const policy = policyFor(envelope);
+  const pcrs = pcrsFor(envelope);
+
+  it("accepts the fixture envelope the manifest set signed", () => {
+    expect(encodeLowerHex(qosJsonHash(envelope.manifest))).toBe(MANIFEST_SHA256);
+    expect(approvedManifestSha256(boot(envelope), policy, pcrs)).toBe(MANIFEST_SHA256);
+  });
+
+  it("rejects a mutated manifest, a missing signature, and a foreign set", () => {
+    const mutated = structuredClone(envelope);
+    mutated.manifest.namespace.name = "other-namespace";
+    expect(() => approvedManifestSha256(boot(mutated), policy, pcrs)).toThrow(/BootProofUnverified/);
+
+    const missing = structuredClone(envelope);
+    missing.manifestSetApprovals = [];
+    expect(() => approvedManifestSha256(boot(missing), policy, pcrs)).toThrow(/BootProofUnverified/);
+
+    const foreign = structuredClone(policy);
+    foreign.manifestSet = {
+      ...foreign.manifestSet,
+      members: foreign.manifestSet.members.map((member) => ({ ...member, alias: "someone-else" })),
+    };
+    expect(() => approvedManifestSha256(boot(envelope), foreign, pcrs)).toThrow(/BootProofUnverified/);
+  });
+});

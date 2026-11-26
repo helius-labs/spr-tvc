@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Helius Decryption Service API",
-    "description": "The gatekeeper front of the decryption enclave. An operation forwards the encrypted request and returns the Boot Proof of the replica that signed the reply. The client checks that proof and the App Proof against the release it pins.",
+    "description": "The gatekeeper front of the decryption enclave. An operation forwards the encrypted request and returns the Boot Proof of the replica that signed the reply. The client checks that proof and the App Proof against the signed pin.",
     "license": {
       "name": "AGPL-3.0-only",
       "identifier": "AGPL-3.0-only"

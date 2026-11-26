@@ -1,24 +1,27 @@
 //! The signed pin is the request target. Each reply is checked on its own.
 
-use qos_p256::encrypt::{P256EncryptPair, P256EncryptPublic};
+use qos_p256::encrypt::P256EncryptPair;
 #[cfg(feature = "local-dev")]
-use spr_tvc_wire::constants::TVC_QOS_PING_PROOF_TYPE;
-use spr_tvc_wire::constants::{API_VERSION, QOS_P256_PUBLIC_LEN, TVC_APP_PROOF_SCHEME};
+use qos_p256::encrypt::P256EncryptPublic;
+#[cfg(feature = "local-dev")]
+use spr_tvc_wire::constants::{API_VERSION, TVC_QOS_PING_PROOF_TYPE};
+use spr_tvc_wire::constants::{QOS_P256_PUBLIC_LEN, TVC_APP_PROOF_SCHEME};
 use spr_tvc_wire::crypto::verify_p256_message;
+#[cfg(feature = "local-dev")]
 use spr_tvc_wire::decryption_service::SERVICE_PROOF_TYPE;
+use spr_tvc_wire::encoding::is_rfc8785;
 #[cfg(feature = "local-dev")]
 use spr_tvc_wire::encoding::jcs_serialize;
-use spr_tvc_wire::encoding::{decode_lower_hex_array, is_rfc8785};
 use spr_tvc_wire::error::{ErrorCode, TvcError};
 use spr_tvc_wire::release::{verify_signed_release_policy, PinnedReleaseAuthorities};
-use spr_tvc_wire::types::{
-    AppProof, Network, OperationKind, ReleasePolicy, ServiceInfo, SignedReleasePolicy,
-};
+use spr_tvc_wire::types::{AppProof, Network, OperationKind, ReleasePolicy, SignedReleasePolicy};
 #[cfg(feature = "local-dev")]
-use spr_tvc_wire::types::{QosPingChallenge, QosPingRequest, QosPingResponse};
+use spr_tvc_wire::types::{QosPingChallenge, QosPingRequest, QosPingResponse, ServiceInfo};
 use zeroize::Zeroizing;
 
-use crate::attestation::{now_ms, verify_boot_proof, BootProof, IdentityPcrs};
+use crate::attestation::{
+    approved_manifest_digest, now_ms, verify_boot_proof, BootProof, IdentityPcrs,
+};
 use crate::transport::Transport;
 use crate::ClientError;
 
@@ -49,7 +52,6 @@ pub struct ConnectConfig<T, B> {
 
 pub(crate) struct Session<B> {
     endpoint: String,
-    info: ServiceInfo,
     release: SignedReleasePolicy,
     pcrs: IdentityPcrs,
     boot_proofs: B,
@@ -64,11 +66,9 @@ impl<B: BootProofs> Session<B> {
     ) -> Result<(Self, T), ClientError> {
         let now = config.now_ms.unwrap_or(now_ms);
         verify_signed_release_policy(&config.release, &config.authorities, config.network, now())?;
-        let info = info_from_policy(&config.release.policy)?;
         Ok((
             Self {
                 endpoint: config.endpoint,
-                info,
                 release: config.release,
                 pcrs: config.pcrs,
                 boot_proofs: config.boot_proofs,
@@ -77,10 +77,6 @@ impl<B: BootProofs> Session<B> {
             },
             config.transport,
         ))
-    }
-
-    pub(crate) fn info(&self) -> &ServiceInfo {
-        &self.info
     }
 
     pub(crate) fn endpoint(&self) -> &str {
@@ -129,14 +125,12 @@ impl<B: BootProofs> Session<B> {
 impl Session<()> {
     pub(crate) fn verified(
         endpoint: String,
-        info: ServiceInfo,
         release: SignedReleasePolicy,
         pcrs: IdentityPcrs,
         now_ms: fn() -> u64,
     ) -> Self {
         Self {
             endpoint,
-            info,
             release,
             pcrs,
             boot_proofs: (),
@@ -161,13 +155,8 @@ fn verify_key<B: BootProofs>(
 ) -> Result<(), ClientError> {
     let key = ephemeral_key(&proof.public_key)?;
     let boot = boot_proofs.boot_proof(&key)?;
-    verify_boot_proof(
-        &key,
-        &boot,
-        &release.policy.accepted_manifest_digests,
-        pcrs,
-        now,
-    )?;
+    let digest = approved_manifest_digest(&boot.manifest_envelope, &release.policy, pcrs)?;
+    verify_boot_proof(&key, &boot, &digest, pcrs, now)?;
     Ok(())
 }
 
@@ -180,41 +169,9 @@ pub(crate) fn verify_reply_boot(
 ) -> Result<(), ClientError> {
     verify_app_signature(proof)?;
     let key = ephemeral_key(&proof.public_key)?;
-    verify_boot_proof(
-        &key,
-        boot,
-        &release.policy.accepted_manifest_digests,
-        pcrs,
-        now,
-    )?;
+    let digest = approved_manifest_digest(&boot.manifest_envelope, &release.policy, pcrs)?;
+    verify_boot_proof(&key, boot, &digest, pcrs, now)?;
     Ok(())
-}
-
-/// The request target from a pin that names one manifest and one executable.
-pub(crate) fn info_from_policy(policy: &ReleasePolicy) -> Result<ServiceInfo, TvcError> {
-    Ok(ServiceInfo {
-        version: policy.version,
-        network: policy.network,
-        security_domain_id: policy.security_domain_id,
-        release_id: policy.release_id.clone(),
-        manifest_digest: one_digest(&policy.accepted_manifest_digests)?,
-        executable_digest: one_digest(&policy.accepted_executable_digests)?,
-        quorum_public_key: policy.quorum_public_key.clone(),
-        quorum_key_id: policy.quorum_key_id.clone(),
-        quorum_key_epoch: policy.quorum_key_epoch,
-        supported_operations: policy.allowed_operations.clone(),
-        max_encrypted_request_bytes: u64::from(policy.max_encrypted_request_bytes),
-        max_encrypted_response_bytes: u64::from(policy.max_encrypted_response_bytes),
-        proof_type: SERVICE_PROOF_TYPE.to_owned(),
-    })
-}
-
-fn one_digest(digests: &[String]) -> Result<[u8; 32], TvcError> {
-    let [digest] = digests else {
-        return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch));
-    };
-    decode_lower_hex_array::<32>(digest.as_str())
-        .map_err(|_| TvcError::new(ErrorCode::ReleaseBindingMismatch))
 }
 
 #[cfg(feature = "local-dev")]
@@ -232,16 +189,9 @@ pub(crate) fn bind_discovery(
     if info.proof_type != SERVICE_PROOF_TYPE {
         return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch));
     }
-    if info.release_id != policy.release_id
-        || info.security_domain_id != policy.security_domain_id
+    if info.security_domain_id != policy.security_domain_id
         || info.quorum_key_id != policy.quorum_key_id
         || info.quorum_public_key != policy.quorum_public_key
-        || !policy.accepted_manifest_digests.iter().any(|digest| {
-            decode_lower_hex_array::<32>(digest).ok().as_ref() == Some(&info.manifest_digest)
-        })
-        || !policy.accepted_executable_digests.iter().any(|digest| {
-            decode_lower_hex_array::<32>(digest).ok().as_ref() == Some(&info.executable_digest)
-        })
         || info.supported_operations != policy.allowed_operations
         || info.max_encrypted_request_bytes != u64::from(policy.max_encrypted_request_bytes)
         || info.max_encrypted_response_bytes != u64::from(policy.max_encrypted_response_bytes)
@@ -331,8 +281,11 @@ pub(crate) fn join(endpoint: &str, path: &str) -> String {
     format!("{}{}", endpoint.trim_end_matches('/'), path)
 }
 
-pub(crate) fn ensure_operation(info: &ServiceInfo, kind: OperationKind) -> Result<(), TvcError> {
-    if info.supported_operations.contains(&kind) {
+pub(crate) fn ensure_operation(
+    policy: &ReleasePolicy,
+    kind: OperationKind,
+) -> Result<(), TvcError> {
+    if policy.allowed_operations.contains(&kind) {
         Ok(())
     } else {
         Err(TvcError::new(ErrorCode::ReleaseBindingMismatch))

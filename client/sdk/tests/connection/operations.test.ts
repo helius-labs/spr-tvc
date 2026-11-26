@@ -17,7 +17,6 @@ const publicKey = (secret: Uint8Array) => encodeLowerHex(p256.getPublicKey(secre
 const quorum = publicKey(bytes(2)) + publicKey(bytes(3));
 const ephemeral = publicKey(bytes(4)) + publicKey(signing);
 const requestId = "aa".repeat(32);
-const manifest = "bb".repeat(32);
 const text = new TextEncoder();
 
 async function fixture() {
@@ -52,14 +51,13 @@ async function fixture() {
   const verifyOperationAppProof = vi.fn(async () => {});
   const context: ConnectedTvcRuntime = {
     backend: { endpoint: new URL("https://enclave.example") },
-    info: {
-      version: API_VERSION, network: "devnet", release_id: "current", security_domain_id: manifest,
-      manifest_digest: manifest, executable_digest: manifest,
-      quorum_public_key: quorum, quorum_key_id: "quorum", quorum_key_epoch: "1",
-      supported_operations: [exchange.operation],
-      max_encrypted_request_bytes: String(MAX_ENCRYPTED_REQUEST_BYTES),
-      max_encrypted_response_bytes: String(MAX_ENCRYPTED_REQUEST_BYTES),
-      proof_type: SERVICE_PROOF_TYPE,
+    target: {
+      network: "devnet",
+      quorumKeyId: "quorum",
+      quorumKeyEpoch: "1",
+      quorumPublicKey: quorum,
+      maxEncryptedRequestBytes: BigInt(MAX_ENCRYPTED_REQUEST_BYTES),
+      maxEncryptedResponseBytes: BigInt(MAX_ENCRYPTED_REQUEST_BYTES),
     },
     transport: { fetch: async () => Response.json(response) },
     releasePolicyValidFromMs: 0n, releasePolicyExpiresAtMs: 2n, nowMs: () => 1n,

@@ -20,8 +20,8 @@ use spr_tvc_wire::release::{
     PinnedReleaseAuthorities, ReleaseAuthorityKey,
 };
 use spr_tvc_wire::types::{
-    Network, OperationKind, ReleaseAuthoritySignature, ReleasePolicy, ServiceInfo,
-    SignedReleasePolicy,
+    ManifestSetMember, ManifestSetPolicy, Network, OperationKind, ReleaseAuthoritySignature,
+    ReleasePolicy, ServiceInfo, SignedReleasePolicy,
 };
 use zeroize::Zeroizing;
 
@@ -80,6 +80,8 @@ pub(crate) struct Approved {
     pub(crate) executable_digest: String,
     #[serde(with = "wire_hex")]
     pub(crate) quorum_public_key: Vec<u8>,
+    pub(crate) namespace: String,
+    pub(crate) manifest_set: ManifestSetPolicy,
 }
 
 impl TurnkeyDeployment {
@@ -144,6 +146,19 @@ impl TurnkeyDeployment {
             manifest_digest: hex::encode(canonical_json_hash(&manifest)),
             executable_digest,
             quorum_public_key: quorum_public_key.to_vec(),
+            namespace: manifest.namespace.name.clone(),
+            manifest_set: ManifestSetPolicy {
+                threshold: manifest.manifest_set.threshold,
+                members: manifest
+                    .manifest_set
+                    .members
+                    .iter()
+                    .map(|member| ManifestSetMember {
+                        alias: member.alias.clone(),
+                        public_key: member.pub_key.clone(),
+                    })
+                    .collect(),
+            },
         })
     }
 }
@@ -256,11 +271,11 @@ impl Release<'_> {
         );
         Ok(ReleasePolicy {
             version: API_VERSION,
-            release_id: self.args.release_id.clone(),
             network: self.network(),
             security_domain_id: self.app.security_domain_id,
-            accepted_manifest_digests: vec![approved.manifest_digest.clone()],
-            accepted_executable_digests: vec![approved.executable_digest.clone()],
+            namespace: approved.namespace.clone(),
+            manifest_set: approved.manifest_set.clone(),
+            minimum_manifest_nonce: 0,
             quorum_key_id: self.app.quorum_key_id.clone(),
             quorum_key_epoch: self.app.quorum_key_epoch,
             quorum_public_key: approved.quorum_public_key.clone(),
@@ -425,8 +440,8 @@ pub(crate) fn devnet_sign(
         SigningKey::try_generate().map_err(|_| anyhow::anyhow!("generate devnet signing key"))?;
     let secret = Zeroizing::new(signing_key.to_bytes().into());
     let public = p256::PublicKey::from(signing_key.verifying_key());
-    let authority_set_id = format!("{}-{}", policy.release_id, policy.valid_from_ms);
-    let key_id = format!("{}-authority-1", policy.release_id);
+    let authority_set_id = format!("{}-{}", policy.quorum_key_id, policy.valid_from_ms);
+    let key_id = format!("{}-authority-1", policy.quorum_key_id);
     let signature = sign_release_policy(&policy, &secret)?.to_vec();
     let authorities = PinnedReleaseAuthorities {
         authority_set_id: authority_set_id.clone(),

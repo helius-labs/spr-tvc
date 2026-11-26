@@ -1,4 +1,5 @@
 import { API_VERSION } from "../wire/constants.js";
+import { decodeDecimalU64 } from "../wire/decimal.js";
 import { SERVICE_PROOF_TYPE } from "../wire/decryption.js";
 import { DecryptionServiceError } from "../wire/error.js";
 import type { Network, OperationKind } from "../wire/types.js";
@@ -69,7 +70,14 @@ export async function connectLocalUnattestedTvc(
   const nowMs = config.nowMs ?? (() => BigInt(Date.now()));
   return {
     backend: config.backend,
-    info,
+    target: {
+      network: info.network,
+      quorumKeyId: info.quorum_key_id,
+      quorumKeyEpoch: info.quorum_key_epoch,
+      quorumPublicKey: info.quorum_public_key,
+      maxEncryptedRequestBytes: decodeDecimalU64(info.max_encrypted_request_bytes),
+      maxEncryptedResponseBytes: decodeDecimalU64(info.max_encrypted_response_bytes),
+    },
     transport,
     releasePolicyValidFromMs: 0n,
     releasePolicyExpiresAtMs: 0xffff_ffff_ffff_ffffn,

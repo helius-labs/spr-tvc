@@ -246,7 +246,7 @@ describe("bindings and HTTP skeleton", () => {
       info: ServiceInfo;
       error: string;
     }[];
-    expect(cases.length).toBe(14);
+    expect(cases.length).toBe(11);
     for (const { name, info, error } of cases) {
       expect(() => bindDiscoveryToPolicy(info, signed), name).toThrowError(
         new RegExp(error)
@@ -427,8 +427,8 @@ describe("enclave verification", () => {
       },
     });
     await expect(verified).resolves.toEqual(expect.objectContaining({
-      info: expect.objectContaining({
-        release_id: (policyFixture.signed as SignedReleasePolicy).policy.releaseId,
+      target: expect.objectContaining({
+        quorumKeyId: (policyFixture.signed as SignedReleasePolicy).policy.quorumKeyId,
       }),
     }));
   });

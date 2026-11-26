@@ -14,8 +14,6 @@ import { decodeLowerHex, encodeLowerHex } from "../wire/hex.js";
 import { canonicalizeJsonValue } from "../wire/jcs.js";
 import { assertExactObjectKeys, parseStrictJson } from "../wire/json.js";
 import type { ReleaseTrust } from "../wire/releases.js";
-import { SERVICE_PROOF_TYPE } from "../wire/decryption.js";
-import { requireHex } from "../wire/hex.js";
 import {
   SERVICE_INFO_KEYS,
   type Network,
@@ -24,6 +22,7 @@ import {
 } from "../wire/types.js";
 import { createDefaultTransport, type DecryptionServiceTransport } from "./http.js";
 import { verifyBootProof, type QosIdentityPcrs } from "../attestation/boot-proof.js";
+import { approvedManifestSha256 } from "../attestation/manifest.js";
 import type {
   TurnkeyAppProofWire,
   TurnkeyBootProofWire,
@@ -60,10 +59,20 @@ export type DecryptionServiceConnectionConfig = {
   transport?: DecryptionServiceTransport;
 };
 
-/** What one verification established: the release's discovery, bound to the policy, and how to check each answer. */
+/** What a request takes from the pin. */
+export type ServiceTarget = {
+  readonly network: Network;
+  readonly quorumKeyId: string;
+  readonly quorumKeyEpoch: string;
+  readonly quorumPublicKey: string;
+  readonly maxEncryptedRequestBytes: bigint;
+  readonly maxEncryptedResponseBytes: bigint;
+};
+
+/** What one verification established, and how to check each answer. */
 export type ConnectedTvcRuntime = {
   readonly backend: EnclaveBackend;
-  readonly info: ServiceInfo;
+  readonly target: ServiceTarget;
   readonly transport: DecryptionServiceTransport;
   readonly releasePolicyValidFromMs: bigint;
   readonly releasePolicyExpiresAtMs: bigint;
@@ -81,30 +90,16 @@ export function parseServiceInfo(text: string): ServiceInfo {
   return parseStrictJson<ServiceInfo>(text, SERVICE_INFO_KEYS);
 }
 
-/** The request target from a pin that names one manifest and one executable. */
-export function serviceInfoFromPolicy(policy: ReleasePolicy): ServiceInfo {
+/** Request fields taken from the pin. */
+export function serviceTargetFromPolicy(policy: ReleasePolicy): ServiceTarget {
   return {
-    version: policy.version,
     network: policy.network,
-    security_domain_id: policy.securityDomainId,
-    release_id: policy.releaseId,
-    manifest_digest: oneDigest(policy.acceptedManifestDigests),
-    executable_digest: oneDigest(policy.acceptedExecutableDigests),
-    quorum_public_key: policy.quorumPublicKey,
-    quorum_key_id: policy.quorumKeyId,
-    quorum_key_epoch: policy.quorumKeyEpoch,
-    supported_operations: [...policy.allowedOperations],
-    max_encrypted_request_bytes: String(policy.maxEncryptedRequestBytes),
-    max_encrypted_response_bytes: String(policy.maxEncryptedResponseBytes),
-    proof_type: SERVICE_PROOF_TYPE,
+    quorumKeyId: policy.quorumKeyId,
+    quorumKeyEpoch: policy.quorumKeyEpoch,
+    quorumPublicKey: policy.quorumPublicKey,
+    maxEncryptedRequestBytes: BigInt(policy.maxEncryptedRequestBytes),
+    maxEncryptedResponseBytes: BigInt(policy.maxEncryptedResponseBytes),
   };
-}
-
-function oneDigest(digests: readonly string[]): string {
-  const digest = digests.length === 1 ? digests[0] : undefined;
-  if (digest === undefined) throw new DecryptionServiceError("ReleaseBindingMismatch");
-  requireHex(digest, 32);
-  return digest;
 }
 
 export async function fetchLiveServiceInfo(
@@ -210,7 +205,7 @@ export async function verifyLiveReplica(input: VerifyLiveReplicaInput): Promise<
   await awaitWithSignal(verifyBootProof({
     ephemeralPublicKey: appProof.publicKey,
     bootProof,
-    allowedManifestSha256: [input.approved.manifestDigest],
+    expectedManifestSha256: input.approved.manifestDigest,
     expectedPcrs: input.qosIdentityPcrs,
     nowMs: input.nowMs ?? BigInt(Date.now()),
   }), signal);
@@ -225,7 +220,7 @@ export async function connectAndVerifyTvc(
   const { backend, network, release } = config;
   const { releasePolicy, qosIdentityPcrs } = release;
   verifySignedReleasePolicy(releasePolicy, release.releaseAuthorities, network, nowMs());
-  const info = serviceInfoFromPolicy(releasePolicy.policy);
+  const target = serviceTargetFromPolicy(releasePolicy.policy);
   const transport = config.transport ?? createDefaultTransport();
 
   const verifyReplica = async (
@@ -233,13 +228,20 @@ export async function connectAndVerifyTvc(
     verificationNow: bigint,
     verifySignal?: AbortSignal,
     bootProof?: TurnkeyBootProofWire,
-  ) => awaitWithSignal(verifyBootProof({
-    ephemeralPublicKey: appProof.publicKey,
-    bootProof: bootProof ?? await lookupBootProof(backend, appProof, verifySignal),
-    allowedManifestSha256: releasePolicy.policy.acceptedManifestDigests,
-    expectedPcrs: qosIdentityPcrs,
-    nowMs: verificationNow,
-  }), verifySignal);
+  ) => {
+    const proof = bootProof ?? await lookupBootProof(backend, appProof, verifySignal);
+    return awaitWithSignal(verifyBootProof({
+      ephemeralPublicKey: appProof.publicKey,
+      bootProof: proof,
+      expectedManifestSha256: approvedManifestSha256(
+        proof,
+        releasePolicy.policy,
+        qosIdentityPcrs,
+      ),
+      expectedPcrs: qosIdentityPcrs,
+      nowMs: verificationNow,
+    }), verifySignal);
+  };
 
   const releasePolicyValidFromMs = BigInt(releasePolicy.policy.validFromMs);
   const releasePolicyExpiresAtMs = BigInt(releasePolicy.policy.expiresAtMs);
@@ -257,7 +259,7 @@ export async function connectAndVerifyTvc(
 
   return {
     backend,
-    info,
+    target,
     transport,
     releasePolicyValidFromMs,
     releasePolicyExpiresAtMs,

@@ -7,6 +7,7 @@ import { MAX_ENCRYPTED_REQUEST_BYTES } from "../../src/wire/constants.js";
 import { encodeLowerHex } from "../../src/wire/hex.js";
 import { bindMainnetRelease, releaseForConnection, type MainnetTrust } from "../../src/wire/releases.js";
 import type { ReleasePolicy, SignedReleasePolicy } from "../../src/wire/types.js";
+import { fixtureManifestSet } from "../support/manifest-set.js";
 
 const now = 1_800_000_000_000n;
 const secrets = [new Uint8Array(32).fill(1), new Uint8Array(32).fill(2)];
@@ -24,10 +25,10 @@ const trust: MainnetTrust = {
   maximumPolicyLifetimeMs: 60_000,
 };
 const policy: ReleasePolicy = {
-  version: 1, network: "mainnet", releaseId: "mainnet-candidate",
+  version: 1, network: "mainnet",
   securityDomainId: trust.securityDomainId, quorumPublicKey: trust.quorumPublicKey,
   quorumKeyId: "quorum", quorumKeyEpoch: "1", revocationEpoch: "2",
-  acceptedManifestDigests: ["aa".repeat(32)], acceptedExecutableDigests: ["bb".repeat(32)],
+  namespace: "spr-decryption", manifestSet: fixtureManifestSet, minimumManifestNonce: "0",
   allowedOperations: ["ServicePublicKeys", "ServiceDecrypt"],
   maxEncryptedRequestBytes: MAX_ENCRYPTED_REQUEST_BYTES, maxEncryptedResponseBytes: MAX_ENCRYPTED_REQUEST_BYTES,
   turnkeyTrustRootId: "aws-nitro-root-g1",

@@ -18,7 +18,7 @@
 
 A sender can encrypt an SPR note to a Solana address before that address has a shielded wallet. The owner already has an Ed25519 key. The enclave holds a stable viewing key for the address and returns plaintext only after that owner, or a grantee they named, signs the request.
 
-The wallet builds each request from the signed release pin. That pin names one manifest digest and one executable digest. The gateway forwards the ciphertext and returns the Boot Proof of the replica that signed the reply. The wallet checks that proof and the App Proof before it opens the result, and it repeats both checks on every reply. A later call may reach a different replica.
+The wallet builds each request from the signed release pin. The pin names the Quorum key, PCR0–3, and the manifest set that may approve an image. The gateway forwards the ciphertext and returns the Boot Proof of the replica that signed the reply. The wallet checks that the pinned set approved the manifest in that proof, then checks the Nitro document and the App Proof, before it opens the result. It repeats those checks on every reply. A later call may reach a replica running a newer image approved by the same set. A client release is required when the Quorum key, PCR0–3, or the manifest set changes.
 
 This document specifies that path, the two operations inside the encrypted envelope, the checks a client and the enclave perform, and the custody and visibility assumptions.
 
@@ -29,13 +29,11 @@ flowchart LR
   Wallet[Wallet]
   Gatekeeper[Gatekeeper<br/>public]
   Gateway[Gateway<br/>private]
-  Enclave[Enclave<br/>firewalled]
-  Turnkey[Turnkey]
+  Service["TVC decryption service<br/>firewalled"]
 
   Wallet -->|x-api-key| Gatekeeper
   Gatekeeper -->|origin credential| Gateway
-  Gateway --> Enclave
-  Gateway --> Turnkey
+  Gateway --> Service
 ```
 
 The public hosts are `https://devnet.helius-rpc.com` and `https://mainnet.helius-rpc.com`. A wallet sends `x-api-key`, or the `api-key` query parameter. The gatekeeper resolves the Helius project and calls the gateway with `Authorization` set to the shared origin credential and `x-helius-project-id` set to that project. The committed gateway config binds `127.0.0.1:8940`.
@@ -52,8 +50,8 @@ A request that reaches the gateway without the gatekeeper's `Authorization` head
 | Gateway | The private process that calls the enclave and Turnkey, and stores a replay of the first answer. |
 | Enclave | The decryption process inside a Turnkey Nitro replica. Holds the Quorum seed and the viewing secrets. |
 | Quorum key | The release's P-256 key pair. Clients encrypt requests to its encryption half. The enclave proves it can use that key. |
-| Release pin | A threshold of release authorities signs the policy. The SDK checks it before using an endpoint. |
-| Boot Proof | Turnkey's Nitro attestation for one replica: COSE signature, certificate chain, PCR0–3, PCR17, and the ephemeral public key. |
+| Release pin | A threshold of release authorities signs the policy: the Quorum key, the namespace, the manifest set, and a minimum manifest nonce. PCR0–3 sit beside that policy. The SDK checks the signatures, the network, and the validity window before the first request, and checks each reply against the same pin. |
+| Boot Proof | Turnkey's Nitro attestation for one replica, plus the QOS manifest and the manifest-set approvals. The document carries the COSE signature, certificate chain, PCR0–3, PCR17, and the ephemeral public key. |
 | App Proof | The replica's P-256 signature over the request id, the operation, and the request and result digests. |
 | Response key | A fresh P-256 key the wallet creates for one call and keeps. The enclave seals the reply to it. |
 | Viewing key | X25519 key the enclave derives for one Solana address. Senders encrypt notes to the public half. |
@@ -108,15 +106,12 @@ sequenceDiagram
 
 `response` is the enclave's `EncryptedResponse`: `version`, `request_id`, `encrypted_result`, and `tvc_app_proof`. The client checks the Boot Proof of `tvc_app_proof.public_key` and then the App Proof, and only then opens `encrypted_result` with the response private key. The App Proof must name this request id, this operation, this request digest, and this result digest.
 
-The plaintext inside `ciphertext` is a `ServiceRequest`. Its release fields are copied from the pin. Field layout, digest domains, and the QOS frame are in the [wire reference](../wire/README.md).
+The plaintext inside `ciphertext` is a `ServiceRequest`. It names the Quorum key from the pin. Field layout, digest domains, and the QOS frame are in the [wire reference](../wire/README.md).
 
 ```json
 {
   "version": 1,
   "request_id": "<32-byte hex>",
-  "target_release_id": "<release>",
-  "target_manifest_digest": "<32-byte hex>",
-  "target_executable_digest": "<32-byte hex>",
   "quorum_key_id": "<id>",
   "quorum_key_epoch": "1",
   "client_response_public_key": "<65-byte SEC1 hex>",
@@ -148,9 +143,11 @@ An operator does not pin a URL. The release tool compares a Turnkey deployment w
 
 On boot, Quorum OS writes `/qos.manifest`. The envelope is QOS schema `manifest.version = "v2"` plus the approval signatures. The process refuses to start unless those approvals meet the manifest threshold, pivot debug mode is off, and the pivot environment is empty. Its arguments must be the launch arguments in the manifest, and the Quorum key it loaded must be the key the manifest names. `GET /v1/info` then reports that public key, the digest of the inner manifest, and the executable digest. The release tool checks this live replica before it writes a signed SDK pin.
 
-The SDK checks the pin before it builds a request. It verifies the authority signatures, the network, and the validity window. On mainnet the authority set, the revocation floor, the Quorum key, the security domain, and the maximum policy lifetime are pinned in the SDK. A policy cannot choose them. The request names the pin's release, its one manifest digest, and its one executable digest. The enclave refuses a request that names a different release.
+The signed policy names the Quorum key, the namespace, the manifest-set keys, the threshold, and a minimum manifest nonce. PCR0–3 sit beside that policy. The floor starts at zero. Raising it is how a later client drops old manifests. A client that has not taken that update stops accepting an old image when that deployment is shut down.
 
-A wallet does not read `/v1/info` or `/v1/ping`. The release tool does, before it writes the pin, to compare the live deployment with the approved image. The wallet's proof is the reply. The request is encrypted to the Quorum key, so a replica that cannot decrypt it cannot answer. The App Proof binds the answer to this request. The Boot Proof binds the signing key to the approved image: COSE signature, certificate chain to the pinned AWS Nitro root, PCR0–3 against the pinned QOS identity, and PCR17 over the manifest digest and the replica's ephemeral public key. A later call may reach a different replica, so the client repeats both checks on every reply.
+The SDK checks the pin before it builds a request. It verifies the authority signatures, the network, and the validity window. On mainnet the authority set, the revocation floor, the Quorum key, the security domain, and the maximum policy lifetime are pinned in the SDK. A policy cannot choose them. The request names the Quorum key id and epoch. Any replica that holds that key and booted from a manifest the pinned set approved can open it.
+
+A wallet does not read `/v1/info` or `/v1/ping`. The release tool does, before it writes the pin, to compare the live deployment with the approved image. The wallet's proof is the reply. The request is encrypted to the Quorum key, so a replica that cannot decrypt it cannot answer. The App Proof binds the answer to this request. The Boot Proof carries the manifest and the operator approvals. The client hashes the manifest and requires that hash to equal the attested user data. The manifest's Quorum key, namespace, and PCR0–3 must match the pin, its nonce must meet the floor, and a threshold of the pinned keys must have signed it. The Nitro document is then checked as before: COSE signature, certificate chain to the pinned AWS Nitro root, PCR0–3, and PCR17 over that manifest hash and the replica's ephemeral public key. An image upgrade is a new manifest approved by the same set and key-forwarded onto the same Quorum key. It needs no client release.
 
 ## Send, claim, and sweep
 
@@ -158,25 +155,25 @@ A wallet does not read `/v1/info` or `/v1/ping`. The release tool does, before i
 sequenceDiagram
     participant Sender
     participant Gatekeeper
-    participant Enclave
+    participant Service as TVC decryption service
     participant Chain
     participant Wallet
 
     Sender->>Gatekeeper: PublicKeys(address)
-    Gatekeeper->>Enclave: sealed request
-    Enclave-->>Sender: viewing key, nullifier key
+    Gatekeeper->>Service: sealed request
+    Service-->>Sender: viewing key, nullifier key
     Note over Sender: encrypt the note to the viewing key
     Sender->>Chain: transfer, owner tag = address
     Wallet->>Chain: read notes for that tag
     Note over Wallet: sign the batch, seal it to the Quorum key
     Wallet->>Gatekeeper: Decrypt
-    Gatekeeper->>Enclave: ciphertext unchanged
-    Enclave-->>Wallet: plaintexts, nullifier secret, Boot Proof
+    Gatekeeper->>Service: ciphertext unchanged
+    Service-->>Wallet: plaintexts, nullifier secret, Boot Proof
 ```
 
 ### Send
 
-A sender whose recipient has no registry record calls `PublicKeys(address)` on the release it pinned. The call returns the service viewing key and the nullifier public key. The enclave accepts on-curve Ed25519 addresses and rejects small-order keys. A program-derived address cannot authorize a decrypt.
+A sender whose recipient has no registry record calls `PublicKeys(address)` on the service in its pin. The call returns the service viewing key and the nullifier public key. The enclave accepts on-curve Ed25519 addresses and rejects small-order keys. A program-derived address cannot authorize a decrypt.
 
 The sender encrypts the note with an ephemeral X25519 secret and the recipient's service viewing key. The plaintext is the asset id, the amount, the blinding, and any ring or application data. The chain publishes the ciphertext, the sender's ephemeral public key, the salt, the output position, and the note commitment. The owner tag is the recipient's Solana address. The commitment binds that address and the service nullifier public key through `owner_hash`.
 
@@ -186,14 +183,14 @@ Senders can cache the public keys and create outputs without calling the service
 
 The recipient wallet finds candidate outputs from the owner tag. It generates a fresh P-256 response key and keeps the private half. The signer is the owner, or a grantee named in a view grant the owner signed on a device. A grant lasts at most 30 minutes, is checked against the enclave clock, and is not stored.
 
-The signature is a Solana off-chain message over the network, the target release and Quorum identity, a fresh request id, the ordered items, the response public key, and the grant when there is one. The SDK seals that signed request to the pinned Quorum encryption key and posts it to `/v1/decryption/operations`.
+The signature is a Solana off-chain message. Its payload names the network and the request digest. That digest covers the Quorum key id and epoch, the request id, the ordered items, the response public key, and the grant when there is one. The SDK seals that signed request to the pinned Quorum encryption key and posts it to `/v1/decryption/operations`.
 
 An empty batch is the same authorization, used to fetch the nullifier secret. A grantee receives that secret too. Ending the grant does not wipe a secret already returned. Spending a note still takes the owner's Solana signature.
 
-Inside the enclave the envelope is authenticated, checked against the running release, and the Ed25519 signature is verified. With no grant, the signer address selects the viewing secret. With a grant, the grant's owner selects it. The enclave rejects the request when any of these fail:
+Inside the enclave the envelope is authenticated, the request's version and Quorum key are checked against the replica, and the Ed25519 signature is verified. With no grant, the signer address selects the viewing secret. With a grant, the grant's owner selects it. The enclave rejects the request when any of these fail:
 
 1. The clock cannot be read, the grant window is longer than 30 minutes, or the grant names another network or Quorum key.
-2. The signature, the release pin, or the response public key is missing or malformed.
+2. The signature or the response public key is missing or malformed, or the request names another version or Quorum key.
 3. An item names a key schedule other than `HkdfSha256Ctr`, or its ephemeral key, salt, or slot is malformed.
 4. One item in the batch fails. The enclave returns no partial plaintext.
 

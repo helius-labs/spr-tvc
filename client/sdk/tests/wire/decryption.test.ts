@@ -13,9 +13,6 @@ import {
 const request: ServiceRequest = {
   version: 1,
   request_id: "01".repeat(32),
-  target_release_id: "release",
-  target_manifest_digest: "02".repeat(32),
-  target_executable_digest: "03".repeat(32),
   quorum_key_id: "quorum",
   quorum_key_epoch: "1",
   client_response_public_key: "04".repeat(65),
@@ -33,7 +30,7 @@ const request: ServiceRequest = {
     }],
   },
 };
-const DIGEST = "9d79a45895d847e3d58ee9a0c52751de52e2848375ea82f38ffc4089691ad2b3";
+const DIGEST = "fa1fd1749eed328af9f1192dd515323ad3af23a9768a7b3ebc92f05b16a92a5b";
 const MESSAGE =
   "ff736f6c616e61206f6666636861696e005be1ef179167714826436f2f8f69579bd2bd3f7b3ad3cf18e4a0b6a1a0700e27000107070707070707070707070707070707070707070707070707070707070707076b00545350502f64656372797074696f6e2d736572766963652f646563727970742f76312f6d61696e6e65742f30393039303930393039303930393039303930393039303930393039303930393039303930393039303930393039303930393039303930393039303930393039";
 
@@ -73,8 +70,8 @@ describe("the decryption service's request", () => {
     expect(() => acceptViewGrantWindow(now, now + MAX_VIEW_GRANT_MS + 1n, now)).toThrow(/ExpiredRequest/);
   });
 
-  it("binds the release ID and rejects invalid Unicode before hashing", () => {
-    expect(encodeLowerHex(serviceRequestDigest({ ...request, target_release_id: "release-2" }))).not.toBe(DIGEST);
-    expect(() => serviceRequestDigest({ ...request, target_release_id: "\ud800" })).toThrow("InvalidCanonicalJson");
+  it("binds the Quorum key and rejects invalid Unicode before hashing", () => {
+    expect(encodeLowerHex(serviceRequestDigest({ ...request, quorum_key_id: "quorum-2" }))).not.toBe(DIGEST);
+    expect(() => serviceRequestDigest({ ...request, quorum_key_id: "\ud800" })).toThrow("InvalidCanonicalJson");
   });
 });

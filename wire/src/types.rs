@@ -185,16 +185,36 @@ pub struct OperationProofPayload {
     pub operation: OperationKind,
 }
 
+/// One manifest-set member, the alias and the QOS public key (`encrypt || sign`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManifestSetMember {
+    pub alias: String,
+    #[serde(with = "hex")]
+    pub public_key: Vec<u8>,
+}
+
+/// The operators who may approve a manifest. The client pins this set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManifestSetPolicy {
+    pub threshold: u32,
+    pub members: Vec<ManifestSetMember>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReleasePolicy {
     pub version: u8,
-    pub release_id: String,
     pub network: Network,
     #[serde(with = "hex")]
     pub security_domain_id: [u8; 32],
-    pub accepted_manifest_digests: Vec<String>,
-    pub accepted_executable_digests: Vec<String>,
+    /// QOS namespace name. A manifest for any other namespace is rejected.
+    pub namespace: String,
+    pub manifest_set: ManifestSetPolicy,
+    /// Manifests below this nonce are rejected. The floor starts at zero.
+    #[serde(with = "decimal_u64")]
+    pub minimum_manifest_nonce: u64,
     pub quorum_key_id: String,
     #[serde(with = "decimal_u64")]
     pub quorum_key_epoch: u64,

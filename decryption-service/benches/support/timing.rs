@@ -64,9 +64,6 @@ impl MaxEnvelope {
         let mut request = spr_tvc_wire::decryption_service::ServiceRequest {
             version: API_VERSION,
             request_id: [0; 32],
-            target_release_id: String::new(),
-            target_manifest_digest: [0; 32],
-            target_executable_digest: [0; 32],
             quorum_key_id: String::new(),
             quorum_key_epoch: u64::MAX,
             client_response_public_key: vec![0x04; SEC1_UNCOMPRESSED_LEN],

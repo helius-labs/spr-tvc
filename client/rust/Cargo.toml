@@ -15,11 +15,13 @@ ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std
 p256 = { version = "=0.14.0", default-features = false, features = ["arithmetic", "ecdsa", "std"] }
 qos_p256.workspace = true
 serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
 spr-keypair.workspace = true
 spr-tvc-wire = { path = "../../wire" }
 
 [dependencies]
 base64 = { version = "=0.22.1" }
+qos_core = { version = "=0.16.3", default-features = false }
 bs58 = { version = "=0.5.1" }
 getrandom = { version = "=0.2.17" }
 hex = { version = "=0.4.3" }

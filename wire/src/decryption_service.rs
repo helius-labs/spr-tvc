@@ -38,11 +38,6 @@ pub struct ServiceRequest {
     pub version: u8,
     #[serde(with = "hex")]
     pub request_id: [u8; 32],
-    pub target_release_id: String,
-    #[serde(with = "hex")]
-    pub target_manifest_digest: [u8; 32],
-    #[serde(with = "hex")]
-    pub target_executable_digest: [u8; 32],
     pub quorum_key_id: String,
     #[serde(with = "decimal_u64")]
     pub quorum_key_epoch: u64,

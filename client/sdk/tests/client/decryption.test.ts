@@ -11,7 +11,6 @@ import { qosDecrypt } from "../../src/crypto/qos.js";
 import { decodeLowerHex, encodeLowerHex } from "../../src/wire/hex.js";
 import { MAX_ENCRYPTED_REQUEST_BYTES } from "../../src/wire/constants.js";
 import { DecryptionServiceError, DecryptionServiceHttpError } from "../../src/wire/error.js";
-import type { ServiceInfo } from "../../src/wire/types.js";
 import * as exchange from "../../src/client/exchange.js";
 import { decryptionServiceFromSession } from "../../src/client/decryption.js";
 import type { ServiceRequest } from "../../src/wire/decryption.js";
@@ -21,26 +20,26 @@ const ownerAddress = address("11111111111111111111111111111111");
 function fixture() {
   const quorum = new Uint8Array(32).fill(1);
   const publicKey = encodeLowerHex(p256.getPublicKey(quorum, false));
-  const info = {
-    version: 1, network: "devnet", security_domain_id: "00".repeat(32),
-    release_id: "release", manifest_digest: "11".repeat(32), executable_digest: "22".repeat(32),
-    quorum_public_key: publicKey + publicKey, quorum_key_id: "quorum", quorum_key_epoch: "1",
-    supported_operations: ["ServicePublicKeys", "ServiceDecrypt"],
-    max_encrypted_request_bytes: String(MAX_ENCRYPTED_REQUEST_BYTES),
-    max_encrypted_response_bytes: String(MAX_ENCRYPTED_REQUEST_BYTES), proof_type: "",
-  } satisfies ServiceInfo;
+  const target = {
+    network: "devnet" as const,
+    quorumKeyId: "quorum",
+    quorumKeyEpoch: "1",
+    quorumPublicKey: publicKey + publicKey,
+    maxEncryptedRequestBytes: BigInt(MAX_ENCRYPTED_REQUEST_BYTES),
+    maxEncryptedResponseBytes: BigInt(MAX_ENCRYPTED_REQUEST_BYTES),
+  };
   const fetch = vi.fn(async (_url: unknown, _init?: RequestInit) => new Response("", { status: 503 }));
   const context: ConnectedTvcRuntime = {
     backend: { endpoint: new URL("https://example.invalid") },
-    info, transport: { fetch },
+    target, transport: { fetch },
     releasePolicyValidFromMs: 0n, releasePolicyExpiresAtMs: 9999999n, nowMs: () => 1000n,
     trustVerifier: { verifyOperationAppProof: async () => {} },
   };
-  return { context, fetch, quorum, info };
+  return { context, fetch, quorum, target };
 }
 
-it("asks for an address's keys from the release it verified", async () => {
-  const { context, fetch, quorum, info } = fixture();
+it("asks for an address's keys with the Quorum key from the pin", async () => {
+  const { context, fetch, quorum, target } = fixture();
   const forget = vi.fn();
   const service = decryptionServiceFromSession({ context: async () => context, forget, reset: vi.fn() });
   const owner = ownerAddress;
@@ -52,16 +51,14 @@ it("asks for an address's keys from the release it verified", async () => {
   expect(Object.keys(body).sort()).toEqual(["ciphertext", "quorum_key_epoch", "quorum_key_id", "version"]);
   const request = JSON.parse(new TextDecoder().decode(qosDecrypt(quorum, decodeLowerHex(body.ciphertext)))) as ServiceRequest;
   expect(request).toMatchObject({
-    target_release_id: "release",
-    target_manifest_digest: info.manifest_digest,
-    target_executable_digest: info.executable_digest,
+    quorum_key_id: target.quorumKeyId,
+    quorum_key_epoch: target.quorumKeyEpoch,
     operation: { type: "PublicKeys", address: owner },
   });
-  // A failed exchange may mean the release moved on.
   expect(forget).toHaveBeenCalledWith(context);
 });
 
-it("forgets the attested session when the exchange returns 429", async () => {
+it("drops the connection when the exchange returns 429", async () => {
   const { context } = fixture();
   const forget = vi.fn();
   const service = decryptionServiceFromSession({ context: async () => context, forget, reset: vi.fn() });
@@ -81,7 +78,7 @@ it("checks the serialized request ceiling before asking for a signature or sendi
   const { context, fetch } = fixture();
   const signMessages = vi.fn();
   await expect(exchange.executeServiceCall({
-    ...context, info: { ...context.info, max_encrypted_request_bytes: "512" },
+    ...context, target: { ...context.target, maxEncryptedRequestBytes: 512n },
   }, {
     type: "Decrypt",
     owner: { address: ownerAddress, signMessages },

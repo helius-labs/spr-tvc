@@ -34,7 +34,7 @@ type VerifyBootProofInput = {
   /** Public key from a previously signature-checked App Proof. */
   ephemeralPublicKey: string;
   bootProof: TurnkeyBootProofWire;
-  allowedManifestSha256: readonly string[];
+  expectedManifestSha256: string;
   expectedPcrs: QosIdentityPcrs;
   /** Verifier clock. Rejects future attestations and validates the certificate chain now. */
   nowMs: bigint;
@@ -170,18 +170,10 @@ function verifyProofBindings(
   input: VerifyBootProofInput,
   attestation: AwsNitroAttestationDocument,
 ): void {
-  if (input.allowedManifestSha256.length === 0) {
-    throw new DecryptionServiceError("BootProofUnverified");
-  }
-  const allowed = input.allowedManifestSha256.map((value) =>
-    decodeFixedLowerHex(value, SHA256_LEN),
-  );
+  const expected = decodeFixedLowerHex(input.expectedManifestSha256, SHA256_LEN);
   // QOS puts the canonical JSON manifest digest in the attested user data.
   const manifestDigest = asBytes(attestation.get("user_data"));
-  if (
-    manifestDigest.length !== SHA256_LEN ||
-    !allowed.some((digest) => bytesEqual(digest, manifestDigest))
-  ) {
+  if (!bytesEqual(manifestDigest, expected)) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
 

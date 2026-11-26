@@ -40,8 +40,7 @@ key. The reply receiver is the client's one-time response key.
 
 `POST /v1/operations` takes `version`, `quorum_key_id`, `quorum_key_epoch`,
 and `ciphertext`. Its envelope contains canonical JSON with `version`,
-32-byte `request_id`, `target_release_id`, `target_manifest_digest`,
-`target_executable_digest`, `quorum_key_id`, `quorum_key_epoch`,
+32-byte `request_id`, `quorum_key_id`, `quorum_key_epoch`,
 `client_response_public_key` (P-256 SEC1), and `operation`.
 
 | Operation | Result |
@@ -110,13 +109,13 @@ starts with counter `nonce || 0x00000002`. See the
 
 ## Release policy and connection
 
-The policy pins the release, network, security domain, manifest and
-executable digests, Quorum key identity and public key, operations, and
-byte limits. A threshold of distinct trusted release authorities signs the
-policy digest with P-256. The client enforces the policy's validity window
-and revocation floor. See [Establish trust before sending](../docs/spec.md#establish-trust-before-sending).
+The policy pins the network, security domain, namespace, manifest set,
+Quorum key, operations, and byte limits. A threshold of distinct release
+authorities signs the policy digest with P-256. The client enforces the
+policy's validity window and revocation floor. See
+[Establish trust before sending](../docs/spec.md#establish-trust-before-sending).
 
-- `GET /v1/info` returns discovery fields that the SDK checks against the policy.
+- `GET /v1/info` is for the release tool and the local testkit. A wallet does not read it.
 - `POST /v1/ping` takes `version` and `encrypted_challenge`. The decrypted
   JSON has `type = spr.tvc.qos_ping.v1`, `version`, and a random 32-byte
   `challenge`. The response contains `version` and an App Proof on the
