@@ -25,9 +25,9 @@ use spr_tvc_wire::types::{
 };
 use zeroize::Zeroizing;
 
-use crate::stage::{Deployment, Descriptor};
+use crate::stage::Descriptor;
 use crate::tools::{capture_check, verify_live, Credentials};
-use crate::{app_config, lower_hex, read_json, write_json, Pcrs, Phase, Release};
+use crate::{app_config, lower_hex, read_json, write_json, Pcrs, Release};
 
 pub(crate) const OPERATIONS: [OperationKind; 2] = [
     OperationKind::ServicePublicKeys,
@@ -221,6 +221,7 @@ impl Release<'_> {
         approved: &Approved,
         trust: Option<&MainnetTrust>,
         valid_from_ms: u64,
+        minimum_manifest_nonce: u64,
     ) -> Result<ReleasePolicy> {
         ensure!(
             self.config.turnkey_trust_root_id == EXPECTED_TURNKEY_TRUST_ROOT_ID,
@@ -275,7 +276,7 @@ impl Release<'_> {
             security_domain_id: self.app.security_domain_id,
             namespace: approved.namespace.clone(),
             manifest_set: approved.manifest_set.clone(),
-            minimum_manifest_nonce: 0,
+            minimum_manifest_nonce,
             quorum_key_id: self.app.quorum_key_id.clone(),
             quorum_key_epoch: self.app.quorum_key_epoch,
             quorum_public_key: approved.quorum_public_key.clone(),
@@ -289,17 +290,21 @@ impl Release<'_> {
         })
     }
 
-    pub(crate) fn policy(&self) -> Result<()> {
+    pub(crate) fn pin(&self) -> Result<()> {
         let mainnet = self.network() == Network::Mainnet;
         let trust = mainnet.then(|| self.production_trust()).transpose()?;
-        let record: Deployment = read_json(&self.path("deploy"))?;
+        let deploy_id = self
+            .args
+            .deploy_id
+            .clone()
+            .context("pin requires the live deploy id")?;
         ensure!(
-            self.live_deployment()?.as_deref() == Some(&record.deploy_id),
-            "the staged deployment is not live"
+            self.live_deployment()?.as_deref() == Some(deploy_id.as_str()),
+            "the deployment is not live"
         );
-        let descriptor = self.read_descriptor()?;
+        let descriptor = self.measured_descriptor()?;
         let credentials = Credentials::load()?;
-        let approved = self.approved_deployment(&record.deploy_id, &descriptor, &credentials)?;
+        let approved = self.approved_deployment(&deploy_id, &descriptor, &credentials)?;
         let info = self.live_info()?;
         let signed: Option<SignedReleasePolicy> = self
             .args
@@ -310,7 +315,22 @@ impl Release<'_> {
         let valid_from_ms = signed
             .as_ref()
             .map_or_else(now_ms, |signed| Ok(signed.policy.valid_from_ms))?;
-        let policy = self.release_policy(&info, &approved, trust.as_ref(), valid_from_ms)?;
+        let minimum_manifest_nonce = signed
+            .as_ref()
+            .map_or(self.args.minimum_manifest_nonce, |signed| {
+                signed.policy.minimum_manifest_nonce
+            });
+        ensure!(
+            u32::try_from(minimum_manifest_nonce).is_ok(),
+            "manifest nonce floor does not fit the client pin"
+        );
+        let policy = self.release_policy(
+            &info,
+            &approved,
+            trust.as_ref(),
+            valid_from_ms,
+            minimum_manifest_nonce,
+        )?;
         let pcrs = trust
             .as_ref()
             .map_or(&self.config.qos_identity_pcrs, |trust| {
@@ -344,12 +364,19 @@ impl Release<'_> {
         match (trust.as_ref(), signed) {
             (Some(trust), Some(signed)) => {
                 verify_mainnet_policy(&signed, &policy, trust, now_ms()?)?;
-                write_json(&self.pin_path(), &signed)
+                println!("verified signed mainnet policy for {}", self.app.endpoint);
+                Ok(())
             }
-            (Some(trust), None) if self.args.phase == Phase::Prepare => {
-                let policy = self.release_policy(&info, &approved, Some(trust), now_ms()?)?;
+            (Some(trust), None) => {
+                let policy = self.release_policy(
+                    &info,
+                    &approved,
+                    Some(trust),
+                    now_ms()?,
+                    self.args.minimum_manifest_nonce,
+                )?;
                 write_json(
-                    &self.path("policy-request"),
+                    &self.request_path(),
                     &json!({
                         "digest": hex::encode(policy_signing_digest(&policy)?),
                         "authoritySetId": trust.release_authorities.authority_set_id,
@@ -368,9 +395,21 @@ impl Release<'_> {
                     }),
                 )
             }
-            _ => anyhow::bail!("inconsistent release phase and signing inputs"),
+            _ => anyhow::bail!("inconsistent pin inputs"),
         }
     }
+}
+
+pub(crate) fn deployment_container_url(deploy_id: &str) -> Result<String> {
+    let credentials = Credentials::load()?;
+    let deployment: TurnkeyDeployment = serde_json::from_slice(&capture_check(
+        &mut credentials.bridge(&["deployment", deploy_id]),
+    )?)
+    .context("decode authenticated Turnkey deployment")?;
+    deployment
+        .pivot_container
+        .context("deployment has no image")
+        .map(|pivot| pivot.container_url)
 }
 
 impl MainnetTrust {

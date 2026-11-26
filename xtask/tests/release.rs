@@ -3,65 +3,114 @@ use std::fs;
 use clap::Parser;
 
 use crate::tools::Credentials;
-use crate::{release_id, stage, Args};
+use crate::{Action, Cli, Command, ReleaseCommand};
 
-#[test]
-fn release_requires_inputs_for_its_phase_and_network() {
-    let parse = |phase: &str, network: &str, extra: &[&str]| {
-        Args::try_parse_from(
-            ["xtask", phase, "candidate", "--network", network]
-                .into_iter()
-                .chain(extra.iter().copied()),
-        )
-    };
-    let sha = "1".repeat(40);
-    for (phase, network, args) in [
-        ("describe", "devnet", vec![]),
-        ("stage", "devnet", vec!["--image", "unused"]),
-        ("stage", "devnet", vec!["--source-commit", &sha]),
-        ("prepare", "devnet", vec![]),
-        ("pin", "devnet", vec!["--signed-policy", "signed.json"]),
-        ("stage", "mainnet", vec![]),
-        ("stage", "mainnet", vec!["--source-commit", &sha[..12]]),
-        ("pin", "mainnet", vec!["--source-commit", &sha]),
-    ] {
-        assert!(
-            parse(phase, network, &args).unwrap().validate().is_err(),
-            "{phase} {network}"
-        );
+fn command(args: &[&str]) -> ReleaseCommand {
+    let Cli { action } = Cli::try_parse_from(args.iter().copied()).unwrap();
+    match action {
+        Command::Deploy(command) | Command::Pin(command) => command,
     }
-    parse("describe", "devnet", &["--image", "image"])
-        .unwrap()
-        .validate()
-        .unwrap();
-    parse("stage", "devnet", &[]).unwrap().validate().unwrap();
-    parse("prepare", "mainnet", &["--source-commit", &sha])
-        .unwrap()
-        .validate()
-        .unwrap();
-    parse(
-        "pin",
-        "mainnet",
-        &["--source-commit", &sha, "--signed-policy", "signed.json"],
-    )
-    .unwrap()
-    .validate()
-    .unwrap();
-    assert!(release_id("../candidate").is_err());
+}
+
+fn kind(args: &[&str]) -> Action {
+    match Cli::try_parse_from(args.iter().copied()).unwrap().action {
+        Command::Deploy(_) => Action::Deploy,
+        Command::Pin(_) => Action::Pin,
+    }
 }
 
 #[test]
-fn deployment_records_contain_only_the_staged_id() {
-    let record: stage::Deployment = serde_json::from_str(r#"{"deployId":"candidate"}"#).unwrap();
-    assert_eq!(
-        serde_json::to_value(record).unwrap(),
-        serde_json::json!({"deployId": "candidate"})
+fn release_requires_inputs_for_its_command_and_network() {
+    let sha = "1".repeat(40);
+    let image = format!(
+        "ghcr.io/helius-labs/spr-tvc-decryption-service:decryption-service-devnet-0123456789ab@sha256:{}",
+        "ab".repeat(32)
     );
-    for field in ["approved", "provisioned", "live"] {
-        let mut record = serde_json::json!({"deployId": "candidate"});
-        record[field] = serde_json::Value::Null;
-        assert!(serde_json::from_value::<stage::Deployment>(record).is_err());
+    let rejected: &[&[&str]] = &[
+        &["xtask", "deploy", "--network", "devnet"],
+        &[
+            "xtask",
+            "deploy",
+            "--network",
+            "devnet",
+            "--source-commit",
+            &sha,
+        ],
+        &["xtask", "pin", "--network", "devnet", "--image", &image],
+        &[
+            "xtask",
+            "pin",
+            "--network",
+            "devnet",
+            "--image",
+            &image,
+            "--deploy-id",
+            "id",
+            "--signed-policy",
+            "signed.json",
+        ],
+        &["xtask", "deploy", "--network", "mainnet", "--image", &image],
+        &[
+            "xtask",
+            "deploy",
+            "--network",
+            "mainnet",
+            "--image",
+            &image,
+            "--source-commit",
+            &sha[..12],
+        ],
+        &[
+            "xtask",
+            "pin",
+            "--network",
+            "mainnet",
+            "--image",
+            &image,
+            "--source-commit",
+            &sha,
+        ],
+    ];
+    for args in rejected {
+        assert!(command(args).validate(kind(args)).is_err(), "{args:?}");
     }
+    command(&["xtask", "deploy", "--network", "devnet", "--image", &image])
+        .validate(Action::Deploy)
+        .unwrap();
+    command(&[
+        "xtask",
+        "deploy",
+        "--network",
+        "mainnet",
+        "--image",
+        &image,
+        "--source-commit",
+        &sha,
+    ])
+    .validate(Action::Deploy)
+    .unwrap();
+    command(&[
+        "xtask",
+        "pin",
+        "--network",
+        "devnet",
+        "--image",
+        &image,
+        "--deploy-id",
+        "deployment",
+    ])
+    .validate(Action::Pin)
+    .unwrap();
+    command(&[
+        "xtask",
+        "pin",
+        "--network",
+        "mainnet",
+        "--signed-policy",
+        "signed.json",
+    ])
+    .validate(Action::Pin)
+    .unwrap();
 }
 
 #[test]

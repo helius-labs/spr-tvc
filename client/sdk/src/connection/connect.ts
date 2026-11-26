@@ -157,7 +157,7 @@ export function verifyQosPingAnswer(text: string, challenge: QosPingChallenge): 
   };
 }
 
-/** What a release tool checks of a live replica before it signs a release policy for it. */
+/** What the release workflow checks of a live replica before it signs a release policy for it. */
 export type ApprovedDeployment = {
   readonly manifestDigest: string;
   readonly executableDigest: string;

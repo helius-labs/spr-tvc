@@ -1,0 +1,107 @@
+# Creates a Turnkey deployment for an image publish-enclave-image already pushed.
+# Operators approve the manifest and provision shares before the enclave boots.
+
+name: deploy-enclave
+
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: Network
+        type: choice
+        options: [devnet, mainnet]
+        required: true
+      image:
+        description: Image reference from publish-enclave-image
+        type: string
+        required: true
+      source_commit:
+        description: Full commit the image was built from
+        type: string
+        required: true
+      deploy_id:
+        description: Resume this deployment instead of creating one
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-enclave-${{ inputs.network }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: image-publish
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+    env:
+      TVC_ORG_ID: ${{ secrets.TVC_ORG_ID }}
+      TVC_API_KEY_PUBLIC: ${{ secrets.TVC_API_KEY_PUBLIC }}
+      TVC_API_KEY_PRIVATE: ${{ secrets.TVC_API_KEY_PRIVATE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+
+      - name: Require a full commit
+        env:
+          COMMIT: ${{ inputs.source_commit }}
+        run: printf '%s' "$COMMIT" | grep -Eq '^[0-9a-f]{40}$'
+
+      - run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+
+      - run: just setup
+
+      - name: Install tvc
+        run: cargo install tvc --version 0.17.1 --locked
+
+      - name: Create the deployment
+        id: deploy
+        env:
+          NETWORK: ${{ inputs.network }}
+          IMAGE: ${{ inputs.image }}
+          COMMIT: ${{ inputs.source_commit }}
+          DEPLOY_ID: ${{ inputs.deploy_id }}
+        run: |
+          set +e
+          args=(deploy --network "$NETWORK" --image "$IMAGE")
+          if [ "$NETWORK" = mainnet ]; then
+            args+=(--source-commit "$COMMIT")
+          fi
+          if [ -n "$DEPLOY_ID" ]; then
+            args+=(--deploy-id "$DEPLOY_ID")
+          fi
+          cargo xtask "${args[@]}" >"$RUNNER_TEMP/deploy.txt"
+          status=$?
+          set -e
+          cat "$RUNNER_TEMP/deploy.txt"
+          id="$(grep -E '^deploy_id=' "$RUNNER_TEMP/deploy.txt" | tail -1 | cut -d= -f2-)"
+          if [ -n "$id" ]; then
+            echo "deploy_id=$id" >> "$GITHUB_OUTPUT"
+            {
+              echo "### decryption-service ($NETWORK)"
+              echo '```'
+              echo "deploy id: $id"
+              echo "image:     $IMAGE"
+              echo '```'
+              echo
+              echo "Operators approve the manifest and provision shares with \`tvc\`. Pin this id after it is live."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
