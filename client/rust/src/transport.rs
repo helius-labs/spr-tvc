@@ -7,6 +7,7 @@ use spr_tvc_wire::error::{ErrorCode, TvcError};
 
 use crate::ClientError;
 
+#[cfg(feature = "local-dev")]
 const MAX_DISCOVERY_BYTES: usize = 64 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -71,7 +72,7 @@ impl ReqwestTransport {
         api_key: Option<&str>,
         max_bytes: usize,
     ) -> Result<Vec<u8>, ClientError> {
-        let failure = if url.ends_with("/v1/ping") || url.ends_with("/v1/decryption/session") {
+        let failure = if url.ends_with("/v1/ping") {
             ErrorCode::BootProofUnverified
         } else if url.ends_with("/v1/info") {
             ErrorCode::DiscoveryUntrusted
@@ -120,10 +121,7 @@ fn read(
     Ok(bytes)
 }
 
+#[cfg(feature = "local-dev")]
 pub(crate) fn discovery_limit() -> usize {
     MAX_DISCOVERY_BYTES
-}
-
-pub(crate) fn session_limit() -> usize {
-    MAX_DISCOVERY_BYTES * 2 + 512 * 1024
 }

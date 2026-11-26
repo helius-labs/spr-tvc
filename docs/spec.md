@@ -18,7 +18,7 @@
 
 A sender can encrypt an SPR note to a Solana address before that address has a shielded wallet. The owner already has an Ed25519 key. The enclave holds a stable viewing key for the address and returns plaintext only after that owner, or a grantee they named, signs the request.
 
-The enclave is not an internet API. A wallet calls the Helius gatekeeper. The gatekeeper checks the API key and forwards to the gateway. The gateway calls the enclave, which is firewalled, and Turnkey, which issues the replica's Boot Proof. The wallet checks that proof before it sends a note, and again on every reply.
+The wallet builds each request from the signed release pin. That pin names one manifest digest and one executable digest. The gateway forwards the ciphertext and returns the Boot Proof of the replica that signed the reply. The wallet checks that proof and the App Proof before it opens the result, and it repeats both checks on every reply. A later call may reach a different replica.
 
 This document specifies that path, the two operations inside the encrypted envelope, the checks a client and the enclave perform, and the custody and visibility assumptions.
 
@@ -40,7 +40,7 @@ flowchart LR
 
 The public hosts are `https://devnet.helius-rpc.com` and `https://mainnet.helius-rpc.com`. A wallet sends `x-api-key`, or the `api-key` query parameter. The gatekeeper resolves the Helius project and calls the gateway with `Authorization` set to the shared origin credential and `x-helius-project-id` set to that project. The committed gateway config binds `127.0.0.1:8940`.
 
-The enclave routes are the internal interface: `GET /v1/info`, `POST /v1/ping`, `POST /v1/operations`, and `GET /health`. They take no API key. The gateway is the process that calls them. A loopback test dials the enclave directly and skips the gatekeeper, the gateway, and the Boot Proof.
+The gateway calls `POST /v1/operations` and asks Turnkey for the Boot Proof of the replica that signed the reply. `GET /v1/info` and `POST /v1/ping` stay on the enclave for the release tool. A loopback test dials the enclave directly and skips the gatekeeper, the gateway, and the Boot Proof.
 
 A request that reaches the gateway without the gatekeeper's `Authorization` header can still present an API key. The gateway resolves the project itself. Production wallets use the gatekeeper hosts.
 
@@ -65,54 +65,15 @@ A request that reaches the gateway without the gatekeeper's `Authorization` head
 
 | # | Call | Who | Result |
 | --- | --- | --- | --- |
-| 1 | `POST /v1/decryption/session` | Wallet, through the gatekeeper | Discovery, the signed ping, and that replica's Boot Proof |
-| 2 | `POST /v1/decryption/operations` | Wallet, through the gatekeeper | The encrypted enclave response and that replica's Boot Proof |
-| 3 | `PublicKeys` | Inside the encrypted envelope | Viewing public key and nullifier public key for one address |
-| 4 | `Decrypt` | Inside the encrypted envelope | Plaintexts in order, and the nullifier secret |
+| 1 | `POST /v1/decryption/operations` | Wallet, through the gatekeeper | The encrypted enclave response and that replica's Boot Proof |
+| 2 | `PublicKeys` | Inside the encrypted envelope | Viewing public key and nullifier public key for one address |
+| 3 | `Decrypt` | Inside the encrypted envelope | Plaintexts in order, and the nullifier secret |
 
 `PublicKeys` is public in the sense that anyone who can form the envelope can ask. It still rides inside a request sealed to the Quorum key, because that is the only request the enclave accepts on `/v1/operations`. `Decrypt` additionally requires the owner's Ed25519 signature, or a grantee's signature plus the owner's grant.
 
 The gateway forwards the operations ciphertext unchanged. It keys a replay ledger by project and ciphertext under the prefix `/v1/decryption`. The configured window is 360 seconds. A repeat returns the first answer and sets `Idempotent-Replayed: true`. The current admission limits are a 512 KiB body and 16 in-flight calls per project (`gateway/configs/config.yaml`).
 
 The enclave's own ceiling is 10 MiB for the encrypted request and the encrypted result, the same cap as the indexer. It rejects a larger body before opening any ciphertext. The SDK splits a decrypt on the pin's ceiling, before signing. There is no item cap. The enclave has no separate in-flight limit, so concurrent connections can multiply that ceiling by the connection count.
-
-### Session
-
-```mermaid
-sequenceDiagram
-    participant Wallet
-    participant Gatekeeper
-    participant Gateway
-    participant Enclave
-    participant Turnkey
-
-    Wallet->>Gatekeeper: POST /v1/decryption/session
-    Gatekeeper->>Gateway: origin credential, project id
-    par identify the replica
-        Gateway->>Enclave: GET /v1/info
-        Gateway->>Enclave: POST /v1/ping
-    end
-    Gateway->>Turnkey: Boot Proof for the ping's ephemeral key
-    Gateway-->>Wallet: info, ping, bootProof
-```
-
-```json
-{ "version": 1, "encrypted_challenge": "<hex QOS envelope>" }
-```
-
-```json
-{ "info": {}, "ping": {}, "bootProof": {} }
-```
-
-`encrypted_challenge` is a QOS envelope to the pinned Quorum encryption key. The plaintext inside it is `type = spr.tvc.qos_ping.v1`, `version`, and a random 32-byte `challenge`. The ping's App Proof signs that exact JSON.
-
-The client stops before it sends a note when any of these fail:
-
-1. The API key is missing or rejected (`ApiKeyRequired`, `ApiKeyInvalid`).
-2. The gateway's origin credential does not match (`OriginAuthRequired`).
-3. The release pin's signatures, network, or validity window fail, or discovery disagrees with the policy.
-4. The ping is not a signature by the Quorum key over this challenge.
-5. The Boot Proof's COSE signature or Nitro chain fails, or PCR0–3, PCR17, or the manifest digest disagree with the pin.
 
 ### Operations
 
@@ -145,9 +106,9 @@ sequenceDiagram
 { "response": {}, "bootProof": {} }
 ```
 
-`response` is the enclave's `EncryptedResponse`: `version`, `request_id`, `encrypted_result`, and `tvc_app_proof`. The SDK checks the App Proof and the Boot Proof before it opens `encrypted_result` with the response private key.
+`response` is the enclave's `EncryptedResponse`: `version`, `request_id`, `encrypted_result`, and `tvc_app_proof`. The client checks the Boot Proof of `tvc_app_proof.public_key` and then the App Proof, and only then opens `encrypted_result` with the response private key. The App Proof must name this request id, this operation, this request digest, and this result digest.
 
-The plaintext inside `ciphertext` is a `ServiceRequest`. Field layout, digest domains, and the QOS frame are in the [wire reference](../wire/README.md).
+The plaintext inside `ciphertext` is a `ServiceRequest`. Its release fields are copied from the pin. Field layout, digest domains, and the QOS frame are in the [wire reference](../wire/README.md).
 
 ```json
 {
@@ -187,13 +148,9 @@ An operator does not pin a URL. The release tool compares a Turnkey deployment w
 
 On boot, Quorum OS writes `/qos.manifest`. The envelope is QOS schema `manifest.version = "v2"` plus the approval signatures. The process refuses to start unless those approvals meet the manifest threshold, pivot debug mode is off, and the pivot environment is empty. Its arguments must be the launch arguments in the manifest, and the Quorum key it loaded must be the key the manifest names. `GET /v1/info` then reports that public key, the digest of the inner manifest, and the executable digest. The release tool checks this live replica before it writes a signed SDK pin.
 
-The SDK checks the pin before it uses the endpoint. It verifies the authority signatures, the network, and the validity window, and it matches discovery to the policy. On mainnet the authority set, the revocation floor, the Quorum key, the security domain, and the maximum policy lifetime are pinned in the SDK. A policy cannot choose them.
+The SDK checks the pin before it builds a request. It verifies the authority signatures, the network, and the validity window. On mainnet the authority set, the revocation floor, the Quorum key, the security domain, and the maximum policy lifetime are pinned in the SDK. A policy cannot choose them. The request names the pin's release, its one manifest digest, and its one executable digest. The enclave refuses a request that names a different release.
 
-The session above is how a wallet learns which replica it is talking to. The wallet cannot call the enclave or Turnkey itself. The gateway does `GET /v1/info` and `POST /v1/ping` together, then fetches the Boot Proof for the ephemeral key that signed the ping.
-
-The replica's signing key is a separate check from the Quorum key. The SDK verifies the Boot Proof's COSE signature and the certificate chain up to the pinned AWS Nitro root. PCR0–3 must match the pinned QOS identity. The manifest digest in the attested user data must match the release policy, and PCR17 must commit to that digest and to the replica's ephemeral public key. A later call may reach a different replica, so the SDK repeats the Boot Proof check for the key that signed each reply.
-
-The firewall and the gatekeeper are the admission path. They are operational controls. A request that reached the enclave some other way would still have to be sealed to the Quorum key, and a `Decrypt` would still have to carry a valid owner signature. `PublicKeys`, discovery, and the ping are not access-controlled beyond that seal.
+A wallet does not read `/v1/info` or `/v1/ping`. The release tool does, before it writes the pin, to compare the live deployment with the approved image. The wallet's proof is the reply. The request is encrypted to the Quorum key, so a replica that cannot decrypt it cannot answer. The App Proof binds the answer to this request. The Boot Proof binds the signing key to the approved image: COSE signature, certificate chain to the pinned AWS Nitro root, PCR0–3 against the pinned QOS identity, and PCR17 over the manifest digest and the replica's ephemeral public key. A later call may reach a different replica, so the client repeats both checks on every reply.
 
 ## Send, claim, and sweep
 
@@ -219,7 +176,7 @@ sequenceDiagram
 
 ### Send
 
-A sender whose recipient has no registry record calls `PublicKeys(address)` on the service it just verified. The call returns the service viewing key and the nullifier public key. The enclave accepts on-curve Ed25519 addresses and rejects small-order keys. A program-derived address cannot authorize a decrypt.
+A sender whose recipient has no registry record calls `PublicKeys(address)` on the release it pinned. The call returns the service viewing key and the nullifier public key. The enclave accepts on-curve Ed25519 addresses and rejects small-order keys. A program-derived address cannot authorize a decrypt.
 
 The sender encrypts the note with an ephemeral X25519 secret and the recipient's service viewing key. The plaintext is the asset id, the amount, the blinding, and any ring or application data. The chain publishes the ciphertext, the sender's ephemeral public key, the salt, the output position, and the note commitment. The owner tag is the recipient's Solana address. The commitment binds that address and the service nullifier public key through `owner_hash`.
 

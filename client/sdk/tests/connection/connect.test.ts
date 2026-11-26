@@ -196,19 +196,11 @@ describe("verification", () => {
     verifyBootProofMock.mockReset().mockResolvedValue(undefined)
   );
 
-  it("runs encrypted QOS ping, resolves the Boot Proof, and holds the verified release", async () => {
-    const {
-      ephemeralPublicKey,
-      manifestDigest,
-      signedPolicy,
-      authorities,
-      info,
-      expectedPcrs,
-      bootProof,
-      pingAnswer,
-    } = connectFixture();
-    const resolveBootProof = vi.fn().mockResolvedValue(bootProof);
-    const config: DecryptionServiceConnectionConfig = {
+  it("builds the request target from the pin and does not contact the enclave", async () => {
+    const { signedPolicy, authorities, expectedPcrs, manifestDigest } = connectFixture();
+    const fetch = vi.fn();
+    const resolveBootProof = vi.fn();
+    const verified = await verify({
       backend: {
         endpoint: new URL("https://tvc.example.invalid/api/tvc/"),
         resolveBootProof,
@@ -216,90 +208,15 @@ describe("verification", () => {
       network: "devnet",
       release: { releasePolicy: signedPolicy, releaseAuthorities: authorities, qosIdentityPcrs: expectedPcrs },
       nowMs: () => 1_750_000_000_000n,
-      transport: {
-        fetch: async (url, init) => {
-          if (url.pathname === "/api/tvc/v1/info") {
-            return new Response(canonicalizeJsonValue(info), { status: 200 });
-          }
-          expect(url.pathname).toBe("/api/tvc/v1/ping");
-          expect(init?.method).toBe("POST");
-          const request = JSON.parse(String(init?.body)) as {
-            encrypted_challenge: string;
-          };
-          return new Response(pingAnswer(request.encrypted_challenge), {
-            status: 200,
-          });
-        },
-      },
-    };
-
-    await expect(verify(config)).resolves.toMatchObject({
-      info: { release_id: "connect-poc", network: "devnet" },
+      transport: { fetch },
     });
-    expect(resolveBootProof).toHaveBeenCalledWith(
-      expect.objectContaining({ bootProofLookupKey: ephemeralPublicKey })
-    );
-    expect(verifyBootProofMock).toHaveBeenCalledWith({
-      ephemeralPublicKey,
-      bootProof,
-      allowedManifestSha256: [manifestDigest],
-      expectedPcrs,
-      nowMs: 1_750_000_000_000n,
-    });
-
-    // A resolver may ignore cancellation; no late result may verify or publish a connection.
-    const controller = new AbortController();
-    let resolveLate!: (value: typeof bootProof) => void;
-    const lookupsBefore = resolveBootProof.mock.calls.length;
-    const verificationsBefore = verifyBootProofMock.mock.calls.length;
-    resolveBootProof.mockImplementationOnce(() => new Promise((resolve) => { resolveLate = resolve; }));
-    const pending = verify(config, { signal: controller.signal });
-    const rejected = expect(pending).rejects.toThrow("cancelled lookup");
-    await vi.waitFor(() => expect(resolveBootProof.mock.calls.length).toBe(lookupsBefore + 1));
-    const lookupSignal = resolveBootProof.mock.lastCall?.[0].signal;
-    controller.abort(new Error("cancelled lookup"));
-    await rejected;
-    expect(lookupSignal?.aborted).toBe(true);
-    resolveLate(bootProof);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(verifyBootProofMock).toHaveBeenCalledTimes(verificationsBefore);
-
-    let discoveryPulls = 0;
-    const oversizedDiscovery = verify({
-      backend: {
-        endpoint: new URL("https://tvc.example.invalid/api/tvc/"),
-        resolveBootProof,
-      },
+    expect(verified.info).toMatchObject({
+      release_id: "connect-poc",
       network: "devnet",
-      release: { releasePolicy: signedPolicy, releaseAuthorities: authorities, qosIdentityPcrs: expectedPcrs },
-      nowMs: () => 1_750_000_000_000n,
-      transport: { fetch: async () => oversizedResponse(() => (discoveryPulls += 1)) },
+      manifest_digest: manifestDigest,
     });
-    await expect(oversizedDiscovery).rejects.toThrowError(
-      "ResponseTooLarge",
-    );
-    expect(discoveryPulls).toBeLessThan(4);
-
-    let pingPulls = 0;
-    const oversizedPing = verify({
-      backend: {
-        endpoint: new URL("https://tvc.example.invalid/api/tvc/"),
-        resolveBootProof,
-      },
-      network: "devnet",
-      release: { releasePolicy: signedPolicy, releaseAuthorities: authorities, qosIdentityPcrs: expectedPcrs },
-      nowMs: () => 1_750_000_000_000n,
-      transport: {
-        fetch: async (url) =>
-          url.pathname.endsWith("/v1/info")
-            ? new Response(canonicalizeJsonValue(info), { status: 200 })
-            : oversizedResponse(() => (pingPulls += 1)),
-      },
-    });
-    await expect(oversizedPing).rejects.toThrowError(
-      "ResponseTooLarge",
-    );
-    expect(pingPulls).toBeLessThan(4);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(resolveBootProof).not.toHaveBeenCalled();
   });
 
   it("reads the clock per use instead of freezing one instant", async () => {
@@ -335,8 +252,10 @@ describe("verification", () => {
       transport: { fetch: async () => new Response("{}", { status: 500 }) },
     });
 
-    await expect(verified).rejects.toThrow();
+    const context = await verified;
     expect(seen.length).toBeGreaterThan(0);
+    context.nowMs();
+    expect(seen.length).toBeGreaterThan(1);
   });
 });
 
@@ -355,23 +274,6 @@ describe("the client's network", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("refuses discovery for another network than the release's", async () => {
-    const { signedPolicy, authorities, info, expectedPcrs, pingAnswer } = connectFixture();
-    const verified = verify({
-      network: "devnet",
-      backend: { endpoint: new URL("https://tvc.example.invalid"), resolveBootProof: vi.fn() },
-      release: { releasePolicy: signedPolicy, releaseAuthorities: authorities, qosIdentityPcrs: expectedPcrs },
-      nowMs: () => 1_750_000_000_000n,
-      transport: {
-        fetch: async (url, init) => {
-          if (url.pathname === "/v1/info") return Response.json({ ...info, network: "mainnet" });
-          const { encrypted_challenge } = JSON.parse(String(init?.body)) as { encrypted_challenge: string };
-          return new Response(pingAnswer(encrypted_challenge));
-        },
-      },
-    });
-    await expect(verified).rejects.toMatchObject({ code: "NetworkMismatch" });
-  });
 });
 
 describe("a live replica, before its release is signed", () => {

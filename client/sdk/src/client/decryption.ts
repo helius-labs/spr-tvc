@@ -187,10 +187,9 @@ export function createDecryptionService(config: DecryptionServiceConfig): Decryp
 }
 
 /**
- * `keys` and `decrypt` through the gatekeeper. The first call posts
- * `/v1/decryption/session` and checks the bundled discovery, ping, and Boot
- * Proof. Later calls post `/v1/decryption/operations` and check each reply's
- * Boot Proof the same way.
+ * `keys` and `decrypt` through the gatekeeper. The request names the release
+ * in the signed pin. Each call posts `/v1/decryption/operations` and checks
+ * that reply's Boot Proof together with its App Proof.
  */
 export function createGatekeeperDecryptionService(
   config: GatekeeperDecryptionServiceConfig,

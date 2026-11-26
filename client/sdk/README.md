@@ -1,6 +1,6 @@
 # @heliuslabs/spr-decryption-service
 
-The client talks to the gatekeeper. The first call opens a session and checks the Boot Proof. Later calls send encrypted operations and check the Boot Proof on each reply. The [spec](../../docs/spec.md) is the path and the trust assumptions.
+The client checks the signed release pin, then posts each operation. The reply carries that replica's Boot Proof. The client checks the Boot Proof and the App Proof before it opens the result. The [spec](../../docs/spec.md) is the path and the trust assumptions.
 
 ```ts
 import { createGatekeeperDecryptionService } from "@heliuslabs/spr-decryption-service";

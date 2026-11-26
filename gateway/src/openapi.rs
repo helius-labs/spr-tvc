@@ -4,7 +4,7 @@
 use strum::VariantNames;
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
 use utoipa::openapi::{RefOr, Schema};
-use utoipa::{Modify, OpenApi, ToSchema};
+use utoipa::{Modify, OpenApi};
 
 use crate::error::{ApiError, Problem};
 
@@ -13,17 +13,16 @@ use crate::error::{ApiError, Problem};
     info(
         title = "Helius Decryption Service API",
         version = "1",
-        description = "The gatekeeper front of the decryption enclave. A session returns \
-                       discovery, the ping, and the Boot Proof of the replica that answered. \
-                       An operation forwards the encrypted request and returns that replica's \
-                       Boot Proof. The client verifies both against the release it pins.",
+        description = "The gatekeeper front of the decryption enclave. An operation forwards \
+                       the encrypted request and returns the Boot Proof of the replica that \
+                       signed the reply. The client checks that proof and the App Proof \
+                       against the release it pins.",
     ),
     servers(
         (url = "https://devnet.helius-rpc.com", description = "Devnet"),
         (url = "https://mainnet.helius-rpc.com", description = "Mainnet")
     ),
     paths(
-        crate::app::decryption_session,
         crate::app::decryption_operations,
     ),
     components(schemas(Problem)),
@@ -31,15 +30,6 @@ use crate::error::{ApiError, Problem};
     security(("api-key" = [])),
 )]
 pub struct ApiDoc;
-
-/// The enclave's `QosPingRequest`.
-#[derive(ToSchema)]
-#[allow(dead_code)]
-pub(crate) struct PingRequest {
-    version: u8,
-    /// A random challenge in a QOS P-256 envelope to the release's quorum key, hex.
-    encrypted_challenge: String,
-}
 
 struct HeliusApiKey;
 

@@ -37,7 +37,7 @@ const MAX_BOOT_PROOF_BYTES = 512n * 1024n;
 
 function postGatekeeper(
   backend: EnclaveBackend,
-  route: "session" | "operations",
+  route: "operations",
   transport: DecryptionServiceTransport,
   body: string,
   signal?: AbortSignal,
@@ -88,36 +88,6 @@ export async function fetchDiscovery(
 ): Promise<string> {
   const response = await fetchWithSignal(transport, endpointUrl(endpoint, "/v1/info"), undefined, signal);
   return readAnswer(response, "DiscoveryUntrusted", MAX_DISCOVERY_RESPONSE_BYTES, signal);
-}
-
-export async function fetchSession(
-  backend: EnclaveBackend,
-  pingBody: string,
-  transport: DecryptionServiceTransport,
-  signal?: AbortSignal,
-): Promise<{ infoText: string; pingText: string; bootProof?: TurnkeyBootProofWire }> {
-  const { endpoint } = backend;
-  if (backend.gatekeeperApiKey !== undefined) {
-    const response = await postGatekeeper(backend, "session", transport, pingBody, signal);
-    const text = await readAnswer(
-      response,
-      "BootProofUnverified",
-      MAX_DISCOVERY_RESPONSE_BYTES + MAX_PING_RESPONSE_BYTES + MAX_BOOT_PROOF_BYTES,
-      signal,
-    );
-    const answer = parseStrictJson<{
-      info: unknown;
-      ping: unknown;
-      bootProof: TurnkeyBootProofWire;
-    }>(text, ["info", "ping", "bootProof"]);
-    return {
-      infoText: JSON.stringify(answer.info),
-      pingText: JSON.stringify(answer.ping),
-      bootProof: answer.bootProof,
-    };
-  }
-  const infoText = await fetchDiscovery(endpoint, transport, signal);
-  return { infoText, pingText: await fetchPing(endpoint, pingBody, transport, signal) };
 }
 
 /** Looks up the Boot Proof for the replica that signed `appProof`. */

@@ -124,8 +124,8 @@ it("refuses a gatekeeper endpoint that is not an https origin", () => {
   })).toThrow(expect.objectContaining({ code: "InvalidGatekeeperConfig" }));
 });
 
-it("verifies the session boot proof before posting an operation", async () => {
-  const { release, info, sessionBoot, operationBoot, quorumEncryptionSecret, ephemeralPublicKey, ephemeralSigningSecret, ping } = fixture();
+it("checks the boot proof on the operation reply", async () => {
+  const { release, operationBoot, quorumEncryptionSecret, ephemeralPublicKey, ephemeralSigningSecret } = fixture();
   const urls: string[] = [];
   const service = createGatekeeperDecryptionService({
     network: "devnet",
@@ -137,10 +137,7 @@ it("verifies the session boot proof before posting an operation", async () => {
       async fetch(url, init) {
         urls.push(url.pathname);
         expect(new Headers(init?.headers).get("x-api-key")).toBe("test-key");
-        const body = JSON.parse(String(init?.body)) as { encrypted_challenge?: string; ciphertext?: string };
-        if (url.pathname === "/v1/decryption/session") {
-          return Response.json({ info, ping: ping(body.encrypted_challenge ?? ""), bootProof: sessionBoot });
-        }
+        const body = JSON.parse(String(init?.body)) as { ciphertext?: string };
         const request = JSON.parse(new TextDecoder().decode(
           qosDecrypt(quorumEncryptionSecret, decodeLowerHex(body.ciphertext ?? "")),
         )) as { request_id: string };
@@ -163,8 +160,7 @@ it("verifies the session boot proof before posting an operation", async () => {
     },
   });
   await expect(service.address(owner)).rejects.toThrow();
-  expect(urls).toEqual(["/v1/decryption/session", "/v1/decryption/operations"]);
-  expect(verifyBootProofMock).toHaveBeenCalledTimes(2);
-  expect(verifyBootProofMock).toHaveBeenNthCalledWith(1, expect.objectContaining({ bootProof: sessionBoot }));
-  expect(verifyBootProofMock).toHaveBeenNthCalledWith(2, expect.objectContaining({ bootProof: operationBoot }));
+  expect(urls).toEqual(["/v1/decryption/operations"]);
+  expect(verifyBootProofMock).toHaveBeenCalledTimes(1);
+  expect(verifyBootProofMock).toHaveBeenCalledWith(expect.objectContaining({ bootProof: operationBoot }));
 });

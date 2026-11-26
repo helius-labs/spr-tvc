@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Helius Decryption Service API",
-    "description": "The gatekeeper front of the decryption enclave. A session returns discovery, the ping, and the Boot Proof of the replica that answered. An operation forwards the encrypted request and returns that replica's Boot Proof. The client verifies both against the release it pins.",
+    "description": "The gatekeeper front of the decryption enclave. An operation forwards the encrypted request and returns the Boot Proof of the replica that signed the reply. The client checks that proof and the App Proof against the release it pins.",
     "license": {
       "name": "AGPL-3.0-only",
       "identifier": "AGPL-3.0-only"
@@ -69,48 +69,6 @@
           }
         }
       }
-    },
-    "/v1/decryption/session": {
-      "post": {
-        "tags": [
-          "Decryption service"
-        ],
-        "summary": "Open a decryption-service session",
-        "description": "Discovery, the enclave's answer to the ping and the Boot Proof of the\nreplica that answered. The decryption service authorizes with a Solana\nsignature on decrypt requests.",
-        "operationId": "decryption_session",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PingRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "The evidence to verify",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Session"
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Refused, or the enclave or Turnkey did not answer",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
     }
   },
   "components": {
@@ -161,25 +119,6 @@
           }
         }
       },
-      "PingRequest": {
-        "type": "object",
-        "description": "The enclave's `QosPingRequest`.",
-        "required": [
-          "version",
-          "encrypted_challenge"
-        ],
-        "properties": {
-          "encrypted_challenge": {
-            "type": "string",
-            "description": "A random challenge in a QOS P-256 envelope to the release's quorum key, hex."
-          },
-          "version": {
-            "type": "integer",
-            "format": "int32",
-            "minimum": 0
-          }
-        }
-      },
       "Problem": {
         "type": "object",
         "description": "An RFC 9457 problem; `type` is omitted, so it is `about:blank`.",
@@ -226,29 +165,6 @@
           "title": {
             "type": "string",
             "description": "The HTTP status phrase."
-          }
-        }
-      },
-      "Session": {
-        "type": "object",
-        "description": "The enclave's discovery document, its answer to the client's encrypted\nping, and the Boot Proof of the replica that answered.",
-        "required": [
-          "info",
-          "ping",
-          "bootProof"
-        ],
-        "properties": {
-          "bootProof": {
-            "type": "object",
-            "description": "Turnkey's Boot Proof for the replica that signed `ping`."
-          },
-          "info": {
-            "type": "object",
-            "description": "The enclave's `ServiceInfo`."
-          },
-          "ping": {
-            "type": "object",
-            "description": "The enclave's `QosPingResponse`."
           }
         }
       }
