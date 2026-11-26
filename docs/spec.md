@@ -157,17 +157,19 @@ sequenceDiagram
 
     Sender->>Gateway: PublicKeys(address)
     Gateway->>Service: sealed request
-    Service-->>Gateway: viewing key, nullifier key
-    Gateway-->>Sender: viewing key, nullifier key
-    Note over Sender: encrypt the note to the viewing key
+    Service-->>Gateway: encrypted response, App Proof
+    Gateway-->>Sender: encrypted response, Boot Proof
+    Note over Sender: open the reply, encrypt the note to the viewing public key
     Sender->>Chain: transfer, owner tag = address
     Wallet->>Chain: read notes for that tag
     Note over Wallet: sign the batch, seal it to the Quorum key
     Wallet->>Gateway: Decrypt
     Gateway->>Service: ciphertext unchanged
-    Service-->>Gateway: plaintexts, nullifier secret, Boot Proof
-    Gateway-->>Wallet: plaintexts, nullifier secret, Boot Proof
+    Service-->>Gateway: encrypted response, App Proof
+    Gateway-->>Wallet: encrypted response, Boot Proof
 ```
+
+The gateway carries the sealed reply. It sees the ciphertext, the App Proof, and the Boot Proof. `PublicKeys` opens to the viewing public key and the nullifier public key. The viewing secret stays in the enclave.
 
 ### Send
 
