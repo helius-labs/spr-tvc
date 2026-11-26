@@ -16,6 +16,7 @@ import type {
   SignedReleasePolicy,
 } from "../../src/wire/types.js";
 import { policySigningDigest } from "../../src/attestation/release-policy.js";
+import { fixtureManifestSet } from "../support/manifest-set.js";
 import { fetchLiveServiceInfo, verifyLiveReplica, type DecryptionServiceConnectionConfig } from "../../src/connection/connect.js";
 import { requestScope, type DecryptionServiceRequestOptions } from "../../src/connection/request.js";
 import { createDecryptionServiceSession } from "../../src/connection/session.js";
@@ -27,7 +28,7 @@ vi.mock("../../src/attestation/boot-proof.js", async (importOriginal) => ({
   verifyBootProof: verifyBootProofMock,
 }));
 
-/** What the client verifies on first use: a fresh session's connection. */
+/** What the client verifies on first use. */
 async function verify(config: DecryptionServiceConnectionConfig, options?: DecryptionServiceRequestOptions) {
   const scope = requestScope(options);
   try {
@@ -87,11 +88,11 @@ function connectFixture() {
 
   const policy: ReleasePolicy = {
     version: 1,
-    releaseId: "connect-poc",
     network: "devnet",
     securityDomainId: "33".repeat(32),
-    acceptedManifestDigests: [manifestDigest],
-    acceptedExecutableDigests: [executableDigest],
+    namespace: "fixture-namespace",
+    manifestSet: fixtureManifestSet,
+    minimumManifestNonce: "0",
     quorumKeyId: "quorum-connect",
     quorumKeyEpoch: "1",
     quorumPublicKey,
@@ -130,7 +131,7 @@ function connectFixture() {
     version: 1,
     network: "devnet",
     security_domain_id: policy.securityDomainId,
-    release_id: policy.releaseId,
+    release_id: "connect-poc",
     manifest_digest: manifestDigest,
     executable_digest: executableDigest,
     quorum_public_key: quorumPublicKey,
@@ -197,7 +198,7 @@ describe("verification", () => {
   );
 
   it("builds the request target from the pin and does not contact the enclave", async () => {
-    const { signedPolicy, authorities, expectedPcrs, manifestDigest } = connectFixture();
+    const { signedPolicy, authorities, expectedPcrs } = connectFixture();
     const fetch = vi.fn();
     const resolveBootProof = vi.fn();
     const verified = await verify({
@@ -210,10 +211,9 @@ describe("verification", () => {
       nowMs: () => 1_750_000_000_000n,
       transport: { fetch },
     });
-    expect(verified.info).toMatchObject({
-      release_id: "connect-poc",
+    expect(verified.target).toMatchObject({
       network: "devnet",
-      manifest_digest: manifestDigest,
+      quorumKeyId: "quorum-connect",
     });
     expect(fetch).not.toHaveBeenCalled();
     expect(resolveBootProof).not.toHaveBeenCalled();
@@ -329,7 +329,7 @@ describe("a live replica, before its release is signed", () => {
     expect(verifyBootProofMock).toHaveBeenCalledWith({
       ephemeralPublicKey,
       bootProof,
-      allowedManifestSha256: [manifestDigest],
+      expectedManifestSha256: manifestDigest,
       expectedPcrs,
       nowMs: 1_750_000_000_000n,
     });

@@ -11,9 +11,6 @@ fn request(operation: ServiceOperation) -> ServiceRequest {
     ServiceRequest {
         version: 1,
         request_id: [1; 32],
-        target_release_id: "release".to_owned(),
-        target_manifest_digest: [2; 32],
-        target_executable_digest: [3; 32],
         quorum_key_id: "quorum".to_owned(),
         quorum_key_epoch: 1,
         client_response_public_key: vec![4; 65],
@@ -74,7 +71,7 @@ fn the_request_digest_covers_everything_but_the_signature() {
     // The TypeScript client checks the same vector.
     assert_eq!(
         encode_lower_hex(&digest),
-        "9d79a45895d847e3d58ee9a0c52751de52e2848375ea82f38ffc4089691ad2b3"
+        "fa1fd1749eed328af9f1192dd515323ad3af23a9768a7b3ebc92f05b16a92a5b"
     );
     assert_eq!(
         digest,
@@ -87,9 +84,9 @@ fn the_request_digest_covers_everything_but_the_signature() {
     let mut other_key = request(decrypt([0; 64], 0));
     other_key.client_response_public_key = vec![5; 65];
     assert_ne!(digest, service_request_digest(&other_key).unwrap());
-    let mut other_release = request(decrypt([0; 64], 0));
-    other_release.target_release_id = "release-2".to_owned();
-    assert_ne!(digest, service_request_digest(&other_release).unwrap());
+    let mut other_quorum = request(decrypt([0; 64], 0));
+    other_quorum.quorum_key_id = "quorum-2".to_owned();
+    assert_ne!(digest, service_request_digest(&other_quorum).unwrap());
 }
 
 #[test]

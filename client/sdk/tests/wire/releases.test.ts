@@ -11,16 +11,17 @@ import { MAX_ENCRYPTED_REQUEST_BYTES } from "../../src/wire/constants.js";
 import { encodeLowerHex } from "../../src/wire/hex.js";
 import { DECRYPTION_SERVICE_RELEASES as RELEASES, releaseFor, type ReleaseTrust } from "../../src/wire/releases.js";
 import type { Network, ReleasePolicy } from "../../src/wire/types.js";
+import { fixtureManifestSet } from "../support/manifest-set.js";
 
 const RELEASES_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../releases");
 const NETWORKS: readonly Network[] = ["devnet", "mainnet"];
 const POLICY_KEYS = [
   "version",
-  "releaseId",
   "network",
   "securityDomainId",
-  "acceptedManifestDigests",
-  "acceptedExecutableDigests",
+  "namespace",
+  "manifestSet",
+  "minimumManifestNonce",
   "quorumKeyId",
   "quorumKeyEpoch",
   "quorumPublicKey",
@@ -74,11 +75,11 @@ describe("a release file", () => {
   const authority = p256.utils.randomPrivateKey();
   const policy: ReleasePolicy = {
     version: 1,
-    releaseId: "decryption-service-devnet-test",
     network: "devnet",
     securityDomainId: "33".repeat(32),
-    acceptedManifestDigests: ["11".repeat(32)],
-    acceptedExecutableDigests: ["22".repeat(32)],
+    namespace: "fixture-namespace",
+    manifestSet: fixtureManifestSet,
+    minimumManifestNonce: "0",
     quorumKeyId: "quorum",
     quorumKeyEpoch: "1",
     quorumPublicKey: "04".repeat(130),
@@ -135,9 +136,9 @@ describe("a release file", () => {
 
   it("is refused tampered, expired, in another shape, or with a field the protocol does not have", () => {
     const tampered = file(policy);
-    tampered.releasePolicy.policy = { ...policy, releaseId: "other" };
+    tampered.releasePolicy.policy = { ...policy, namespace: "other" };
     expect(() => verifyReleaseFile(tampered, "devnet", now)).toThrowError(/InvalidSignature/);
-    tampered.releasePolicy.policy = { ...policy, releaseId: "\ud800" };
+    tampered.releasePolicy.policy = { ...policy, namespace: "\ud800" };
     expect(() => verifyReleaseFile(tampered, "devnet", now)).toThrowError(/InvalidCanonicalJson/);
     expect(() => verifyReleaseFile(file(policy), "devnet", 1_950_000_000_000n)).toThrowError(/ExpiredRequest/);
     expect(() => verifyReleaseFile(file(policy, { extra: true }), "devnet", now)).toThrowError(/UnknownJsonField/);

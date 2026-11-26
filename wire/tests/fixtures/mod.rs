@@ -30,8 +30,9 @@ use spr_tvc_wire::release::{
     ReleaseAuthorityKey,
 };
 use spr_tvc_wire::types::{
-    HealthResponse, HealthStatus, Network, OperationKind, OperationProofPayload,
-    ReleaseAuthoritySignature, ReleasePolicy, ServiceInfo, SignedReleasePolicy,
+    HealthResponse, HealthStatus, ManifestSetMember, ManifestSetPolicy, Network, OperationKind,
+    OperationProofPayload, ReleaseAuthoritySignature, ReleasePolicy, ServiceInfo,
+    SignedReleasePolicy,
 };
 
 // The SDK reproduces this fixed envelope and qos_p256 decrypts it.
@@ -85,9 +86,6 @@ pub fn bind_discovery_to_policy(
     if info.proof_type != SERVICE_PROOF_TYPE {
         return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch));
     }
-    if info.release_id != policy.release_id {
-        return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch));
-    }
     if info.security_domain_id != policy.security_domain_id {
         return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch));
     }
@@ -98,22 +96,6 @@ pub fn bind_discovery_to_policy(
         return Err(TvcError::new(ErrorCode::QuorumKeyEpochMismatch));
     }
     if info.quorum_public_key != policy.quorum_public_key {
-        return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch));
-    }
-    let manifest = encode_lower_hex(&info.manifest_digest);
-    if !policy
-        .accepted_manifest_digests
-        .iter()
-        .any(|value| value == &manifest)
-    {
-        return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch));
-    }
-    let executable = encode_lower_hex(&info.executable_digest);
-    if !policy
-        .accepted_executable_digests
-        .iter()
-        .any(|value| value == &executable)
-    {
         return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch));
     }
     if info.supported_operations != policy.allowed_operations {
@@ -211,14 +193,26 @@ fn sample_info(quorum: Vec<u8>) -> ServiceInfo {
     }
 }
 
+fn sample_manifest_set() -> ManifestSetPolicy {
+    let encrypt = authority_public(&sha256_label("spr-tvc-test-manifest-encrypt"));
+    let sign = authority_public(&sha256_label("spr-tvc-test-manifest-sign"));
+    ManifestSetPolicy {
+        threshold: 1,
+        members: vec![ManifestSetMember {
+            alias: "fixture-operator".into(),
+            public_key: [encrypt, sign].concat(),
+        }],
+    }
+}
+
 fn sample_policy(info: &ServiceInfo) -> ReleasePolicy {
     ReleasePolicy {
         version: API_VERSION,
-        release_id: info.release_id.clone(),
         network: info.network,
         security_domain_id: info.security_domain_id,
-        accepted_manifest_digests: vec![encode_lower_hex(&info.manifest_digest)],
-        accepted_executable_digests: vec![encode_lower_hex(&info.executable_digest)],
+        namespace: "fixture-namespace".into(),
+        manifest_set: sample_manifest_set(),
+        minimum_manifest_nonce: 0,
         quorum_key_id: info.quorum_key_id.clone(),
         quorum_key_epoch: info.quorum_key_epoch,
         quorum_public_key: info.quorum_public_key.clone(),
@@ -476,7 +470,7 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_wire::error::
     let mut unknown = signed.clone();
     unknown.signatures[0].key_id = "release-unknown".to_owned();
     let mut mutated = signed.clone();
-    mutated.policy.release_id = "other-release".to_owned();
+    mutated.policy.namespace = "other-namespace".to_owned();
     let zero_threshold = PinnedReleaseAuthorities {
         threshold: 0,
         ..authorities.clone()
@@ -537,11 +531,6 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_wire::error::
     }
     {
         let mut m = info.clone();
-        m.release_id = "other-release".to_owned();
-        binding_cases.push(("release_id", m));
-    }
-    {
-        let mut m = info.clone();
         m.security_domain_id = [0xaa; 32];
         binding_cases.push(("security_domain_id", m));
     }
@@ -559,16 +548,6 @@ pub fn fixture_files() -> Result<BTreeMap<String, String>, spr_tvc_wire::error::
         let mut m = info.clone();
         m.quorum_public_key[64] ^= 1;
         binding_cases.push(("quorum_public_key", m));
-    }
-    {
-        let mut m = info.clone();
-        m.manifest_digest = [0xcc; 32];
-        binding_cases.push(("manifest_digest", m));
-    }
-    {
-        let mut m = info.clone();
-        m.executable_digest = [0xdd; 32];
-        binding_cases.push(("executable_digest", m));
     }
     {
         let mut m = info.clone();

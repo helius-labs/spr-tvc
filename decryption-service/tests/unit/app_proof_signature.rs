@@ -35,9 +35,6 @@ fn an_encrypted_result_must_fit_the_response_ceiling() {
     let request = ServiceRequest {
         version: API_VERSION,
         request_id: [1; 32],
-        target_release_id: "release".into(),
-        target_manifest_digest: [2; 32],
-        target_executable_digest: [3; 32],
         quorum_key_id: "quorum".into(),
         quorum_key_epoch: 1,
         client_response_public_key: Vec::new(),

@@ -25,7 +25,7 @@ function verify(overrides: AttestationOverrides = {}, input: Record<string, unkn
   return verifyBootProof({
     ephemeralPublicKey: appProof().publicKey,
     bootProof: bootProof(overrides),
-    allowedManifestSha256: [encodeLowerHex(MANIFEST_DIGEST)],
+    expectedManifestSha256: encodeLowerHex(MANIFEST_DIGEST),
     expectedPcrs: EXPECTED_PCRS,
     nowMs: NOW_MS,
     ...input,
@@ -54,11 +54,11 @@ describe("verifyBootProof", () => {
     expect(verifyChainMock).not.toHaveBeenCalled();
   });
 
-  it("rejects a manifest digest outside the pinned release policy", async () => {
+  it("rejects a manifest digest that is not the attested user data", async () => {
     await expect(
-      verify({}, { allowedManifestSha256: [encodeLowerHex(label("other-manifest"))] }),
+      verify({}, { expectedManifestSha256: encodeLowerHex(label("other-manifest")) }),
     ).rejects.toThrowError(/BootProofUnverified/);
-    await expect(verify({}, { allowedManifestSha256: [] })).rejects.toThrowError(
+    await expect(verify({}, { expectedManifestSha256: "" })).rejects.toThrowError(
       /BootProofUnverified/,
     );
     expect(verifyChainMock).not.toHaveBeenCalled();

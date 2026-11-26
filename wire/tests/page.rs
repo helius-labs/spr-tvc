@@ -46,9 +46,6 @@ pub fn page_decrypt_request() -> ServiceRequest {
     ServiceRequest {
         version: API_VERSION,
         request_id: [0; 32],
-        target_release_id: String::new(),
-        target_manifest_digest: [0; 32],
-        target_executable_digest: [0; 32],
         quorum_key_id: String::new(),
         quorum_key_epoch: u64::MAX,
         client_response_public_key: vec![0x04; SEC1_UNCOMPRESSED_LEN],
@@ -109,7 +106,7 @@ fn an_empty_page_fits_under_the_cap_and_the_reply_is_smaller() {
     let request = page_encrypted_request_len().unwrap();
     let response = page_encrypted_response_len().unwrap();
     let reply = jcs_serialize(&page_decrypt_result()).unwrap();
-    assert_eq!(request, 675_814, "the empty-page measurement moved");
+    assert_eq!(request, 675_396, "the empty-page measurement moved");
     assert!(request < MAX_ENCRYPTED_REQUEST_BYTES as usize);
     assert!(
         response <= request,
@@ -136,7 +133,7 @@ fn notes_larger_than_the_empty_page_fit_until_the_cap() {
     parse_service_request(&room).unwrap();
 
     let mut over = page_decrypt_request();
-    over.target_release_id = "x".repeat(max_inner_len().unwrap() - page.len() + 1);
+    over.quorum_key_id = "x".repeat(max_inner_len().unwrap() - page.len() + 1);
     let over = jcs_serialize(&over).unwrap();
     assert!(over.len() > max_inner_len().unwrap());
     assert_eq!(

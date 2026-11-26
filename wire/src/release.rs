@@ -10,11 +10,11 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::constants::{API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID};
-use crate::crypto::{sign_p256_prehash, verify_p256_prehash};
+use crate::crypto::{parse_uncompressed_sec1, sign_p256_prehash, verify_p256_prehash};
 use crate::digest::release_policy_digest;
 use crate::encoding::{decimal_u64, hex, jcs_serialize};
 use crate::error::{ErrorCode, TvcError};
-use crate::types::{Network, ReleasePolicy, SignedReleasePolicy};
+use crate::types::{ManifestSetPolicy, Network, ReleasePolicy, SignedReleasePolicy};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -65,7 +65,9 @@ pub fn verify_signed_release_policy(
     if signed.authority_set_id != authorities.authority_set_id {
         return Err(TvcError::new(ErrorCode::ReleasePolicyInvalid));
     }
-    if signed.policy.turnkey_trust_root_id != EXPECTED_TURNKEY_TRUST_ROOT_ID {
+    if signed.policy.turnkey_trust_root_id != EXPECTED_TURNKEY_TRUST_ROOT_ID
+        || !manifest_set_is_pinned(&signed.policy.manifest_set, &signed.policy.namespace)
+    {
         return Err(TvcError::new(ErrorCode::ReleasePolicyInvalid));
     }
     if signed.policy.revocation_epoch < authorities.minimum_revocation_epoch {
@@ -116,4 +118,31 @@ pub fn verify_signed_release_policy(
         return Err(TvcError::new(ErrorCode::ReleasePolicyInvalid));
     }
     Ok(())
+}
+
+/// The pinned set is the one the client trusts. It is not read from a Boot Proof.
+fn manifest_set_is_pinned(set: &ManifestSetPolicy, namespace: &str) -> bool {
+    if namespace.is_empty()
+        || namespace.len() > 128
+        || set.threshold == 0
+        || set.members.is_empty()
+        || set.threshold as usize > set.members.len()
+    {
+        return false;
+    }
+    let mut aliases = HashSet::new();
+    let mut keys = HashSet::new();
+    for member in &set.members {
+        if member.alias.is_empty()
+            || member.alias.len() > 128
+            || member.public_key.len() != 130
+            || parse_uncompressed_sec1(&member.public_key[..65]).is_err()
+            || parse_uncompressed_sec1(&member.public_key[65..]).is_err()
+            || !aliases.insert(member.alias.as_str())
+            || !keys.insert(member.public_key.as_slice())
+        {
+            return false;
+        }
+    }
+    true
 }

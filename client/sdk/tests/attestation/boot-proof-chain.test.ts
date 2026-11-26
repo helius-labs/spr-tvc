@@ -19,7 +19,7 @@ describe("Boot Proof AWS Nitro chain", () => {
       verifyBootProof({
         ephemeralPublicKey: appProof().publicKey,
         bootProof: bootProof(),
-        allowedManifestSha256: [encodeLowerHex(MANIFEST_DIGEST)],
+        expectedManifestSha256: encodeLowerHex(MANIFEST_DIGEST),
         expectedPcrs: EXPECTED_PCRS,
         nowMs: NOW_MS,
       }),

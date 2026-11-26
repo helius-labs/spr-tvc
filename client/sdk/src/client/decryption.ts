@@ -67,7 +67,7 @@ export type DecryptionService = {
   ): Promise<DecryptionServiceKeys>;
 };
 
-/** The owner signs a 30-minute view grant for `grantee` on this release. */
+/** The owner signs a 30-minute view grant for `grantee` on this Quorum key. */
 export async function signViewGrant(
   owner: MessagePartialSigner,
   input: {
@@ -186,8 +186,8 @@ export function decryptionServiceFromSession(
 }
 
 /**
- * `keys` and `decrypt` against `config.endpoint`. The request names the release
- * in the signed pin. With `apiKey`, each call posts `/v1/decryption/operations`
+ * `keys` and `decrypt` against `config.endpoint`. The request names the Quorum
+ * key in the signed pin. With `apiKey`, each call posts `/v1/decryption/operations`
  * and checks that reply's Boot Proof together with its App Proof. With
  * `resolveBootProof`, the client dials the enclave and fetches each proof.
  */

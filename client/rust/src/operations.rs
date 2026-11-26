@@ -1,5 +1,5 @@
 //! `keys` and `decrypt` go to `POST /v1/decryption/operations`. The request
-//! names the release in the signed pin. Each reply carries the Boot Proof of
+//! names the Quorum key in the signed pin. Each reply carries the Boot Proof of
 //! the replica that signed it, checked with the App Proof before the result opens.
 
 use crate::attestation::{now_ms, BootProof, IdentityPcrs};
@@ -7,7 +7,7 @@ use crate::service::{
     bind_operation_proof, shielded_address, CheckReply, Exchange, OpenNotes, ServiceKeys, Target,
     RESPONSE_ENVELOPE_SLACK,
 };
-use crate::session::{info_from_policy, join, verify_reply_boot, Session};
+use crate::session::{join, verify_reply_boot, Session};
 use crate::transport::Transport;
 use crate::{ClientError, OwnerSigner};
 use base64::Engine;
@@ -51,9 +51,8 @@ impl<T: Transport> OperationsClient<T> {
         require_https_origin(&config.endpoint, &config.api_key)?;
         let now = now_ms;
         verify_signed_release_policy(&release, &authorities, network, now())?;
-        let info = info_from_policy(&release.policy)?;
         Ok(Self {
-            session: Session::verified(config.endpoint, info, release, pcrs, now),
+            session: Session::verified(config.endpoint, release, pcrs, now),
             transport,
             api_key: config.api_key,
         })
@@ -61,7 +60,10 @@ impl<T: Transport> OperationsClient<T> {
 
     /// The shielded address a sender pays `owner` at before that owner registers.
     pub fn address(&self, owner: &[u8; ADDRESS_LEN]) -> Result<ShieldedAddress, ClientError> {
-        crate::session::ensure_operation(self.session.info(), OperationKind::ServicePublicKeys)?;
+        crate::session::ensure_operation(
+            &self.session.release().policy,
+            OperationKind::ServicePublicKeys,
+        )?;
         let result = self.call(
             ServiceOperation::PublicKeys {
                 address: bs58::encode(owner).into_string(),
@@ -86,7 +88,7 @@ impl<T: Transport> OperationsClient<T> {
         owner: &[u8; ADDRESS_LEN],
     ) -> Result<spr_tvc_wire::decryption_service::ServiceResult, ClientError> {
         Exchange {
-            target: Target::from_info(self.session.info()),
+            target: Target::from_policy(&self.session.release().policy),
             operation,
             signer,
             owner,
@@ -151,7 +153,10 @@ impl<T: Transport> OpenNotes for OperationsClient<T> {
         signer: &dyn OwnerSigner,
         items: Vec<DecryptItem>,
     ) -> Result<DecryptedOutputs, ClientError> {
-        crate::session::ensure_operation(self.session.info(), OperationKind::ServiceDecrypt)?;
+        crate::session::ensure_operation(
+            &self.session.release().policy,
+            OperationKind::ServiceDecrypt,
+        )?;
         let owner = signer.pubkey();
         let result = self.call(
             ServiceOperation::Decrypt {
@@ -177,6 +182,8 @@ impl<T: Transport> OpenNotes for OperationsClient<T> {
 struct WireBootProof {
     aws_attestation_doc_b64: String,
     ephemeral_public_key_hex: String,
+    #[serde(default)]
+    qos_manifest_envelope_b64: String,
 }
 
 #[derive(Deserialize)]
@@ -197,9 +204,13 @@ fn decode_boot_proof(wire: &WireBootProof) -> Result<BootProof, TvcError> {
     }
     let mut ephemeral_public_key = [0u8; QOS_P256_PUBLIC_LEN];
     ephemeral_public_key.copy_from_slice(&key);
+    let manifest_envelope = base64::engine::general_purpose::STANDARD
+        .decode(wire.qos_manifest_envelope_b64.as_bytes())
+        .map_err(|_| TvcError::new(ErrorCode::BootProofUnverified))?;
     Ok(BootProof {
         attestation,
         ephemeral_public_key,
+        manifest_envelope,
     })
 }
 
@@ -240,8 +251,8 @@ mod tests {
         sign_release_policy, PinnedReleaseAuthorities, ReleaseAuthorityKey,
     };
     use spr_tvc_wire::types::{
-        AppProof, EncryptedRequest, EncryptedResponse, Network, OperationKind,
-        ReleaseAuthoritySignature, ReleasePolicy, SignedReleasePolicy,
+        AppProof, EncryptedRequest, EncryptedResponse, ManifestSetMember, ManifestSetPolicy,
+        Network, OperationKind, ReleaseAuthoritySignature, ReleasePolicy, SignedReleasePolicy,
     };
 
     use super::*;
@@ -316,6 +327,23 @@ mod tests {
         ephemeral_public_key_hex: &'a str,
     }
 
+    fn test_manifest_set() -> ManifestSetPolicy {
+        const GENERATOR: [u8; 65] = [
+            0x04, 0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc, 0xe6, 0xe5, 0x63,
+            0xa4, 0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d, 0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39,
+            0x45, 0xd8, 0x98, 0xc2, 0x96, 0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e,
+            0xe7, 0xeb, 0x4a, 0x7c, 0x0f, 0x9e, 0x16, 0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31, 0x5e,
+            0xce, 0xcb, 0xb6, 0x40, 0x68, 0x37, 0xbf, 0x51, 0xf5,
+        ];
+        ManifestSetPolicy {
+            threshold: 1,
+            members: vec![ManifestSetMember {
+                alias: "fixture-operator".into(),
+                public_key: [GENERATOR, GENERATOR].concat(),
+            }],
+        }
+    }
+
     fn signed_policy(gate: &Gate) -> (SignedReleasePolicy, PinnedReleaseAuthorities) {
         let secret = [4u8; 32];
         let point = SigningKey::from_slice(&secret)
@@ -324,11 +352,11 @@ mod tests {
             .to_sec1_point(false);
         let policy = ReleasePolicy {
             version: API_VERSION,
-            release_id: "release".into(),
             network: Network::Devnet,
             security_domain_id: [0; 32],
-            accepted_manifest_digests: vec![encode_lower_hex(&[9; 32])],
-            accepted_executable_digests: vec![encode_lower_hex(&[8; 32])],
+            namespace: "fixture-namespace".into(),
+            manifest_set: test_manifest_set(),
+            minimum_manifest_nonce: 0,
             quorum_key_id: "quorum".into(),
             quorum_key_epoch: 1,
             quorum_public_key: gate.ephemeral.clone(),

@@ -9,10 +9,10 @@ import { assertExactObjectKeys, parseStrictJson } from "../wire/json.js";
 import { API_VERSION, QOS_ENVELOPE_OVERHEAD, QOS_P256_PUBLIC_LEN,
   RAW_P256_SIGNATURE_LEN, SHA256_LEN, TVC_APP_PROOF_KEYS, TVC_APP_PROOF_SCHEME,
 } from "../wire/constants.js";
-import type { OperationKind, ServiceInfo } from "../wire/types.js";
+import type { OperationKind } from "../wire/types.js";
 import type { TurnkeyAppProofWire, TurnkeyBootProofWire } from "../attestation/turnkey.js";
 import { sendOperation, type EncryptedRequestWire } from "./backend.js";
-import type { ConnectedTvcRuntime } from "./connect.js";
+import type { ConnectedTvcRuntime, ServiceTarget } from "./connect.js";
 import { awaitWithSignal } from "./request.js";
 
 const te = new TextEncoder();
@@ -78,13 +78,13 @@ export type Exchange = {
 };
 
 function encryptedRequest(
-  info: ServiceInfo,
+  target: ServiceTarget,
   ciphertext: string,
 ): EncryptedRequestWire {
   return {
     version: API_VERSION,
-    quorum_key_id: info.quorum_key_id,
-    quorum_key_epoch: info.quorum_key_epoch,
+    quorum_key_id: target.quorumKeyId,
+    quorum_key_epoch: target.quorumKeyEpoch,
     ciphertext,
   };
 }
@@ -95,8 +95,8 @@ function enclaveRequestBytes(request: EncryptedRequestWire): number {
 }
 
 /** The advertised request ceiling covers the entire UTF-8 HTTP body. */
-function checkRequestSize(info: ServiceInfo, bytes: number): void {
-  if (BigInt(bytes) > BigInt(info.max_encrypted_request_bytes)) {
+function checkRequestSize(target: ServiceTarget, bytes: number): void {
+  if (BigInt(bytes) > target.maxEncryptedRequestBytes) {
     throw new DecryptionServiceError("RequestTooLarge");
   }
 }
@@ -112,8 +112,8 @@ export function checkSignedRequestSize(
   const ciphertextBytes =
     te.encode(canonicalizeJsonValue(signed)).length + QOS_ENVELOPE_OVERHEAD;
   checkRequestSize(
-    context.info,
-    enclaveRequestBytes(encryptedRequest(context.info, "")) + 2 * ciphertextBytes,
+    context.target,
+    enclaveRequestBytes(encryptedRequest(context.target, "")) + 2 * ciphertextBytes,
   );
 }
 
@@ -176,17 +176,17 @@ export async function sealedExchange(
 ): Promise<string> {
   signal?.throwIfAborted();
   const quorum = parseQosP256Public(
-    requireHex(context.info.quorum_public_key, QOS_P256_PUBLIC_LEN),
+    requireHex(context.target.quorumPublicKey, QOS_P256_PUBLIC_LEN),
   );
   const ciphertext = await qosEncrypt(
     quorum.encryption,
     te.encode(canonicalizeJsonValue(exchange.request)),
   );
-  const encrypted = encryptedRequest(context.info, encodeLowerHex(ciphertext));
-  checkRequestSize(context.info, enclaveRequestBytes(encrypted));
+  const encrypted = encryptedRequest(context.target, encodeLowerHex(ciphertext));
+  checkRequestSize(context.target, enclaveRequestBytes(encrypted));
   // The ciphertext is hex, so it cannot exceed twice the byte ceiling;
   // RESPONSE_ENVELOPE_SLACK covers the surrounding JSON and App Proof.
-  const maxResponseBytes = BigInt(context.info.max_encrypted_response_bytes);
+  const maxResponseBytes = context.target.maxEncryptedResponseBytes;
   const { responseText, bootProof } = await sendOperation(
     context.backend, encrypted, context.transport,
     maxResponseBytes * 2n + RESPONSE_ENVELOPE_SLACK, signal,

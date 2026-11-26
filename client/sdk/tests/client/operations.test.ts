@@ -11,7 +11,8 @@ import { MAX_ENCRYPTED_REQUEST_BYTES, TVC_APP_PROOF_SCHEME } from "../../src/wir
 import { canonicalizeJsonValue } from "../../src/wire/jcs.js";
 import { decodeLowerHex, encodeLowerHex } from "../../src/wire/hex.js";
 import type { ReleaseTrust } from "../../src/wire/releases.js";
-import type { ReleasePolicy, ServiceInfo } from "../../src/wire/types.js";
+import type { ReleasePolicy } from "../../src/wire/types.js";
+import { fixtureManifestSet } from "../support/manifest-set.js";
 
 const verifyBootProofMock = vi.hoisted(() => vi.fn());
 
@@ -39,15 +40,13 @@ function fixture() {
   const authoritySecret = secret("gatekeeper-authority");
   const quorumPublicKey = qosPublic(quorumEncryptionSecret, secret("gatekeeper-quorum-signing"));
   const ephemeralPublicKey = qosPublic(secret("gatekeeper-ephemeral-encryption"), ephemeralSigningSecret);
-  const manifestDigest = "11".repeat(32);
-  const executableDigest = "22".repeat(32);
   const policy: ReleasePolicy = {
     version: 1,
-    releaseId: "gatekeeper",
     network: "devnet",
     securityDomainId: "33".repeat(32),
-    acceptedManifestDigests: [manifestDigest],
-    acceptedExecutableDigests: [executableDigest],
+    namespace: "fixture-namespace",
+    manifestSet: fixtureManifestSet,
+    minimumManifestNonce: "0",
     quorumKeyId: "quorum",
     quorumKeyEpoch: "1",
     quorumPublicKey,
@@ -76,21 +75,6 @@ function fixture() {
     },
     qosIdentityPcrs: { 0: "44".repeat(48), 1: "55".repeat(48), 2: "66".repeat(48), 3: "77".repeat(48) },
   };
-  const info: ServiceInfo = {
-    version: 1,
-    network: "devnet",
-    security_domain_id: policy.securityDomainId,
-    release_id: policy.releaseId,
-    manifest_digest: manifestDigest,
-    executable_digest: executableDigest,
-    quorum_public_key: quorumPublicKey,
-    quorum_key_id: policy.quorumKeyId,
-    quorum_key_epoch: policy.quorumKeyEpoch,
-    supported_operations: ["ServicePublicKeys", "ServiceDecrypt"],
-    max_encrypted_request_bytes: String(MAX_ENCRYPTED_REQUEST_BYTES),
-    max_encrypted_response_bytes: String(MAX_ENCRYPTED_REQUEST_BYTES),
-    proof_type: "spr.tvc.decryption_service.v1",
-  };
   const sessionBoot = { ephemeralPublicKeyHex: ephemeralPublicKey, awsAttestationDocB64: "session-proof" };
   const operationBoot = { ephemeralPublicKeyHex: ephemeralPublicKey, awsAttestationDocB64: "operation-proof" };
   function ping(encryptedChallenge: string) {
@@ -107,7 +91,7 @@ function fixture() {
       },
     };
   }
-  return { release, info, sessionBoot, operationBoot, quorumEncryptionSecret, ephemeralPublicKey, ephemeralSigningSecret, ping };
+  return { release, sessionBoot, operationBoot, quorumEncryptionSecret, ephemeralPublicKey, ephemeralSigningSecret, ping };
 }
 
 beforeEach(() => {
@@ -159,8 +143,7 @@ it("checks the boot proof on the operation reply", async () => {
       },
     },
   });
-  await expect(service.address(owner)).rejects.toThrow();
+  await expect(service.address(owner)).rejects.toMatchObject({ code: "BootProofUnverified" });
   expect(urls).toEqual(["/v1/decryption/operations"]);
-  expect(verifyBootProofMock).toHaveBeenCalledTimes(1);
-  expect(verifyBootProofMock).toHaveBeenCalledWith(expect.objectContaining({ bootProof: operationBoot }));
+  expect(verifyBootProofMock).not.toHaveBeenCalled();
 });

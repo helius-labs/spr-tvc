@@ -8,7 +8,8 @@ use spr_tvc_wire::digest::sha256;
 use spr_tvc_wire::encoding::{decode_lower_hex, parse_strict_json};
 use spr_tvc_wire::error::{ErrorCode, TvcError};
 use spr_tvc_wire::types::{
-    Network, OperationKind, ReleasePolicy, ServiceInfo, SignedReleasePolicy,
+    ManifestSetMember, ManifestSetPolicy, Network, OperationKind, ReleasePolicy, ServiceInfo,
+    SignedReleasePolicy,
 };
 
 use crate::attestation::{now_ms, IdentityPcrs};
@@ -59,7 +60,6 @@ pub(crate) fn connect<T: Transport>(
     }
     let session = Session::verified(
         endpoint,
-        info,
         release,
         IdentityPcrs {
             pcr0: [0; 48],
@@ -107,15 +107,11 @@ fn release_for(testkit: &Testkit, info: &ServiceInfo) -> Result<SignedReleasePol
     Ok(SignedReleasePolicy {
         policy: ReleasePolicy {
             version: API_VERSION,
-            release_id: info.release_id.clone(),
             network: info.network,
             security_domain_id: info.security_domain_id,
-            accepted_manifest_digests: vec![spr_tvc_wire::encoding::encode_lower_hex(
-                &info.manifest_digest,
-            )],
-            accepted_executable_digests: vec![spr_tvc_wire::encoding::encode_lower_hex(
-                &info.executable_digest,
-            )],
+            namespace: "local".into(),
+            manifest_set: local_manifest_set(),
+            minimum_manifest_nonce: 0,
             quorum_key_id: info.quorum_key_id.clone(),
             quorum_key_epoch: info.quorum_key_epoch,
             quorum_public_key: info.quorum_public_key.clone(),
@@ -132,6 +128,23 @@ fn release_for(testkit: &Testkit, info: &ServiceInfo) -> Result<SignedReleasePol
         authority_set_id: "local".into(),
         signatures: Vec::new(),
     })
+}
+
+fn local_manifest_set() -> ManifestSetPolicy {
+    const GENERATOR: [u8; 65] = [
+        0x04, 0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc, 0xe6, 0xe5, 0x63, 0xa4,
+        0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d, 0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39, 0x45, 0xd8,
+        0x98, 0xc2, 0x96, 0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e, 0xe7, 0xeb, 0x4a,
+        0x7c, 0x0f, 0x9e, 0x16, 0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31, 0x5e, 0xce, 0xcb, 0xb6, 0x40,
+        0x68, 0x37, 0xbf, 0x51, 0xf5,
+    ];
+    ManifestSetPolicy {
+        threshold: 1,
+        members: vec![ManifestSetMember {
+            alias: "local".into(),
+            public_key: [GENERATOR, GENERATOR].concat(),
+        }],
+    }
 }
 
 fn ephemeral_key(hex_key: &str) -> Result<[u8; QOS_P256_PUBLIC_LEN], TvcError> {

@@ -9,16 +9,13 @@ fn replicas_under_the_same_quorum_key_derive_the_same_keys() {
 }
 
 #[test]
-fn a_request_is_bound_to_the_running_release() {
+fn a_request_is_bound_to_the_quorum_key() {
     let service = service();
     let base = public_keys(&service, &recipient_signer());
     assert!(call(&service, &base).is_ok());
 
-    let edits: [fn(&mut ServiceRequest); 6] = [
+    let edits: [fn(&mut ServiceRequest); 3] = [
         |r| r.version = API_VERSION + 1,
-        |r| r.target_release_id.push('x'),
-        |r| r.target_manifest_digest[0] ^= 1,
-        |r| r.target_executable_digest[0] ^= 1,
         |r| r.quorum_key_id.push('x'),
         |r| r.quorum_key_epoch = 2,
     ];

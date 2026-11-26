@@ -83,9 +83,6 @@ fn unix_now_ms() -> Result<u64, Failure> {
 
 fn targets_release(request: &ServiceRequest, info: &ServiceInfo) -> bool {
     request.version == API_VERSION
-        && request.target_release_id == info.release_id
-        && request.target_manifest_digest == info.manifest_digest
-        && request.target_executable_digest == info.executable_digest
         && request.quorum_key_id == info.quorum_key_id
         && request.quorum_key_epoch == info.quorum_key_epoch
 }

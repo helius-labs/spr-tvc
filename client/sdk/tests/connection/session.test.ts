@@ -5,9 +5,11 @@ import { sessionFromConnector } from "../../src/connection/session.js";
 function runtime(label: string, nowMs: () => bigint = () => 1n): ConnectedTvcRuntime {
   return {
     backend: { endpoint: new URL("https://tvc.example") },
-    info: { version: 1, network: "devnet", security_domain_id: "00".repeat(32), release_id: label,
-      manifest_digest: "11".repeat(32), executable_digest: "22".repeat(32), quorum_public_key: "", quorum_key_id: "quorum", quorum_key_epoch: "1",
-      supported_operations: [], max_encrypted_request_bytes: String(MAX_ENCRYPTED_REQUEST_BYTES), max_encrypted_response_bytes: String(MAX_ENCRYPTED_REQUEST_BYTES), proof_type: "" },
+    target: {
+      network: "devnet", quorumKeyId: label, quorumKeyEpoch: "1", quorumPublicKey: "",
+      maxEncryptedRequestBytes: BigInt(MAX_ENCRYPTED_REQUEST_BYTES),
+      maxEncryptedResponseBytes: BigInt(MAX_ENCRYPTED_REQUEST_BYTES),
+    },
     transport: { fetch: vi.fn() }, releasePolicyValidFromMs: 0n,
     releasePolicyExpiresAtMs: 999999n, nowMs,
     trustVerifier: { verifyOperationAppProof: vi.fn() },
@@ -24,7 +26,7 @@ it("verifies once on first use and holds the connection", async () => {
   const connect = vi.fn(async (_signal: AbortSignal) => runtime("held"));
   const session = sessionFromConnector(connect);
   const first = await session.context(signal());
-  expect(first).toMatchObject({ info: { release_id: "held" } });
+  expect(first).toMatchObject({ target: { quorumKeyId: "held" } });
   await expect(session.context(signal())).resolves.toBe(first);
   expect(connect).toHaveBeenCalledOnce();
 });
@@ -60,14 +62,14 @@ it("verifies anew after reset, and a verification in flight at the reset never b
   session.reset();
   connect.mockResolvedValueOnce(runtime("after"));
   const after = await session.context(signal());
-  expect(after.info.release_id).toBe("after");
+  expect(after.target.quorumKeyId).toBe("after");
   ready.resolve(runtime("before"));
-  await expect(inFlight).resolves.toMatchObject({ info: { release_id: "before" } });
+  await expect(inFlight).resolves.toMatchObject({ target: { quorumKeyId: "before" } });
   await expect(session.context(signal())).resolves.toBe(after);
 
   session.reset();
   connect.mockResolvedValueOnce(runtime("again"));
-  await expect(session.context(signal())).resolves.toMatchObject({ info: { release_id: "again" } });
+  await expect(session.context(signal())).resolves.toMatchObject({ target: { quorumKeyId: "again" } });
   expect(connect).toHaveBeenCalledTimes(3);
 });
 
@@ -86,7 +88,7 @@ it("lets one caller cancel while another receives the shared verification", asyn
   expect(connect).toHaveBeenCalledOnce();
   expect(connect.mock.calls[0]![0].aborted).toBe(false);
   ready.resolve(connection);
-  await expect(second).resolves.toMatchObject({ info: { release_id: "shared" } });
+  await expect(second).resolves.toMatchObject({ target: { quorumKeyId: "shared" } });
 });
 
 it("aborts an abandoned verification and refuses its late result after a replacement verifies", async () => {
@@ -103,7 +105,7 @@ it("aborts an abandoned verification and refuses its late result after a replace
   expect(connect.mock.calls[0]![0].aborted).toBe(true);
   connect.mockResolvedValueOnce(runtime("current"));
   const current = await session.context(signal());
-  expect(current.info.release_id).toBe("current");
+  expect(current.target.quorumKeyId).toBe("current");
   ready.resolve(runtime("old"));
   await new Promise((resolve) => setTimeout(resolve, 0));
   await expect(session.context(signal())).resolves.toBe(current);

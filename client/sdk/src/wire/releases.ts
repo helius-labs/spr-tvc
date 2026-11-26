@@ -6,7 +6,7 @@ import { decodeDecimalU64 } from "./decimal.js";
 import { DecryptionServiceError } from "./error.js";
 import type { Network, PinnedReleaseAuthorities, SignedReleasePolicy } from "./types.js";
 
-/** The trust a client pins for one enclave release. */
+/** The signed pin, its authorities, and PCR0–3. */
 export type ReleaseTrust = {
   readonly releasePolicy: SignedReleasePolicy;
   readonly releaseAuthorities: PinnedReleaseAuthorities;

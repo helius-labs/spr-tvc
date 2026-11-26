@@ -9,13 +9,33 @@ use spr_tvc_wire::release::{
     sign_release_policy, verify_signed_release_policy, PinnedReleaseAuthorities,
     ReleaseAuthorityKey,
 };
-use spr_tvc_wire::types::{Network, ReleaseAuthoritySignature, ReleasePolicy, SignedReleasePolicy};
+use spr_tvc_wire::types::{
+    ManifestSetMember, ManifestSetPolicy, Network, ReleaseAuthoritySignature, ReleasePolicy,
+    SignedReleasePolicy,
+};
 
 use crate::policy::{
     devnet_sign, verify_mainnet_policy, MainnetTrust, TurnkeyDeployment, OPERATIONS,
 };
 use crate::{Args, Release};
 use clap::Parser;
+
+fn pinned_manifest_set() -> ManifestSetPolicy {
+    const GENERATOR: [u8; 65] = [
+        0x04, 0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc, 0xe6, 0xe5, 0x63, 0xa4,
+        0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d, 0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39, 0x45, 0xd8,
+        0x98, 0xc2, 0x96, 0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e, 0xe7, 0xeb, 0x4a,
+        0x7c, 0x0f, 0x9e, 0x16, 0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31, 0x5e, 0xce, 0xcb, 0xb6, 0x40,
+        0x68, 0x37, 0xbf, 0x51, 0xf5,
+    ];
+    ManifestSetPolicy {
+        threshold: 1,
+        members: vec![ManifestSetMember {
+            alias: "operator".into(),
+            public_key: [GENERATOR, GENERATOR].concat(),
+        }],
+    }
+}
 
 fn mainnet_args() -> Args {
     Args::parse_from(["xtask", "prepare", "candidate", "--network", "mainnet"])
@@ -125,11 +145,11 @@ fn signed_mainnet_policy_requires_the_exact_candidate_and_distinct_authorities()
     let now = 100;
     let policy = ReleasePolicy {
         version: API_VERSION,
-        release_id: "candidate".into(),
         network: Network::Mainnet,
         security_domain_id: [3; 32],
-        accepted_manifest_digests: vec!["aa".repeat(32)],
-        accepted_executable_digests: vec!["bb".repeat(32)],
+        namespace: "spr-decryption".into(),
+        manifest_set: pinned_manifest_set(),
+        minimum_manifest_nonce: 0,
         quorum_key_id: "quorum".into(),
         quorum_key_epoch: 1,
         quorum_public_key: vec![4; 130],
@@ -181,7 +201,7 @@ fn signed_mainnet_policy_requires_the_exact_candidate_and_distinct_authorities()
     verify_mainnet_policy(&signed, &policy, &trust, now).unwrap();
     assert!(verify_mainnet_policy(&signed, &policy, &trust, 111).is_err());
     let other = ReleasePolicy {
-        accepted_manifest_digests: vec!["cc".repeat(32)],
+        namespace: "other-namespace".into(),
         ..policy.clone()
     };
     assert!(verify_mainnet_policy(&signed, &other, &trust, now).is_err());

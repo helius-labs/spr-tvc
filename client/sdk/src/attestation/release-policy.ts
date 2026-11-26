@@ -10,11 +10,12 @@ import { DecryptionServiceError } from "../wire/error.js";
 import type {
   Network,
   PinnedReleaseAuthorities,
+  ReleasePolicy,
   ServiceInfo,
   SignedReleasePolicy,
 } from "../wire/types.js";
 import { SERVICE_PROOF_TYPE } from "../wire/decryption.js";
-import { verifyP256Prehash } from "../crypto/p256.js";
+import { parseUncompressedSec1, verifyP256Prehash } from "../crypto/p256.js";
 
 export function policySigningDigest(policy: unknown): Uint8Array {
   return releasePolicyDigest(new TextEncoder().encode(canonicalizeJsonValue(policy)));
@@ -45,7 +46,8 @@ export function verifySignedReleasePolicy(
   if (signed.authoritySetId !== authorities.authoritySetId) {
     throw new DecryptionServiceError("ReleasePolicyInvalid");
   }
-  if (signed.policy.turnkeyTrustRootId !== EXPECTED_TURNKEY_TRUST_ROOT_ID) {
+  if (signed.policy.turnkeyTrustRootId !== EXPECTED_TURNKEY_TRUST_ROOT_ID ||
+      !manifestSetIsPinned(signed.policy)) {
     throw new DecryptionServiceError("ReleasePolicyInvalid");
   }
   if (
@@ -113,9 +115,6 @@ export function bindDiscoveryToPolicy(
   if (info.proof_type !== SERVICE_PROOF_TYPE) {
     throw new DecryptionServiceError("ReleaseBindingMismatch");
   }
-  if (info.release_id !== policy.releaseId) {
-    throw new DecryptionServiceError("ReleaseBindingMismatch");
-  }
   if (info.security_domain_id !== policy.securityDomainId) {
     throw new DecryptionServiceError("ReleaseBindingMismatch");
   }
@@ -126,12 +125,6 @@ export function bindDiscoveryToPolicy(
     throw new DecryptionServiceError("QuorumKeyEpochMismatch");
   }
   if (info.quorum_public_key !== policy.quorumPublicKey) {
-    throw new DecryptionServiceError("ReleaseBindingMismatch");
-  }
-  if (!policy.acceptedManifestDigests.includes(info.manifest_digest)) {
-    throw new DecryptionServiceError("ReleaseBindingMismatch");
-  }
-  if (!policy.acceptedExecutableDigests.includes(info.executable_digest)) {
     throw new DecryptionServiceError("ReleaseBindingMismatch");
   }
   if (
@@ -150,4 +143,41 @@ export function bindDiscoveryToPolicy(
   ) {
     throw new DecryptionServiceError("ReleaseBindingMismatch");
   }
+}
+
+/** Namespace, threshold, and member keys on the pin. */
+function manifestSetIsPinned(policy: ReleasePolicy): boolean {
+  const { namespace, manifestSet } = policy;
+  if (typeof namespace !== "string" || namespace.length === 0 || namespace.length > 128) {
+    return false;
+  }
+  if (!manifestSet || !Number.isSafeInteger(manifestSet.threshold) || manifestSet.threshold < 1 ||
+      !Array.isArray(manifestSet.members) || manifestSet.members.length === 0 ||
+      manifestSet.threshold > manifestSet.members.length) {
+    return false;
+  }
+  try {
+    decodeDecimalU64(policy.minimumManifestNonce);
+  } catch {
+    return false;
+  }
+  const aliases = new Set<string>();
+  const keys = new Set<string>();
+  for (const member of manifestSet.members) {
+    if (typeof member?.alias !== "string" || member.alias.length === 0 || member.alias.length > 128 ||
+        aliases.has(member.alias) || keys.has(member.publicKey)) {
+      return false;
+    }
+    try {
+      const bytes = decodeLowerHex(member.publicKey);
+      if (bytes.length !== 130) return false;
+      parseUncompressedSec1(bytes.subarray(0, 65));
+      parseUncompressedSec1(bytes.subarray(65));
+    } catch {
+      return false;
+    }
+    aliases.add(member.alias);
+    keys.add(member.publicKey);
+  }
+  return true;
 }

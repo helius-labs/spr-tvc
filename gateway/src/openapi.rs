@@ -16,7 +16,7 @@ use crate::error::{ApiError, Problem};
         description = "The gatekeeper front of the decryption enclave. An operation forwards \
                        the encrypted request and returns the Boot Proof of the replica that \
                        signed the reply. The client checks that proof and the App Proof \
-                       against the release it pins.",
+                       against the signed pin.",
     ),
     servers(
         (url = "https://devnet.helius-rpc.com", description = "Devnet"),

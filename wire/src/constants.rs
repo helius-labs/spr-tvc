@@ -20,7 +20,7 @@ pub const EMPTY_RECIPIENT_CIPHERTEXT_LEN: usize = 50;
 
 /// Encrypted HTTP body the service will read, and the encrypted-result ceiling.
 /// Same 10 MiB body cap as Photon and the SPR SDK indexer client. An empty
-/// indexer page measures 675,814 bytes and fits inside it.
+/// indexer page measures 675,396 bytes and fits inside it.
 pub const MAX_ENCRYPTED_REQUEST_BYTES: u64 = 10 * 1024 * 1024;
 pub const MAX_ENCRYPTED_RESPONSE_BYTES: u64 = MAX_ENCRYPTED_REQUEST_BYTES;
 

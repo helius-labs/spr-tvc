@@ -44,13 +44,13 @@ type DecryptCall = {
 export type ServiceCall = Extract<ServiceOperation, { type: "PublicKeys" }> | DecryptCall;
 export type ServiceCallResult<T extends ServiceCall> = Extract<ServiceResult, { type: T["type"] }>;
 
-/** Bind the release and response key before asking the owner to authorize a batch. */
+/** Check the pin's window and build the response key before the owner signs a batch. */
 export async function executeServiceCall<T extends ServiceCall>(
   context: ConnectedTvcRuntime,
   call: T,
   signal: AbortSignal,
 ): Promise<ServiceCallResult<T>> {
-  const { info } = context;
+  const { target } = context;
   signal.throwIfAborted();
   requireCurrentReleasePolicy(context, context.nowMs());
   const responseSecret = p256.utils.randomPrivateKey();
@@ -80,11 +80,8 @@ export async function executeServiceCall<T extends ServiceCall>(
     let request: ServiceRequest = {
       version: API_VERSION,
       request_id: encodeLowerHex(crypto.getRandomValues(new Uint8Array(32))),
-      target_release_id: info.release_id,
-      target_manifest_digest: info.manifest_digest,
-      target_executable_digest: info.executable_digest,
-      quorum_key_id: info.quorum_key_id,
-      quorum_key_epoch: info.quorum_key_epoch,
+      quorum_key_id: target.quorumKeyId,
+      quorum_key_epoch: target.quorumKeyEpoch,
       client_response_public_key: encodeLowerHex(p256.getPublicKey(responseSecret, false)),
       operation,
     };
@@ -94,7 +91,7 @@ export async function executeServiceCall<T extends ServiceCall>(
       const address = operation.signer;
       const message = decryptMessage(
         new Uint8Array(addressEncoder.encode(address)),
-        info.network,
+        target.network,
         requestDigest,
       );
       signal.throwIfAborted();

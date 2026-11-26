@@ -29,13 +29,27 @@ export type ServiceInfo = {
   proof_type: string;
 };
 
+/** One manifest-set member. `publicKey` is the QOS key, encrypt key then signing key. */
+export type ManifestSetMember = {
+  alias: string;
+  publicKey: string;
+};
+
+/** The operators who may approve a manifest. The client pins this set. */
+export type ManifestSetPolicy = {
+  threshold: number;
+  members: readonly ManifestSetMember[];
+};
+
 export type ReleasePolicy = {
   version: typeof API_VERSION;
-  releaseId: string;
   network: Network;
   securityDomainId: string;
-  acceptedManifestDigests: readonly string[];
-  acceptedExecutableDigests: readonly string[];
+  /** QOS namespace name. A manifest for any other namespace is rejected. */
+  namespace: string;
+  manifestSet: ManifestSetPolicy;
+  /** Manifests below this nonce are rejected. The floor starts at zero. */
+  minimumManifestNonce: string;
   quorumKeyId: string;
   quorumKeyEpoch: string;
   quorumPublicKey: string;
