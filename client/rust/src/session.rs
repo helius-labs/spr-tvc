@@ -35,7 +35,7 @@ pub trait BootProofs {
 
 impl BootProofs for () {
     fn boot_proof(&self, _: &[u8; QOS_P256_PUBLIC_LEN]) -> Result<BootProof, ClientError> {
-        Err(TvcError::new(ErrorCode::BootProofUnverified).into())
+        Err(TvcError::boot("decode").into())
     }
 }
 

@@ -6,7 +6,9 @@
 //! [`DecryptionClient`] builds each request from the signed release pin. It
 //! checks that the pinned manifest set approved the manifest in the reply,
 //! then the Nitro document, PCR0–3, and PCR17, and opens the reply only after
-//! the App Proof names the request.
+//! the App Proof names the request. A failed Boot Proof is
+//! `BootProofUnverified` and names the stage: `decode`, `shape`, `timestamp`,
+//! `bindings`, or `aws-chain`. The reply stays sealed.
 //! [`OperationsClient`] posts `keys` and `decrypt` to
 //! `/v1/decryption/operations` and checks the Boot Proof bundled in that reply
 //! the same way.
@@ -61,7 +63,10 @@ pub enum ClientError {
 impl Display for ClientError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self {
-            Self::Protocol(error) => Display::fmt(error, f),
+            Self::Protocol(error) => match error.detail {
+                Some(detail) => write!(f, "{error}: {detail}"),
+                None => Display::fmt(error, f),
+            },
             Self::Transport => f.write_str("Transport"),
             Self::ResponseTooLarge => f.write_str("ResponseTooLarge"),
             Self::Entropy => f.write_str("Entropy"),
