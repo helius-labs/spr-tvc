@@ -3,6 +3,7 @@
 //! `keys` fetches the public keys only. The first `Decrypt` returns the
 //! plaintexts and the nullifier secret together. Asking for the secret before
 //! any note has been opened sends one empty `Decrypt`.
+//! [`SignViewGrant`] is the owner's signature that lets a grantee call `keys_for`.
 
 use hkdf::Hkdf;
 use qos_p256::encrypt::P256EncryptPublic;
@@ -13,8 +14,9 @@ use spr_keypair::ShieldedAddress;
 use spr_tvc_wire::body_limit::encrypted_request_http_len;
 use spr_tvc_wire::constants::{API_VERSION, QOS_P256_PUBLIC_LEN};
 use spr_tvc_wire::decryption_service::{
-    decrypt_message, service_request_digest, DecryptedOutputs, ServiceOperation, ServiceRequest,
-    ServiceResult, ADDRESS_LEN,
+    accept_view_grant_window, decrypt_message, service_request_digest, view_grant_digest,
+    view_grant_message, DecryptedOutputs, ServiceOperation, ServiceRequest, ServiceResult,
+    ViewGrant, ADDRESS_LEN,
 };
 use spr_tvc_wire::digest::result_digest;
 use spr_tvc_wire::encoding::{is_rfc8785, jcs_serialize};
@@ -75,7 +77,23 @@ impl<T: Transport, B: BootProofs> DecryptionClient<T, B> {
     pub fn keys<'a>(&'a self, signer: &'a dyn OwnerSigner) -> Result<ServiceKeys<'a>, ClientError> {
         let owner = signer.pubkey();
         let address = self.address(&owner)?;
-        Ok(ServiceKeys::new(self, signer, address))
+        Ok(ServiceKeys::new(self, signer, address, None))
+    }
+
+    /// Keys for the grant's owner. `grantee` signs each later `Decrypt`.
+    pub fn keys_for<'a>(
+        &'a self,
+        grantee: &'a dyn OwnerSigner,
+        grant: &'a ViewGrant,
+    ) -> Result<ServiceKeys<'a>, ClientError> {
+        let owner = grant_owner(
+            grantee,
+            grant,
+            &self.session.release().policy,
+            self.session.now_ms(),
+        )?;
+        let address = self.address(&owner)?;
+        Ok(ServiceKeys::new(self, grantee, address, Some(grant)))
     }
 
     fn call(
@@ -98,6 +116,7 @@ impl<T: Transport, B: BootProofs> DecryptionClient<T, B> {
         &self,
         signer: &dyn OwnerSigner,
         items: Vec<DecryptItem>,
+        grant: Option<&ViewGrant>,
     ) -> Result<DecryptedOutputs, ClientError> {
         ensure_operation(
             &self.session.release().policy,
@@ -105,12 +124,13 @@ impl<T: Transport, B: BootProofs> DecryptionClient<T, B> {
         )?;
         let owner = signer.pubkey();
         let result = self.call(
-            ServiceOperation::Decrypt {
-                signer: bs58::encode(owner).into_string(),
-                signature: [0; 64],
+            decrypt_operation(
+                signer,
                 items,
-                grant: None,
-            },
+                grant,
+                &self.session.release().policy,
+                self.session.now_ms(),
+            )?,
             Some(signer),
             &owner,
         )?;
@@ -128,6 +148,7 @@ pub(crate) trait OpenNotes {
         &self,
         signer: &dyn OwnerSigner,
         items: Vec<DecryptItem>,
+        grant: Option<&ViewGrant>,
     ) -> Result<DecryptedOutputs, ClientError>;
 }
 
@@ -179,8 +200,9 @@ impl<T: Transport, B: BootProofs> OpenNotes for DecryptionClient<T, B> {
         &self,
         signer: &dyn OwnerSigner,
         items: Vec<DecryptItem>,
+        grant: Option<&ViewGrant>,
     ) -> Result<DecryptedOutputs, ClientError> {
-        DecryptionClient::decrypt_items(self, signer, items)
+        DecryptionClient::decrypt_items(self, signer, items, grant)
     }
 }
 
@@ -189,6 +211,7 @@ pub struct ServiceKeys<'a> {
     opener: &'a dyn OpenNotes,
     signer: &'a dyn OwnerSigner,
     address: ShieldedAddress,
+    grant: Option<&'a ViewGrant>,
     secret: Option<Zeroizing<[u8; 31]>>,
 }
 
@@ -197,11 +220,13 @@ impl<'a> ServiceKeys<'a> {
         opener: &'a dyn OpenNotes,
         signer: &'a dyn OwnerSigner,
         address: ShieldedAddress,
+        grant: Option<&'a ViewGrant>,
     ) -> Self {
         Self {
             opener,
             signer,
             address,
+            grant,
             secret: None,
         }
     }
@@ -250,9 +275,12 @@ impl ServiceKeys<'_> {
 
     fn open(&self, items: Vec<DecryptItem>) -> Result<DecryptedOutputs, ClientError> {
         if items.len() < 2 {
-            return self.opener.decrypt_items(self.signer, items);
+            return self.opener.decrypt_items(self.signer, items, self.grant);
         }
-        match self.opener.decrypt_items(self.signer, items.clone()) {
+        match self
+            .opener
+            .decrypt_items(self.signer, items.clone(), self.grant)
+        {
             Err(ClientError::Protocol(error)) if error.code == ErrorCode::RequestTooLarge => {
                 let middle = items.len() / 2;
                 let mut left = self.open(items[..middle].to_vec())?;
@@ -273,6 +301,85 @@ impl ServiceKeys<'_> {
         self.secret = Some(Zeroizing::new(secret));
         secret.zeroize();
     }
+}
+
+/// The owner signs this for `grantee`. The window is at most 30 minutes.
+pub struct SignViewGrant<'a> {
+    pub grantee: [u8; ADDRESS_LEN],
+    pub network: Network,
+    pub quorum_key_id: &'a str,
+    pub quorum_key_epoch: u64,
+    pub not_before_ms: u64,
+    pub expiry_ms: u64,
+}
+
+impl SignViewGrant<'_> {
+    pub fn sign(self, owner: &dyn OwnerSigner) -> Result<ViewGrant, ClientError> {
+        accept_view_grant_window(self.not_before_ms, self.expiry_ms, self.not_before_ms)?;
+        if self.grantee == owner.pubkey() {
+            return Err(TvcError::new(ErrorCode::InvalidSignature).into());
+        }
+        let mut grant = ViewGrant {
+            owner: bs58::encode(owner.pubkey()).into_string(),
+            grantee: bs58::encode(self.grantee).into_string(),
+            network: self.network,
+            quorum_key_id: self.quorum_key_id.to_owned(),
+            quorum_key_epoch: self.quorum_key_epoch,
+            not_before_ms: self.not_before_ms,
+            expiry_ms: self.expiry_ms,
+            signature: [0; 64],
+        };
+        let digest = view_grant_digest(&grant)?;
+        grant.signature = owner.sign_offchain(&view_grant_message(&owner.pubkey(), &digest))?;
+        Ok(grant)
+    }
+}
+
+pub(crate) fn decrypt_operation(
+    signer: &dyn OwnerSigner,
+    items: Vec<DecryptItem>,
+    grant: Option<&ViewGrant>,
+    policy: &ReleasePolicy,
+    now_ms: u64,
+) -> Result<ServiceOperation, ClientError> {
+    if let Some(grant) = grant {
+        grant_owner(signer, grant, policy, now_ms)?;
+    }
+    Ok(ServiceOperation::Decrypt {
+        signer: bs58::encode(signer.pubkey()).into_string(),
+        signature: [0; 64],
+        items,
+        grant: grant.cloned().map(Box::new),
+    })
+}
+
+pub(crate) fn grant_owner(
+    grantee: &dyn OwnerSigner,
+    grant: &ViewGrant,
+    policy: &ReleasePolicy,
+    now_ms: u64,
+) -> Result<[u8; ADDRESS_LEN], ClientError> {
+    let grantee_key = address_bytes(&grant.grantee)?;
+    let owner = address_bytes(&grant.owner)?;
+    if grantee_key != grantee.pubkey()
+        || owner == grantee_key
+        || grant.network != policy.network
+        || grant.quorum_key_id != policy.quorum_key_id
+        || grant.quorum_key_epoch != policy.quorum_key_epoch
+    {
+        return Err(TvcError::new(ErrorCode::InvalidSignature).into());
+    }
+    accept_view_grant_window(grant.not_before_ms, grant.expiry_ms, now_ms)?;
+    Ok(owner)
+}
+
+fn address_bytes(address: &str) -> Result<[u8; ADDRESS_LEN], ClientError> {
+    let bytes = bs58::decode(address)
+        .into_vec()
+        .map_err(|_| TvcError::new(ErrorCode::InvalidSignature))?;
+    bytes
+        .try_into()
+        .map_err(|_| TvcError::new(ErrorCode::InvalidSignature).into())
 }
 
 pub(crate) struct Target<'a> {
@@ -481,4 +588,152 @@ fn random_32() -> Result<[u8; 32], ClientError> {
     let mut bytes = [0u8; 32];
     getrandom::getrandom(&mut bytes).map_err(|_| ClientError::Entropy)?;
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use ed25519_dalek::Signer;
+    use spr_tvc_wire::constants::API_VERSION;
+    use spr_tvc_wire::decryption_service::{
+        view_grant_digest, view_grant_message, MAX_VIEW_GRANT_MS,
+    };
+    use spr_tvc_wire::error::ErrorCode;
+    use spr_tvc_wire::types::{ManifestSetPolicy, Network, ReleasePolicy};
+
+    use super::*;
+
+    struct Key(ed25519_dalek::SigningKey);
+
+    impl Key {
+        fn from_seed(seed: u8) -> Self {
+            Self(ed25519_dalek::SigningKey::from_bytes(&[seed; 32]))
+        }
+    }
+
+    impl OwnerSigner for Key {
+        fn pubkey(&self) -> [u8; 32] {
+            self.0.verifying_key().to_bytes()
+        }
+
+        fn sign_offchain(&self, message: &[u8]) -> Result<[u8; 64], ClientError> {
+            Ok(self.0.sign(message).to_bytes())
+        }
+    }
+
+    fn policy() -> ReleasePolicy {
+        ReleasePolicy {
+            version: API_VERSION,
+            network: Network::Devnet,
+            security_domain_id: [0; 32],
+            namespace: "namespace".into(),
+            manifest_set: ManifestSetPolicy {
+                threshold: 1,
+                members: Vec::new(),
+            },
+            minimum_manifest_nonce: 0,
+            quorum_key_id: "quorum".into(),
+            quorum_key_epoch: 1,
+            quorum_public_key: Vec::new(),
+            allowed_operations: Vec::new(),
+            max_encrypted_request_bytes: 1,
+            max_encrypted_response_bytes: 1,
+            turnkey_trust_root_id: "root".into(),
+            valid_from_ms: 0,
+            expires_at_ms: 1,
+            revocation_epoch: 0,
+        }
+    }
+
+    fn grant_for(grantee: &Key, not_before_ms: u64, expiry_ms: u64) -> SignViewGrant<'static> {
+        SignViewGrant {
+            grantee: grantee.pubkey(),
+            network: Network::Devnet,
+            quorum_key_id: "quorum",
+            quorum_key_epoch: 1,
+            not_before_ms,
+            expiry_ms,
+        }
+    }
+
+    fn code(error: ClientError) -> ErrorCode {
+        match error {
+            ClientError::Protocol(error) => error.code,
+            other => panic!("protocol error, got {other}"),
+        }
+    }
+
+    #[test]
+    fn the_owner_signs_the_grant_and_the_grantee_carries_it() {
+        let owner = Key::from_seed(1);
+        let grantee = Key::from_seed(2);
+        let grant = grant_for(&grantee, 1_000, 1_000 + MAX_VIEW_GRANT_MS)
+            .sign(&owner)
+            .expect("grant");
+        let digest = view_grant_digest(&grant).expect("digest");
+        owner
+            .0
+            .verifying_key()
+            .verify_strict(
+                &view_grant_message(&owner.pubkey(), &digest),
+                &ed25519_dalek::Signature::from_bytes(&grant.signature),
+            )
+            .expect("owner signature");
+
+        let operation = decrypt_operation(&grantee, Vec::new(), Some(&grant), &policy(), 1_000)
+            .expect("decrypt");
+        let ServiceOperation::Decrypt {
+            signer,
+            grant: carried,
+            ..
+        } = operation
+        else {
+            panic!("decrypt operation");
+        };
+        assert_eq!(signer, bs58::encode(grantee.pubkey()).into_string());
+        assert_eq!(
+            carried.expect("grant").owner,
+            bs58::encode(owner.pubkey()).into_string()
+        );
+
+        let other = Key::from_seed(3);
+        assert_eq!(
+            code(grant_owner(&other, &grant, &policy(), 1_000).expect_err("grantee")),
+            ErrorCode::InvalidSignature
+        );
+        assert_eq!(
+            code(
+                grant_owner(&grantee, &grant, &policy(), 1_000 + MAX_VIEW_GRANT_MS)
+                    .expect_err("expired")
+            ),
+            ErrorCode::ExpiredRequest
+        );
+
+        let mut other_network = grant.clone();
+        other_network.network = Network::Mainnet;
+        assert_eq!(
+            code(grant_owner(&grantee, &other_network, &policy(), 1_000).expect_err("network")),
+            ErrorCode::InvalidSignature
+        );
+    }
+
+    #[test]
+    fn a_grant_names_someone_else_for_at_most_thirty_minutes() {
+        let owner = Key::from_seed(1);
+        assert_eq!(
+            code(
+                grant_for(&owner, 1_000, 1_000 + 1)
+                    .sign(&owner)
+                    .expect_err("self")
+            ),
+            ErrorCode::InvalidSignature
+        );
+        assert_eq!(
+            code(
+                grant_for(&Key::from_seed(2), 1_000, 1_000 + MAX_VIEW_GRANT_MS + 1)
+                    .sign(&owner)
+                    .expect_err("span")
+            ),
+            ErrorCode::ExpiredRequest
+        );
+    }
 }
