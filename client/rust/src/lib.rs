@@ -2,6 +2,7 @@
 //!
 //! The phone, or any other Rust caller, uses [`DecryptionClient::address`] to
 //! pay an unregistered owner and [`DecryptionClient::keys`] to open those notes.
+//! [`SignViewGrant`] lets that owner name a grantee for at most 30 minutes.
 //! [`DecryptionClient`] builds each request from the signed release pin. It
 //! checks that the pinned manifest set approved the manifest in the reply,
 //! then the Nitro document, PCR0–3, and PCR17, and opens the reply only after
@@ -23,7 +24,8 @@ mod transport;
 
 pub use attestation::{BootProof, IdentityPcrs};
 pub use operations::{OperationsClient, OperationsConfig};
-pub use service::{DecryptionClient, Note, ServiceKeys};
+pub use service::{DecryptionClient, Note, ServiceKeys, SignViewGrant};
+pub use spr_tvc_wire::decryption_service::ViewGrant;
 pub use transport::{ReqwestTransport, Transport};
 
 use std::fmt::{Display, Formatter, Result as FmtResult};

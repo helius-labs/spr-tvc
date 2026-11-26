@@ -4,8 +4,8 @@
 
 use crate::attestation::{now_ms, BootProof, IdentityPcrs};
 use crate::service::{
-    bind_operation_proof, shielded_address, CheckReply, Exchange, OpenNotes, ServiceKeys, Target,
-    RESPONSE_ENVELOPE_SLACK,
+    bind_operation_proof, decrypt_operation, shielded_address, CheckReply, Exchange, OpenNotes,
+    ServiceKeys, Target, RESPONSE_ENVELOPE_SLACK,
 };
 use crate::session::{join, verify_reply_boot, Session};
 use crate::transport::Transport;
@@ -78,7 +78,23 @@ impl<T: Transport> OperationsClient<T> {
     pub fn keys<'a>(&'a self, signer: &'a dyn OwnerSigner) -> Result<ServiceKeys<'a>, ClientError> {
         let owner = signer.pubkey();
         let address = self.address(&owner)?;
-        Ok(ServiceKeys::new(self, signer, address))
+        Ok(ServiceKeys::new(self, signer, address, None))
+    }
+
+    /// Keys for the grant's owner. `grantee` signs each later `Decrypt`.
+    pub fn keys_for<'a>(
+        &'a self,
+        grantee: &'a dyn OwnerSigner,
+        grant: &'a spr_tvc_wire::decryption_service::ViewGrant,
+    ) -> Result<ServiceKeys<'a>, ClientError> {
+        let owner = crate::service::grant_owner(
+            grantee,
+            grant,
+            &self.session.release().policy,
+            self.session.now_ms(),
+        )?;
+        let address = self.address(&owner)?;
+        Ok(ServiceKeys::new(self, grantee, address, Some(grant)))
     }
 
     fn call(
@@ -152,6 +168,7 @@ impl<T: Transport> OpenNotes for OperationsClient<T> {
         &self,
         signer: &dyn OwnerSigner,
         items: Vec<DecryptItem>,
+        grant: Option<&spr_tvc_wire::decryption_service::ViewGrant>,
     ) -> Result<DecryptedOutputs, ClientError> {
         crate::session::ensure_operation(
             &self.session.release().policy,
@@ -159,12 +176,13 @@ impl<T: Transport> OpenNotes for OperationsClient<T> {
         )?;
         let owner = signer.pubkey();
         let result = self.call(
-            ServiceOperation::Decrypt {
-                signer: bs58::encode(owner).into_string(),
-                signature: [0; 64],
+            decrypt_operation(
+                signer,
                 items,
-                grant: None,
-            },
+                grant,
+                &self.session.release().policy,
+                self.session.now_ms(),
+            )?,
             Some(signer),
             &owner,
         )?;
