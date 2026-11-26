@@ -14,15 +14,22 @@ import { decodeLowerHex, encodeLowerHex } from "../wire/hex.js";
 import { canonicalizeJsonValue } from "../wire/jcs.js";
 import { assertExactObjectKeys, parseStrictJson } from "../wire/json.js";
 import type { ReleaseTrust } from "../wire/releases.js";
-import { SERVICE_INFO_KEYS, type Network, type ServiceInfo } from "../wire/types.js";
+import { SERVICE_PROOF_TYPE } from "../wire/decryption.js";
+import { requireHex } from "../wire/hex.js";
+import {
+  SERVICE_INFO_KEYS,
+  type Network,
+  type ReleasePolicy,
+  type ServiceInfo,
+} from "../wire/types.js";
 import { createDefaultTransport, type DecryptionServiceTransport } from "./http.js";
 import { verifyBootProof, type QosIdentityPcrs } from "../attestation/boot-proof.js";
 import type {
   TurnkeyAppProofWire,
   TurnkeyBootProofWire,
 } from "../attestation/turnkey.js";
-import { bindDiscoveryToPolicy, verifySignedReleasePolicy } from "../attestation/release-policy.js";
-import { fetchDiscovery, fetchPing, fetchSession, lookupBootProof, type EnclaveBackend } from "./backend.js";
+import { verifySignedReleasePolicy } from "../attestation/release-policy.js";
+import { fetchDiscovery, fetchPing, lookupBootProof, type EnclaveBackend } from "./backend.js";
 import { requireCurrentReleasePolicy } from "./operations.js";
 
 const PING_RESPONSE_KEYS = ["version", "tvc_app_proof"] as const;
@@ -72,6 +79,32 @@ export type ConnectedTvcRuntime = {
 
 export function parseServiceInfo(text: string): ServiceInfo {
   return parseStrictJson<ServiceInfo>(text, SERVICE_INFO_KEYS);
+}
+
+/** The request target from a pin that names one manifest and one executable. */
+export function serviceInfoFromPolicy(policy: ReleasePolicy): ServiceInfo {
+  return {
+    version: policy.version,
+    network: policy.network,
+    security_domain_id: policy.securityDomainId,
+    release_id: policy.releaseId,
+    manifest_digest: oneDigest(policy.acceptedManifestDigests),
+    executable_digest: oneDigest(policy.acceptedExecutableDigests),
+    quorum_public_key: policy.quorumPublicKey,
+    quorum_key_id: policy.quorumKeyId,
+    quorum_key_epoch: policy.quorumKeyEpoch,
+    supported_operations: [...policy.allowedOperations],
+    max_encrypted_request_bytes: String(policy.maxEncryptedRequestBytes),
+    max_encrypted_response_bytes: String(policy.maxEncryptedResponseBytes),
+    proof_type: SERVICE_PROOF_TYPE,
+  };
+}
+
+function oneDigest(digests: readonly string[]): string {
+  const digest = digests.length === 1 ? digests[0] : undefined;
+  if (digest === undefined) throw new DecryptionServiceError("ReleaseBindingMismatch");
+  requireHex(digest, 32);
+  return digest;
 }
 
 export async function fetchLiveServiceInfo(
@@ -192,6 +225,7 @@ export async function connectAndVerifyTvc(
   const { backend, network, release } = config;
   const { releasePolicy, qosIdentityPcrs } = release;
   verifySignedReleasePolicy(releasePolicy, release.releaseAuthorities, network, nowMs());
+  const info = serviceInfoFromPolicy(releasePolicy.policy);
   const transport = config.transport ?? createDefaultTransport();
 
   const verifyReplica = async (
@@ -206,13 +240,6 @@ export async function connectAndVerifyTvc(
     expectedPcrs: qosIdentityPcrs,
     nowMs: verificationNow,
   }), verifySignal);
-
-  const challenge = await qosPingChallenge(releasePolicy.policy.quorumPublicKey);
-  const session = await fetchSession(backend, challenge.body, transport, signal);
-  const info = parseServiceInfo(session.infoText);
-  bindDiscoveryToPolicy(info, releasePolicy);
-  const appProof = verifyQosPingAnswer(session.pingText, challenge);
-  await verifyReplica(appProof, nowMs(), signal, session.bootProof);
 
   const releasePolicyValidFromMs = BigInt(releasePolicy.policy.validFromMs);
   const releasePolicyExpiresAtMs = BigInt(releasePolicy.policy.expiresAtMs);

@@ -10,7 +10,7 @@ use axum::routing::{get, post};
 use cadence_macros::statsd_time;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
-use spr_tvc_wire::{EncryptedRequest, QosPingRequest};
+use spr_tvc_wire::EncryptedRequest;
 use tower_http::set_header::SetResponseHeaderLayer;
 use utoipa::ToSchema;
 
@@ -20,7 +20,6 @@ use crate::error::ApiError;
 use crate::error::Problem;
 use crate::json::ApiJson;
 use crate::limits::InFlightLimiter;
-use crate::openapi::PingRequest;
 use crate::project::Caller;
 use crate::replay::{Claim, Outcome, ReplayLedger};
 use crate::turnkey::{CallShare, Turnkey};
@@ -61,9 +60,7 @@ impl AppState {
 }
 
 pub fn router(state: Arc<AppState>, max_body_bytes: usize) -> Router {
-    let decryption_service = Router::new()
-        .route("/session", post(decryption_session))
-        .route("/operations", post(decryption_operations));
+    let decryption_service = Router::new().route("/operations", post(decryption_operations));
     Router::new()
         .route("/health", get(health))
         .nest(DECRYPTION_SERVICE_PREFIX, decryption_service)
@@ -75,22 +72,6 @@ pub fn router(state: Arc<AppState>, max_body_bytes: usize) -> Router {
             HeaderValue::from_static("no-store"),
         ))
         .with_state(state)
-}
-
-/// The enclave's discovery document, its answer to the client's encrypted
-/// ping, and the Boot Proof of the replica that answered.
-#[derive(Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct Session {
-    /// The enclave's `ServiceInfo`.
-    #[schema(value_type = Object)]
-    info: Box<RawValue>,
-    /// The enclave's `QosPingResponse`.
-    #[schema(value_type = Object)]
-    ping: Box<RawValue>,
-    /// Turnkey's Boot Proof for the replica that signed `ping`.
-    #[schema(value_type = Object)]
-    boot_proof: Box<RawValue>,
 }
 
 /// The enclave's encrypted response and the Boot Proof of the replica that
@@ -123,46 +104,6 @@ async fn health() -> impl IntoResponse {
 
 async fn not_found() -> ApiError {
     ApiError::NotFound
-}
-
-/// Open a decryption-service session
-///
-/// Discovery, the enclave's answer to the ping and the Boot Proof of the
-/// replica that answered. The decryption service authorizes with a Solana
-/// signature on decrypt requests.
-#[utoipa::path(
-    post,
-    path = "/v1/decryption/session",
-    tag = "Decryption service",
-    request_body = PingRequest,
-    responses(
-        (status = 200, description = "The evidence to verify", body = Session),
-        (status = "4XX", description = "Refused, or the enclave or Turnkey did not answer", body = Problem, content_type = "application/problem+json"),
-    ),
-)]
-pub(crate) async fn decryption_session(
-    State(state): State<Arc<AppState>>,
-    Caller(project): Caller,
-    ApiJson(ping): ApiJson<QosPingRequest>,
-) -> Result<Response, ApiError> {
-    let _permit = state.limiter.try_acquire(&project)?;
-    let (info, ping) = tokio::try_join!(state.enclave.info(), state.enclave.ping(&ping))?;
-    if !info.is_success() {
-        return Ok(info.into_response());
-    }
-    if !ping.is_success() {
-        return Ok(ping.into_response());
-    }
-    let boot_proof = state
-        .turnkey
-        .boot_proof(&app_proof_key(&ping.body)?, CallShare::Project(&project))
-        .await?;
-    Ok(Json(Session {
-        info: raw_json(&info.body)?,
-        ping: raw_json(&ping.body)?,
-        boot_proof: raw_json(&boot_proof)?,
-    })
-    .into_response())
 }
 
 /// The enclave's `EncryptedRequest` (OpenAPI shape).
@@ -260,7 +201,6 @@ async fn track(request: Request, next: Next) -> Response {
 
 fn route_name(matched: &str) -> &'static str {
     match matched.strip_prefix(DECRYPTION_SERVICE_PREFIX) {
-        Some("/session") => "decryption_session",
         Some("/operations") => "decryption_operations",
         Some(_) | None => "other",
     }

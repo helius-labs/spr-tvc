@@ -23,18 +23,28 @@ import { executeServiceCall, type ServiceCall, type ServiceCallResult } from "./
 import { ServiceKeys, type DecryptionServiceKeys } from "./keys.js";
 const addressEncoder = getAddressEncoder();
 
-export type DecryptionServiceConfig = {
+type ServiceOptions = {
   readonly network: Network;
-  /** Direct enclave URL or a relay that forwards its routes. */
   readonly endpoint: URL;
-  /** Fetches a replica's Boot Proof from the decryption app's Turnkey organization. */
-  readonly resolveBootProof: BootProofResolver;
   /** Mainnet uses only the policy from an override. The SDK pins its own trust anchors. */
   readonly release?: ReleaseTrust;
   /** Verifier clock override for development. Mainnet uses the system clock. */
   readonly nowMs?: () => bigint;
   readonly transport?: DecryptionServiceTransport;
   readonly requestTimeoutMs?: number;
+};
+
+/** Posts `/v1/decryption/operations`. The reply includes the Boot Proof. */
+export type DecryptionServiceConfig = ServiceOptions & {
+  /** Sent as `x-api-key`. */
+  readonly apiKey: string;
+  readonly resolveBootProof?: undefined;
+};
+
+/** Dials the enclave URL and fetches each Boot Proof. */
+export type EnclaveDecryptionServiceConfig = ServiceOptions & {
+  readonly resolveBootProof: BootProofResolver;
+  readonly apiKey?: undefined;
 };
 
 /** Plaintexts in item order, plus the address's nullifier secret. The caller owns `nullifierSecret` and wipes it. */
@@ -175,26 +185,21 @@ export function decryptionServiceFromSession(
   };
 }
 
-export type GatekeeperDecryptionServiceConfig = Omit<DecryptionServiceConfig, "resolveBootProof"> & {
-  /** Gatekeeper API key, sent as `x-api-key`. */
-  readonly apiKey: string;
-};
-
-/** A client of the decryption service at `config.endpoint`, verified against its release. */
-export function createDecryptionService(config: DecryptionServiceConfig): DecryptionService {
-  const { endpoint, resolveBootProof } = config;
-  return createClient(config, { endpoint, resolveBootProof });
-}
-
 /**
- * `keys` and `decrypt` through the gatekeeper. The first call posts
- * `/v1/decryption/session` and checks the bundled discovery, ping, and Boot
- * Proof. Later calls post `/v1/decryption/operations` and check each reply's
- * Boot Proof the same way.
+ * `keys` and `decrypt` against `config.endpoint`. The request names the release
+ * in the signed pin. With `apiKey`, each call posts `/v1/decryption/operations`
+ * and checks that reply's Boot Proof together with its App Proof. With
+ * `resolveBootProof`, the client dials the enclave and fetches each proof.
  */
-export function createGatekeeperDecryptionService(
-  config: GatekeeperDecryptionServiceConfig,
+export function createDecryptionService(
+  config: DecryptionServiceConfig | EnclaveDecryptionServiceConfig,
 ): DecryptionService {
+  if (config.resolveBootProof !== undefined) {
+    return createClient(config, {
+      endpoint: config.endpoint,
+      resolveBootProof: config.resolveBootProof,
+    });
+  }
   const endpoint = new URL(config.endpoint);
   if (
     endpoint.protocol !== "https:" ||
@@ -205,13 +210,13 @@ export function createGatekeeperDecryptionService(
     (endpoint.pathname !== "/" && endpoint.pathname !== "") ||
     !config.apiKey.trim()
   ) {
-    throw new DecryptionServiceError("InvalidGatekeeperConfig");
+    throw new DecryptionServiceError("InvalidServiceConfig");
   }
-  return createClient(config, { endpoint, gatekeeperApiKey: config.apiKey });
+  return createClient(config, { endpoint, apiKey: config.apiKey });
 }
 
 function createClient(
-  config: Omit<DecryptionServiceConfig, "resolveBootProof">,
+  config: ServiceOptions,
   backend: EnclaveBackend,
 ): DecryptionService {
   const network = requireNetwork(config.network);

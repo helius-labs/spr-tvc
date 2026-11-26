@@ -27,10 +27,7 @@ import {
   qosDecrypt,
   qosEncryptWith,
 } from "../../src/crypto/qos.js";
-import {
-  computeQosLiveManifestCommitmentPcr,
-  verifyBootProof,
-} from "../../src/attestation/boot-proof.js";
+import { computeQosLiveManifestCommitmentPcr } from "../../src/attestation/boot-proof.js";
 import { connectAndVerifyTvc } from "../../src/connection/connect.js";
 import {
   bindDiscoveryToPolicy,
@@ -412,8 +409,7 @@ describe("enclave verification", () => {
     });
   });
 
-  it("fails closed when a replica proves nothing after a valid policy", async () => {
-    const http = readJson("http-skeleton.json");
+  it("checks the release pin without contacting the enclave", async () => {
     const policyFixture = readJson("signed-release-policy.json");
     const verified = connectAndVerifyTvc({
       network: "devnet",
@@ -425,21 +421,16 @@ describe("enclave verification", () => {
       },
       nowMs: () => BigInt(String(policyFixture.now_ms)),
       transport: {
-        fetch: async (url) =>
-          url.pathname === "/v1/info"
-            ? new Response(String(http.info_body), {
-                status: 200,
-                headers: { "content-type": "application/json" },
-              })
-            : new Response(null, { status: 503 }),
+        fetch: async () => {
+          throw new Error("the pin check must not fetch");
+        },
       },
     });
-    await expect(verified).rejects.toMatchObject({
-      code: "BootProofUnverified",
-    });
-    await expect(verifyBootProof({} as never)).rejects.toThrowError(
-      /BootProofUnverified/
-    );
+    await expect(verified).resolves.toEqual(expect.objectContaining({
+      info: expect.objectContaining({
+        release_id: (policyFixture.signed as SignedReleasePolicy).policy.releaseId,
+      }),
+    }));
   });
 });
 

@@ -2,7 +2,7 @@ import { API_VERSION } from "../wire/constants.js";
 import { SERVICE_PROOF_TYPE } from "../wire/decryption.js";
 import { DecryptionServiceError } from "../wire/error.js";
 import type { Network, OperationKind } from "../wire/types.js";
-import { fetchSession, type EnclaveBackend } from "./backend.js";
+import { fetchDiscovery, fetchPing, type EnclaveBackend } from "./backend.js";
 import {
   parseServiceInfo,
   qosPingChallenge,
@@ -41,8 +41,8 @@ export async function connectLocalUnattestedTvc(
   }
   const transport = config.transport ?? createDefaultTransport();
   const challenge = await qosPingChallenge(config.expectedQuorumPublicKey);
-  const session = await fetchSession(config.backend, challenge.body, transport, signal);
-  const info = parseServiceInfo(session.infoText);
+  const info = parseServiceInfo(await fetchDiscovery(endpoint, transport, signal));
+  const pingText = await fetchPing(endpoint, challenge.body, transport, signal);
   if (
     info.version !== API_VERSION ||
     info.network !== config.network ||
@@ -62,7 +62,7 @@ export async function connectLocalUnattestedTvc(
     throw new DecryptionServiceError("DiscoveryUntrusted", "local testkit identity does not match");
   }
 
-  const appProof = verifyQosPingAnswer(session.pingText, challenge);
+  const appProof = verifyQosPingAnswer(pingText, challenge);
   if (appProof.publicKey !== config.expectedEphemeralPublicKey) {
     throw new DecryptionServiceError("DiscoveryUntrusted", "local ping used another key");
   }

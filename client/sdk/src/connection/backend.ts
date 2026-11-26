@@ -19,8 +19,8 @@ export type BootProofResolver = (input: ResolveBootProofInput) => Promise<Turnke
 export type EnclaveBackend = {
   readonly endpoint: URL;
   readonly resolveBootProof?: BootProofResolver;
-  /** Set when the endpoint is the gatekeeper. Session and operations then carry the Boot Proof. */
-  readonly gatekeeperApiKey?: string;
+  /** Sent as `x-api-key`. The reply then includes the Boot Proof. */
+  readonly apiKey?: string;
 };
 
 /** The enclave's request fields around the ciphertext. */
@@ -35,15 +35,15 @@ const MAX_DISCOVERY_RESPONSE_BYTES = 64n * 1024n;
 const MAX_PING_RESPONSE_BYTES = 64n * 1024n;
 const MAX_BOOT_PROOF_BYTES = 512n * 1024n;
 
-function postGatekeeper(
+function postOperation(
   backend: EnclaveBackend,
-  route: "session" | "operations",
+  route: "operations",
   transport: DecryptionServiceTransport,
   body: string,
   signal?: AbortSignal,
 ): Promise<Response> {
-  const apiKey = backend.gatekeeperApiKey;
-  if (apiKey === undefined || !apiKey.trim()) throw new DecryptionServiceError("InvalidGatekeeperConfig");
+  const apiKey = backend.apiKey;
+  if (apiKey === undefined || !apiKey.trim()) throw new DecryptionServiceError("InvalidServiceConfig");
   return fetchWithSignal(transport, endpointUrl(backend.endpoint, `/v1/decryption/${route}`), {
     method: "POST",
     redirect: "error",
@@ -90,36 +90,6 @@ export async function fetchDiscovery(
   return readAnswer(response, "DiscoveryUntrusted", MAX_DISCOVERY_RESPONSE_BYTES, signal);
 }
 
-export async function fetchSession(
-  backend: EnclaveBackend,
-  pingBody: string,
-  transport: DecryptionServiceTransport,
-  signal?: AbortSignal,
-): Promise<{ infoText: string; pingText: string; bootProof?: TurnkeyBootProofWire }> {
-  const { endpoint } = backend;
-  if (backend.gatekeeperApiKey !== undefined) {
-    const response = await postGatekeeper(backend, "session", transport, pingBody, signal);
-    const text = await readAnswer(
-      response,
-      "BootProofUnverified",
-      MAX_DISCOVERY_RESPONSE_BYTES + MAX_PING_RESPONSE_BYTES + MAX_BOOT_PROOF_BYTES,
-      signal,
-    );
-    const answer = parseStrictJson<{
-      info: unknown;
-      ping: unknown;
-      bootProof: TurnkeyBootProofWire;
-    }>(text, ["info", "ping", "bootProof"]);
-    return {
-      infoText: JSON.stringify(answer.info),
-      pingText: JSON.stringify(answer.ping),
-      bootProof: answer.bootProof,
-    };
-  }
-  const infoText = await fetchDiscovery(endpoint, transport, signal);
-  return { infoText, pingText: await fetchPing(endpoint, pingBody, transport, signal) };
-}
-
 /** Looks up the Boot Proof for the replica that signed `appProof`. */
 export function lookupBootProof(
   backend: EnclaveBackend,
@@ -151,7 +121,7 @@ export async function sendToEnclave(
   return readAnswer(response, code, maxAnswerBytes, signal);
 }
 
-/** Posts one operation. A gatekeeper answer is the enclave response plus that replica's Boot Proof. */
+/** Posts one operation. With an API key, the answer is the enclave response plus that replica's Boot Proof. */
 export async function sendOperation(
   backend: EnclaveBackend,
   request: EncryptedRequestWire,
@@ -159,10 +129,10 @@ export async function sendOperation(
   maxAnswerBytes: bigint,
   signal?: AbortSignal,
 ): Promise<{ responseText: string; bootProof?: TurnkeyBootProofWire }> {
-  if (backend.gatekeeperApiKey === undefined) {
+  if (backend.apiKey === undefined) {
     return { responseText: await sendToEnclave(backend.endpoint, request, transport, maxAnswerBytes, signal) };
   }
-  const response = await postGatekeeper(
+  const response = await postOperation(
     backend, "operations", transport, canonicalizeJsonValue(request), signal,
   );
   const code = response.status >= 500 ? "OperationUnavailable" : "OperationRejected";

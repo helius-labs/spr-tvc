@@ -89,7 +89,7 @@ async fn health_needs_no_credentials() {
 #[tokio::test]
 async fn requests_without_gatekeepers_credential_or_project_are_refused() {
     let state = state();
-    let mut forged = request("POST", "/v1/decryption/session", "{}");
+    let mut forged = request("POST", "/v1/decryption/operations", "{}");
     forged.headers_mut().insert(
         header::AUTHORIZATION,
         HeaderValue::from_static("Bearer forged"),
@@ -98,7 +98,7 @@ async fn requests_without_gatekeepers_credential_or_project_are_refused() {
         call(&state, forged).await,
         (StatusCode::UNAUTHORIZED, "OriginAuthRequired".to_owned())
     );
-    let mut anonymous = request("POST", "/v1/decryption/session", "{}");
+    let mut anonymous = request("POST", "/v1/decryption/operations", "{}");
     anonymous.headers_mut().remove(PROJECT_ID_HEADER);
     assert_eq!(
         call(&state, anonymous).await,
@@ -116,13 +116,13 @@ async fn a_direct_request_needs_an_api_key_dev_api_resolves() {
         request
     };
     assert_eq!(
-        call(&state, direct("/v1/decryption/session")).await,
+        call(&state, direct("/v1/decryption/operations")).await,
         (StatusCode::UNAUTHORIZED, "ApiKeyRequired".to_owned())
     );
     assert_eq!(
         call(
             &state,
-            direct("/v1/decryption/session?api-key=not%20a%20key")
+            direct("/v1/decryption/operations?api-key=not%20a%20key")
         )
         .await,
         (StatusCode::UNAUTHORIZED, "ApiKeyInvalid".to_owned())
@@ -135,12 +135,12 @@ async fn a_direct_request_needs_an_api_key_dev_api_resolves() {
     assert_eq!(
         call(
             &state,
-            direct(&format!("/v1/decryption/session?api-key={key}"))
+            direct(&format!("/v1/decryption/operations?api-key={key}"))
         )
         .await,
         unresolved
     );
-    let mut by_header = direct("/v1/decryption/session");
+    let mut by_header = direct("/v1/decryption/operations");
     by_header.headers_mut().insert(
         crate::project::API_KEY_HEADER,
         HeaderValue::from_static(key),
@@ -171,9 +171,9 @@ async fn a_ciphertext_that_never_reached_the_enclave_can_be_resent() {
 }
 
 #[tokio::test]
-async fn a_session_takes_one_of_the_projects_in_flight_slots() {
+async fn an_operation_takes_one_of_the_projects_in_flight_slots() {
     let state = state();
-    let body = r#"{"version":1,"encrypted_challenge":"aa"}"#;
+    let body = operation("abcd");
     let held: Vec<_> = (0..4)
         .map(|_| {
             state
@@ -183,12 +183,12 @@ async fn a_session_takes_one_of_the_projects_in_flight_slots() {
         })
         .collect();
     assert_eq!(
-        call(&state, request("POST", "/v1/decryption/session", body)).await,
+        call(&state, request("POST", "/v1/decryption/operations", &body)).await,
         (StatusCode::TOO_MANY_REQUESTS, "TooManyInFlight".to_owned())
     );
     drop(held);
     assert_eq!(
-        call(&state, request("POST", "/v1/decryption/session", body)).await,
+        call(&state, request("POST", "/v1/decryption/operations", &body)).await,
         (
             StatusCode::FAILED_DEPENDENCY,
             "EnclaveUnavailable".to_owned()
@@ -203,7 +203,7 @@ async fn oversized_enclave_bodies_and_other_routes_are_refused() {
     assert_eq!(
         call(
             &state,
-            request("POST", "/v1/decryption/session", &oversized)
+            request("POST", "/v1/decryption/operations", &oversized)
         )
         .await
         .0,

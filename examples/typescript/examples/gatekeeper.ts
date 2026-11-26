@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 
 import {
-  createGatekeeperDecryptionService,
-  type GatekeeperDecryptionServiceConfig,
+  createDecryptionService,
+  type DecryptionServiceConfig,
 } from "@heliuslabs/spr-decryption-service";
 
 import { noteFor, owner, sameBytes } from "../src/lib.js";
@@ -22,12 +22,12 @@ if (apiKey === undefined || apiKey === "") {
   process.exit(1);
 }
 
-const service = createGatekeeperDecryptionService({
+const service = createDecryptionService({
   network: "devnet",
   endpoint: new URL(required("SPR_E2E_GATEKEEPER_URL")),
   apiKey,
   release: JSON.parse(readFileSync(required("SPR_E2E_RELEASE_PIN"), "utf8")) as NonNullable<
-    GatekeeperDecryptionServiceConfig["release"]
+    DecryptionServiceConfig["release"]
   >,
 });
 const keys = await service.keys(await owner());

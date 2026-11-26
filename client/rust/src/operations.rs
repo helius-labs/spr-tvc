@@ -1,18 +1,14 @@
-//! Gatekeeper client.
-//!
-//! `POST /v1/decryption/session` returns discovery, the ping, and the replica's
-//! Boot Proof. `keys` and `decrypt` then go to `POST /v1/decryption/operations`,
-//! and each reply carries the Boot Proof of the replica that signed it.
+//! `keys` and `decrypt` go to `POST /v1/decryption/operations`. The request
+//! names the release in the signed pin. Each reply carries the Boot Proof of
+//! the replica that signed it, checked with the App Proof before the result opens.
 
 use crate::attestation::{now_ms, BootProof, IdentityPcrs};
 use crate::service::{
     bind_operation_proof, shielded_address, CheckReply, Exchange, OpenNotes, ServiceKeys, Target,
     RESPONSE_ENVELOPE_SLACK,
 };
-use crate::session::{
-    bind_discovery, join, ping_challenge, verify_ping, verify_reply_boot, Session,
-};
-use crate::transport::{session_limit, Transport};
+use crate::session::{info_from_policy, join, verify_reply_boot, Session};
+use crate::transport::Transport;
 use crate::{ClientError, OwnerSigner};
 use base64::Engine;
 use serde::Deserialize;
@@ -21,23 +17,22 @@ use spr_tvc_wire::constants::QOS_P256_PUBLIC_LEN;
 use spr_tvc_wire::decryption_service::{
     DecryptedOutputs, ServiceOperation, ServiceRequest, ADDRESS_LEN,
 };
-use spr_tvc_wire::encoding::{decode_lower_hex, jcs_serialize, parse_strict_json};
+use spr_tvc_wire::encoding::{decode_lower_hex, parse_strict_json};
 use spr_tvc_wire::error::{ErrorCode, TvcError};
 use spr_tvc_wire::release::{verify_signed_release_policy, PinnedReleaseAuthorities};
 use spr_tvc_wire::types::{
-    AppProof, DecryptItem, EncryptedResponse, Network, OperationKind, QosPingResponse, ServiceInfo,
-    SignedReleasePolicy,
+    AppProof, DecryptItem, EncryptedResponse, Network, OperationKind, SignedReleasePolicy,
 };
 
 const BOOT_PROOF_SLACK: u64 = 512 * 1024;
 
-/// Where the gatekeeper is, and the API key it expects.
-pub struct Gatekeeper {
+/// HTTPS origin and the API key sent as `x-api-key`.
+pub struct OperationsConfig {
     pub endpoint: String,
     pub api_key: String,
 }
 
-/// Public keys and decrypt through the gatekeeper, with the bundled Boot Proofs checked.
+/// `keys` and `decrypt` at an HTTPS origin. Each reply's Boot Proof is checked.
 pub struct OperationsClient<T> {
     session: Session<()>,
     transport: T,
@@ -47,33 +42,20 @@ pub struct OperationsClient<T> {
 impl<T: Transport> OperationsClient<T> {
     pub fn connect(
         network: Network,
-        gatekeeper: Gatekeeper,
+        config: OperationsConfig,
         release: SignedReleasePolicy,
         authorities: PinnedReleaseAuthorities,
         pcrs: IdentityPcrs,
         transport: T,
     ) -> Result<Self, ClientError> {
-        require_gatekeeper(&gatekeeper.endpoint, &gatekeeper.api_key)?;
+        require_https_origin(&config.endpoint, &config.api_key)?;
         let now = now_ms;
         verify_signed_release_policy(&release, &authorities, network, now())?;
-        let (body, payload) = ping_challenge(&release.policy.quorum_public_key)?;
-        let bytes = transport.post_with_api_key(
-            &join(&gatekeeper.endpoint, "/v1/decryption/session"),
-            &gatekeeper.api_key,
-            &body,
-            session_limit(),
-        )?;
-        let text = std::str::from_utf8(&bytes)
-            .map_err(|_| TvcError::new(ErrorCode::InvalidCanonicalJson))?;
-        let answer: SessionAnswer = parse_strict_json(text)?;
-        bind_discovery(&answer.info, &release)?;
-        let proof = verify_ping(&jcs_serialize(&answer.ping)?, &payload)?;
-        let boot = decode_boot_proof(&answer.boot_proof)?;
-        verify_reply_boot(&release, &pcrs, &proof, &boot, now())?;
+        let info = info_from_policy(&release.policy)?;
         Ok(Self {
-            session: Session::verified(gatekeeper.endpoint, answer.info, release, pcrs, now),
+            session: Session::verified(config.endpoint, info, release, pcrs, now),
             transport,
-            api_key: gatekeeper.api_key,
+            api_key: config.api_key,
         })
     }
 
@@ -199,14 +181,6 @@ struct WireBootProof {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SessionAnswer {
-    info: ServiceInfo,
-    ping: QosPingResponse,
-    boot_proof: WireBootProof,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OperationAnswer {
     response: EncryptedResponse,
     boot_proof: WireBootProof,
@@ -229,8 +203,8 @@ fn decode_boot_proof(wire: &WireBootProof) -> Result<BootProof, TvcError> {
     })
 }
 
-fn require_gatekeeper(endpoint: &str, api_key: &str) -> Result<(), ClientError> {
-    let url = reqwest::Url::parse(endpoint).map_err(|_| ClientError::InvalidGatekeeperConfig)?;
+fn require_https_origin(endpoint: &str, api_key: &str) -> Result<(), ClientError> {
+    let url = reqwest::Url::parse(endpoint).map_err(|_| ClientError::InvalidServiceConfig)?;
     if url.scheme() != "https"
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -241,7 +215,7 @@ fn require_gatekeeper(endpoint: &str, api_key: &str) -> Result<(), ClientError> 
         || api_key.trim().is_empty()
         || reqwest::header::HeaderValue::from_str(api_key).is_err()
     {
-        return Err(ClientError::InvalidGatekeeperConfig);
+        return Err(ClientError::InvalidServiceConfig);
     }
     Ok(())
 }
@@ -259,14 +233,15 @@ mod tests {
         API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, TVC_APP_PROOF_SCHEME,
     };
     use spr_tvc_wire::crypto::sign_p256_message;
+    use spr_tvc_wire::decryption_service::parse_service_request;
     use spr_tvc_wire::encoding::{encode_lower_hex, jcs_serialize, parse_strict_json};
     use spr_tvc_wire::error::ErrorCode;
     use spr_tvc_wire::release::{
         sign_release_policy, PinnedReleaseAuthorities, ReleaseAuthorityKey,
     };
     use spr_tvc_wire::types::{
-        AppProof, Network, OperationKind, QosPingRequest, QosPingResponse,
-        ReleaseAuthoritySignature, ReleasePolicy, ServiceInfo, SignedReleasePolicy,
+        AppProof, EncryptedRequest, EncryptedResponse, Network, OperationKind,
+        ReleaseAuthoritySignature, ReleasePolicy, SignedReleasePolicy,
     };
 
     use super::*;
@@ -298,26 +273,25 @@ mod tests {
         ) -> Result<Vec<u8>, ClientError> {
             assert_eq!(api_key, "test-key");
             self.urls.borrow_mut().push(format!("POST {url}"));
-            let request: QosPingRequest = parse_strict_json(body).unwrap();
-            let payload = self
-                .encryption
-                .decrypt(&request.encrypted_challenge)
-                .unwrap();
-            let payload = std::str::from_utf8(&payload).unwrap();
-            let signature = sign_p256_message(&self.signing_secret, payload.as_bytes()).unwrap();
-            let ping = QosPingResponse {
-                version: API_VERSION,
-                tvc_app_proof: AppProof {
-                    scheme: TVC_APP_PROOF_SCHEME.into(),
-                    public_key: self.ephemeral.clone(),
-                    proof_payload: payload.into(),
-                    signature: signature.to_vec(),
+            let request: EncryptedRequest = parse_strict_json(body).unwrap();
+            let inner = self.encryption.decrypt(&request.ciphertext).unwrap();
+            let inner = std::str::from_utf8(&inner).unwrap();
+            let service = parse_service_request(inner).unwrap();
+            let proof_payload = "{}";
+            let signature =
+                sign_p256_message(&self.signing_secret, proof_payload.as_bytes()).unwrap();
+            let answer = OperationWire {
+                response: EncryptedResponse {
+                    version: API_VERSION,
+                    request_id: service.request_id,
+                    encrypted_result: vec![0],
+                    tvc_app_proof: AppProof {
+                        scheme: TVC_APP_PROOF_SCHEME.into(),
+                        public_key: self.ephemeral.clone(),
+                        proof_payload: proof_payload.into(),
+                        signature: signature.to_vec(),
+                    },
                 },
-            };
-            let info = service_info(self);
-            let answer = SessionWire {
-                info: &info,
-                ping: &ping,
                 boot_proof: Wire {
                     aws_attestation_doc_b64: &base64::engine::general_purpose::STANDARD
                         .encode(b"no"),
@@ -330,9 +304,8 @@ mod tests {
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
-    struct SessionWire<'a> {
-        info: &'a ServiceInfo,
-        ping: &'a QosPingResponse,
+    struct OperationWire<'a> {
+        response: EncryptedResponse,
         boot_proof: Wire<'a>,
     }
 
@@ -341,27 +314,6 @@ mod tests {
     struct Wire<'a> {
         aws_attestation_doc_b64: &'a str,
         ephemeral_public_key_hex: &'a str,
-    }
-
-    fn service_info(gate: &Gate) -> ServiceInfo {
-        ServiceInfo {
-            version: API_VERSION,
-            network: Network::Devnet,
-            security_domain_id: [0; 32],
-            release_id: "release".into(),
-            manifest_digest: [9; 32],
-            executable_digest: [8; 32],
-            quorum_public_key: gate.ephemeral.clone(),
-            quorum_key_id: "quorum".into(),
-            quorum_key_epoch: 1,
-            supported_operations: vec![
-                OperationKind::ServicePublicKeys,
-                OperationKind::ServiceDecrypt,
-            ],
-            max_encrypted_request_bytes: 1_000_000,
-            max_encrypted_response_bytes: 1_000_000,
-            proof_type: spr_tvc_wire::decryption_service::SERVICE_PROOF_TYPE.into(),
-        }
     }
 
     fn signed_policy(gate: &Gate) -> (SignedReleasePolicy, PinnedReleaseAuthorities) {
@@ -444,12 +396,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_gatekeeper_that_is_not_an_https_origin() {
+    fn rejects_an_endpoint_that_is_not_an_https_origin() {
         let (transport, urls) = gate();
         let (release, authorities) = signed_policy(&transport);
         let Err(error) = OperationsClient::connect(
             Network::Devnet,
-            Gatekeeper {
+            OperationsConfig {
                 endpoint: "http://gate.example".into(),
                 api_key: "test-key".into(),
             },
@@ -458,19 +410,20 @@ mod tests {
             pcrs(),
             transport,
         ) else {
-            panic!("expected the gatekeeper call to fail");
+            panic!("expected the endpoint to be refused");
         };
-        assert!(matches!(error, ClientError::InvalidGatekeeperConfig));
+        assert!(matches!(error, ClientError::InvalidServiceConfig));
         assert!(urls.borrow().is_empty());
     }
 
     #[test]
-    fn session_boot_proof_is_checked_before_any_operation() {
+    fn the_first_operation_checks_the_boot_proof() {
         let (transport, urls) = gate();
         let (release, authorities) = signed_policy(&transport);
-        let Err(error) = OperationsClient::connect(
+        let owner = [7u8; 32];
+        let client = OperationsClient::connect(
             Network::Devnet,
-            Gatekeeper {
+            OperationsConfig {
                 endpoint: "https://gate.example".into(),
                 api_key: "test-key".into(),
             },
@@ -478,8 +431,11 @@ mod tests {
             authorities,
             pcrs(),
             transport,
-        ) else {
-            panic!("expected the gatekeeper call to fail");
+        )
+        .expect("the pin is enough to connect");
+        assert!(urls.borrow().is_empty());
+        let Err(error) = client.address(&owner) else {
+            panic!("expected the boot proof to fail");
         };
         assert!(matches!(
             error,
@@ -487,7 +443,7 @@ mod tests {
         ));
         assert_eq!(
             urls.borrow().as_slice(),
-            ["POST https://gate.example/v1/decryption/session"]
+            ["POST https://gate.example/v1/decryption/operations"]
         );
     }
 }

@@ -6,7 +6,7 @@ use spr_tvc_wire::encoding::{decode_lower_hex_array, parse_strict_json};
 use spr_tvc_wire::release::PinnedReleaseAuthorities;
 use spr_tvc_wire::SignedReleasePolicy;
 
-use spr_tvc_client::{Gatekeeper, IdentityPcrs, OperationsClient, ReqwestTransport};
+use spr_tvc_client::{IdentityPcrs, OperationsClient, OperationsConfig, ReqwestTransport};
 
 use support::{one_note, replay, Key, Tape};
 
@@ -32,7 +32,7 @@ struct Pcrs {
 
 #[test]
 #[ignore = "needs SPR_E2E_GATEKEEPER_URL, an API key, and SPR_E2E_RELEASE_PIN"]
-fn session_opens_one_note() {
+fn operations_open_one_note() {
     let endpoint = std::env::var("SPR_E2E_GATEKEEPER_URL").expect("SPR_E2E_GATEKEEPER_URL");
     let api_key = std::env::var("HELIUS_API_KEY")
         .or_else(|_| std::env::var("API_KEY"))
@@ -50,7 +50,7 @@ fn session_opens_one_note() {
     let tape = Tape::new(ReqwestTransport::new().expect("client"));
     let client = OperationsClient::connect(
         network,
-        Gatekeeper {
+        OperationsConfig {
             endpoint,
             api_key: api_key.clone(),
         },

@@ -1,22 +1,25 @@
-//! Verify one replica, then check every later reply against the same release.
+//! The signed pin is the request target. Each reply is checked on its own.
 
 use qos_p256::encrypt::{P256EncryptPair, P256EncryptPublic};
-use spr_tvc_wire::constants::{
-    API_VERSION, QOS_P256_PUBLIC_LEN, TVC_APP_PROOF_SCHEME, TVC_QOS_PING_PROOF_TYPE,
-};
+#[cfg(feature = "local-dev")]
+use spr_tvc_wire::constants::TVC_QOS_PING_PROOF_TYPE;
+use spr_tvc_wire::constants::{API_VERSION, QOS_P256_PUBLIC_LEN, TVC_APP_PROOF_SCHEME};
 use spr_tvc_wire::crypto::verify_p256_message;
 use spr_tvc_wire::decryption_service::SERVICE_PROOF_TYPE;
-use spr_tvc_wire::encoding::{decode_lower_hex_array, is_rfc8785, jcs_serialize};
+#[cfg(feature = "local-dev")]
+use spr_tvc_wire::encoding::jcs_serialize;
+use spr_tvc_wire::encoding::{decode_lower_hex_array, is_rfc8785};
 use spr_tvc_wire::error::{ErrorCode, TvcError};
 use spr_tvc_wire::release::{verify_signed_release_policy, PinnedReleaseAuthorities};
 use spr_tvc_wire::types::{
-    AppProof, Network, OperationKind, QosPingChallenge, QosPingRequest, QosPingResponse,
-    ServiceInfo, SignedReleasePolicy,
+    AppProof, Network, OperationKind, ReleasePolicy, ServiceInfo, SignedReleasePolicy,
 };
+#[cfg(feature = "local-dev")]
+use spr_tvc_wire::types::{QosPingChallenge, QosPingRequest, QosPingResponse};
 use zeroize::Zeroizing;
 
 use crate::attestation::{now_ms, verify_boot_proof, BootProof, IdentityPcrs};
-use crate::transport::{discovery_limit, Transport};
+use crate::transport::Transport;
 use crate::ClientError;
 
 /// Fetches the Boot Proof for the replica ephemeral key that signed a reply.
@@ -61,29 +64,7 @@ impl<B: BootProofs> Session<B> {
     ) -> Result<(Self, T), ClientError> {
         let now = config.now_ms.unwrap_or(now_ms);
         verify_signed_release_policy(&config.release, &config.authorities, config.network, now())?;
-        let info_bytes = config
-            .transport
-            .get(&join(&config.endpoint, "/v1/info"), discovery_limit())?;
-        let info_text = std::str::from_utf8(&info_bytes)
-            .map_err(|_| TvcError::new(ErrorCode::DiscoveryUntrusted))?;
-        let info: ServiceInfo = spr_tvc_wire::encoding::parse_strict_json(info_text)?;
-        bind_discovery(&info, &config.release)?;
-        let (body, payload) = ping_challenge(&info.quorum_public_key)?;
-        let ping_bytes = config.transport.post(
-            &join(&config.endpoint, "/v1/ping"),
-            &body,
-            discovery_limit(),
-        )?;
-        let ping_text = std::str::from_utf8(&ping_bytes)
-            .map_err(|_| TvcError::new(ErrorCode::BootProofUnverified))?;
-        let proof = verify_ping(ping_text, &payload)?;
-        verify_key(
-            &config.boot_proofs,
-            &config.release,
-            &config.pcrs,
-            &proof,
-            now(),
-        )?;
+        let info = info_from_policy(&config.release.policy)?;
         Ok((
             Self {
                 endpoint: config.endpoint,
@@ -164,6 +145,7 @@ impl Session<()> {
         }
     }
 
+    #[cfg(feature = "local-dev")]
     pub(crate) fn with_loopback_key(mut self, key: [u8; QOS_P256_PUBLIC_LEN]) -> Self {
         self.expected_ephemeral = Some(key);
         self
@@ -208,6 +190,34 @@ pub(crate) fn verify_reply_boot(
     Ok(())
 }
 
+/// The request target from a pin that names one manifest and one executable.
+pub(crate) fn info_from_policy(policy: &ReleasePolicy) -> Result<ServiceInfo, TvcError> {
+    Ok(ServiceInfo {
+        version: policy.version,
+        network: policy.network,
+        security_domain_id: policy.security_domain_id,
+        release_id: policy.release_id.clone(),
+        manifest_digest: one_digest(&policy.accepted_manifest_digests)?,
+        executable_digest: one_digest(&policy.accepted_executable_digests)?,
+        quorum_public_key: policy.quorum_public_key.clone(),
+        quorum_key_id: policy.quorum_key_id.clone(),
+        quorum_key_epoch: policy.quorum_key_epoch,
+        supported_operations: policy.allowed_operations.clone(),
+        max_encrypted_request_bytes: u64::from(policy.max_encrypted_request_bytes),
+        max_encrypted_response_bytes: u64::from(policy.max_encrypted_response_bytes),
+        proof_type: SERVICE_PROOF_TYPE.to_owned(),
+    })
+}
+
+fn one_digest(digests: &[String]) -> Result<[u8; 32], TvcError> {
+    let [digest] = digests else {
+        return Err(TvcError::new(ErrorCode::ReleaseBindingMismatch));
+    };
+    decode_lower_hex_array::<32>(digest.as_str())
+        .map_err(|_| TvcError::new(ErrorCode::ReleaseBindingMismatch))
+}
+
+#[cfg(feature = "local-dev")]
 pub(crate) fn bind_discovery(
     info: &ServiceInfo,
     signed: &SignedReleasePolicy,
@@ -244,6 +254,7 @@ pub(crate) fn bind_discovery(
     Ok(())
 }
 
+#[cfg(feature = "local-dev")]
 pub(crate) fn ping_challenge(quorum_public_key: &[u8]) -> Result<(String, String), ClientError> {
     if quorum_public_key.len() != QOS_P256_PUBLIC_LEN {
         return Err(TvcError::new(ErrorCode::InvalidPublicKey).into());
@@ -267,6 +278,7 @@ pub(crate) fn ping_challenge(quorum_public_key: &[u8]) -> Result<(String, String
     Ok((body, payload))
 }
 
+#[cfg(feature = "local-dev")]
 pub(crate) fn verify_ping(text: &str, payload: &str) -> Result<AppProof, TvcError> {
     if !is_rfc8785(text) {
         return Err(TvcError::new(ErrorCode::InvalidCanonicalJson));
@@ -296,6 +308,7 @@ fn ephemeral_key(bytes: &[u8]) -> Result<[u8; QOS_P256_PUBLIC_LEN], TvcError> {
         .map_err(|_| TvcError::new(ErrorCode::InvalidPublicKey))
 }
 
+#[cfg(feature = "local-dev")]
 fn parse_qos_ping_response(text: &str) -> Result<QosPingResponse, TvcError> {
     spr_tvc_wire::encoding::parse_strict_json(text)
 }

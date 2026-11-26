@@ -2,11 +2,12 @@
 //!
 //! The phone, or any other Rust caller, uses [`DecryptionClient::address`] to
 //! pay an unregistered owner and [`DecryptionClient::keys`] to open those notes.
-//! [`DecryptionClient`] checks the Nitro document, PCR0–3, PCR17, and the
-//! manifest allowlist, and opens a reply only after the App Proof names that
-//! request. [`OperationsClient`] is the gatekeeper path. It checks the Boot
-//! Proof bundled with `/v1/decryption/session`, then posts `keys` and `decrypt`
-//! to `/v1/decryption/operations` and checks the Boot Proof on each reply.
+//! [`DecryptionClient`] builds each request from the signed release pin. It
+//! checks the Nitro document, PCR0–3, PCR17, and the manifest allowlist on the
+//! reply, and opens that reply only after the App Proof names the request.
+//! [`OperationsClient`] posts `keys` and `decrypt` to
+//! `/v1/decryption/operations` and checks the Boot Proof bundled in that reply
+//! the same way.
 
 #![forbid(unsafe_code)]
 
@@ -20,7 +21,7 @@ mod session;
 mod transport;
 
 pub use attestation::{BootProof, IdentityPcrs};
-pub use operations::{Gatekeeper, OperationsClient};
+pub use operations::{OperationsClient, OperationsConfig};
 pub use service::{DecryptionClient, Note, ServiceKeys};
 pub use transport::{ReqwestTransport, Transport};
 
@@ -50,8 +51,8 @@ pub enum ClientError {
     Entropy,
     /// The response key could not open the ciphertext.
     InvalidEnvelope,
-    /// The gatekeeper URL or API key cannot be used.
-    InvalidGatekeeperConfig,
+    /// The HTTPS origin or API key cannot be used.
+    InvalidServiceConfig,
 }
 
 impl Display for ClientError {
@@ -62,7 +63,7 @@ impl Display for ClientError {
             Self::ResponseTooLarge => f.write_str("ResponseTooLarge"),
             Self::Entropy => f.write_str("Entropy"),
             Self::InvalidEnvelope => f.write_str("InvalidEncryptedEnvelope"),
-            Self::InvalidGatekeeperConfig => f.write_str("InvalidGatekeeperConfig"),
+            Self::InvalidServiceConfig => f.write_str("InvalidServiceConfig"),
         }
     }
 }

@@ -1,14 +1,15 @@
 # @heliuslabs/spr-decryption-service
 
-The client checks a signed release, then the Boot Proof of the replica, before it sends a note.
+The client checks the signed release pin, then posts each operation. The reply carries that replica's Boot Proof. The client checks the Boot Proof and the App Proof before it opens the result. The [spec](../../docs/spec.md) is the path and the trust assumptions.
 
 ```ts
 import { createDecryptionService } from "@heliuslabs/spr-decryption-service";
 
 const service = createDecryptionService({
   network: "devnet",
-  endpoint: new URL(decryptionServiceUrl),
-  resolveBootProof,
+  endpoint: new URL("https://devnet.helius-rpc.com"),
+  apiKey,
+  release,
 });
 
 const recipient = await service.address(recipientAddress);
@@ -19,6 +20,6 @@ const keys = await service.keys(owner);
 
 Pass `recipient` to the SPR transfer builder. The transfer publishes the recipient's Solana address.
 
-Mainnet ignores a policy that tries to choose its own trust anchors. The pins are in [trust/mainnet.json](trust/mainnet.json). A gateway can attach the Boot Proofs. The client still checks them. [`createGatekeeperDecryptionService`](src/client/decryption.ts) is that path.
+Mainnet ignores a policy that tries to choose its own trust anchors. The pins are in [trust/mainnet.json](trust/mainnet.json). Pass `resolveBootProof` instead of `apiKey` to dial an enclave URL and fetch each Boot Proof.
 
-[Examples](../../examples/typescript) · [Turnkey flow](../../examples/turnkey) · [Specification](../../decryption-service/SPEC.md)
+[Examples](../../examples/typescript) · [Turnkey flow](../../examples/turnkey)

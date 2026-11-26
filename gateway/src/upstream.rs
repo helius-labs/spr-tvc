@@ -6,7 +6,7 @@ use bytes::{Bytes, BytesMut};
 use cadence_macros::{statsd_count, statsd_time};
 use reqwest::redirect::Policy;
 
-use spr_tvc_wire::{EncryptedRequest, QosPingRequest};
+use spr_tvc_wire::EncryptedRequest;
 
 use crate::config::EnclaveConfig;
 use crate::error::ApiError;
@@ -16,8 +16,6 @@ const JSON: HeaderValue = HeaderValue::from_static("application/json");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Target {
-    Info,
-    Ping,
     Operations,
 }
 
@@ -25,8 +23,6 @@ impl Target {
     #[inline]
     const fn name(self) -> &'static str {
         match self {
-            Self::Info => "enclave_info",
-            Self::Ping => "enclave_ping",
             Self::Operations => "enclave_operations",
         }
     }
@@ -73,17 +69,6 @@ impl Enclave {
             .connect_timeout(CONNECT_TIMEOUT)
             .build()?;
         Ok(Self { http, config })
-    }
-
-    pub async fn info(&self) -> Result<Forwarded, ApiError> {
-        let url = format!("{}/v1/info", self.config.base_url);
-        self.send(Target::Info, self.http.get(url)).await
-    }
-
-    pub async fn ping(&self, request: &QosPingRequest) -> Result<Forwarded, ApiError> {
-        let url = format!("{}/v1/ping", self.config.base_url);
-        self.send(Target::Ping, self.http.post(url).json(request))
-            .await
     }
 
     pub async fn operations(&self, request: &EncryptedRequest) -> Result<Forwarded, ApiError> {

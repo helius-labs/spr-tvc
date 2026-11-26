@@ -4,7 +4,7 @@ import { ViewingKey } from "@heliuslabs/spr";
 import { randomSalt } from "@heliuslabs/spr/keypair";
 import { expect, it } from "vitest";
 
-import { createGatekeeperDecryptionService } from "../../src/client/decryption.js";
+import { createDecryptionService } from "../../src/client/decryption.js";
 import type { DecryptionServiceTransport } from "../../src/connection/http.js";
 import { qosDecrypt } from "../../src/crypto/qos.js";
 import { decodeLowerHex } from "../../src/wire/hex.js";
@@ -15,7 +15,7 @@ const apiKey = process.env["HELIUS_API_KEY"] ?? process.env["API_KEY"];
 const pinPath = process.env["SPR_E2E_RELEASE_PIN"];
 
 it.skipIf(!endpoint || !apiKey || !pinPath)(
-  "the gatekeeper session opens one note for its owner",
+  "opens one note for its owner",
   async () => {
     const release = JSON.parse(readFileSync(pinPath!, "utf8")) as ReleaseTrust;
     const seen: { body: string; text: string }[] = [];
@@ -28,7 +28,7 @@ it.skipIf(!endpoint || !apiKey || !pinPath)(
         return new Response(text, { status: response.status, headers: response.headers });
       },
     };
-    const service = createGatekeeperDecryptionService({
+    const service = createDecryptionService({
       network: "devnet",
       endpoint: new URL(endpoint!),
       apiKey: apiKey!,

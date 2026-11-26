@@ -1,10 +1,10 @@
-//! Opens one note through the gatekeeper.
+//! Opens one note at a deployed endpoint.
 //!
 //! Set `SPR_E2E_GATEKEEPER_URL`, `HELIUS_API_KEY` or `API_KEY`, and
 //! `SPR_E2E_RELEASE_PIN` to the signed release JSON.
 
 use serde::Deserialize;
-use spr_tvc_client::{Gatekeeper, IdentityPcrs, OperationsClient, ReqwestTransport};
+use spr_tvc_client::{IdentityPcrs, OperationsClient, OperationsConfig, ReqwestTransport};
 use spr_tvc_rust_example::{note_for, owner};
 use spr_tvc_wire::encoding::{decode_lower_hex_array, parse_strict_json};
 use spr_tvc_wire::release::PinnedReleaseAuthorities;
@@ -46,7 +46,7 @@ fn main() {
     };
     let client = OperationsClient::connect(
         pin.release_policy.policy.network,
-        Gatekeeper { endpoint, api_key },
+        OperationsConfig { endpoint, api_key },
         pin.release_policy,
         pin.release_authorities,
         pcrs,
