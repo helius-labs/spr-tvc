@@ -1,5 +1,11 @@
 import { p256 } from "@noble/curves/p256";
-import { createSignableMessage, getAddressEncoder, type MessagePartialSigner } from "@solana/kit";
+import {
+  address as solanaAddress,
+  createSignableMessage,
+  getAddressEncoder,
+  type Address,
+  type MessagePartialSigner,
+} from "@solana/kit";
 
 import type { ConnectedTvcRuntime } from "../connection/connect.js";
 import {
@@ -44,6 +50,14 @@ type DecryptCall = {
 export type ServiceCall = Extract<ServiceOperation, { type: "PublicKeys" }> | DecryptCall;
 export type ServiceCallResult<T extends ServiceCall> = Extract<ServiceResult, { type: T["type"] }>;
 
+/** Validates structural grant identity (`grantee`, distinct `owner`, valid Solana address). */
+export function validateGrantIdentity(grant: ViewGrant, signerAddress: string): Address {
+  if (grant.grantee !== signerAddress || grant.owner === grant.grantee) {
+    throw new DecryptionServiceError("InvalidSignature");
+  }
+  return solanaAddress(grant.owner);
+}
+
 /** Validates a caller-supplied grant before fetching keys or signing a `Decrypt`. */
 export function validateGrantForTarget(
   grant: ViewGrant,
@@ -51,9 +65,7 @@ export function validateGrantForTarget(
   target: ConnectedTvcRuntime["target"],
   nowMs: bigint,
 ): void {
-  if (grant.grantee !== signerAddress || grant.owner === grant.grantee) {
-    throw new DecryptionServiceError("InvalidSignature");
-  }
+  validateGrantIdentity(grant, signerAddress);
   if (grant.network !== target.network) {
     throw new DecryptionServiceError("NetworkMismatch");
   }

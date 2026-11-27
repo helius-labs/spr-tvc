@@ -1,6 +1,6 @@
 import { ShieldedAddress, ShieldedPublicKey, type Bytes32 } from "@heliuslabs/spr";
 import { X25519PublicKey, type Bytes31 } from "@heliuslabs/spr/keypair";
-import { address as solanaAddress, createSignableMessage, getAddressEncoder, type Address, type MessagePartialSigner } from "@solana/kit";
+import { createSignableMessage, getAddressEncoder, type Address, type MessagePartialSigner } from "@solana/kit";
 
 import type { BootProofResolver, EnclaveBackend } from "../connection/backend.js";
 import type { DecryptionServiceTransport } from "../connection/http.js";
@@ -22,6 +22,7 @@ import { batched, checkHexList } from "./items.js";
 import {
   executeServiceCall,
   validateGrantForTarget,
+  validateGrantIdentity,
   type ServiceCall,
   type ServiceCallResult,
 } from "./exchange.js";
@@ -187,10 +188,7 @@ export function decryptionServiceFromSession(
         const grant = options?.grant;
         let owner: Address = signer.address;
         if (grant !== undefined) {
-          if (grant.grantee !== signer.address || grant.owner === grant.grantee) {
-            throw new DecryptionServiceError("InvalidSignature");
-          }
-          owner = solanaAddress(grant.owner);
+          owner = validateGrantIdentity(grant, signer.address);
           const context = await session.context(signal);
           validateGrantForTarget(grant, signer.address, context.target, context.nowMs());
         }

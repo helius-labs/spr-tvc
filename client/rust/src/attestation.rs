@@ -122,9 +122,8 @@ pub(crate) fn verify_boot_proof(
     now_ms: u64,
 ) -> Result<(), TvcError> {
     let decoded = decode_attestation(boot).map_err(|_| TvcError::boot("decode"))?;
-    validate_shape(&decoded.document).map_err(|_| TvcError::boot("shape"))?;
-    let attestation_ms =
-        assert_fresh(&decoded.document, now_ms).map_err(|_| TvcError::boot("timestamp"))?;
+    let attestation_ms = validate_shape(&decoded.document).map_err(|_| TvcError::boot("shape"))?;
+    assert_fresh(attestation_ms, now_ms).map_err(|_| TvcError::boot("timestamp"))?;
     verify_bindings(
         app_ephemeral_public_key,
         boot,
@@ -194,7 +193,7 @@ fn unverified() -> TvcError {
     TvcError::new(ErrorCode::BootProofUnverified)
 }
 
-fn validate_shape(attestation: &Cbor) -> Result<(), TvcError> {
+fn validate_shape(attestation: &Cbor) -> Result<u64, TvcError> {
     let module_id = attestation
         .map_get(&CborKey::Text("module_id".into()))?
         .as_str()?;
@@ -212,6 +211,7 @@ fn validate_shape(attestation: &Cbor) -> Result<(), TvcError> {
     if timestamp <= 0 {
         return Err(unverified());
     }
+    let timestamp = u64::try_from(timestamp).map_err(|_| unverified())?;
     match attestation.map_get(&CborKey::Text("nonce".into())) {
         Ok(Cbor::Null) | Err(_) => {}
         Ok(_) => return Err(unverified()),
@@ -228,23 +228,14 @@ fn validate_shape(attestation: &Cbor) -> Result<(), TvcError> {
             return Err(unverified());
         }
     }
-    Ok(())
+    Ok(timestamp)
 }
 
-fn assert_fresh(attestation: &Cbor, now_ms: u64) -> Result<u64, TvcError> {
-    if now_ms == 0 {
+fn assert_fresh(timestamp_ms: u64, now_ms: u64) -> Result<(), TvcError> {
+    if now_ms == 0 || timestamp_ms > now_ms.saturating_add(MAX_CLOCK_SKEW_MS) {
         return Err(unverified());
     }
-    let timestamp = u64::try_from(
-        attestation
-            .map_get(&CborKey::Text("timestamp".into()))?
-            .as_i64()?,
-    )
-    .map_err(|_| unverified())?;
-    if timestamp > now_ms.saturating_add(MAX_CLOCK_SKEW_MS) {
-        return Err(unverified());
-    }
-    Ok(timestamp)
+    Ok(())
 }
 
 fn verify_bindings(

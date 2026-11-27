@@ -6,7 +6,7 @@ import { decodeDecimalU64 } from "../wire/decimal.js";
 import { DecryptionServiceError } from "../wire/error.js";
 import type { ManifestSetPolicy, ReleasePolicy } from "../wire/types.js";
 import { parseUncompressedSec1 } from "../crypto/p256.js";
-import type { QosIdentityPcrs } from "./boot-proof.js";
+import { decodeBase64, type QosIdentityPcrs } from "./boot-proof.js";
 import { qosJsonHash } from "./qos-json.js";
 import type { TurnkeyBootProofWire } from "./turnkey.js";
 
@@ -158,12 +158,4 @@ function verifyManifestApproval(
   if (!p256.verify(normalized, sha256(digest), publicSec1, { prehash: false })) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
-}
-
-function decodeBase64(value: string): Uint8Array {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new DecryptionServiceError("BootProofUnverified");
-  }
-  const binary = atob(value);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }

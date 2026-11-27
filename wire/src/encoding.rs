@@ -260,15 +260,19 @@ fn classify_json_error(error: &serde_json::Error) -> ErrorCode {
     }
 }
 
-/// Parse JSON, rejecting duplicate keys, unknown fields (via serde), and trailing data.
-pub fn parse_strict_json<T: DeserializeOwned>(input: &str) -> Result<T, TvcError> {
+fn parse_strict_value(input: &str) -> Result<Value, TvcError> {
     let mut de = serde_json::Deserializer::from_str(input);
     let strict = StrictValue::deserialize(&mut de)
         .map_err(|error| TvcError::new(classify_json_error(&error)))?;
     de.end()
         .map_err(|_| TvcError::new(ErrorCode::InvalidCanonicalJson))?;
-    let value = Value::from(strict);
-    serde_json::from_value(value).map_err(|error| TvcError::new(classify_json_error(&error)))
+    Ok(Value::from(strict))
+}
+
+/// Parse JSON, rejecting duplicate keys, unknown fields (via serde), and trailing data.
+pub fn parse_strict_json<T: DeserializeOwned>(input: &str) -> Result<T, TvcError> {
+    serde_json::from_value(parse_strict_value(input)?)
+        .map_err(|error| TvcError::new(classify_json_error(&error)))
 }
 
 pub fn to_canonical_value<T: Serialize>(value: &T) -> Result<Value, TvcError> {
@@ -327,12 +331,7 @@ pub fn canonicalize_json_value(value: &Value) -> Result<String, TvcError> {
 }
 
 pub fn canonicalize_json_str(input: &str) -> Result<String, TvcError> {
-    let mut de = serde_json::Deserializer::from_str(input);
-    let strict = StrictValue::deserialize(&mut de)
-        .map_err(|error| TvcError::new(classify_json_error(&error)))?;
-    de.end()
-        .map_err(|_| TvcError::new(ErrorCode::InvalidCanonicalJson))?;
-    canonicalize_json_value(&Value::from(strict))
+    canonicalize_json_value(&parse_strict_value(input)?)
 }
 
 pub fn jcs_serialize<T: Serialize>(value: &T) -> Result<String, TvcError> {

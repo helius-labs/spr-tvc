@@ -59,9 +59,9 @@ export async function verifyBootProof(input: VerifyBootProofInput): Promise<void
     const decoded = decodeBootProof(input.bootProof);
     stage = "shape";
     validateCoseProtectedHeader(decoded.coseSign1.protectedHeaders);
-    validateAttestationShape(decoded.attestation);
+    const attestationTimestampMs = validateAttestationShape(decoded.attestation);
     stage = "timestamp";
-    assertAttestationFreshness(decoded.attestation, input.nowMs);
+    assertAttestationFreshness(attestationTimestampMs, input.nowMs);
 
     stage = "bindings";
     verifyProofBindings(input, decoded.attestation);
@@ -74,7 +74,7 @@ export async function verifyBootProof(input: VerifyBootProofInput): Promise<void
       decoded.certificate,
       decoded.cabundle,
       Number(input.nowMs),
-      decoded.attestation.get("timestamp") as number,
+      attestationTimestampMs,
     );
   } catch {
     // Stage names contain no proof bytes or remote error text. They make a
@@ -139,7 +139,7 @@ function validateCoseProtectedHeader(protectedHeaders: Uint8Array): void {
   }
 }
 
-function validateAttestationShape(attestation: AwsNitroAttestationDocument): void {
+function validateAttestationShape(attestation: AwsNitroAttestationDocument): number {
   const moduleId = attestation.get("module_id");
   if (typeof moduleId !== "string" || moduleId.length === 0) {
     throw new DecryptionServiceError("BootProofUnverified");
@@ -162,20 +162,17 @@ function validateAttestationShape(attestation: AwsNitroAttestationDocument): voi
   for (let index = 0; index < QOS_ATTESTABLE_PCR_COUNT; index += 1) {
     getPcr(attestation, index);
   }
+  return timestamp;
 }
 
-function assertAttestationFreshness(
-  attestation: AwsNitroAttestationDocument,
-  nowMs: bigint,
-): void {
+function assertAttestationFreshness(timestampMs: number, nowMs: bigint): void {
   // Narrowed to Number below for the certificate-chain check, so anything past
   // the safe-integer range would silently lose precision.
   if (nowMs <= 0n || nowMs > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
-  const timestamp = BigInt(attestation.get("timestamp") as number);
   // The signed challenge or operation reply proves live possession of the key.
-  if (timestamp > nowMs + MAX_CLOCK_SKEW_MS) {
+  if (BigInt(timestampMs) > nowMs + MAX_CLOCK_SKEW_MS) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
 }
@@ -240,7 +237,7 @@ function decodeFixedLowerHex(value: string, length: number): Uint8Array {
   return bytes;
 }
 
-function decodeBase64(value: string): Uint8Array {
+export function decodeBase64(value: string): Uint8Array {
   if (typeof value !== "string" || value.length === 0) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
