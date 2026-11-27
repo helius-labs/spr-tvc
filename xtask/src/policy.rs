@@ -82,6 +82,8 @@ pub(crate) struct Approved {
     pub(crate) quorum_public_key: Vec<u8>,
     pub(crate) namespace: String,
     pub(crate) manifest_set: ManifestSetPolicy,
+    #[serde(skip_serializing)]
+    pub(crate) manifest_nonce: u32,
 }
 
 impl TurnkeyDeployment {
@@ -159,6 +161,7 @@ impl TurnkeyDeployment {
                     })
                     .collect(),
             },
+            manifest_nonce: manifest.namespace.nonce,
         })
     }
 }
@@ -269,13 +272,20 @@ impl Release<'_> {
             valid_from_ms > 0 && expires_at_ms > valid_from_ms && expires_at_ms <= MAX_SAFE_INTEGER,
             "invalid policy lifetime"
         );
+        let minimum_manifest_nonce = u64::from(self.args.minimum_manifest_nonce.unwrap_or(0));
+        ensure!(
+            u64::from(approved.manifest_nonce) >= minimum_manifest_nonce,
+            "approved manifest nonce {} is below --minimum-manifest-nonce {}",
+            approved.manifest_nonce,
+            minimum_manifest_nonce
+        );
         Ok(ReleasePolicy {
             version: API_VERSION,
             network: self.network(),
             security_domain_id: self.app.security_domain_id,
             namespace: approved.namespace.clone(),
             manifest_set: approved.manifest_set.clone(),
-            minimum_manifest_nonce: 0,
+            minimum_manifest_nonce,
             quorum_key_id: self.app.quorum_key_id.clone(),
             quorum_key_epoch: self.app.quorum_key_epoch,
             quorum_public_key: approved.quorum_public_key.clone(),
@@ -421,9 +431,42 @@ pub(crate) fn verify_mainnet_policy(
     trust: &MainnetTrust,
     now: u64,
 ) -> Result<()> {
+    let policy = &signed.policy;
     ensure!(
-        &signed.policy == expected,
+        policy.version == expected.version
+            && policy.network == expected.network
+            && policy.security_domain_id == expected.security_domain_id
+            && policy.namespace == expected.namespace
+            && policy.manifest_set == expected.manifest_set
+            && policy.quorum_key_id == expected.quorum_key_id
+            && policy.quorum_key_epoch == expected.quorum_key_epoch
+            && policy.quorum_public_key == expected.quorum_public_key
+            && policy.allowed_operations == expected.allowed_operations
+            && policy.max_encrypted_request_bytes == expected.max_encrypted_request_bytes
+            && policy.max_encrypted_response_bytes == expected.max_encrypted_response_bytes
+            && policy.turnkey_trust_root_id == expected.turnkey_trust_root_id
+            && policy.valid_from_ms == expected.valid_from_ms,
         "signed mainnet policy does not match the attested candidate"
+    );
+    ensure!(
+        policy.minimum_manifest_nonce >= expected.minimum_manifest_nonce
+            && policy.minimum_manifest_nonce <= u64::from(u32::MAX),
+        "signed mainnet policy manifest nonce floor is out of range"
+    );
+    ensure!(
+        policy.revocation_epoch >= trust.release_authorities.minimum_revocation_epoch,
+        "signed mainnet policy revocation epoch is below trust floor"
+    );
+    let lifetime = policy
+        .expires_at_ms
+        .checked_sub(policy.valid_from_ms)
+        .context("signed mainnet policy expiry precedes validFromMs")?;
+    ensure!(
+        policy.valid_from_ms > 0
+            && lifetime > 0
+            && lifetime <= trust.maximum_policy_lifetime_ms
+            && policy.expires_at_ms <= MAX_SAFE_INTEGER,
+        "signed mainnet policy lifetime exceeds pinned maximum"
     );
     verify_signed_release_policy(signed, &trust.release_authorities, Network::Mainnet, now)?;
     Ok(())

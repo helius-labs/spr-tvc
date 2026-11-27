@@ -188,7 +188,10 @@ impl<'a> Reader<'a> {
             }
             MAJOR_ARRAY => {
                 let len = usize::try_from(argument).map_err(|_| boot())?;
-                let mut items = Vec::with_capacity(len);
+                if len > self.bytes.len() - self.offset {
+                    return Err(boot());
+                }
+                let mut items = Vec::with_capacity(len.min(64));
                 for _ in 0..len {
                     items.push(self.read(depth + 1)?);
                 }
@@ -196,6 +199,9 @@ impl<'a> Reader<'a> {
             }
             MAJOR_MAP => {
                 let len = usize::try_from(argument).map_err(|_| boot())?;
+                if len > (self.bytes.len() - self.offset) / 2 {
+                    return Err(boot());
+                }
                 Ok(Cbor::Map(self.entries(depth, len)?))
             }
             MAJOR_TAG => {
@@ -209,7 +215,7 @@ impl<'a> Reader<'a> {
     }
 
     fn entries(&mut self, depth: usize, len: usize) -> Result<Vec<(CborKey, Cbor)>, TvcError> {
-        let mut entries = Vec::with_capacity(len);
+        let mut entries = Vec::with_capacity(len.min(64));
         for _ in 0..len {
             let key = map_key(self.read(depth + 1)?)?;
             if entries.iter().any(|(existing, _)| existing == &key) {
@@ -333,6 +339,13 @@ mod tests {
     fn rejects_non_minimal_arguments_and_trailing_bytes() {
         assert!(decode_cbor(&hex::decode("1800").unwrap()).is_err());
         assert!(decode_cbor(&hex::decode("0000").unwrap()).is_err());
+    }
+
+    #[test]
+    fn rejects_huge_container_lengths_without_allocating() {
+        // Definite array and map claiming 2^32 entries with zero body bytes.
+        assert!(decode_cbor(&hex::decode("9b0000000100000000").unwrap()).is_err());
+        assert!(decode_cbor(&hex::decode("bb0000000100000000").unwrap()).is_err());
     }
 
     #[test]

@@ -19,7 +19,12 @@ import { requireNetwork } from "../wire/network.js";
 import { releaseForConnection, type ReleaseTrust } from "../wire/releases.js";
 import type { DecryptItem, Network } from "../wire/types.js";
 import { batched, checkHexList } from "./items.js";
-import { executeServiceCall, type ServiceCall, type ServiceCallResult } from "./exchange.js";
+import {
+  executeServiceCall,
+  validateGrantForTarget,
+  type ServiceCall,
+  type ServiceCallResult,
+} from "./exchange.js";
 import { ServiceKeys, type DecryptionServiceKeys } from "./keys.js";
 const addressEncoder = getAddressEncoder();
 
@@ -80,8 +85,12 @@ export async function signViewGrant(
   },
   options?: DecryptionServiceRequestOptions,
 ): Promise<ViewGrant> {
+  const network = requireNetwork(input.network);
+  if (input.grantee === owner.address) {
+    throw new DecryptionServiceError("InvalidSignature");
+  }
   acceptViewGrantWindow(input.notBeforeMs, input.expiryMs, input.notBeforeMs);
-  const unsigned = viewGrantWire({ ...input, owner: owner.address });
+  const unsigned = viewGrantWire({ ...input, network, owner: owner.address });
   const message = viewGrantMessage(
     new Uint8Array(addressEncoder.encode(owner.address)),
     viewGrantDigest(unsigned),
@@ -176,6 +185,10 @@ export function decryptionServiceFromSession(
     keys(signer, options) {
       return withinRequest(options, async (signal) => {
         const grant = options?.grant;
+        if (grant !== undefined) {
+          const context = await session.context(signal);
+          validateGrantForTarget(grant, signer.address, context.target, context.nowMs());
+        }
         const owner = grant === undefined ? signer.address : solanaAddress(grant.owner);
         const shielded = await address(owner, signal);
         return new ServiceKeys(shielded, (items, context) =>

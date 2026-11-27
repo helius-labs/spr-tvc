@@ -7,8 +7,8 @@
 //! checks that the pinned manifest set approved the manifest in the reply,
 //! then the Nitro document, PCR0–3, and PCR17, and opens the reply only after
 //! the App Proof names the request. A failed Boot Proof is
-//! `BootProofUnverified` and names the stage: `decode`, `shape`, `timestamp`,
-//! `bindings`, or `aws-chain`. The reply stays sealed.
+//! `BootProofUnverified` and names the stage: `manifest`, `decode`, `shape`,
+//! `timestamp`, `bindings`, or `aws-chain`. The reply stays sealed.
 //! [`OperationsClient`] posts `keys` and `decrypt` to
 //! `/v1/decryption/operations` and checks the Boot Proof bundled in that reply
 //! the same way.

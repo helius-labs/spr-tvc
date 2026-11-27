@@ -217,3 +217,99 @@ async fn oversized_enclave_bodies_and_other_routes_are_refused() {
         );
     }
 }
+
+#[tokio::test]
+async fn client_disconnect_completes_upstream_and_records_replay_outcome() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::sync::Notify;
+
+    crate::metrics::init_for_tests();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let entered_srv = Arc::clone(&entered);
+    let release_srv = Arc::clone(&release);
+
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf).await;
+        entered_srv.notify_one();
+        release_srv.notified().await;
+        let body = r#"{"code":"InvalidSignature"}"#;
+        let reply = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(reply.as_bytes()).await;
+    });
+
+    let enclave = Enclave::new(EnclaveConfig {
+        base_url: format!("http://{addr}"),
+        request_timeout_ms: 5_000,
+        max_body_bytes: 4_096,
+        max_in_flight_per_project: 1,
+        replay_window_secs: 360,
+        replay_max_entries: 1_000,
+        replay_redis_url: None,
+    })
+    .unwrap();
+    let state = Arc::new(AppState {
+        origin_auth_header: ORIGIN_AUTH.to_owned(),
+        api_keys: ApiKeys::for_tests(UNREACHABLE),
+        enclave,
+        turnkey: Turnkey::for_tests(UNREACHABLE),
+        limiter: InFlightLimiter::new(1, "test.in_flight_rejected"),
+        replay: ReplayLedger::Local(LocalLedger::new(Duration::from_secs(360), 1_000)),
+    });
+
+    let body = operation("deadbeef");
+    let first = tokio::spawn({
+        let state = Arc::clone(&state);
+        let body = body.clone();
+        async move { call(&state, request("POST", "/v1/decryption/operations", &body)).await }
+    });
+    entered.notified().await;
+
+    // Simulate client disconnect mid-flight.
+    first.abort();
+    let _ = first.await;
+
+    // Permit must still be held while the enclave call is in flight.
+    assert!(
+        state
+            .limiter
+            .try_acquire(&ProjectId::for_tests(PROJECT))
+            .is_err()
+    );
+
+    // Let the enclave finish; the detached task records the outcome and drops
+    // the permit.
+    release.notify_one();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(permit) = state.limiter.try_acquire(&ProjectId::for_tests(PROJECT)) {
+                drop(permit);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("detached task must release permit once upstream completes");
+
+    // Retrying now gets the recorded 400 outcome instead of sticking on
+    // OperationInProgress.
+    let response = router(Arc::clone(&state), 4_096)
+        .oneshot(request("POST", "/v1/decryption/operations", &body))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response.headers().get(IDEMPOTENT_REPLAYED),
+        Some(&HeaderValue::from_static("true"))
+    );
+}

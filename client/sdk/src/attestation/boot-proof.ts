@@ -58,6 +58,7 @@ export async function verifyBootProof(input: VerifyBootProofInput): Promise<void
   try {
     const decoded = decodeBootProof(input.bootProof);
     stage = "shape";
+    validateCoseProtectedHeader(decoded.coseSign1.protectedHeaders);
     validateAttestationShape(decoded.attestation);
     stage = "timestamp";
     assertAttestationFreshness(decoded.attestation, input.nowMs);
@@ -65,13 +66,15 @@ export async function verifyBootProof(input: VerifyBootProofInput): Promise<void
     stage = "bindings";
     verifyProofBindings(input, decoded.attestation);
 
-    // Check certificate validity on the verifier's clock.
+    // Check root validity on the verifier's clock and leaf/intermediate validity
+    // at the attestation timestamp.
     stage = "aws-chain";
     await verifyTurnkeyAwsAttestation(
       decoded.coseSign1,
       decoded.certificate,
       decoded.cabundle,
       Number(input.nowMs),
+      decoded.attestation.get("timestamp") as number,
     );
   } catch {
     // Stage names contain no proof bytes or remote error text. They make a
@@ -123,6 +126,17 @@ function decodeBootProof(bootProof: TurnkeyBootProofWire): DecodedBootProof {
     throw new DecryptionServiceError("BootProofUnverified");
   }
   return { coseSign1, attestation: decoded, certificate, cabundle: cabundle.map(asBytes) };
+}
+
+function validateCoseProtectedHeader(protectedHeaders: Uint8Array): void {
+  if (protectedHeaders.length === 0) {
+    throw new DecryptionServiceError("BootProofUnverified");
+  }
+  const header = decodeCbor(protectedHeaders);
+  // COSE_Sign1 alg header (label 1) must be ES384 (-35).
+  if (!(header instanceof Map) || header.get(1) !== -35) {
+    throw new DecryptionServiceError("BootProofUnverified");
+  }
 }
 
 function validateAttestationShape(attestation: AwsNitroAttestationDocument): void {

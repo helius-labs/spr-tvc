@@ -23,9 +23,8 @@ export function approvedManifestSha256(
 ): string {
   try {
     return encodeLowerHex(approvedDigest(bootProof, policy, pcrs));
-  } catch (error) {
-    if (error instanceof DecryptionServiceError && error.code === "BootProofUnverified") throw error;
-    throw new DecryptionServiceError("BootProofUnverified");
+  } catch {
+    throw new DecryptionServiceError("BootProofUnverified", "manifest");
   }
 }
 
@@ -36,17 +35,32 @@ function approvedDigest(
 ): Uint8Array {
   const envelope = JSON.parse(new TextDecoder().decode(decodeBase64(bootProof.qosManifestEnvelopeB64))) as unknown;
   if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
-    throw new DecryptionServiceError("BootProofUnverified");
+    throw new DecryptionServiceError("BootProofUnverified", "manifest");
   }
   const record = envelope as Record<string, unknown>;
   const manifest = record.manifest;
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
-    throw new DecryptionServiceError("BootProofUnverified");
+    throw new DecryptionServiceError("BootProofUnverified", "manifest");
   }
   const digest = qosJsonHash(manifest);
   const body = manifest as Record<string, unknown>;
+  if (body.version !== "v2") {
+    throw new DecryptionServiceError("BootProofUnverified", "manifest");
+  }
+  const pivot = body.pivot as Record<string, unknown> | undefined;
+  if (
+    !pivot ||
+    typeof pivot !== "object" ||
+    Array.isArray(pivot) ||
+    pivot.debugMode !== false ||
+    (pivot.env !== undefined &&
+      pivot.env !== null &&
+      (typeof pivot.env !== "object" || Array.isArray(pivot.env) || Object.keys(pivot.env).length > 0))
+  ) {
+    throw new DecryptionServiceError("BootProofUnverified", "manifest");
+  }
   if (!sameManifestSet(policy.manifestSet, body.manifestSet)) {
-    throw new DecryptionServiceError("BootProofUnverified");
+    throw new DecryptionServiceError("BootProofUnverified", "manifest");
   }
   requireApprovals(record.manifestSetApprovals, policy.manifestSet, digest);
   const namespace = body.namespace as Record<string, unknown> | undefined;

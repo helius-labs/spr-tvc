@@ -33,6 +33,9 @@ export async function connectLocalUnattestedTvc(
   config: LocalUnattestedConnectionConfig,
   signal?: AbortSignal,
 ): Promise<ConnectedTvcRuntime> {
+  if (config.network !== "devnet") {
+    throw new DecryptionServiceError("NetworkMismatch", "local testkit supports devnet only");
+  }
   const { endpoint } = config.backend;
   if (
     endpoint.protocol !== "http:" ||

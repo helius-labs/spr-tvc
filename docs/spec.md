@@ -69,7 +69,7 @@ Both calls are the `operation` inside one `POST /v1/decryption/operations`. The 
 
 `PublicKeys` is sealed to the Quorum key, because that is the only request the service accepts on `/v1/operations`. `Decrypt` also requires the owner's Ed25519 signature, or a grantee's signature plus the owner's grant.
 
-The gateway forwards the operations ciphertext unchanged. It keys a replay ledger by project and ciphertext under the prefix `/v1/decryption`. The configured window is 360 seconds. A repeat returns the first answer and sets `Idempotent-Replayed: true`. The current admission limits are a 512 KiB body and 16 in-flight calls per project (`gateway/configs/config.yaml`).
+The gateway forwards the operations ciphertext unchanged. It keys a replay ledger by project and request envelope under the prefix `/v1/decryption`. The configured window is 360 seconds. A repeat returns the first answer and sets `Idempotent-Replayed: true`. The current admission limits are a 10 MiB body and 16 in-flight calls per project (`gateway/configs/config.yaml`).
 
 The enclave's own ceiling is 10 MiB for the encrypted request and the encrypted result, the same cap as the indexer. It rejects a larger body before opening any ciphertext. The SDK splits a decrypt on the pin's ceiling, before signing. There is no item cap. The enclave has no separate in-flight limit, so concurrent connections can multiply that ceiling by the connection count.
 

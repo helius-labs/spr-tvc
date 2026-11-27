@@ -143,10 +143,10 @@ pub(crate) async fn decryption_operations(
     Caller(project): Caller,
     ApiJson(request): ApiJson<EncryptedRequest>,
 ) -> Result<Response, ApiError> {
-    let _permit = state.limiter.try_acquire(&project)?;
+    let permit = state.limiter.try_acquire(&project)?;
     let key = match state
         .replay
-        .claim(DECRYPTION_SERVICE_PREFIX, &project, &request.ciphertext)
+        .claim(DECRYPTION_SERVICE_PREFIX, &project, &request)
         .await?
     {
         Claim::New(key) => key,
@@ -158,8 +158,24 @@ pub(crate) async fn decryption_operations(
             return Ok(response);
         }
     };
-    let outcome = state.enclave.operations(&request).await;
-    state.replay.record(key, &outcome).await;
+    // Complete the upstream call and record its outcome in a spawned task
+    // holding the in-flight permit, so client cancellation neither leaks a
+    // `Running` claim nor frees concurrency slots prematurely.
+    let task_state = Arc::clone(&state);
+    let outcome = match tokio::spawn(async move {
+        let _permit = permit;
+        let outcome = task_state.enclave.operations(&request).await;
+        task_state.replay.record(key, &outcome).await;
+        outcome
+    })
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            state.replay.release(key).await;
+            Err(ApiError::EnclaveUnavailable)
+        }
+    };
     Ok(answer(&state, outcome).await)
 }
 

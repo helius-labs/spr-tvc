@@ -32,6 +32,7 @@ fn every_code_is_its_variant_name() {
             "DiscoveryUntrusted",
             "NetworkMismatch",
             "ReleasePolicyInvalid",
+            "ReleaseNotPinned",
         ]
     );
     for code in ErrorCode::VARIANTS {

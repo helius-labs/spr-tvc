@@ -150,4 +150,16 @@ describe("verifyBootProof", () => {
     expect(verifyChainMock).not.toHaveBeenCalled();
   });
 
+  it("rejects a COSE_Sign1 protected header whose alg is not ES384", async () => {
+    await expect(verify({ protectedHeaders: Uint8Array.from([0xa1, 0x01, 0x26]) })).rejects.toMatchObject({
+      code: "BootProofUnverified",
+      message: "BootProofUnverified: shape",
+    });
+    await expect(verify({ protectedHeaders: new Uint8Array(0) })).rejects.toMatchObject({
+      code: "BootProofUnverified",
+      message: "BootProofUnverified: shape",
+    });
+    expect(verifyChainMock).not.toHaveBeenCalled();
+  });
+
 });

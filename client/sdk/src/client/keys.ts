@@ -143,10 +143,10 @@ export class ServiceKeys implements DecryptionServiceKeys {
       return;
     }
     const nullifierKey = NullifierKey.fromSecret(secret);
-    const transactionKey = ViewingKey.fromBytes(
-      hkdf(sha256, secret, undefined, TRANSACTION_KEY_LABEL, 32) as Bytes32,
-    );
+    const transactionSeed = hkdf(sha256, secret, undefined, TRANSACTION_KEY_LABEL, 32) as Bytes32;
+    let transactionKey: ViewingKey | undefined;
     try {
+      transactionKey = ViewingKey.fromBytes(transactionSeed);
       const transactionPublic = transactionKey.publicKey();
       this.#local = LocalShieldedKeys.fromKeys({
         address: ShieldedAddress.fromPublicKeys(
@@ -160,7 +160,8 @@ export class ServiceKeys implements DecryptionServiceKeys {
       this.#transactionKey = transactionPublic;
     } finally {
       nullifierKey.destroy();
-      transactionKey.destroy();
+      transactionKey?.destroy();
+      transactionSeed.fill(0);
       secret.fill(0);
     }
   }

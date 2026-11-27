@@ -19,9 +19,11 @@ const MANIFEST_SHA256 = "016748a03b94269ade9b75c7b4231a2940cc3c85aabade226a956ea
 
 type Envelope = {
   manifest: {
+    version: string;
     namespace: { name: string; nonce: string | number; quorumKey: string };
     manifestSet: { threshold: string | number; members: { alias: string; pubKey: string }[] };
     enclave: { pcr0: string; pcr1: string; pcr2: string; pcr3: string };
+    pivot: { debugMode: boolean; env?: Record<string, string> };
   };
   manifestSetApprovals: unknown[];
 };
@@ -96,20 +98,44 @@ describe("approved manifest", () => {
     expect(approvedManifestSha256(boot(envelope), policy, pcrs)).toBe(MANIFEST_SHA256);
   });
 
-  it("rejects a mutated manifest, a missing signature, and a foreign set", () => {
+  it("rejects a mutated manifest, a missing signature, a foreign set, debug mode, and non-empty env", () => {
     const mutated = structuredClone(envelope);
     mutated.manifest.namespace.name = "other-namespace";
-    expect(() => approvedManifestSha256(boot(mutated), policy, pcrs)).toThrow(/BootProofUnverified/);
+    expect(() => approvedManifestSha256(boot(mutated), policy, pcrs)).toThrow(
+      "BootProofUnverified: manifest",
+    );
 
     const missing = structuredClone(envelope);
     missing.manifestSetApprovals = [];
-    expect(() => approvedManifestSha256(boot(missing), policy, pcrs)).toThrow(/BootProofUnverified/);
+    expect(() => approvedManifestSha256(boot(missing), policy, pcrs)).toThrow(
+      "BootProofUnverified: manifest",
+    );
 
     const foreign = structuredClone(policy);
     foreign.manifestSet = {
       ...foreign.manifestSet,
       members: foreign.manifestSet.members.map((member) => ({ ...member, alias: "someone-else" })),
     };
-    expect(() => approvedManifestSha256(boot(envelope), foreign, pcrs)).toThrow(/BootProofUnverified/);
+    expect(() => approvedManifestSha256(boot(envelope), foreign, pcrs)).toThrow(
+      "BootProofUnverified: manifest",
+    );
+
+    const wrongVersion = structuredClone(envelope);
+    wrongVersion.manifest.version = "v1";
+    expect(() => approvedManifestSha256(boot(wrongVersion), policy, pcrs)).toThrow(
+      "BootProofUnverified: manifest",
+    );
+
+    const debug = structuredClone(envelope);
+    debug.manifest.pivot.debugMode = true;
+    expect(() => approvedManifestSha256(boot(debug), policy, pcrs)).toThrow(
+      "BootProofUnverified: manifest",
+    );
+
+    const withEnv = structuredClone(envelope);
+    withEnv.manifest.pivot.env = { FOO: "bar" };
+    expect(() => approvedManifestSha256(boot(withEnv), policy, pcrs)).toThrow(
+      "BootProofUnverified: manifest",
+    );
   });
 });

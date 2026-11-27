@@ -8,6 +8,7 @@ use cadence_macros::statsd_count;
 use redis::aio::ConnectionManager;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use spr_tvc_wire::EncryptedRequest;
 
 use crate::error::ApiError;
 use crate::project::ProjectId;
@@ -27,20 +28,26 @@ pub const MAX_KEPT_ANSWER_BYTES: usize = 64 * 1024;
 /// left it unknown.
 pub type Outcome = Result<Forwarded, ApiError>;
 
-/// The digest of an application route, a project, and a ciphertext it claimed.
-/// Application routes and project IDs hold no NUL, so the triple is unambiguous
-/// and private-wallet vs decryption-service cannot share an entry.
+/// The digest of an application route, a project, and an encrypted request
+/// envelope it claimed. Every variable-length component is length-prefixed so
+/// different routes, projects, quorum keys, epochs, versions, or ciphertexts
+/// cannot collide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Key([u8; 32]);
 
 impl Key {
-    fn of(application: &str, project: &ProjectId, ciphertext: &[u8]) -> Self {
+    fn of(application: &str, project: &ProjectId, request: &EncryptedRequest) -> Self {
         let mut digest = Sha256::new();
-        digest.update(application.as_bytes());
-        digest.update([0]);
-        digest.update(project.as_str().as_bytes());
-        digest.update([0]);
-        digest.update(ciphertext);
+        let feed = |digest: &mut Sha256, bytes: &[u8]| {
+            digest.update((bytes.len() as u64).to_be_bytes());
+            digest.update(bytes);
+        };
+        feed(&mut digest, application.as_bytes());
+        feed(&mut digest, project.as_str().as_bytes());
+        digest.update([request.version]);
+        feed(&mut digest, request.quorum_key_id.as_bytes());
+        digest.update(request.quorum_key_epoch.to_be_bytes());
+        feed(&mut digest, &request.ciphertext);
         Self(digest.finalize().into())
     }
 }
@@ -79,16 +86,16 @@ impl ReplayLedger {
         }))
     }
 
-    /// Refuses a ciphertext the project's earlier request on this application
+    /// Refuses a request the project's earlier call on this application
     /// is still running. `application` is the gateway route prefix
     /// (`/v1/private-wallet` or `/v1/decryption`).
     pub async fn claim(
         &self,
         application: &str,
         project: &ProjectId,
-        ciphertext: &[u8],
+        request: &EncryptedRequest,
     ) -> Result<Claim, ApiError> {
-        let key = Key::of(application, project, ciphertext);
+        let key = Key::of(application, project, request);
         let claim = match self {
             Self::Local(ledger) => ledger.claim(key, Instant::now()),
             Self::Shared(ledger) => ledger.claim(key).await,

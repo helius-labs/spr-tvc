@@ -84,6 +84,7 @@ export type AttestationOverrides = {
   pcrOverrides?: Record<number, Uint8Array>;
   pcrCount?: number;
   coseLength?: number;
+  protectedHeaders?: Uint8Array;
 };
 
 function attestationPcrs(overrides: AttestationOverrides): Map<string | number, CborValue> {
@@ -111,7 +112,7 @@ export function bootProof(overrides: AttestationOverrides = {}): TurnkeyBootProo
   for (const [key, value] of Object.entries(overrides.entries ?? {})) payload.set(key, value);
 
   const cose: CborValue[] = [
-    Uint8Array.from([0xa1, 0x01, 0x38, 0x22]),
+    overrides.protectedHeaders ?? Uint8Array.from([0xa1, 0x01, 0x38, 0x22]),
     new Map(),
     Uint8Array.from(encodeCbor(payload)),
     new Uint8Array(96).fill(0x11),

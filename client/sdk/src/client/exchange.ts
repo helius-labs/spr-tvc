@@ -44,6 +44,32 @@ type DecryptCall = {
 export type ServiceCall = Extract<ServiceOperation, { type: "PublicKeys" }> | DecryptCall;
 export type ServiceCallResult<T extends ServiceCall> = Extract<ServiceResult, { type: T["type"] }>;
 
+/** Validates a caller-supplied grant before fetching keys or signing a `Decrypt`. */
+export function validateGrantForTarget(
+  grant: ViewGrant,
+  signerAddress: string,
+  target: ConnectedTvcRuntime["target"],
+  nowMs: bigint,
+): void {
+  if (grant.grantee !== signerAddress || grant.owner === grant.grantee) {
+    throw new DecryptionServiceError("InvalidSignature");
+  }
+  if (grant.network !== target.network) {
+    throw new DecryptionServiceError("NetworkMismatch");
+  }
+  if (grant.quorum_key_id !== target.quorumKeyId) {
+    throw new DecryptionServiceError("ReleaseBindingMismatch");
+  }
+  if (grant.quorum_key_epoch !== target.quorumKeyEpoch) {
+    throw new DecryptionServiceError("QuorumKeyEpochMismatch");
+  }
+  acceptViewGrantWindow(
+    decodeDecimalU64(grant.not_before_ms),
+    decodeDecimalU64(grant.expiry_ms),
+    nowMs,
+  );
+}
+
 /** Check the pin's window and build the response key before the owner signs a batch. */
 export async function executeServiceCall<T extends ServiceCall>(
   context: ConnectedTvcRuntime,
@@ -56,14 +82,7 @@ export async function executeServiceCall<T extends ServiceCall>(
   const responseSecret = p256.utils.randomPrivateKey();
   try {
     if (call.type === "Decrypt" && call.grant) {
-      if (call.grant.grantee !== call.owner.address) {
-        throw new DecryptionServiceError("InvalidSignature");
-      }
-      acceptViewGrantWindow(
-        decodeDecimalU64(call.grant.not_before_ms),
-        decodeDecimalU64(call.grant.expiry_ms),
-        context.nowMs(),
-      );
+      validateGrantForTarget(call.grant, call.owner.address, target, context.nowMs());
     }
     const { owner, operation } = call.type === "Decrypt"
       ? {

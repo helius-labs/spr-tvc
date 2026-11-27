@@ -40,6 +40,8 @@ struct Args {
     source_commit: Option<String>,
     #[arg(long)]
     signed_policy: Option<PathBuf>,
+    #[arg(long)]
+    minimum_manifest_nonce: Option<u32>,
 }
 
 fn parse_network(value: &str) -> Result<Network, &'static str> {
@@ -72,6 +74,11 @@ impl Args {
             self.signed_policy.is_some()
                 == (self.network == Network::Mainnet && self.phase == Phase::Pin),
             "--signed-policy is required for mainnet pin and only used by that phase"
+        );
+        ensure!(
+            self.minimum_manifest_nonce.is_none()
+                || matches!(self.phase, Phase::Prepare | Phase::Pin),
+            "--minimum-manifest-nonce is only used by prepare and pin"
         );
         if self.network == Network::Mainnet {
             ensure!(

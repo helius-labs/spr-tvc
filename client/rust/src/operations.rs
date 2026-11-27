@@ -7,7 +7,7 @@ use crate::service::{
     bind_operation_proof, decrypt_operation, shielded_address, CheckReply, Exchange, OpenNotes,
     ServiceKeys, Target, RESPONSE_ENVELOPE_SLACK,
 };
-use crate::session::{join, verify_reply_boot, Session};
+use crate::session::{join, verify_connection_release, verify_reply_boot, Session};
 use crate::transport::Transport;
 use crate::{ClientError, OwnerSigner};
 use base64::Engine;
@@ -19,7 +19,7 @@ use spr_tvc_wire::decryption_service::{
 };
 use spr_tvc_wire::encoding::{decode_lower_hex, parse_strict_json};
 use spr_tvc_wire::error::{ErrorCode, TvcError};
-use spr_tvc_wire::release::{verify_signed_release_policy, PinnedReleaseAuthorities};
+use spr_tvc_wire::release::PinnedReleaseAuthorities;
 use spr_tvc_wire::types::{
     AppProof, DecryptItem, EncryptedResponse, Network, OperationKind, SignedReleasePolicy,
 };
@@ -50,7 +50,7 @@ impl<T: Transport> OperationsClient<T> {
     ) -> Result<Self, ClientError> {
         require_https_origin(&config.endpoint, &config.api_key)?;
         let now = now_ms;
-        verify_signed_release_policy(&release, &authorities, network, now())?;
+        verify_connection_release(network, &release, &authorities, &pcrs, now())?;
         Ok(Self {
             session: Session::verified(config.endpoint, release, pcrs, now),
             transport,
@@ -491,5 +491,29 @@ mod tests {
             urls.borrow().as_slice(),
             ["POST https://gate.example/v1/decryption/operations"]
         );
+    }
+
+    #[test]
+    fn rejects_unpinned_mainnet_before_connecting() {
+        let (transport, urls) = gate();
+        let (release, authorities) = signed_policy(&transport);
+        let Err(error) = OperationsClient::connect(
+            Network::Mainnet,
+            OperationsConfig {
+                endpoint: "https://gate.example".into(),
+                api_key: "test-key".into(),
+            },
+            release,
+            authorities,
+            pcrs(),
+            transport,
+        ) else {
+            panic!("expected unpinned mainnet to fail closed");
+        };
+        assert!(matches!(
+            error,
+            ClientError::Protocol(ref protocol) if protocol.code == ErrorCode::ReleaseNotPinned
+        ));
+        assert!(urls.borrow().is_empty());
     }
 }

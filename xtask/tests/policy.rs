@@ -205,6 +205,43 @@ fn signed_mainnet_policy_requires_the_exact_candidate_and_distinct_authorities()
         ..policy.clone()
     };
     assert!(verify_mainnet_policy(&signed, &other, &trust, now).is_err());
+
+    // Offline authorities may sign a shorter lifetime, a higher revocation
+    // epoch, or a raised manifest nonce floor without failing candidate checks.
+    let sign_both = |candidate: &ReleasePolicy| {
+        let signatures = [1u8, 2u8]
+            .into_iter()
+            .map(|i| ReleaseAuthoritySignature {
+                key_id: i.to_string(),
+                signature: sign_release_policy(candidate, &[i; 32]).unwrap().to_vec(),
+            })
+            .collect();
+        SignedReleasePolicy {
+            authority_set_id: "mainnet".into(),
+            policy: candidate.clone(),
+            signatures,
+        }
+    };
+    let stricter = ReleasePolicy {
+        expires_at_ms: now + 5,
+        revocation_epoch: 3,
+        minimum_manifest_nonce: 7,
+        ..policy.clone()
+    };
+    verify_mainnet_policy(&sign_both(&stricter), &policy, &trust, now).unwrap();
+
+    let over_lifetime = ReleasePolicy {
+        expires_at_ms: now + 11,
+        ..policy.clone()
+    };
+    assert!(verify_mainnet_policy(&sign_both(&over_lifetime), &policy, &trust, now).is_err());
+
+    let higher_floor = ReleasePolicy {
+        minimum_manifest_nonce: 5,
+        ..policy.clone()
+    };
+    assert!(verify_mainnet_policy(&signed, &higher_floor, &trust, now).is_err());
+
     signed.signatures.pop();
     assert!(verify_mainnet_policy(&signed, &policy, &trust, now).is_err());
     assert!(devnet_sign(policy.clone()).is_err());

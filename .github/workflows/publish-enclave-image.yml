@@ -58,6 +58,8 @@ jobs:
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # One linux/amd64 manifest without attestations, which Turnkey pulls.
+      # Do not consume GHA cache here: cache scopes can be written by
+      # unprotected CI runs and must not feed SLSA-attested release builds.
       - id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -70,8 +72,6 @@ jobs:
             SPR_NETWORK=${{ inputs.network }}
           push: true
           tags: ${{ steps.image.outputs.tag }}
-          cache-from: type=gha,scope=decryption-service-${{ inputs.network }}
-          cache-to: type=gha,mode=max,scope=decryption-service-${{ inputs.network }}
 
       - name: Attest the image digest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2

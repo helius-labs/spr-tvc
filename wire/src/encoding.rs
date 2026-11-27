@@ -247,10 +247,14 @@ impl From<StrictValue> for Value {
 
 fn classify_json_error(error: &serde_json::Error) -> ErrorCode {
     let message = error.to_string();
-    if message.contains(ErrorCode::DuplicateJsonField.as_str()) {
+    if message.starts_with(ErrorCode::DuplicateJsonField.as_str()) {
         ErrorCode::DuplicateJsonField
     } else if message.contains("unknown field") {
         ErrorCode::UnknownJsonField
+    } else if message == ErrorCode::InvalidHex.as_str() {
+        ErrorCode::InvalidHex
+    } else if message == ErrorCode::InvalidDecimal.as_str() {
+        ErrorCode::InvalidDecimal
     } else {
         ErrorCode::InvalidCanonicalJson
     }
