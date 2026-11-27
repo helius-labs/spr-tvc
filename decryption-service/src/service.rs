@@ -108,34 +108,44 @@ pub(crate) fn router(service: Arc<Service>) -> Router {
     Router::new().fallback(dispatch).with_state(service)
 }
 
+const MAX_PING_BODY_BYTES: usize = 4_096;
+
+async fn serve_get_json<T: serde::Serialize>(
+    body: Body,
+    value: &T,
+    serialize_error: PublicError,
+) -> Response<Body> {
+    if to_bytes(body, 0).await.is_err() {
+        return PublicError::RequestTooLarge.into_response();
+    }
+    match jcs_serialize(value) {
+        Ok(json) => http::ok(json),
+        Err(_) => serialize_error.into_response(),
+    }
+}
+
 async fn dispatch(State(service): State<Arc<Service>>, request: Request<Body>) -> Response<Body> {
     let (parts, body) = request.into_parts();
     match (parts.method.as_str(), parts.uri.path()) {
         ("GET", "/health") => {
-            if to_bytes(body, 0).await.is_err() {
-                return PublicError::RequestTooLarge.into_response();
-            }
-            match jcs_serialize(&HealthResponse {
-                status: HealthStatus::Healthy,
-            }) {
-                Ok(body) => http::ok(body),
-                Err(_) => PublicError::Unavailable.into_response(),
-            }
+            serve_get_json(
+                body,
+                &HealthResponse {
+                    status: HealthStatus::Healthy,
+                },
+                PublicError::Unavailable,
+            )
+            .await
         }
         ("GET", "/v1/info") => {
-            if to_bytes(body, 0).await.is_err() {
-                return PublicError::RequestTooLarge.into_response();
-            }
-            match jcs_serialize(&service.info) {
-                Ok(body) => http::ok(body),
-                Err(_) => PublicError::InvalidRequest.into_response(),
-            }
+            serve_get_json(body, &service.info, PublicError::InvalidRequest).await
         }
         ("POST", "/v1/ping" | "/v1/operations") if !has_json_content_type(&parts.headers) => {
             PublicError::InvalidRequest.into_response()
         }
         ("POST", path @ ("/v1/ping" | "/v1/operations")) => {
-            let Ok(body_limit) = usize::try_from(
+            let is_ping = path == "/v1/ping";
+            let Ok(max_ops) = usize::try_from(
                 service
                     .info
                     .max_encrypted_request_bytes
@@ -143,10 +153,14 @@ async fn dispatch(State(service): State<Arc<Service>>, request: Request<Body>) -
             ) else {
                 return PublicError::Unavailable.into_response();
             };
+            let body_limit = if is_ping {
+                max_ops.min(MAX_PING_BODY_BYTES)
+            } else {
+                max_ops
+            };
             let Ok(body) = to_bytes(body, body_limit).await else {
                 return PublicError::RequestTooLarge.into_response();
             };
-            let is_ping = path == "/v1/ping";
             tokio::task::spawn_blocking(move || {
                 if is_ping {
                     handle_ping(&service, &body)

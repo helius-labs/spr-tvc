@@ -41,6 +41,9 @@ importers:
       '@noble/hashes':
         specifier: 1.7.1
         version: 1.7.1
+      '@peculiar/x509':
+        specifier: 1.12.3
+        version: 1.12.3
       '@turnkey/crypto':
         specifier: 2.11.3
         version: 2.11.3

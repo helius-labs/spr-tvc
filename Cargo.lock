@@ -3380,6 +3380,8 @@ dependencies = [
  "qos_core",
  "qos_p256",
  "reqwest",
+ "rustls-pki-types",
+ "rustls-webpki",
  "serde",
  "serde_json",
  "sha2 0.10.9",

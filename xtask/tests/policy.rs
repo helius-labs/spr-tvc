@@ -6,17 +6,15 @@ use spr_tvc_wire::constants::{
 };
 use spr_tvc_wire::crypto::public_key_uncompressed;
 use spr_tvc_wire::release::{
-    sign_release_policy, verify_signed_release_policy, PinnedReleaseAuthorities,
-    ReleaseAuthorityKey,
+    sign_release_policy, verify_signed_release_policy, IdentityPcrs, MainnetTrust,
+    PinnedReleaseAuthorities, ReleaseAuthorityKey,
 };
 use spr_tvc_wire::types::{
     ManifestSetMember, ManifestSetPolicy, Network, ReleaseAuthoritySignature, ReleasePolicy,
     SignedReleasePolicy,
 };
 
-use crate::policy::{
-    devnet_sign, verify_mainnet_policy, MainnetTrust, TurnkeyDeployment, OPERATIONS,
-};
+use crate::policy::{devnet_sign, verify_mainnet_policy, TurnkeyDeployment, OPERATIONS};
 use crate::{Args, Release};
 use clap::Parser;
 
@@ -143,24 +141,6 @@ fn authentic_deployment_binds_app_runtime_image_and_manifest() {
 #[test]
 fn signed_mainnet_policy_requires_the_exact_candidate_and_distinct_authorities() {
     let now = 100;
-    let policy = ReleasePolicy {
-        version: API_VERSION,
-        network: Network::Mainnet,
-        security_domain_id: [3; 32],
-        namespace: "spr-decryption".into(),
-        manifest_set: pinned_manifest_set(),
-        minimum_manifest_nonce: 0,
-        quorum_key_id: "quorum".into(),
-        quorum_key_epoch: 1,
-        quorum_public_key: vec![4; 130],
-        allowed_operations: OPERATIONS.to_vec(),
-        max_encrypted_request_bytes: MAX_ENCRYPTED_POLICY_BYTES,
-        max_encrypted_response_bytes: MAX_ENCRYPTED_POLICY_BYTES,
-        turnkey_trust_root_id: EXPECTED_TURNKEY_TRUST_ROOT_ID.into(),
-        valid_from_ms: now,
-        expires_at_ms: now + 10,
-        revocation_epoch: 1,
-    };
     let mut trust = MainnetTrust {
         release_authorities: PinnedReleaseAuthorities {
             authority_set_id: "mainnet".into(),
@@ -168,12 +148,17 @@ fn signed_mainnet_policy_requires_the_exact_candidate_and_distinct_authorities()
             keys: vec![],
             minimum_revocation_epoch: 1,
         },
-        qos_identity_pcrs: (0..=3).map(|i| (i, "ab".repeat(48))).collect(),
-        security_domain_id: policy.security_domain_id,
+        qos_identity_pcrs: IdentityPcrs {
+            pcr0: [0xab; 48],
+            pcr1: [0xab; 48],
+            pcr2: [0xab; 48],
+            pcr3: [0xab; 48],
+        },
+        security_domain_id: [3; 32],
         quorum_public_key: vec![],
         maximum_policy_lifetime_ms: 10,
     };
-    let signatures = [1, 2]
+    let authority_keys: Vec<(String, [u8; 32])> = [1u8, 2u8]
         .into_iter()
         .map(|i| {
             let secret = [i; 32];
@@ -186,13 +171,35 @@ fn signed_mainnet_policy_requires_the_exact_candidate_and_distinct_authorities()
                 key_id: key_id.clone(),
                 public_key,
             });
-            ReleaseAuthoritySignature {
-                key_id,
-                signature: sign_release_policy(&policy, &secret).unwrap().to_vec(),
-            }
+            (key_id, secret)
         })
         .collect();
     trust.validate().unwrap();
+    let policy = ReleasePolicy {
+        version: API_VERSION,
+        network: Network::Mainnet,
+        security_domain_id: [3; 32],
+        namespace: "spr-decryption".into(),
+        manifest_set: pinned_manifest_set(),
+        minimum_manifest_nonce: 0,
+        quorum_key_id: "quorum".into(),
+        quorum_key_epoch: 1,
+        quorum_public_key: trust.quorum_public_key.clone(),
+        allowed_operations: OPERATIONS.to_vec(),
+        max_encrypted_request_bytes: MAX_ENCRYPTED_POLICY_BYTES,
+        max_encrypted_response_bytes: MAX_ENCRYPTED_POLICY_BYTES,
+        turnkey_trust_root_id: EXPECTED_TURNKEY_TRUST_ROOT_ID.into(),
+        valid_from_ms: now,
+        expires_at_ms: now + 10,
+        revocation_epoch: 1,
+    };
+    let signatures = authority_keys
+        .iter()
+        .map(|(key_id, secret)| ReleaseAuthoritySignature {
+            key_id: key_id.clone(),
+            signature: sign_release_policy(&policy, secret).unwrap().to_vec(),
+        })
+        .collect();
     let mut signed = SignedReleasePolicy {
         authority_set_id: "mainnet".into(),
         policy: policy.clone(),

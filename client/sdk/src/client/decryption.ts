@@ -185,11 +185,15 @@ export function decryptionServiceFromSession(
     keys(signer, options) {
       return withinRequest(options, async (signal) => {
         const grant = options?.grant;
+        let owner: Address = signer.address;
         if (grant !== undefined) {
+          if (grant.grantee !== signer.address || grant.owner === grant.grantee) {
+            throw new DecryptionServiceError("InvalidSignature");
+          }
+          owner = solanaAddress(grant.owner);
           const context = await session.context(signal);
           validateGrantForTarget(grant, signer.address, context.target, context.nowMs());
         }
-        const owner = grant === undefined ? signer.address : solanaAddress(grant.owner);
         const shielded = await address(owner, signal);
         return new ServiceKeys(shielded, (items, context) =>
           withinRequest(context, (batchSignal) => decryptItems(signer, items, batchSignal, grant)));

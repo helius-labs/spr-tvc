@@ -3,7 +3,6 @@
 use qos_p256::encrypt::P256EncryptPair;
 #[cfg(feature = "local-dev")]
 use qos_p256::encrypt::P256EncryptPublic;
-use serde::Deserialize;
 #[cfg(feature = "local-dev")]
 use spr_tvc_wire::constants::{API_VERSION, TVC_QOS_PING_PROOF_TYPE};
 use spr_tvc_wire::constants::{QOS_P256_PUBLIC_LEN, TVC_APP_PROOF_SCHEME};
@@ -14,49 +13,15 @@ use spr_tvc_wire::decryption_service::SERVICE_PROOF_TYPE;
 use spr_tvc_wire::encoding::jcs_serialize;
 use spr_tvc_wire::encoding::{is_rfc8785, parse_strict_json};
 use spr_tvc_wire::error::{ErrorCode, TvcError};
-use spr_tvc_wire::release::{verify_signed_release_policy, PinnedReleaseAuthorities};
+use spr_tvc_wire::release::{
+    verify_signed_release_policy, IdentityPcrs, MainnetTrust, PinnedReleaseAuthorities,
+};
 use spr_tvc_wire::types::{AppProof, Network, OperationKind, ReleasePolicy, SignedReleasePolicy};
 #[cfg(feature = "local-dev")]
 use spr_tvc_wire::types::{QosPingChallenge, QosPingRequest, QosPingResponse, ServiceInfo};
 use zeroize::Zeroizing;
 
 const MAINNET_TRUST_JSON: &str = include_str!("../../sdk/trust/mainnet.json");
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct MainnetTrust {
-    pub(crate) release_authorities: PinnedReleaseAuthorities,
-    pub(crate) qos_identity_pcrs: PinnedPcrs,
-    #[serde(with = "spr_tvc_wire::encoding::hex")]
-    pub(crate) security_domain_id: [u8; 32],
-    #[serde(with = "spr_tvc_wire::encoding::hex")]
-    pub(crate) quorum_public_key: Vec<u8>,
-    pub(crate) maximum_policy_lifetime_ms: u64,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PinnedPcrs {
-    #[serde(rename = "0", with = "spr_tvc_wire::encoding::hex")]
-    pub(crate) pcr0: [u8; 48],
-    #[serde(rename = "1", with = "spr_tvc_wire::encoding::hex")]
-    pub(crate) pcr1: [u8; 48],
-    #[serde(rename = "2", with = "spr_tvc_wire::encoding::hex")]
-    pub(crate) pcr2: [u8; 48],
-    #[serde(rename = "3", with = "spr_tvc_wire::encoding::hex")]
-    pub(crate) pcr3: [u8; 48],
-}
-
-impl MainnetTrust {
-    pub(crate) fn pcrs(&self) -> IdentityPcrs {
-        IdentityPcrs {
-            pcr0: self.qos_identity_pcrs.pcr0,
-            pcr1: self.qos_identity_pcrs.pcr1,
-            pcr2: self.qos_identity_pcrs.pcr2,
-            pcr3: self.qos_identity_pcrs.pcr3,
-        }
-    }
-}
 
 pub(crate) fn pinned_mainnet_trust() -> Result<Option<MainnetTrust>, TvcError> {
     parse_strict_json(MAINNET_TRUST_JSON)
@@ -68,30 +33,8 @@ pub(crate) fn bind_mainnet_release(
     pcrs: &IdentityPcrs,
     trust: Option<&MainnetTrust>,
 ) -> Result<(), TvcError> {
-    let Some(trust) = trust else {
-        return Err(TvcError::new(ErrorCode::ReleaseNotPinned));
-    };
-    let policy = &release.policy;
-    if policy.network != Network::Mainnet {
-        return Err(TvcError::new(ErrorCode::NetworkMismatch));
-    }
-    if policy.security_domain_id != trust.security_domain_id
-        || policy.quorum_public_key != trust.quorum_public_key
-        || *authorities != trust.release_authorities
-        || *pcrs != trust.pcrs()
-        || trust.release_authorities.threshold < 2
-        || trust.maximum_policy_lifetime_ms == 0
-    {
-        return Err(TvcError::new(ErrorCode::ReleasePolicyInvalid));
-    }
-    let lifetime = policy
-        .expires_at_ms
-        .checked_sub(policy.valid_from_ms)
-        .ok_or_else(|| TvcError::new(ErrorCode::ReleasePolicyInvalid))?;
-    if lifetime == 0 || lifetime > trust.maximum_policy_lifetime_ms {
-        return Err(TvcError::new(ErrorCode::ReleasePolicyInvalid));
-    }
-    Ok(())
+    let trust = trust.ok_or_else(|| TvcError::new(ErrorCode::ReleaseNotPinned))?;
+    trust.bind_release(release, authorities, pcrs)
 }
 
 pub(crate) fn verify_connection_release(
@@ -108,9 +51,7 @@ pub(crate) fn verify_connection_release(
     verify_signed_release_policy(release, authorities, network, now)
 }
 
-use crate::attestation::{
-    approved_manifest_digest, now_ms, verify_boot_proof, BootProof, IdentityPcrs,
-};
+use crate::attestation::{approved_manifest_digest, now_ms, verify_boot_proof, BootProof};
 use crate::transport::Transport;
 use crate::ClientError;
 
@@ -495,12 +436,7 @@ mod tests {
         };
         let trust = MainnetTrust {
             release_authorities: authorities.clone(),
-            qos_identity_pcrs: PinnedPcrs {
-                pcr0: pcrs.pcr0,
-                pcr1: pcrs.pcr1,
-                pcr2: pcrs.pcr2,
-                pcr3: pcrs.pcr3,
-            },
+            qos_identity_pcrs: pcrs,
             security_domain_id: [0x22; 32],
             quorum_public_key: quorum,
             maximum_policy_lifetime_ms: 86_400_000,
@@ -537,17 +473,12 @@ mod tests {
             ErrorCode::ReleasePolicyInvalid
         );
 
-        let mut single_sig_trust = MainnetTrust {
+        let single_sig_trust = MainnetTrust {
             release_authorities: PinnedReleaseAuthorities {
                 threshold: 1,
                 ..authorities.clone()
             },
-            qos_identity_pcrs: PinnedPcrs {
-                pcr0: pcrs.pcr0,
-                pcr1: pcrs.pcr1,
-                pcr2: pcrs.pcr2,
-                pcr3: pcrs.pcr3,
-            },
+            qos_identity_pcrs: pcrs,
             security_domain_id: trust.security_domain_id,
             quorum_public_key: trust.quorum_public_key.clone(),
             maximum_policy_lifetime_ms: trust.maximum_policy_lifetime_ms,
@@ -563,7 +494,6 @@ mod tests {
             .code,
             ErrorCode::ReleasePolicyInvalid
         );
-        single_sig_trust.release_authorities.threshold = 2;
         assert_eq!(
             verify_connection_release(
                 Network::Mainnet,

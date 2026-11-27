@@ -10,13 +10,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use p384::ecdsa::signature::Verifier;
 use p384::ecdsa::{Signature, VerifyingKey};
+use rustls_pki_types::{CertificateDer, UnixTime};
 use sha2::{Digest, Sha256, Sha384};
 use spr_tvc_wire::encoding::encode_lower_hex;
 use spr_tvc_wire::error::{ErrorCode, TvcError};
+pub use spr_tvc_wire::release::IdentityPcrs;
 use spr_tvc_wire::types::ReleasePolicy;
+use webpki::{anchor_from_trusted_cert, EndEntityCert, KeyUsage};
 use x509_cert::der::oid::{AssociatedOid, ObjectIdentifier};
-use x509_cert::der::{Decode, Encode};
-use x509_cert::ext::pkix::{BasicConstraints, KeyUsage, KeyUsages};
+use x509_cert::der::Decode;
+use x509_cert::ext::pkix::{KeyUsage as X509KeyUsage, KeyUsages};
 use x509_cert::Certificate;
 
 use crate::cbor::{decode_cbor, decode_nitro_cbor, encode_cose_sig_structure, Cbor, CborKey};
@@ -28,7 +31,6 @@ const EPHEMERAL_PUBLIC_KEY_LEN: usize = 130;
 const PCR17: i64 = 17;
 const COSE_HEADER_ALG: i64 = 1;
 const COSE_ALG_ES384: i64 = -35;
-const OID_ECDSA_WITH_SHA384: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.3");
 const OID_EC_PUBLIC_KEY: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
 const OID_SECP384R1: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.0.34");
 const LIVE_MANIFEST_DOMAIN: &str = "qos-live-manifest-pcr-commitment-v1";
@@ -47,15 +49,6 @@ MQCjfy+Rocm9Xue4YnwWmNJVA44fA0P5W2OpYow9OYCVRaEevL8uO1XYru5xtMPW\n\
 rfMCMQCi85sWBbJwKKXdS6BptQFuZbT73o/gBh1qUxl/nNr12UO8Yfwr6wPLb+6N\n\
 IwLz3/Y=\n\
 -----END CERTIFICATE-----";
-
-/// PCR0–3 for the expected QOS deployment. Never taken from the enclave.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IdentityPcrs {
-    pub pcr0: [u8; PCR_LEN],
-    pub pcr1: [u8; PCR_LEN],
-    pub pcr2: [u8; PCR_LEN],
-    pub pcr3: [u8; PCR_LEN],
-}
 
 /// The attestation document and the ephemeral key the Boot Proof names.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,7 +123,8 @@ pub(crate) fn verify_boot_proof(
 ) -> Result<(), TvcError> {
     let decoded = decode_attestation(boot).map_err(|_| TvcError::boot("decode"))?;
     validate_shape(&decoded.document).map_err(|_| TvcError::boot("shape"))?;
-    assert_fresh(&decoded.document, now_ms).map_err(|_| TvcError::boot("timestamp"))?;
+    let attestation_ms =
+        assert_fresh(&decoded.document, now_ms).map_err(|_| TvcError::boot("timestamp"))?;
     verify_bindings(
         app_ephemeral_public_key,
         boot,
@@ -144,6 +138,7 @@ pub(crate) fn verify_boot_proof(
         &decoded.payload,
         &decoded.signature,
         &decoded.document,
+        attestation_ms,
         now_ms,
     )
     .map_err(|_| TvcError::boot("aws-chain"))
@@ -175,14 +170,9 @@ fn verify_aws(
     payload: &[u8],
     signature: &[u8],
     attestation: &Cbor,
+    attestation_ms: u64,
     now_ms: u64,
 ) -> Result<(), TvcError> {
-    let attestation_ms = u64::try_from(
-        attestation
-            .map_get(&CborKey::Text("timestamp".into()))?
-            .as_i64()?,
-    )
-    .map_err(|_| unverified())?;
     let certificate = attestation
         .map_get(&CborKey::Text("certificate".into()))?
         .as_bytes()?;
@@ -241,7 +231,7 @@ fn validate_shape(attestation: &Cbor) -> Result<(), TvcError> {
     Ok(())
 }
 
-fn assert_fresh(attestation: &Cbor, now_ms: u64) -> Result<(), TvcError> {
+fn assert_fresh(attestation: &Cbor, now_ms: u64) -> Result<u64, TvcError> {
     if now_ms == 0 {
         return Err(unverified());
     }
@@ -254,7 +244,7 @@ fn assert_fresh(attestation: &Cbor, now_ms: u64) -> Result<(), TvcError> {
     if timestamp > now_ms.saturating_add(MAX_CLOCK_SKEW_MS) {
         return Err(unverified());
     }
-    Ok(())
+    Ok(timestamp)
 }
 
 fn verify_bindings(
@@ -342,88 +332,58 @@ fn verify_certificate_chain(
     if hex::encode(Sha256::digest(&root_der)) != AWS_ROOT_SHA256 {
         return Err(unverified());
     }
-    let root = Certificate::from_der(&root_der).map_err(|_| unverified())?;
-    verify_certificate_chain_against_root(leaf, cabundle, &root, &root_der, attestation_ms, now_ms)
+    verify_certificate_chain_against_root(leaf, cabundle, &root_der, attestation_ms, now_ms)
 }
 
 fn verify_certificate_chain_against_root(
     leaf: &[u8],
     cabundle: &[Vec<u8>],
-    root: &Certificate,
     root_der: &[u8],
     attestation_ms: u64,
     now_ms: u64,
 ) -> Result<(), TvcError> {
-    assert_ca_cert(root)?;
-    if root.tbs_certificate.issuer != root.tbs_certificate.subject {
-        return Err(unverified());
-    }
-    verify_cert(root, root)?;
-    assert_cert_valid_at(root, now_ms)?;
-    assert_cert_valid_at(root, attestation_ms)?;
-    // The bundle's first certificate is an untrusted copy of the root.
-    let mut issuers = Vec::with_capacity(cabundle.len());
+    let root = Certificate::from_der(root_der).map_err(|_| unverified())?;
+    assert_cert_valid_at(&root, now_ms)?;
+    assert_cert_valid_at(&root, attestation_ms)?;
+
+    let root_cert_der = CertificateDer::from(root_der);
+    let anchor = anchor_from_trusted_cert(&root_cert_der).map_err(|_| unverified())?;
+    let leaf_cert_der = CertificateDer::from(leaf);
+    let end_entity = EndEntityCert::try_from(&leaf_cert_der).map_err(|_| unverified())?;
+    // cabundle[0] is an untrusted copy of the root; pass only intermediates to webpki.
+    let mut intermediates = Vec::with_capacity(cabundle.len().saturating_sub(1));
     for der in cabundle.iter().skip(1) {
-        issuers.push((
-            Certificate::from_der(der).map_err(|_| unverified())?,
-            der.clone(),
-        ));
+        // webpki does not enforce KeyUsage.keyCertSign on intermediates; check it when present.
+        assert_key_cert_sign_if_present(der)?;
+        intermediates.push(CertificateDer::from(der.as_slice()));
     }
-    issuers.push((root.clone(), root_der.to_vec()));
-    let mut current = Certificate::from_der(leaf).map_err(|_| unverified())?;
     // Validate leaf and intermediate lifetimes at the attestation timestamp:
     // enclaves outlive the 3-hour Nitro leaf cert, so `now_ms` applies only to the root.
-    assert_cert_valid_at(&current, attestation_ms)?;
-    let mut hops = 1usize;
-    let expected = cabundle.len() + 1;
-    while hops < expected {
-        let issuer_index = issuers
-            .iter()
-            .position(|(issuer, _)| {
-                current.tbs_certificate.issuer == issuer.tbs_certificate.subject
-                    && assert_ca_cert(issuer).is_ok()
-                    && assert_cert_valid_at(issuer, attestation_ms).is_ok()
-                    && verify_cert(&current, issuer).is_ok()
-            })
-            .ok_or_else(unverified)?;
-        let (issuer, issuer_der) = issuers.remove(issuer_index);
-        hops += 1;
-        if issuer_der == root_der {
-            return if hops == expected && issuers.is_empty() {
-                Ok(())
-            } else {
-                Err(unverified())
-            };
-        }
-        current = issuer;
-    }
-    Err(unverified())
+    let validation_time = UnixTime::since_unix_epoch(Duration::from_secs(attestation_ms / 1_000));
+    end_entity
+        .verify_for_usage(
+            &[webpki::ring::ECDSA_P384_SHA384],
+            &[anchor],
+            &intermediates,
+            validation_time,
+            KeyUsage::server_auth(),
+            None,
+            None,
+        )
+        .map(|_| ())
+        .map_err(|_| unverified())
 }
 
-fn assert_ca_cert(cert: &Certificate) -> Result<(), TvcError> {
-    let extensions = cert
-        .tbs_certificate
-        .extensions
-        .as_deref()
-        .ok_or_else(unverified)?;
-    let mut basic_ca = false;
-    for ext in extensions {
-        if ext.extn_id == BasicConstraints::OID {
-            let bc =
-                BasicConstraints::from_der(ext.extn_value.as_bytes()).map_err(|_| unverified())?;
-            if !bc.ca {
-                return Err(unverified());
-            }
-            basic_ca = true;
-        } else if ext.extn_id == KeyUsage::OID {
-            let usage = KeyUsage::from_der(ext.extn_value.as_bytes()).map_err(|_| unverified())?;
+fn assert_key_cert_sign_if_present(der: &[u8]) -> Result<(), TvcError> {
+    let cert = Certificate::from_der(der).map_err(|_| unverified())?;
+    for ext in cert.tbs_certificate.extensions.as_deref().unwrap_or(&[]) {
+        if ext.extn_id == X509KeyUsage::OID {
+            let usage =
+                X509KeyUsage::from_der(ext.extn_value.as_bytes()).map_err(|_| unverified())?;
             if !usage.0.contains(KeyUsages::KeyCertSign) {
                 return Err(unverified());
             }
         }
-    }
-    if !basic_ca {
-        return Err(unverified());
     }
     Ok(())
 }
@@ -437,19 +397,6 @@ fn assert_cert_valid_at(cert: &Certificate, time_ms: u64) -> Result<(), TvcError
         return Err(unverified());
     }
     Ok(())
-}
-
-fn verify_cert(subject: &Certificate, issuer: &Certificate) -> Result<(), TvcError> {
-    if subject.signature_algorithm.oid != OID_ECDSA_WITH_SHA384
-        || subject.tbs_certificate.signature != subject.signature_algorithm
-    {
-        return Err(unverified());
-    }
-    let key = p384_key(issuer)?;
-    let signature = Signature::from_der(subject.signature.as_bytes().ok_or_else(unverified)?)
-        .map_err(|_| unverified())?;
-    let tbs = subject.tbs_certificate.to_der().map_err(|_| unverified())?;
-    key.verify(&tbs, &signature).map_err(|_| unverified())
 }
 
 fn p384_key(cert: &Certificate) -> Result<VerifyingKey, TvcError> {
@@ -497,9 +444,9 @@ mod tests {
     fn pinned_aws_root_matches_the_fingerprint_and_signs_itself() {
         let der = pinned_root_der().unwrap();
         assert_eq!(hex::encode(Sha256::digest(&der)), AWS_ROOT_SHA256);
+        let root_cert_der = CertificateDer::from(der.as_slice());
+        anchor_from_trusted_cert(&root_cert_der).unwrap();
         let root = Certificate::from_der(&der).unwrap();
-        assert_ca_cert(&root).unwrap();
-        verify_cert(&root, &root).unwrap();
         assert_cert_valid_at(&root, 1_700_000_000_000).unwrap();
         assert!(assert_cert_valid_at(&root, 1_000_000_000_000).is_err());
         assert!(assert_cert_valid_at(&root, 2_524_608_000_000).is_err());
@@ -737,13 +684,18 @@ mod tests {
         use p384::ecdsa::signature::Signer;
         use p384::ecdsa::SigningKey;
         use x509_cert::der::asn1::{BitString, OctetString};
-        use x509_cert::der::Any;
+        use x509_cert::der::oid::AssociatedOid;
+        use x509_cert::der::{Any, Encode};
+        use x509_cert::ext::pkix::{BasicConstraints, KeyUsage, KeyUsages};
         use x509_cert::ext::Extension;
         use x509_cert::name::Name;
         use x509_cert::serial_number::SerialNumber;
         use x509_cert::spki::{AlgorithmIdentifierOwned, SubjectPublicKeyInfoOwned};
         use x509_cert::time::{Time, Validity};
         use x509_cert::TbsCertificate;
+
+        const OID_ECDSA_WITH_SHA384: ObjectIdentifier =
+            ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.3");
 
         struct TestCert<'a> {
             subject_cn: &'a str,
@@ -849,7 +801,6 @@ mod tests {
             key_cert_sign: Some(true),
         }
         .build();
-        let root = Certificate::from_der(&root_der).unwrap();
         let inter_der = TestCert {
             subject_cn: "inter",
             issuer_cn: "root",
@@ -875,7 +826,6 @@ mod tests {
         verify_certificate_chain_against_root(
             &leaf_der,
             &[root_der.clone(), inter_der.clone()],
-            &root,
             &root_der,
             att_ms,
             att_ms,
@@ -884,7 +834,6 @@ mod tests {
         verify_certificate_chain_against_root(
             &leaf_der,
             &[root_der.clone(), inter_der.clone()],
-            &root,
             &root_der,
             att_ms,
             later_ms,
@@ -905,7 +854,6 @@ mod tests {
         assert!(verify_certificate_chain_against_root(
             &expired_leaf,
             &[root_der.clone(), inter_der.clone()],
-            &root,
             &root_der,
             att_ms,
             att_ms,
@@ -926,7 +874,6 @@ mod tests {
         assert!(verify_certificate_chain_against_root(
             &leaf_der,
             &[root_der.clone(), non_ca_inter],
-            &root,
             &root_der,
             att_ms,
             att_ms,
@@ -947,7 +894,6 @@ mod tests {
         assert!(verify_certificate_chain_against_root(
             &leaf_der,
             &[root_der.clone(), no_cert_sign_inter],
-            &root,
             &root_der,
             att_ms,
             att_ms,
@@ -968,7 +914,6 @@ mod tests {
         assert!(verify_certificate_chain_against_root(
             &wrong_dn_leaf,
             &[root_der.clone(), inter_der],
-            &root,
             &root_der,
             att_ms,
             att_ms,

@@ -16,6 +16,106 @@ use crate::encoding::{decimal_u64, hex, jcs_serialize};
 use crate::error::{ErrorCode, TvcError};
 use crate::types::{ManifestSetPolicy, Network, ReleasePolicy, SignedReleasePolicy};
 
+/// Pinned Nitro PCR0–PCR3 values identifying a QOS enclave image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityPcrs {
+    #[serde(rename = "0", with = "hex")]
+    pub pcr0: [u8; 48],
+    #[serde(rename = "1", with = "hex")]
+    pub pcr1: [u8; 48],
+    #[serde(rename = "2", with = "hex")]
+    pub pcr2: [u8; 48],
+    #[serde(rename = "3", with = "hex")]
+    pub pcr3: [u8; 48],
+}
+
+/// Pinned mainnet trust root shared by client verification and release tooling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MainnetTrust {
+    pub release_authorities: PinnedReleaseAuthorities,
+    pub qos_identity_pcrs: IdentityPcrs,
+    #[serde(with = "hex")]
+    pub security_domain_id: [u8; 32],
+    #[serde(with = "hex")]
+    pub quorum_public_key: Vec<u8>,
+    pub maximum_policy_lifetime_ms: u64,
+}
+
+const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+
+impl MainnetTrust {
+    /// Validate that the trust root itself is well-formed (quorum threshold >= 2,
+    /// distinct valid P-256 authority keys, valid Quorum public key, bounded lifetime).
+    pub fn validate(&self) -> Result<(), TvcError> {
+        let authorities = &self.release_authorities;
+        if authorities.authority_set_id.is_empty()
+            || authorities.threshold < 2
+            || usize::from(authorities.threshold) > authorities.keys.len()
+        {
+            return Err(TvcError::new(ErrorCode::ReleasePolicyInvalid));
+        }
+        let mut ids = HashSet::new();
+        let mut keys = HashSet::new();
+        for key in &authorities.keys {
+            if key.key_id.is_empty()
+                || parse_uncompressed_sec1(&key.public_key).is_err()
+                || !ids.insert(key.key_id.as_str())
+                || !keys.insert(key.public_key.as_slice())
+            {
+                return Err(TvcError::new(ErrorCode::ReleasePolicyInvalid));
+            }
+        }
+        if !is_valid_quorum_public_key(&self.quorum_public_key)
+            || self.maximum_policy_lifetime_ms == 0
+            || self.maximum_policy_lifetime_ms > MAX_SAFE_INTEGER
+        {
+            return Err(TvcError::new(ErrorCode::ReleasePolicyInvalid));
+        }
+        Ok(())
+    }
+
+    /// Verify that a mainnet release policy matches this trust root's network,
+    /// security domain, Quorum public key, and lifetime bounds.
+    pub fn check_policy_bounds(&self, policy: &ReleasePolicy) -> Result<(), TvcError> {
+        self.validate()?;
+        if policy.network != Network::Mainnet {
+            return Err(TvcError::new(ErrorCode::NetworkMismatch));
+        }
+        if policy.security_domain_id != self.security_domain_id
+            || policy.quorum_public_key != self.quorum_public_key
+            || policy.valid_from_ms == 0
+            || policy.expires_at_ms > MAX_SAFE_INTEGER
+        {
+            return Err(TvcError::new(ErrorCode::ReleasePolicyInvalid));
+        }
+        let lifetime = policy
+            .expires_at_ms
+            .checked_sub(policy.valid_from_ms)
+            .ok_or_else(|| TvcError::new(ErrorCode::ReleasePolicyInvalid))?;
+        if lifetime == 0 || lifetime > self.maximum_policy_lifetime_ms {
+            return Err(TvcError::new(ErrorCode::ReleasePolicyInvalid));
+        }
+        Ok(())
+    }
+
+    /// Verify that caller-supplied authorities, PCRs, and signed release policy
+    /// all match this pinned mainnet trust root.
+    pub fn bind_release(
+        &self,
+        signed: &SignedReleasePolicy,
+        authorities: &PinnedReleaseAuthorities,
+        pcrs: &IdentityPcrs,
+    ) -> Result<(), TvcError> {
+        self.check_policy_bounds(&signed.policy)?;
+        if authorities != &self.release_authorities || pcrs != &self.qos_identity_pcrs {
+            return Err(TvcError::new(ErrorCode::ReleasePolicyInvalid));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReleaseAuthorityKey {
@@ -120,6 +220,12 @@ pub fn verify_signed_release_policy(
     Ok(())
 }
 
+fn is_valid_quorum_public_key(bytes: &[u8]) -> bool {
+    bytes.len() == 130
+        && parse_uncompressed_sec1(&bytes[..65]).is_ok()
+        && parse_uncompressed_sec1(&bytes[65..]).is_ok()
+}
+
 /// The pinned set is the one the client trusts. It is not read from a Boot Proof.
 fn manifest_set_is_pinned(set: &ManifestSetPolicy, namespace: &str) -> bool {
     if namespace.is_empty()
@@ -135,9 +241,7 @@ fn manifest_set_is_pinned(set: &ManifestSetPolicy, namespace: &str) -> bool {
     for member in &set.members {
         if member.alias.is_empty()
             || member.alias.len() > 128
-            || member.public_key.len() != 130
-            || parse_uncompressed_sec1(&member.public_key[..65]).is_err()
-            || parse_uncompressed_sec1(&member.public_key[65..]).is_err()
+            || !is_valid_quorum_public_key(&member.public_key)
             || !aliases.insert(member.alias.as_str())
             || !keys.insert(member.public_key.as_slice())
         {

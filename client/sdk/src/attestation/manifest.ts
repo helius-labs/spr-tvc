@@ -35,17 +35,17 @@ function approvedDigest(
 ): Uint8Array {
   const envelope = JSON.parse(new TextDecoder().decode(decodeBase64(bootProof.qosManifestEnvelopeB64))) as unknown;
   if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
-    throw new DecryptionServiceError("BootProofUnverified", "manifest");
+    throw new DecryptionServiceError("BootProofUnverified");
   }
   const record = envelope as Record<string, unknown>;
   const manifest = record.manifest;
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
-    throw new DecryptionServiceError("BootProofUnverified", "manifest");
+    throw new DecryptionServiceError("BootProofUnverified");
   }
   const digest = qosJsonHash(manifest);
   const body = manifest as Record<string, unknown>;
   if (body.version !== "v2") {
-    throw new DecryptionServiceError("BootProofUnverified", "manifest");
+    throw new DecryptionServiceError("BootProofUnverified");
   }
   const pivot = body.pivot as Record<string, unknown> | undefined;
   if (
@@ -57,10 +57,10 @@ function approvedDigest(
       pivot.env !== null &&
       (typeof pivot.env !== "object" || Array.isArray(pivot.env) || Object.keys(pivot.env).length > 0))
   ) {
-    throw new DecryptionServiceError("BootProofUnverified", "manifest");
+    throw new DecryptionServiceError("BootProofUnverified");
   }
   if (!sameManifestSet(policy.manifestSet, body.manifestSet)) {
-    throw new DecryptionServiceError("BootProofUnverified", "manifest");
+    throw new DecryptionServiceError("BootProofUnverified");
   }
   requireApprovals(record.manifestSetApprovals, policy.manifestSet, digest);
   const namespace = body.namespace as Record<string, unknown> | undefined;

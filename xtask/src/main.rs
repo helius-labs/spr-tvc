@@ -10,6 +10,7 @@ use clap::{Parser, ValueEnum};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use spr_tvc_wire::encoding::{decimal_u64, hex as wire_hex};
+use spr_tvc_wire::release::IdentityPcrs;
 use spr_tvc_wire::types::Network;
 
 const APP: &str = "decryption-service";
@@ -98,15 +99,13 @@ impl Args {
     }
 }
 
-type Pcrs = std::collections::BTreeMap<u8, String>;
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ReleaseConfig {
     image_repository: String,
     qos_version: String,
     turnkey_trust_root_id: String,
-    qos_identity_pcrs: Pcrs,
+    qos_identity_pcrs: IdentityPcrs,
     policy_validity_days: u64,
     networks: Networks,
 }
