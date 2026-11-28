@@ -1,5 +1,9 @@
-// Covers INV-14 (strict deterministic CBOR subset safety before signature verification).
+// Covers INV-14 (strict deterministic CBOR subset safety before signature verification, driven by
+// shared Rust/TypeScript conformance vectors).
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   CborError,
@@ -8,24 +12,37 @@ import {
 } from "../../src/attestation/cbor.js";
 import { decodeLowerHex, encodeLowerHex } from "../../src/wire/hex.js";
 
+type AcceptVector = { name: string; hex: string; kind: string; value: unknown };
+type RejectVector = { name: string; hex: string; ts_error: string };
+type CborVectors = {
+  accept: AcceptVector[];
+  reject: RejectVector[];
+  nitro_root: {
+    accept_hex: string;
+    reject: RejectVector[];
+  };
+};
+
+const SHARED_VECTORS_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../../tests/fixtures/cbor-vectors.json",
+);
+const SHARED_VECTORS = JSON.parse(readFileSync(SHARED_VECTORS_PATH, "utf8")) as CborVectors;
+
 function decodeHex(hex: string) {
   return decodeCbor(decodeLowerHex(hex));
 }
 
 describe("strict CBOR decoder", () => {
   it("decodes the deterministic subset an attestation document uses", () => {
-    expect(decodeHex("00")).toBe(0);
-    expect(decodeHex("17")).toBe(23);
-    expect(decodeHex("1818")).toBe(24);
-    expect(decodeHex("1903e8")).toBe(1000);
-    expect(decodeHex("1b000001977420dc00")).toBe(1_750_000_000_000);
-    expect(decodeHex("20")).toBe(-1);
-    expect(decodeHex("f4")).toBe(false);
-    expect(decodeHex("f5")).toBe(true);
-    expect(decodeHex("f6")).toBe(null);
-    expect(decodeHex("6449455446")).toBe("IETF");
-    expect(encodeLowerHex(decodeHex("43010203") as Uint8Array)).toBe("010203");
-    expect(decodeHex("83010203")).toEqual([1, 2, 3]);
+    for (const vector of SHARED_VECTORS.accept) {
+      const decoded = decodeHex(vector.hex);
+      if (vector.kind === "bytes") {
+        expect(encodeLowerHex(decoded as Uint8Array), vector.name).toBe(vector.value);
+      } else {
+        expect(decoded, vector.name).toEqual(vector.value);
+      }
+    }
   });
 
   it("decodes maps into a Map keyed by text or integer", () => {
@@ -50,81 +67,36 @@ describe("strict CBOR decoder", () => {
     expect(encodeLowerHex(bytes)).toBe("010203");
   });
 
-  it("rejects indefinite lengths", () => {
-    expect(() => decodeHex("5f42010243030405ff")).toThrowError(CborError);
-    expect(() => decodeHex("9f018202039f0405ffff")).toThrowError(CborError);
-    expect(() => decodeHex("bf61610161629f0203ffff")).toThrowError(CborError);
+  it("rejects every shared negative vector (indefinite, non-minimal, floats, duplicates, truncation, depth, huge lengths, UTF-8)", () => {
+    for (const vector of SHARED_VECTORS.reject) {
+      const decode = () => decodeHex(vector.hex);
+      if (vector.ts_error) {
+        expect(decode, vector.name).toThrowError(CborError);
+        expect(decode, vector.name).toThrowError(vector.ts_error);
+      } else {
+        expect(decode, vector.name).toThrow();
+      }
+    }
   });
 
   it("accepts only the bounded indefinite root map emitted by AWS Nitro", () => {
-    const value = decodeAwsNitroAttestationCbor(
-      decodeLowerHex("bf696d6f64756c655f6964616d6470637273a10043010203ff"),
-    ) as Map<string | number, unknown>;
+    const rootBytes = decodeLowerHex(SHARED_VECTORS.nitro_root.accept_hex);
+    expect(() => decodeCbor(rootBytes)).toThrowError(CborError);
+    const value = decodeAwsNitroAttestationCbor(rootBytes) as Map<string | number, unknown>;
     expect(value.get("module_id")).toBe("m");
     expect(value.get("pcrs")).toBeInstanceOf(Map);
 
-    expect(() =>
-      decodeAwsNitroAttestationCbor(decodeLowerHex("bf6161bf616201ffff")),
-    ).toThrowError(/unsupported CBOR argument/);
-    expect(() =>
-      decodeAwsNitroAttestationCbor(decodeLowerHex("bf616101616102ff")),
-    ).toThrowError(/duplicate/);
-    expect(() =>
-      decodeAwsNitroAttestationCbor(decodeLowerHex("bf6161ff")),
-    ).toThrowError(/missing a value/);
-    expect(() =>
-      decodeAwsNitroAttestationCbor(
-        Uint8Array.from([
-          0xbf,
-          ...Array.from({ length: 33 }, (_, index) =>
-            index < 24 ? [index, 0] : [0x18, index, 0],
-          ).flat(),
-          0xff,
-        ]),
-      ),
-    ).toThrowError(/too many entries/);
-  });
-
-  it("rejects non-shortest argument encodings", () => {
-    expect(() => decodeHex("1817")).toThrowError(/non-minimal/);
-    expect(() => decodeHex("190018")).toThrowError(/non-minimal/);
-    expect(() => decodeHex("1a000003e8")).toThrowError(/non-minimal/);
-    expect(() => decodeHex("1b00000000000003e8")).toThrowError(/non-minimal/);
-  });
-
-  it("rejects floats and unassigned simple values", () => {
-    expect(() => decodeHex("f93c00")).toThrowError(CborError);
-    expect(() => decodeHex("fa47c35000")).toThrowError(CborError);
-    expect(() => decodeHex("fb3ff199999999999a")).toThrowError(CborError);
-    expect(() => decodeHex("f7")).toThrowError(CborError);
-  });
-
-  it("rejects duplicate map keys and non-scalar keys", () => {
-    expect(() => decodeHex("a2616101616102")).toThrowError(/duplicate/);
-    expect(() => decodeHex("a18101 01".replace(/ /g, ""))).toThrowError(/map key/);
-  });
-
-  it("rejects trailing bytes, truncation, and unsupported tags", () => {
-    expect(() => decodeHex("0000")).toThrowError(/trailing bytes/);
-    expect(() => decodeHex("43 0102".replace(/ /g, ""))).toThrowError(/truncated/);
-    expect(() => decodeHex("830102")).toThrowError(/truncated/);
-    expect(() => decodeHex("c07818323031332d30332d32315432303a30343a30305a")).toThrowError(
-      /unsupported CBOR tag/,
-    );
+    for (const vector of SHARED_VECTORS.nitro_root.reject) {
+      expect(
+        () => decodeAwsNitroAttestationCbor(decodeLowerHex(vector.hex)),
+        vector.name,
+      ).toThrowError(vector.ts_error);
+    }
   });
 
   it("unwraps the COSE_Sign1 tag only as the outermost item", () => {
     expect(decodeHex("d24101")).toEqual(decodeLowerHex("01"));
     // 81 d2 4101 => [18(h'01')]; a tag nested inside the payload is rejected.
     expect(() => decodeHex("81d24101")).toThrowError(/unsupported CBOR tag/);
-  });
-
-  it("rejects nesting past the depth limit", () => {
-    const deep = "81".repeat(64) + "00";
-    expect(() => decodeHex(deep)).toThrowError(/nesting too deep/);
-  });
-
-  it("rejects invalid UTF-8 in text strings", () => {
-    expect(() => decodeHex("62c328")).toThrowError();
   });
 });

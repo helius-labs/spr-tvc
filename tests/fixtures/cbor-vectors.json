@@ -1,0 +1,56 @@
+{
+  "accept": [
+    { "name": "unsigned_zero", "hex": "00", "kind": "int", "value": 0 },
+    { "name": "unsigned_inline_max", "hex": "17", "kind": "int", "value": 23 },
+    { "name": "unsigned_u8_min", "hex": "1818", "kind": "int", "value": 24 },
+    { "name": "unsigned_u16", "hex": "1903e8", "kind": "int", "value": 1000 },
+    { "name": "unsigned_u64_timestamp", "hex": "1b000001977420dc00", "kind": "int", "value": 1750000000000 },
+    { "name": "negative_one", "hex": "20", "kind": "int", "value": -1 },
+    { "name": "bool_false", "hex": "f4", "kind": "bool", "value": false },
+    { "name": "bool_true", "hex": "f5", "kind": "bool", "value": true },
+    { "name": "null", "hex": "f6", "kind": "null", "value": null },
+    { "name": "bytes", "hex": "43010203", "kind": "bytes", "value": "010203" },
+    { "name": "text", "hex": "6449455446", "kind": "text", "value": "IETF" },
+    { "name": "array_ints", "hex": "83010203", "kind": "int_array", "value": [1, 2, 3] },
+    { "name": "outer_cose_sign1_tag", "hex": "d24101", "kind": "bytes", "value": "01" }
+  ],
+  "reject": [
+    { "name": "non_minimal_u8_zero", "hex": "1800", "ts_error": "non-minimal" },
+    { "name": "non_minimal_u8_23", "hex": "1817", "ts_error": "non-minimal" },
+    { "name": "non_minimal_u16", "hex": "190018", "ts_error": "non-minimal" },
+    { "name": "non_minimal_u32", "hex": "1a000003e8", "ts_error": "non-minimal" },
+    { "name": "non_minimal_u64", "hex": "1b00000000000003e8", "ts_error": "non-minimal" },
+    { "name": "trailing_byte", "hex": "0000", "ts_error": "trailing bytes" },
+    { "name": "truncated_bytes", "hex": "430102", "ts_error": "truncated" },
+    { "name": "truncated_array", "hex": "830102", "ts_error": "truncated" },
+    { "name": "duplicate_map_key", "hex": "a2616101616102", "ts_error": "duplicate" },
+    { "name": "non_scalar_map_key", "hex": "a1810101", "ts_error": "map key" },
+    { "name": "float16", "hex": "f93c00", "ts_error": "simple value" },
+    { "name": "float32", "hex": "fa47c35000", "ts_error": "simple value" },
+    { "name": "float64", "hex": "fb3ff199999999999a", "ts_error": "simple value" },
+    { "name": "unassigned_simple", "hex": "f7", "ts_error": "simple value" },
+    { "name": "invalid_utf8", "hex": "62c328", "ts_error": "" },
+    { "name": "unsupported_tag_zero", "hex": "c07818323031332d30332d32315432303a30343a30305a", "ts_error": "unsupported CBOR tag" },
+    { "name": "nested_cose_sign1_tag", "hex": "81d24101", "ts_error": "unsupported CBOR tag" },
+    { "name": "indefinite_bytes", "hex": "5f42010243030405ff", "ts_error": "unsupported CBOR argument" },
+    { "name": "indefinite_array", "hex": "9f01ff", "ts_error": "unsupported CBOR argument" },
+    { "name": "indefinite_map", "hex": "bf616101ff", "ts_error": "unsupported CBOR argument" },
+    { "name": "huge_unbacked_array", "hex": "9b0000000100000000", "ts_error": "truncated" },
+    { "name": "huge_unbacked_map", "hex": "bb0000000100000000", "ts_error": "truncated" },
+    { "name": "depth_overflow", "hex": "818181818181818181818181818181818100", "ts_error": "nesting too deep" }
+  ],
+  "nitro_root": {
+    "accept_hex": "bf696d6f64756c655f6964616d6470637273a10043010203ff",
+    "reject": [
+      { "name": "nested_indefinite_map", "hex": "bf6161bf616201ffff", "ts_error": "unsupported CBOR argument" },
+      { "name": "duplicate_key", "hex": "bf616101616102ff", "ts_error": "duplicate" },
+      { "name": "missing_value", "hex": "bf6161ff", "ts_error": "missing a value" },
+      { "name": "too_many_entries_33", "hex": "bf00000100020003000400050006000700080009000a000b000c000d000e000f0010001100120013001400150016001700181800181900181a00181b00181c00181d00181e00181f00182000ff", "ts_error": "too many entries" }
+    ]
+  },
+  "cose_sig_structure": {
+    "protected_hex": "a10138",
+    "payload_hex": "0102030405",
+    "expected_hex": "846a5369676e61747572653143a1013840450102030405"
+  }
+}

@@ -29,9 +29,13 @@ pub struct ReqwestTransport {
 
 impl ReqwestTransport {
     pub fn new() -> Result<Self, ClientError> {
+        Self::with_timeout(REQUEST_TIMEOUT)
+    }
+
+    fn with_timeout(timeout: Duration) -> Result<Self, ClientError> {
         let client = reqwest::blocking::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(REQUEST_TIMEOUT)
+            .timeout(timeout)
             .build()
             .map_err(|_| ClientError::Transport)?;
         Ok(Self { client })
