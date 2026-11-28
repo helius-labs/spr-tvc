@@ -9,7 +9,7 @@ use crate::config::EnclaveConfig;
 use crate::project::{PROJECT_ID_HEADER, ProjectId};
 use crate::replay::LocalLedger;
 
-const ORIGIN_AUTH: &str = "Bearer gatekeeper-test";
+const ORIGIN_AUTH: &str = "Bearer origin-auth-test";
 const PROJECT: &str = "project-a";
 const UNREACHABLE: &str = "http://127.0.0.1:9";
 
@@ -89,7 +89,7 @@ async fn health_needs_no_credentials() {
 }
 
 #[tokio::test]
-async fn requests_without_gatekeepers_credential_or_project_are_refused() {
+async fn requests_without_origin_credential_or_project_are_refused() {
     let state = state();
     let mut forged = request("POST", "/v1/decryption/operations", "{}");
     forged.headers_mut().insert(

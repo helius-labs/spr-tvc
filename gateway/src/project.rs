@@ -35,8 +35,8 @@ impl ProjectId {
 }
 
 /// The project a request is made for. A request with an `Authorization`
-/// header came through gatekeeper, which sends its origin credential and the
-/// project. Any other carries a Helius API key, as the `api-key` query
+/// header came through the edge proxy, which sends its origin credential and
+/// the project. Any other carries a Helius API key, as the `api-key` query
 /// parameter or the `X-Api-Key` header, which the gateway resolves itself.
 pub struct Caller(pub ProjectId);
 
@@ -48,14 +48,14 @@ impl FromRequestParts<Arc<AppState>> for Caller {
         state: &Arc<AppState>,
     ) -> Result<Self, Self::Rejection> {
         if let Some(presented) = parts.headers.get(AUTHORIZATION) {
-            return gatekeeper_project(parts, presented.as_bytes(), state).map(Self);
+            return edge_proxy_project(parts, presented.as_bytes(), state).map(Self);
         }
         let api_key = api_key(parts).ok_or(ApiError::ApiKeyRequired)?;
         state.api_keys.project(api_key).await.map(Self)
     }
 }
 
-fn gatekeeper_project(
+fn edge_proxy_project(
     parts: &Parts,
     presented: &[u8],
     state: &AppState,

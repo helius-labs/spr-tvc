@@ -37,11 +37,11 @@ function qosPublic(encryptionSecret: Uint8Array, signingSecret: Uint8Array): str
 }
 
 function fixture() {
-  const quorumEncryptionSecret = secret("gatekeeper-quorum-encryption");
-  const ephemeralSigningSecret = secret("gatekeeper-ephemeral-signing");
-  const authoritySecret = secret("gatekeeper-authority");
-  const quorumPublicKey = qosPublic(quorumEncryptionSecret, secret("gatekeeper-quorum-signing"));
-  const ephemeralPublicKey = qosPublic(secret("gatekeeper-ephemeral-encryption"), ephemeralSigningSecret);
+  const quorumEncryptionSecret = secret("operations-quorum-encryption");
+  const ephemeralSigningSecret = secret("operations-ephemeral-signing");
+  const authoritySecret = secret("operations-authority");
+  const quorumPublicKey = qosPublic(quorumEncryptionSecret, secret("operations-quorum-signing"));
+  const ephemeralPublicKey = qosPublic(secret("operations-ephemeral-encryption"), ephemeralSigningSecret);
   const policy: ReleasePolicy = {
     version: 1,
     network: "devnet",

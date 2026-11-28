@@ -44,5 +44,5 @@ path = "tests/loopback.rs"
 required-features = ["local-dev"]
 
 [[test]]
-name = "gatekeeper"
-path = "tests/gatekeeper.rs"
+name = "hosted_operations"
+path = "tests/hosted_operations.rs"

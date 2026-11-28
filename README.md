@@ -4,7 +4,7 @@ A sender can pay a Solana address before its owner has a shielded wallet. The de
 
 The transfer publishes the recipient's Solana address. That is how the wallet finds the notes.
 
-The enclave is firewalled. Wallets call the Helius gatekeeper, which admits an API key and forwards to the gateway. The gateway calls the enclave and Turnkey. The [spec](docs/spec.md) is the path, the checks, and the security assumptions.
+The enclave is firewalled. Wallets call the public Helius edge proxy, which admits an API key and forwards to the gateway. The gateway calls the enclave and Turnkey. The [spec](docs/spec.md) is the path, the checks, and the security assumptions.
 
 [Enclave](decryption-service) · [Gateway](gateway) · [Wire](wire) · [TypeScript client](client/sdk) · [Rust client](client/rust)
 

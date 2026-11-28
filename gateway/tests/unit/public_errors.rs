@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn the_code_is_the_variant_name_and_no_failure_is_retried_by_gatekeeper() {
+fn the_code_is_the_variant_name_and_no_failure_is_retried_by_edge_proxy() {
     assert_eq!(ApiError::InvalidJson.code(), "InvalidJson");
     assert_eq!("InvalidJson".parse(), Ok(ApiError::InvalidJson));
     for error in [ApiError::EnclaveUnavailable, ApiError::TurnkeyUnavailable] {

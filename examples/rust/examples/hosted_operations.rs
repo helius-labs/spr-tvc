@@ -1,6 +1,6 @@
 //! Opens one note at a deployed endpoint.
 //!
-//! Set `SPR_E2E_GATEKEEPER_URL`, `HELIUS_API_KEY` or `API_KEY`, and
+//! Set `SPR_E2E_ENDPOINT`, `HELIUS_API_KEY` or `API_KEY`, and
 //! `SPR_E2E_RELEASE_PIN` to the signed release JSON.
 
 use serde::Deserialize;
@@ -31,7 +31,7 @@ struct Pcrs {
 }
 
 fn main() {
-    let endpoint = env("SPR_E2E_GATEKEEPER_URL");
+    let endpoint = env("SPR_E2E_ENDPOINT");
     let api_key = std::env::var("HELIUS_API_KEY")
         .or_else(|_| std::env::var("API_KEY"))
         .unwrap_or_else(|_| env("HELIUS_API_KEY"));

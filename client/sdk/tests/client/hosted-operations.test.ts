@@ -1,4 +1,4 @@
-// Covers INV-13, INV-18, INV-28 (live Gatekeeper end-to-end note decryption; gated by SPR_E2E_* env vars).
+// Covers INV-13, INV-18, INV-28 (live hosted operations end-to-end note decryption; gated by SPR_E2E_* env vars).
 
 import { readFileSync } from "node:fs";
 import { generateKeyPairSigner } from "@solana/kit";
@@ -12,7 +12,7 @@ import { qosDecrypt } from "../../src/crypto/qos.js";
 import { decodeLowerHex } from "../../src/wire/hex.js";
 import type { ReleaseTrust } from "../../src/wire/releases.js";
 
-const endpoint = process.env["SPR_E2E_GATEKEEPER_URL"];
+const endpoint = process.env["SPR_E2E_ENDPOINT"];
 const apiKey = process.env["HELIUS_API_KEY"] ?? process.env["API_KEY"];
 const pinPath = process.env["SPR_E2E_RELEASE_PIN"];
 
