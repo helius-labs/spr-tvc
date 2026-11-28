@@ -4,8 +4,8 @@ use qos_p256::encrypt::P256EncryptPair;
 #[cfg(feature = "local-dev")]
 use qos_p256::encrypt::P256EncryptPublic;
 #[cfg(feature = "local-dev")]
-use spr_tvc_wire::constants::{API_VERSION, TVC_QOS_PING_PROOF_TYPE};
-use spr_tvc_wire::constants::{QOS_P256_PUBLIC_LEN, TVC_APP_PROOF_SCHEME};
+use spr_tvc_wire::constants::{API_VERSION, SHA256_LEN, TVC_QOS_PING_PROOF_TYPE};
+use spr_tvc_wire::constants::{QOS_P256_PUBLIC_LEN, SEC1_UNCOMPRESSED_LEN, TVC_APP_PROOF_SCHEME};
 use spr_tvc_wire::crypto::verify_p256_message;
 #[cfg(feature = "local-dev")]
 use spr_tvc_wire::decryption_service::SERVICE_PROOF_TYPE;
@@ -249,9 +249,9 @@ pub(crate) fn ping_challenge(quorum_public_key: &[u8]) -> Result<(String, String
     if quorum_public_key.len() != QOS_P256_PUBLIC_LEN {
         return Err(TvcError::new(ErrorCode::InvalidPublicKey).into());
     }
-    let encryption = P256EncryptPublic::from_bytes(&quorum_public_key[..65])
+    let encryption = P256EncryptPublic::from_bytes(&quorum_public_key[..SEC1_UNCOMPRESSED_LEN])
         .map_err(|_| TvcError::new(ErrorCode::InvalidPublicKey))?;
-    let mut challenge = [0u8; 32];
+    let mut challenge = [0u8; SHA256_LEN];
     getrandom::getrandom(&mut challenge).map_err(|_| ClientError::Entropy)?;
     let payload = jcs_serialize(&QosPingChallenge {
         r#type: TVC_QOS_PING_PROOF_TYPE.into(),
@@ -289,7 +289,11 @@ pub(crate) fn verify_app_signature(proof: &AppProof) -> Result<(), TvcError> {
         return Err(TvcError::new(ErrorCode::TurnkeyEvidenceInvalid));
     }
     let key = ephemeral_key(&proof.public_key)?;
-    verify_p256_message(&key[65..], proof.proof_payload.as_bytes(), &proof.signature)
+    verify_p256_message(
+        &key[SEC1_UNCOMPRESSED_LEN..],
+        proof.proof_payload.as_bytes(),
+        &proof.signature,
+    )
 }
 
 fn ephemeral_key(bytes: &[u8]) -> Result<[u8; QOS_P256_PUBLIC_LEN], TvcError> {

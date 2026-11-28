@@ -1,5 +1,6 @@
 import { sha256 } from "@noble/hashes/sha256";
 
+import { ED25519_SIGNATURE_LEN } from "./constants.js";
 import { domainSeparatedHash } from "./digest.js";
 import { DecryptionServiceError } from "./error.js";
 import { encodeDecimalU64 } from "./decimal.js";
@@ -14,6 +15,13 @@ const VIEW_GRANT_LABEL = "TSPP/decryption-service/view-grant/v1";
 const VIEW_GRANT_DIGEST_DOMAIN = "SPR_TVC_VIEW_GRANT_V1";
 /** Longest accepted view-grant window. The enclave stores nothing, so expiry is the only revocation. */
 export const MAX_VIEW_GRANT_MS = 30n * 60n * 1000n;
+
+const OFFCHAIN_PREFIX_BYTE = 0xff;
+const OFFCHAIN_VERSION_V0 = 0;
+const OFFCHAIN_FORMAT_UTF8 = 0;
+const OFFCHAIN_SIGNER_COUNT = 1;
+const BYTE_MASK = 0xff;
+const BITS_PER_BYTE = 8;
 
 const te = new TextEncoder();
 
@@ -120,21 +128,21 @@ export function viewGrantWire(input: {
     quorum_key_epoch: encodeDecimalU64(input.quorumKeyEpoch),
     not_before_ms: encodeDecimalU64(input.notBeforeMs),
     expiry_ms: encodeDecimalU64(input.expiryMs),
-    signature: encodeLowerHex(input.signature ?? new Uint8Array(64)),
+    signature: encodeLowerHex(input.signature ?? new Uint8Array(ED25519_SIGNATURE_LEN)),
   };
 }
 
 function offchainMessage(label: string, signer: Uint8Array, payload: Uint8Array): Uint8Array {
   return Uint8Array.of(
-    0xff,
+    OFFCHAIN_PREFIX_BYTE,
     ...te.encode("solana offchain"),
-    0,
+    OFFCHAIN_VERSION_V0,
     ...sha256(te.encode(label)),
-    0,
-    1,
+    OFFCHAIN_FORMAT_UTF8,
+    OFFCHAIN_SIGNER_COUNT,
     ...signer,
-    payload.length & 0xff,
-    payload.length >> 8,
+    payload.length & BYTE_MASK,
+    payload.length >> BITS_PER_BYTE,
     ...payload,
   );
 }

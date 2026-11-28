@@ -15,6 +15,11 @@ export function qosJsonHash(value: unknown): Uint8Array {
   return sha256(te.encode(canonicalizeQosJson(value)));
 }
 
+function qosJsonString(value: string): string {
+  if (/[\uD800-\uDFFF]/u.test(value)) throw new DecryptionServiceError("BootProofUnverified");
+  return JSON.stringify(value);
+}
+
 function qosJson(value: unknown): string {
   if (value === null) return "null";
   if (typeof value === "boolean") return value ? "true" : "false";
@@ -22,10 +27,7 @@ function qosJson(value: unknown): string {
     if (!Number.isSafeInteger(value)) throw new DecryptionServiceError("BootProofUnverified");
     return JSON.stringify(String(value));
   }
-  if (typeof value === "string") {
-    if (/[\uD800-\uDFFF]/u.test(value)) throw new DecryptionServiceError("BootProofUnverified");
-    return JSON.stringify(value);
-  }
+  if (typeof value === "string") return qosJsonString(value);
   if (Array.isArray(value)) {
     return `[${value.map(qosJson).join(",")}]`;
   }
@@ -34,7 +36,7 @@ function qosJson(value: unknown): string {
     const keys = Object.keys(record)
       .filter((key) => record[key] !== null && record[key] !== undefined)
       .sort();
-    return `{${keys.map((key) => `${JSON.stringify(key)}:${qosJson(record[key])}`).join(",")}}`;
+    return `{${keys.map((key) => `${qosJsonString(key)}:${qosJson(record[key])}`).join(",")}}`;
   }
   throw new DecryptionServiceError("BootProofUnverified");
 }

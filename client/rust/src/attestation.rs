@@ -5,35 +5,34 @@
 //! freshness. Turnkey's `verify` skips the image pins and expects a
 //! `timestampMs` field these proofs do not carry.
 
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use base64::Engine;
 use p384::ecdsa::signature::Verifier;
 use p384::ecdsa::{Signature, VerifyingKey};
+use p384::pkcs8::DecodePublicKey;
 use rustls_pki_types::{CertificateDer, UnixTime};
 use sha2::{Digest, Sha256, Sha384};
+use spr_tvc_wire::constants::{MAX_CLOCK_SKEW_MS, QOS_P256_PUBLIC_LEN, SHA256_LEN, SHA384_LEN};
 use spr_tvc_wire::encoding::encode_lower_hex;
 use spr_tvc_wire::error::{ErrorCode, TvcError};
 pub use spr_tvc_wire::release::IdentityPcrs;
 use spr_tvc_wire::types::ReleasePolicy;
 use webpki::{anchor_from_trusted_cert, EndEntityCert, KeyUsage};
-use x509_cert::der::oid::{AssociatedOid, ObjectIdentifier};
-use x509_cert::der::Decode;
+use x509_cert::der::oid::AssociatedOid;
+use x509_cert::der::{Decode, Encode};
 use x509_cert::ext::pkix::{KeyUsage as X509KeyUsage, KeyUsages};
 use x509_cert::Certificate;
 
 use crate::cbor::{decode_cbor, decode_nitro_cbor, encode_cose_sig_structure, Cbor, CborKey};
 
-const MAX_CLOCK_SKEW_MS: u64 = 60_000;
-const PCR_LEN: usize = 48;
-const PCR_COUNT: i64 = 32;
-const EPHEMERAL_PUBLIC_KEY_LEN: usize = 130;
+const PCR_COUNT: usize = 32;
 const PCR17: i64 = 17;
+const COSE_SIGN1_LEN: usize = 4;
 const COSE_HEADER_ALG: i64 = 1;
 const COSE_ALG_ES384: i64 = -35;
-const OID_EC_PUBLIC_KEY: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
-const OID_SECP384R1: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.0.34");
 const LIVE_MANIFEST_DOMAIN: &str = "qos-live-manifest-pcr-commitment-v1";
+const PEM_CERT_LABEL: &str = "CERTIFICATE";
 const AWS_ROOT_SHA256: &str = "641a0321a3e244efe456463195d606317ed7cdcc3c1756e09893f3c68f79bb5b";
 const AWS_NITRO_ROOT_PEM: &str = "-----BEGIN CERTIFICATE-----\n\
 MIICETCCAZagAwIBAgIRAPkxdWgbkK/hHUbMtOTn+FYwCgYIKoZIzj0EAwMwSTEL\n\
@@ -54,7 +53,7 @@ IwLz3/Y=\n\
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootProof {
     pub attestation: Vec<u8>,
-    pub ephemeral_public_key: [u8; EPHEMERAL_PUBLIC_KEY_LEN],
+    pub ephemeral_public_key: [u8; QOS_P256_PUBLIC_LEN],
     /// QOS manifest envelope. Empty on the synthetic documents the chain tests build.
     pub manifest_envelope: Vec<u8>,
 }
@@ -64,7 +63,7 @@ pub(crate) fn approved_manifest_digest(
     envelope: &[u8],
     policy: &ReleasePolicy,
     pcrs: &IdentityPcrs,
-) -> Result<[u8; 32], TvcError> {
+) -> Result<[u8; SHA256_LEN], TvcError> {
     use qos_core::protocol::services::boot::manifest::{
         canonical_json_hash, VersionedManifestEnvelope,
     };
@@ -110,14 +109,14 @@ fn same_manifest_set(
         })
 }
 
-fn pcr_bytes(live: &[u8], pinned: &[u8; PCR_LEN]) -> bool {
+fn pcr_bytes(live: &[u8], pinned: &[u8; SHA384_LEN]) -> bool {
     live == pinned.as_slice()
 }
 
 pub(crate) fn verify_boot_proof(
     app_ephemeral_public_key: &[u8],
     boot: &BootProof,
-    manifest_digest: &[u8; 32],
+    manifest_digest: &[u8; SHA256_LEN],
     expected: &IdentityPcrs,
     now_ms: u64,
 ) -> Result<(), TvcError> {
@@ -153,7 +152,7 @@ struct DecodedAttestation {
 fn decode_attestation(boot: &BootProof) -> Result<DecodedAttestation, TvcError> {
     let decoded = decode_cbor(&boot.attestation)?;
     let cose = decoded.as_array()?;
-    if cose.len() != 4 {
+    if cose.len() != COSE_SIGN1_LEN {
         return Err(unverified());
     }
     Ok(DecodedAttestation {
@@ -181,10 +180,10 @@ fn verify_aws(
     if bundle.is_empty() {
         return Err(unverified());
     }
-    let cabundle = bundle
+    let cabundle: Vec<&[u8]> = bundle
         .iter()
-        .map(|item| item.as_bytes().map(ToOwned::to_owned))
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(Cbor::as_bytes)
+        .collect::<Result<_, _>>()?;
     verify_cose(protected, payload, signature, certificate)?;
     verify_certificate_chain(certificate, &cabundle, attestation_ms, now_ms)
 }
@@ -208,10 +207,10 @@ fn validate_shape(attestation: &Cbor) -> Result<u64, TvcError> {
     let timestamp = attestation
         .map_get(&CborKey::Text("timestamp".into()))?
         .as_i64()?;
-    if timestamp <= 0 {
-        return Err(unverified());
-    }
-    let timestamp = u64::try_from(timestamp).map_err(|_| unverified())?;
+    let timestamp = u64::try_from(timestamp)
+        .ok()
+        .filter(|&ms| ms > 0)
+        .ok_or_else(unverified)?;
     match attestation.map_get(&CborKey::Text("nonce".into())) {
         Ok(Cbor::Null) | Err(_) => {}
         Ok(_) => return Err(unverified()),
@@ -219,12 +218,12 @@ fn validate_shape(attestation: &Cbor) -> Result<u64, TvcError> {
     let pcrs = attestation
         .map_get(&CborKey::Text("pcrs".into()))?
         .as_map()?;
-    if pcrs.len() != usize::try_from(PCR_COUNT).map_err(|_| unverified())? {
+    if pcrs.len() != PCR_COUNT {
         return Err(unverified());
     }
     for index in 0..PCR_COUNT {
-        let bytes = pcr(attestation, index)?;
-        if bytes.len() != PCR_LEN {
+        let bytes = pcr(attestation, i64::try_from(index).map_err(|_| unverified())?)?;
+        if bytes.len() != SHA384_LEN {
             return Err(unverified());
         }
     }
@@ -242,7 +241,7 @@ fn verify_bindings(
     app_ephemeral_public_key: &[u8],
     boot: &BootProof,
     attestation: &Cbor,
-    manifest_digest: &[u8; 32],
+    manifest_digest: &[u8; SHA256_LEN],
     expected: &IdentityPcrs,
 ) -> Result<(), TvcError> {
     let manifest = attestation
@@ -254,7 +253,7 @@ fn verify_bindings(
     let attested = attestation
         .map_get(&CborKey::Text("public_key".into()))?
         .as_bytes()?;
-    if attested.len() != EPHEMERAL_PUBLIC_KEY_LEN
+    if attested.len() != QOS_P256_PUBLIC_LEN
         || app_ephemeral_public_key != attested
         || boot.ephemeral_public_key.as_slice() != attested
     {
@@ -268,7 +267,7 @@ fn verify_bindings(
             return Err(unverified());
         }
     }
-    if pcr(attestation, PCR17)? != live_manifest_pcr(manifest, attested)?.as_slice() {
+    if pcr(attestation, PCR17)? != live_manifest_pcr(manifest, attested).as_slice() {
         return Err(unverified());
     }
     Ok(())
@@ -281,19 +280,18 @@ fn pcr(attestation: &Cbor, index: i64) -> Result<&[u8], TvcError> {
         .as_bytes()
 }
 
-fn live_manifest_pcr(manifest: &[u8], ephemeral: &[u8]) -> Result<[u8; PCR_LEN], TvcError> {
+fn live_manifest_pcr(manifest: &[u8], ephemeral: &[u8]) -> [u8; SHA384_LEN] {
     let preimage = format!(
         "{{\"domain\":\"{LIVE_MANIFEST_DOMAIN}\",\"ephemeralPublicKey\":\"{}\",\"manifestHash\":\"{}\"}}",
         encode_lower_hex(ephemeral),
         encode_lower_hex(manifest),
     );
     let commitment = Sha384::digest(preimage.as_bytes());
-    let mut extension = [0u8; 96];
-    extension[48..].copy_from_slice(&commitment);
-    let digest = Sha384::digest(extension);
-    let mut pcr = [0u8; PCR_LEN];
-    pcr.copy_from_slice(&digest);
-    Ok(pcr)
+    Sha384::new()
+        .chain_update([0u8; SHA384_LEN])
+        .chain_update(commitment)
+        .finalize()
+        .into()
 }
 
 fn verify_cose(
@@ -307,7 +305,12 @@ fn verify_cose(
         return Err(unverified());
     }
     let leaf = Certificate::from_der(certificate).map_err(|_| unverified())?;
-    let key = p384_key(&leaf)?;
+    let spki_der = leaf
+        .tbs_certificate
+        .subject_public_key_info
+        .to_der()
+        .map_err(|_| unverified())?;
+    let key = VerifyingKey::from_public_key_der(&spki_der).map_err(|_| unverified())?;
     let signature = Signature::from_slice(signature).map_err(|_| unverified())?;
     let signed = encode_cose_sig_structure(protected, payload);
     key.verify(&signed, &signature).map_err(|_| unverified())
@@ -315,20 +318,17 @@ fn verify_cose(
 
 fn verify_certificate_chain(
     leaf: &[u8],
-    cabundle: &[Vec<u8>],
+    cabundle: &[impl AsRef<[u8]>],
     attestation_ms: u64,
     now_ms: u64,
 ) -> Result<(), TvcError> {
     let root_der = pinned_root_der()?;
-    if hex::encode(Sha256::digest(&root_der)) != AWS_ROOT_SHA256 {
-        return Err(unverified());
-    }
-    verify_certificate_chain_against_root(leaf, cabundle, &root_der, attestation_ms, now_ms)
+    verify_certificate_chain_against_root(leaf, cabundle, root_der, attestation_ms, now_ms)
 }
 
 fn verify_certificate_chain_against_root(
     leaf: &[u8],
-    cabundle: &[Vec<u8>],
+    cabundle: &[impl AsRef<[u8]>],
     root_der: &[u8],
     attestation_ms: u64,
     now_ms: u64,
@@ -344,13 +344,16 @@ fn verify_certificate_chain_against_root(
     // cabundle[0] is an untrusted copy of the root; pass only intermediates to webpki.
     let mut intermediates = Vec::with_capacity(cabundle.len().saturating_sub(1));
     for der in cabundle.iter().skip(1) {
+        let der = der.as_ref();
         // webpki does not enforce KeyUsage.keyCertSign on intermediates; check it when present.
         assert_key_cert_sign_if_present(der)?;
-        intermediates.push(CertificateDer::from(der.as_slice()));
+        intermediates.push(CertificateDer::from(der));
     }
     // Validate leaf and intermediate lifetimes at the attestation timestamp:
     // enclaves outlive the 3-hour Nitro leaf cert, so `now_ms` applies only to the root.
-    let validation_time = UnixTime::since_unix_epoch(Duration::from_secs(attestation_ms / 1_000));
+    let validation_time = UnixTime::since_unix_epoch(Duration::from_secs(
+        Duration::from_millis(attestation_ms).as_secs(),
+    ));
     end_entity
         .verify_for_usage(
             &[webpki::ring::ECDSA_P384_SHA384],
@@ -390,32 +393,19 @@ fn assert_cert_valid_at(cert: &Certificate, time_ms: u64) -> Result<(), TvcError
     Ok(())
 }
 
-fn p384_key(cert: &Certificate) -> Result<VerifyingKey, TvcError> {
-    let spki = &cert.tbs_certificate.subject_public_key_info;
-    if spki.algorithm.oid != OID_EC_PUBLIC_KEY {
-        return Err(unverified());
-    }
-    let curve: ObjectIdentifier = spki
-        .algorithm
-        .parameters
-        .as_ref()
-        .ok_or_else(unverified)?
-        .decode_as()
-        .map_err(|_| unverified())?;
-    if curve != OID_SECP384R1 {
-        return Err(unverified());
-    }
-    let raw = spki.subject_public_key.raw_bytes();
-    VerifyingKey::from_sec1_bytes(raw).map_err(|_| unverified())
-}
-
-fn pinned_root_der() -> Result<Vec<u8>, TvcError> {
-    let body: String = AWS_NITRO_ROOT_PEM
-        .lines()
-        .filter(|line| !line.starts_with("-----"))
-        .collect();
-    base64::engine::general_purpose::STANDARD
-        .decode(body)
+fn pinned_root_der() -> Result<&'static [u8], TvcError> {
+    static ROOT_DER: OnceLock<Result<Vec<u8>, ()>> = OnceLock::new();
+    ROOT_DER
+        .get_or_init(|| {
+            let (label, der) =
+                x509_cert::der::pem::decode_vec(AWS_NITRO_ROOT_PEM.as_bytes()).map_err(|_| ())?;
+            if label != PEM_CERT_LABEL || encode_lower_hex(&Sha256::digest(&der)) != AWS_ROOT_SHA256
+            {
+                return Err(());
+            }
+            Ok(der)
+        })
+        .as_deref()
         .map_err(|_| unverified())
 }
 

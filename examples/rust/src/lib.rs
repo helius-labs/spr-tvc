@@ -1,24 +1,26 @@
 //! Shared loopback setup for the decryption-client examples.
 
-use ed25519_dalek::Signer;
+use ed25519_dalek::{Signer, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
 use spr_keypair::{random_salt, ShieldedAddress, ViewingKey};
 use spr_tvc_client::{ClientError, DecryptionClient, Note, OwnerSigner, ReqwestTransport};
 use spr_tvc_wire::DecryptLabel;
 
+const DEMO_OWNER_SEED_BYTE: u8 = 7;
+
 pub struct Key(ed25519_dalek::SigningKey);
 
 impl Key {
-    pub fn pubkey(&self) -> [u8; 32] {
+    pub fn pubkey(&self) -> [u8; PUBLIC_KEY_LENGTH] {
         self.0.verifying_key().to_bytes()
     }
 }
 
 impl OwnerSigner for Key {
-    fn pubkey(&self) -> [u8; 32] {
+    fn pubkey(&self) -> [u8; PUBLIC_KEY_LENGTH] {
         Key::pubkey(self)
     }
 
-    fn sign_offchain(&self, message: &[u8]) -> Result<[u8; 64], ClientError> {
+    fn sign_offchain(&self, message: &[u8]) -> Result<[u8; SIGNATURE_LENGTH], ClientError> {
         Ok(self.0.sign(message).to_bytes())
     }
 }
@@ -35,7 +37,9 @@ pub fn local_client() -> DecryptionClient<ReqwestTransport, ()> {
 
 /// A local owner. The same seed keeps the examples easy to compare.
 pub fn owner() -> Key {
-    Key(ed25519_dalek::SigningKey::from_bytes(&[7; 32]))
+    Key(ed25519_dalek::SigningKey::from_bytes(
+        &[DEMO_OWNER_SEED_BYTE; PUBLIC_KEY_LENGTH],
+    ))
 }
 
 /// One transfer note encrypted to `address`.

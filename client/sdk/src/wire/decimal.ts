@@ -1,7 +1,8 @@
+import { MAX_U64_BIGINT } from "./constants.js";
 import { DecryptionServiceError } from "./error.js";
 
 export function encodeDecimalU64(value: bigint): string {
-  if (value < 0n || value > 0xffff_ffff_ffff_ffffn) {
+  if (value < 0n || value > MAX_U64_BIGINT) {
     throw new DecryptionServiceError("InvalidDecimal");
   }
   return value.toString(10);
@@ -14,7 +15,7 @@ export function decodeDecimalU64(input: string): bigint {
   } catch {
     throw new DecryptionServiceError("InvalidDecimal");
   }
-  if (value < 0n || value > 0xffff_ffff_ffff_ffffn || value.toString(10) !== input) {
+  if (value < 0n || value > MAX_U64_BIGINT || value.toString(10) !== input) {
     throw new DecryptionServiceError("InvalidDecimal");
   }
   return value;

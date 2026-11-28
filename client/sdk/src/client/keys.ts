@@ -15,6 +15,7 @@ import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha256";
 
 import { awaitWithSignal } from "../connection/request.js";
+import { SHA256_LEN } from "../wire/constants.js";
 import { DecryptionServiceError } from "../wire/error.js";
 import type { DecryptItem } from "../wire/types.js";
 import { decryptItem } from "./items.js";
@@ -143,7 +144,7 @@ export class ServiceKeys implements DecryptionServiceKeys {
       return;
     }
     const nullifierKey = NullifierKey.fromSecret(secret);
-    const transactionSeed = hkdf(sha256, secret, undefined, TRANSACTION_KEY_LABEL, 32) as Bytes32;
+    const transactionSeed = hkdf(sha256, secret, undefined, TRANSACTION_KEY_LABEL, SHA256_LEN) as Bytes32;
     let transactionKey: ViewingKey | undefined;
     try {
       transactionKey = ViewingKey.fromBytes(transactionSeed);

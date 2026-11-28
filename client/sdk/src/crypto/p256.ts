@@ -1,13 +1,24 @@
 import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha256";
-import { RAW_P256_SIGNATURE_LEN, SEC1_UNCOMPRESSED_LEN } from "../wire/constants.js";
+import {
+  ASN1_SEQUENCE_TAG,
+  RAW_P256_SIGNATURE_LEN,
+  SEC1_COMPRESSED_EVEN,
+  SEC1_COMPRESSED_LEN,
+  SEC1_COMPRESSED_ODD,
+  SEC1_UNCOMPRESSED_LEN,
+  SEC1_UNCOMPRESSED_PREFIX,
+} from "../wire/constants.js";
 import { DecryptionServiceError } from "../wire/error.js";
 
 export function parseUncompressedSec1(bytes: Uint8Array): Uint8Array {
-  if (bytes.length === 33 && (bytes[0] === 0x02 || bytes[0] === 0x03)) {
+  if (
+    bytes.length === SEC1_COMPRESSED_LEN &&
+    (bytes[0] === SEC1_COMPRESSED_EVEN || bytes[0] === SEC1_COMPRESSED_ODD)
+  ) {
     throw new DecryptionServiceError("CompressedKeyRejected");
   }
-  if (bytes.length !== SEC1_UNCOMPRESSED_LEN || bytes[0] !== 0x04) {
+  if (bytes.length !== SEC1_UNCOMPRESSED_LEN || bytes[0] !== SEC1_UNCOMPRESSED_PREFIX) {
     throw new DecryptionServiceError("InvalidPublicKey");
   }
   try {
@@ -20,7 +31,7 @@ export function parseUncompressedSec1(bytes: Uint8Array): Uint8Array {
 
 function parseRawLowS(signature: Uint8Array) {
   if (signature.length !== RAW_P256_SIGNATURE_LEN) {
-    if (signature.length > 0 && signature[0] === 0x30) {
+    if (signature.length > 0 && signature[0] === ASN1_SEQUENCE_TAG) {
       throw new DecryptionServiceError("DerSignatureRejected");
     }
     throw new DecryptionServiceError("InvalidSignature");

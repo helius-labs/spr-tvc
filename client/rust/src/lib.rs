@@ -32,6 +32,7 @@ pub use transport::{ReqwestTransport, Transport};
 
 use std::fmt::{Display, Formatter, Result as FmtResult};
 
+use spr_tvc_wire::decryption_service::{ADDRESS_LEN, ED25519_SIGNATURE_LEN};
 use spr_tvc_wire::error::TvcError;
 use spr_tvc_wire::release::PinnedReleaseAuthorities;
 use spr_tvc_wire::Network;
@@ -43,8 +44,8 @@ pub use crate::session::BootProofs;
 
 /// Signs the Solana off-chain message for one `Decrypt`.
 pub trait OwnerSigner {
-    fn pubkey(&self) -> [u8; 32];
-    fn sign_offchain(&self, message: &[u8]) -> Result<[u8; 64], ClientError>;
+    fn pubkey(&self) -> [u8; ADDRESS_LEN];
+    fn sign_offchain(&self, message: &[u8]) -> Result<[u8; ED25519_SIGNATURE_LEN], ClientError>;
 }
 
 /// Failure without response bytes or key material in the display.

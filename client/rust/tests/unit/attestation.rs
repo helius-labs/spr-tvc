@@ -1,13 +1,17 @@
+//! Boot proof, X.509 certificate chain, COSE_Sign1 ES384, PCR, and manifest verification tests.
+//! Covers INV-15 (AWS Nitro root & X.509/ES384 chain), INV-16 (attestation shape, PCR0-3 & PCR17),
+//! and INV-17 (strict manifest envelope & approved manifest set).
+
 use super::*;
 use crate::ClientError;
 
 #[test]
 fn pinned_aws_root_matches_the_fingerprint_and_signs_itself() {
     let der = pinned_root_der().unwrap();
-    assert_eq!(hex::encode(Sha256::digest(&der)), AWS_ROOT_SHA256);
-    let root_cert_der = CertificateDer::from(der.as_slice());
+    assert_eq!(hex::encode(Sha256::digest(der)), AWS_ROOT_SHA256);
+    let root_cert_der = CertificateDer::from(der);
     anchor_from_trusted_cert(&root_cert_der).unwrap();
-    let root = Certificate::from_der(&der).unwrap();
+    let root = Certificate::from_der(der).unwrap();
     assert_cert_valid_at(&root, 1_700_000_000_000).unwrap();
     assert!(assert_cert_valid_at(&root, 1_000_000_000_000).is_err());
     assert!(assert_cert_valid_at(&root, 2_524_608_000_000).is_err());
@@ -16,17 +20,17 @@ fn pinned_aws_root_matches_the_fingerprint_and_signs_itself() {
 #[test]
 fn wrong_pcr_fails_before_the_certificate_chain() {
     let manifest = [0x11; 32];
-    let ephemeral = [0x04; EPHEMERAL_PUBLIC_KEY_LEN];
-    let proof = synthetic_boot(&manifest, &ephemeral, &[0; PCR_LEN]);
+    let ephemeral = [0x04; QOS_P256_PUBLIC_LEN];
+    let proof = synthetic_boot(&manifest, &ephemeral, &[0; SHA384_LEN]);
     let error = verify_boot_proof(
         &ephemeral,
         &proof,
         &manifest,
         &IdentityPcrs {
-            pcr0: [0xff; PCR_LEN],
-            pcr1: [0; PCR_LEN],
-            pcr2: [0; PCR_LEN],
-            pcr3: [0; PCR_LEN],
+            pcr0: [0xff; SHA384_LEN],
+            pcr1: [0; SHA384_LEN],
+            pcr2: [0; SHA384_LEN],
+            pcr3: [0; SHA384_LEN],
         },
         1_000_000,
     )
@@ -43,8 +47,8 @@ fn wrong_pcr_fails_before_the_certificate_chain() {
 #[test]
 fn unchained_attestation_is_rejected() {
     let manifest = [0x11; 32];
-    let ephemeral = [0x04; EPHEMERAL_PUBLIC_KEY_LEN];
-    let pcr0 = [0x22; PCR_LEN];
+    let ephemeral = [0x04; QOS_P256_PUBLIC_LEN];
+    let pcr0 = [0x22; SHA384_LEN];
     let proof = synthetic_boot(&manifest, &ephemeral, &pcr0);
     let error = verify_boot_proof(
         &ephemeral,
@@ -52,9 +56,9 @@ fn unchained_attestation_is_rejected() {
         &manifest,
         &IdentityPcrs {
             pcr0,
-            pcr1: [0; PCR_LEN],
-            pcr2: [0; PCR_LEN],
-            pcr3: [0; PCR_LEN],
+            pcr1: [0; SHA384_LEN],
+            pcr2: [0; SHA384_LEN],
+            pcr3: [0; SHA384_LEN],
         },
         1_000_000,
     )
@@ -70,18 +74,18 @@ fn unchained_attestation_is_rejected() {
 #[test]
 fn a_boot_proof_that_does_not_decode_names_that_stage() {
     let error = verify_boot_proof(
-        &[0x04; EPHEMERAL_PUBLIC_KEY_LEN],
+        &[0x04; QOS_P256_PUBLIC_LEN],
         &BootProof {
             attestation: Vec::new(),
-            ephemeral_public_key: [0x04; EPHEMERAL_PUBLIC_KEY_LEN],
+            ephemeral_public_key: [0x04; QOS_P256_PUBLIC_LEN],
             manifest_envelope: Vec::new(),
         },
         &[0x11; 32],
         &IdentityPcrs {
-            pcr0: [0; PCR_LEN],
-            pcr1: [0; PCR_LEN],
-            pcr2: [0; PCR_LEN],
-            pcr3: [0; PCR_LEN],
+            pcr0: [0; SHA384_LEN],
+            pcr1: [0; SHA384_LEN],
+            pcr2: [0; SHA384_LEN],
+            pcr3: [0; SHA384_LEN],
         },
         1_000_000,
     )
@@ -92,8 +96,8 @@ fn a_boot_proof_that_does_not_decode_names_that_stage() {
 #[test]
 fn a_non_sha384_digest_is_the_shape_stage() {
     let manifest = [0x11; 32];
-    let ephemeral = [0x04; EPHEMERAL_PUBLIC_KEY_LEN];
-    let pcr0 = [0x22; PCR_LEN];
+    let ephemeral = [0x04; QOS_P256_PUBLIC_LEN];
+    let pcr0 = [0x22; SHA384_LEN];
     let mut proof = synthetic_boot(&manifest, &ephemeral, &pcr0);
     let digest = b"SHA384";
     let offset = proof
@@ -108,9 +112,9 @@ fn a_non_sha384_digest_is_the_shape_stage() {
         &manifest,
         &IdentityPcrs {
             pcr0,
-            pcr1: [0; PCR_LEN],
-            pcr2: [0; PCR_LEN],
-            pcr3: [0; PCR_LEN],
+            pcr1: [0; SHA384_LEN],
+            pcr2: [0; SHA384_LEN],
+            pcr3: [0; SHA384_LEN],
         },
         1_000_000,
     )
@@ -121,17 +125,17 @@ fn a_non_sha384_digest_is_the_shape_stage() {
 #[test]
 fn a_clock_reading_of_zero_is_the_timestamp_stage() {
     let manifest = [0x11; 32];
-    let ephemeral = [0x04; EPHEMERAL_PUBLIC_KEY_LEN];
-    let pcr0 = [0x22; PCR_LEN];
+    let ephemeral = [0x04; QOS_P256_PUBLIC_LEN];
+    let pcr0 = [0x22; SHA384_LEN];
     let error = verify_boot_proof(
         &ephemeral,
         &synthetic_boot(&manifest, &ephemeral, &pcr0),
         &manifest,
         &IdentityPcrs {
             pcr0,
-            pcr1: [0; PCR_LEN],
-            pcr2: [0; PCR_LEN],
-            pcr3: [0; PCR_LEN],
+            pcr1: [0; SHA384_LEN],
+            pcr2: [0; SHA384_LEN],
+            pcr3: [0; SHA384_LEN],
         },
         0,
     )
@@ -155,7 +159,7 @@ fn the_pinned_manifest_set_approves_the_boot_manifest() {
         panic!("fixture envelope is v2");
     };
     let manifest = &envelope.manifest;
-    let pcr = |bytes: &[u8]| -> [u8; PCR_LEN] { bytes.try_into().unwrap() };
+    let pcr = |bytes: &[u8]| -> [u8; SHA384_LEN] { bytes.try_into().unwrap() };
     let pcrs = IdentityPcrs {
         pcr0: pcr(&manifest.enclave.pcr0),
         pcr1: pcr(&manifest.enclave.pcr1),
@@ -245,9 +249,10 @@ fn x509_chain_checks_ca_constraints_dn_validity_and_cose_alg() {
 
     use p384::ecdsa::signature::Signer;
     use p384::ecdsa::SigningKey;
+    use p384::pkcs8::EncodePublicKey;
     use x509_cert::der::asn1::{BitString, OctetString};
-    use x509_cert::der::oid::AssociatedOid;
-    use x509_cert::der::{Any, Encode};
+    use x509_cert::der::oid::{AssociatedOid, ObjectIdentifier};
+    use x509_cert::der::Encode;
     use x509_cert::ext::pkix::{BasicConstraints, KeyUsage, KeyUsages};
     use x509_cert::ext::Extension;
     use x509_cert::name::Name;
@@ -276,14 +281,10 @@ fn x509_chain_checks_ca_constraints_dn_validity_and_cose_alg() {
                 oid: OID_ECDSA_WITH_SHA384,
                 parameters: None,
             };
-            let pub_bytes = self.subject_key.verifying_key().to_encoded_point(false);
-            let spki = SubjectPublicKeyInfoOwned {
-                algorithm: AlgorithmIdentifierOwned {
-                    oid: OID_EC_PUBLIC_KEY,
-                    parameters: Some(Any::encode_from(&OID_SECP384R1).unwrap()),
-                },
-                subject_public_key: BitString::from_bytes(pub_bytes.as_bytes()).unwrap(),
-            };
+            let spki_doc = p384::PublicKey::from(self.subject_key.verifying_key())
+                .to_public_key_der()
+                .unwrap();
+            let spki = SubjectPublicKeyInfoOwned::from_der(spki_doc.as_bytes()).unwrap();
             let mut exts = Vec::new();
             if let Some(ca) = self.basic_ca {
                 exts.push(Extension {
@@ -498,16 +499,16 @@ fn x509_chain_checks_ca_constraints_dn_validity_and_cose_alg() {
 
 fn synthetic_boot(
     manifest: &[u8; 32],
-    ephemeral: &[u8; EPHEMERAL_PUBLIC_KEY_LEN],
-    pcr0: &[u8; PCR_LEN],
+    ephemeral: &[u8; QOS_P256_PUBLIC_LEN],
+    pcr0: &[u8; SHA384_LEN],
 ) -> BootProof {
-    let live = live_manifest_pcr(manifest, ephemeral).unwrap();
-    let zeros = [0u8; PCR_LEN];
+    let live = live_manifest_pcr(manifest, ephemeral);
+    let zeros = [0u8; SHA384_LEN];
     let mut pcr_body = Vec::new();
     for index in 0..PCR_COUNT {
         let value = if index == 0 {
             pcr0.as_slice()
-        } else if index == PCR17 {
+        } else if index == PCR17 as usize {
             live.as_slice()
         } else {
             zeros.as_slice()

@@ -9,12 +9,17 @@ use anyhow::{ensure, Context, Result};
 use clap::{Parser, ValueEnum};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use spr_tvc_wire::constants::SHA256_LEN;
 use spr_tvc_wire::encoding::{decimal_u64, hex as wire_hex};
 use spr_tvc_wire::release::IdentityPcrs;
 use spr_tvc_wire::types::Network;
 
 const APP: &str = "decryption-service";
 const DEPLOY_DIR: &str = "decryption-service/deploy";
+const RELEASE_ID_MIN_LEN: usize = 2;
+const RELEASE_ID_MAX_LEN: usize = 64;
+pub(crate) const GIT_SHA_HEX_LEN: usize = 40;
+pub(crate) const SHA256_HEX_LEN: usize = SHA256_LEN * 2;
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Phase {
@@ -55,7 +60,7 @@ fn parse_network(value: &str) -> Result<Network, &'static str> {
 
 fn release_id(value: &str) -> Result<String, &'static str> {
     let valid_char = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
-    if (2..=64).contains(&value.len())
+    if (RELEASE_ID_MIN_LEN..=RELEASE_ID_MAX_LEN).contains(&value.len())
         && valid_char(value.as_bytes()[0])
         && value.bytes().all(|byte| valid_char(byte) || byte == b'-')
     {
@@ -85,7 +90,7 @@ impl Args {
             ensure!(
                 self.source_commit
                     .as_deref()
-                    .is_some_and(|sha| lower_hex(sha, 40)),
+                    .is_some_and(|sha| lower_hex(sha, GIT_SHA_HEX_LEN)),
                 "mainnet requires --source-commit with the reviewed full commit hash"
             );
         } else {
@@ -124,7 +129,7 @@ struct NetworkConfig {
     endpoint: String,
     qos_version: Option<String>,
     #[serde(with = "wire_hex")]
-    security_domain_id: [u8; 32],
+    security_domain_id: [u8; SHA256_LEN],
     quorum_key_id: String,
     #[serde(with = "decimal_u64")]
     quorum_key_epoch: u64,

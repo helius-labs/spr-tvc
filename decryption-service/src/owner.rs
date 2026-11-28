@@ -3,9 +3,10 @@
 use crate::request::Failure;
 use ed25519_dalek::{Signature, VerifyingKey};
 use solana_pubkey::Pubkey;
+use spr_tvc_wire::constants::SHA256_LEN;
 use spr_tvc_wire::decryption_service::{
     accept_view_grant_window, decrypt_message, view_grant_digest, view_grant_message, ViewGrant,
-    ADDRESS_LEN,
+    ADDRESS_LEN, ED25519_SIGNATURE_LEN,
 };
 use spr_tvc_wire::types::{Network, ServiceInfo};
 
@@ -22,9 +23,9 @@ pub(crate) fn address_key(address: &str) -> Result<VerifyingKey, Failure> {
 /// Return the address after verifying its signature over the network and request digest.
 pub(crate) fn verify_decrypt(
     signer_address: &str,
-    signature: &[u8; 64],
+    signature: &[u8; ED25519_SIGNATURE_LEN],
     network: Network,
-    request_digest: &[u8; 32],
+    request_digest: &[u8; SHA256_LEN],
 ) -> Result<[u8; ADDRESS_LEN], Failure> {
     let key = address_key(signer_address)?;
     let address = key.to_bytes();
@@ -42,8 +43,8 @@ pub(crate) fn verify_decrypt(
 /// the grantee and the address is the grant owner.
 pub(crate) struct DecryptAuthorization<'a> {
     pub signer: &'a str,
-    pub signature: &'a [u8; 64],
-    pub request_digest: &'a [u8; 32],
+    pub signature: &'a [u8; ED25519_SIGNATURE_LEN],
+    pub request_digest: &'a [u8; SHA256_LEN],
     pub grant: Option<&'a ViewGrant>,
     pub now_ms: u64,
 }

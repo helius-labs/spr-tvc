@@ -1,4 +1,5 @@
 import { awaitWithSignal } from "./request.js";
+import { MAX_SAFE_INTEGER_BIGINT } from "../wire/constants.js";
 import { DecryptionServiceError, DecryptionServiceHttpError } from "../wire/error.js";
 
 /** Fetch implementation used for enclave HTTP requests. */
@@ -39,7 +40,7 @@ async function readBoundedBytes(
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
   signal?.throwIfAborted();
-  if (maxBytes <= 0n || maxBytes > BigInt(Number.MAX_SAFE_INTEGER)) {
+  if (maxBytes <= 0n || maxBytes > MAX_SAFE_INTEGER_BIGINT) {
     throw new DecryptionServiceError("ResponseTooLarge");
   }
   const limit = Number(maxBytes);

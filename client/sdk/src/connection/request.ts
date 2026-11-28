@@ -1,3 +1,4 @@
+import { DEFAULT_REQUEST_TIMEOUT_MS, MAX_SET_TIMEOUT_MS } from "../wire/constants.js";
 import { DecryptionServiceError } from "../wire/error.js";
 
 /** Applies to the whole SDK call, including verification and any decrypt batches. */
@@ -7,9 +8,12 @@ export interface DecryptionServiceRequestOptions {
   readonly timeoutMs?: number;
 }
 
-export function requestScope(options: DecryptionServiceRequestOptions = {}, defaultTimeoutMs = 120_000) {
+export function requestScope(
+  options: DecryptionServiceRequestOptions = {},
+  defaultTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+) {
   const timeoutMs = options.timeoutMs ?? defaultTimeoutMs;
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_SET_TIMEOUT_MS) {
     throw new DecryptionServiceError("InvalidRequestTimeout");
   }
   const controller = new AbortController();

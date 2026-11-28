@@ -14,7 +14,7 @@ import {
   sealedExchange,
 } from "../connection/operations.js";
 import { awaitWithSignal } from "../connection/request.js";
-import { API_VERSION } from "../wire/constants.js";
+import { API_VERSION, ED25519_SIGNATURE_LEN, SHA256_LEN } from "../wire/constants.js";
 import { DecryptionServiceError } from "../wire/error.js";
 import { encodeLowerHex } from "../wire/hex.js";
 import { parseStrictJson } from "../wire/json.js";
@@ -30,8 +30,7 @@ import {
   type ViewGrant,
 } from "../wire/decryption.js";
 
-const ED25519_SIGNATURE_BYTES = 64;
-const EMPTY_SIGNATURE = "00".repeat(ED25519_SIGNATURE_BYTES);
+const EMPTY_SIGNATURE = "00".repeat(ED25519_SIGNATURE_LEN);
 const OPERATION_KINDS = { PublicKeys: "ServicePublicKeys", Decrypt: "ServiceDecrypt" } as const;
 const RESULT_KEYS = {
   PublicKeys: ["type", "viewing_public_key", "nullifier_public_key"],
@@ -49,6 +48,23 @@ type DecryptCall = {
 
 export type ServiceCall = Extract<ServiceOperation, { type: "PublicKeys" }> | DecryptCall;
 export type ServiceCallResult<T extends ServiceCall> = Extract<ServiceResult, { type: T["type"] }>;
+
+/** Requests an Ed25519 signature over `message` from `signer` and enforces its exact byte length. */
+export async function signOffchainMessage(
+  signer: MessagePartialSigner,
+  message: Uint8Array,
+  signal: AbortSignal,
+): Promise<Uint8Array> {
+  const [signatures] = await awaitWithSignal(
+    signer.signMessages([createSignableMessage(message)], { abortSignal: signal }),
+    signal,
+  );
+  const signature = signatures?.[signer.address];
+  if (signature?.length !== ED25519_SIGNATURE_LEN) {
+    throw new DecryptionServiceError("InvalidSignature");
+  }
+  return signature;
+}
 
 /** Validates structural grant identity (`grantee`, distinct `owner`, valid Solana address). */
 export function validateGrantIdentity(grant: ViewGrant, signerAddress: string): Address {
@@ -110,7 +126,7 @@ export async function executeServiceCall<T extends ServiceCall>(
       : { owner: undefined, operation: call };
     let request: ServiceRequest = {
       version: API_VERSION,
-      request_id: encodeLowerHex(crypto.getRandomValues(new Uint8Array(32))),
+      request_id: encodeLowerHex(crypto.getRandomValues(new Uint8Array(SHA256_LEN))),
       quorum_key_id: target.quorumKeyId,
       quorum_key_epoch: target.quorumKeyEpoch,
       client_response_public_key: encodeLowerHex(p256.getPublicKey(responseSecret, false)),
@@ -119,21 +135,13 @@ export async function executeServiceCall<T extends ServiceCall>(
     const requestDigest = serviceRequestDigest(request);
     checkSignedRequestSize(context, request);
     if (owner) {
-      const address = operation.signer;
       const message = decryptMessage(
-        new Uint8Array(addressEncoder.encode(address)),
+        new Uint8Array(addressEncoder.encode(operation.signer)),
         target.network,
         requestDigest,
       );
       signal.throwIfAborted();
-      const [signatures] = await awaitWithSignal(
-        owner.signMessages([createSignableMessage(message)], { abortSignal: signal }),
-        signal,
-      );
-      const signature = signatures?.[address];
-      if (signature?.length !== ED25519_SIGNATURE_BYTES) {
-        throw new DecryptionServiceError("InvalidSignature");
-      }
+      const signature = await signOffchainMessage(owner, message, signal);
       request = { ...request, operation: { ...operation, signature: encodeLowerHex(signature) } };
     }
 

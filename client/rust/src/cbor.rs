@@ -6,6 +6,9 @@
 
 use spr_tvc_wire::error::{ErrorCode, TvcError};
 
+const MAJOR_SHIFT: u8 = 5;
+const ADDITIONAL_MASK: u8 = 0x1f;
+
 const MAJOR_UNSIGNED: u8 = 0;
 const MAJOR_NEGATIVE: u8 = 1;
 const MAJOR_BYTES: u8 = 2;
@@ -14,9 +17,24 @@ const MAJOR_ARRAY: u8 = 4;
 const MAJOR_MAP: u8 = 5;
 const MAJOR_TAG: u8 = 6;
 const MAJOR_SIMPLE: u8 = 7;
+
+const INLINE_ARG_LIMIT: u8 = 24;
+const ADDITIONAL_U8: u8 = 24;
+const ADDITIONAL_U16: u8 = 25;
+const ADDITIONAL_U32: u8 = 26;
+const ADDITIONAL_U64: u8 = 27;
+const ADDITIONAL_INDEFINITE: u8 = 31;
+
+const SIMPLE_FALSE: u8 = 20;
+const SIMPLE_TRUE: u8 = 21;
+const SIMPLE_NULL: u8 = 22;
+const CBOR_BREAK: u8 = 0xff;
+
 const COSE_SIGN1_TAG: u64 = 18;
+const COSE_SIG_STRUCTURE_ELEMENTS: usize = 4;
 const MAX_DEPTH: usize = 16;
 const MAX_INDEFINITE_ROOT_MAP_ENTRIES: usize = 32;
+const MAX_PREALLOC: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CborKey {
@@ -118,38 +136,36 @@ impl<'a> Reader<'a> {
     }
 
     fn argument(&mut self, additional: u8) -> Result<u64, TvcError> {
-        if additional < 24 {
-            return Ok(u64::from(additional));
-        }
-        if additional == 24 {
-            let value = u64::from(self.byte()?);
-            if value < 24 {
-                return Err(boot());
+        let (value, minimum) = match additional {
+            0..INLINE_ARG_LIMIT => return Ok(u64::from(additional)),
+            ADDITIONAL_U8 => (u64::from(self.byte()?), u64::from(INLINE_ARG_LIMIT)),
+            ADDITIONAL_U16 => {
+                let raw: [u8; size_of::<u16>()] = self
+                    .take(size_of::<u16>())?
+                    .try_into()
+                    .map_err(|_| boot())?;
+                (u64::from(u16::from_be_bytes(raw)), u64::from(u8::MAX) + 1)
             }
-            return Ok(value);
-        }
-        if matches!(additional, 25..=27) {
-            let width = match additional {
-                25 => 2,
-                26 => 4,
-                _ => 8,
-            };
-            let raw = self.take(width)?;
-            let mut value = 0u64;
-            for byte in raw {
-                value = value.checked_shl(8).ok_or_else(boot)? | u64::from(*byte);
+            ADDITIONAL_U32 => {
+                let raw: [u8; size_of::<u32>()] = self
+                    .take(size_of::<u32>())?
+                    .try_into()
+                    .map_err(|_| boot())?;
+                (u64::from(u32::from_be_bytes(raw)), u64::from(u16::MAX) + 1)
             }
-            let minimum = match additional {
-                25 => 0x100,
-                26 => 0x1_0000,
-                _ => 0x1_0000_0000,
-            };
-            if value < minimum {
-                return Err(boot());
+            ADDITIONAL_U64 => {
+                let raw: [u8; size_of::<u64>()] = self
+                    .take(size_of::<u64>())?
+                    .try_into()
+                    .map_err(|_| boot())?;
+                (u64::from_be_bytes(raw), u64::from(u32::MAX) + 1)
             }
-            return Ok(value);
+            _ => return Err(boot()),
+        };
+        if value < minimum {
+            return Err(boot());
         }
-        Err(boot())
+        Ok(value)
     }
 
     fn read(&mut self, depth: usize) -> Result<Cbor, TvcError> {
@@ -157,17 +173,21 @@ impl<'a> Reader<'a> {
             return Err(boot());
         }
         let initial = self.byte()?;
-        let major = initial >> 5;
-        let additional = initial & 0x1f;
+        let major = initial >> MAJOR_SHIFT;
+        let additional = initial & ADDITIONAL_MASK;
         if major == MAJOR_SIMPLE {
             return match additional {
-                20 => Ok(Cbor::Bool(false)),
-                21 => Ok(Cbor::Bool(true)),
-                22 => Ok(Cbor::Null),
+                SIMPLE_FALSE => Ok(Cbor::Bool(false)),
+                SIMPLE_TRUE => Ok(Cbor::Bool(true)),
+                SIMPLE_NULL => Ok(Cbor::Null),
                 _ => Err(boot()),
             };
         }
-        if additional == 31 && major == MAJOR_MAP && depth == 0 && self.allow_indefinite_root_map {
+        if additional == ADDITIONAL_INDEFINITE
+            && major == MAJOR_MAP
+            && depth == 0
+            && self.allow_indefinite_root_map
+        {
             return self.indefinite_root_map(depth);
         }
         let argument = self.argument(additional)?;
@@ -191,7 +211,7 @@ impl<'a> Reader<'a> {
                 if len > self.bytes.len() - self.offset {
                     return Err(boot());
                 }
-                let mut items = Vec::with_capacity(len.min(64));
+                let mut items = Vec::with_capacity(len.min(MAX_PREALLOC));
                 for _ in 0..len {
                     items.push(self.read(depth + 1)?);
                 }
@@ -215,7 +235,7 @@ impl<'a> Reader<'a> {
     }
 
     fn entries(&mut self, depth: usize, len: usize) -> Result<Vec<(CborKey, Cbor)>, TvcError> {
-        let mut entries = Vec::with_capacity(len.min(64));
+        let mut entries = Vec::with_capacity(len.min(MAX_PREALLOC));
         for _ in 0..len {
             let key = map_key(self.read(depth + 1)?)?;
             if entries.iter().any(|(existing, _)| existing == &key) {
@@ -228,12 +248,12 @@ impl<'a> Reader<'a> {
 
     fn indefinite_root_map(&mut self, depth: usize) -> Result<Cbor, TvcError> {
         let mut entries = Vec::new();
-        while self.bytes.get(self.offset) != Some(&0xff) {
+        while self.bytes.get(self.offset) != Some(&CBOR_BREAK) {
             if entries.len() >= MAX_INDEFINITE_ROOT_MAP_ENTRIES {
                 return Err(boot());
             }
             let key = map_key(self.read(depth + 1)?)?;
-            if self.bytes.get(self.offset) == Some(&0xff) {
+            if self.bytes.get(self.offset) == Some(&CBOR_BREAK) {
                 return Err(boot());
             }
             if entries.iter().any(|(existing, _)| existing == &key) {
@@ -265,48 +285,35 @@ pub(crate) fn decode_nitro_cbor(bytes: &[u8]) -> Result<Cbor, TvcError> {
 /// `["Signature1", protected, h'', payload]`, definite-length.
 pub(crate) fn encode_cose_sig_structure(protected: &[u8], payload: &[u8]) -> Vec<u8> {
     let context = b"Signature1";
-    let mut out = encode_head(MAJOR_ARRAY, 4);
-    out.extend(encode_head(MAJOR_TEXT, context.len()));
+    let mut out = Vec::new();
+    push_head(&mut out, MAJOR_ARRAY, COSE_SIG_STRUCTURE_ELEMENTS);
+    push_head(&mut out, MAJOR_TEXT, context.len());
     out.extend_from_slice(context);
     for item in [protected, &[][..], payload] {
-        out.extend(encode_head(MAJOR_BYTES, item.len()));
+        push_head(&mut out, MAJOR_BYTES, item.len());
         out.extend_from_slice(item);
     }
     out
 }
 
-fn encode_head(major: u8, argument: usize) -> Vec<u8> {
-    let prefix = major << 5;
+fn push_head(out: &mut Vec<u8>, major: u8, argument: usize) {
+    let prefix = major << MAJOR_SHIFT;
     let argument = argument as u64;
-    if argument < 24 {
-        return vec![prefix | argument as u8];
+    if argument < u64::from(INLINE_ARG_LIMIT) {
+        out.push(prefix | argument as u8);
+    } else if let Ok(value) = u8::try_from(argument) {
+        out.push(prefix | ADDITIONAL_U8);
+        out.push(value);
+    } else if let Ok(value) = u16::try_from(argument) {
+        out.push(prefix | ADDITIONAL_U16);
+        out.extend_from_slice(&value.to_be_bytes());
+    } else if let Ok(value) = u32::try_from(argument) {
+        out.push(prefix | ADDITIONAL_U32);
+        out.extend_from_slice(&value.to_be_bytes());
+    } else {
+        out.push(prefix | ADDITIONAL_U64);
+        out.extend_from_slice(&argument.to_be_bytes());
     }
-    if argument < 0x100 {
-        return vec![prefix | 24, argument as u8];
-    }
-    if argument < 0x1_0000 {
-        return vec![prefix | 25, (argument >> 8) as u8, argument as u8];
-    }
-    if argument < 0x1_0000_0000 {
-        return vec![
-            prefix | 26,
-            (argument >> 24) as u8,
-            (argument >> 16) as u8,
-            (argument >> 8) as u8,
-            argument as u8,
-        ];
-    }
-    vec![
-        prefix | 27,
-        (argument >> 56) as u8,
-        (argument >> 48) as u8,
-        (argument >> 40) as u8,
-        (argument >> 32) as u8,
-        (argument >> 24) as u8,
-        (argument >> 16) as u8,
-        (argument >> 8) as u8,
-        argument as u8,
-    ]
 }
 
 #[cfg(test)]

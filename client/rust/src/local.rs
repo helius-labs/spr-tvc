@@ -2,7 +2,9 @@
 //! discovery has to match the shared testkit fixture.
 
 use serde::Deserialize;
-use spr_tvc_wire::constants::{API_VERSION, QOS_P256_PUBLIC_LEN};
+use spr_tvc_wire::constants::{
+    API_VERSION, QOS_P256_PUBLIC_LEN, SEC1_UNCOMPRESSED_LEN, SHA384_LEN,
+};
 use spr_tvc_wire::decryption_service::SERVICE_PROOF_TYPE;
 use spr_tvc_wire::digest::sha256;
 use spr_tvc_wire::encoding::{decode_lower_hex, parse_strict_json};
@@ -62,10 +64,10 @@ pub(crate) fn connect<T: Transport>(
         endpoint,
         release,
         IdentityPcrs {
-            pcr0: [0; 48],
-            pcr1: [0; 48],
-            pcr2: [0; 48],
-            pcr3: [0; 48],
+            pcr0: [0; SHA384_LEN],
+            pcr1: [0; SHA384_LEN],
+            pcr2: [0; SHA384_LEN],
+            pcr3: [0; SHA384_LEN],
         },
         now_ms,
     )
@@ -131,7 +133,7 @@ fn release_for(testkit: &Testkit, info: &ServiceInfo) -> Result<SignedReleasePol
 }
 
 fn local_manifest_set() -> ManifestSetPolicy {
-    const GENERATOR: [u8; 65] = [
+    const GENERATOR: [u8; SEC1_UNCOMPRESSED_LEN] = [
         0x04, 0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc, 0xe6, 0xe5, 0x63, 0xa4,
         0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d, 0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39, 0x45, 0xd8,
         0x98, 0xc2, 0x96, 0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e, 0xe7, 0xeb, 0x4a,

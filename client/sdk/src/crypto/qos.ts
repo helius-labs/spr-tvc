@@ -7,16 +7,19 @@ import {
   AES_GCM_NONCE_LEN,
   AES_GCM_TAG_LEN,
   QOS_ENCRYPTION_HMAC_MESSAGE,
+  QOS_ENVELOPE_LEN_FIELD_LEN,
   QOS_ENVELOPE_OVERHEAD,
   QOS_P256_PUBLIC_LEN,
   SEC1_UNCOMPRESSED_LEN,
+  SHA256_LEN,
 } from "../wire/constants.js";
 import { DecryptionServiceError } from "../wire/error.js";
 import { parseUncompressedSec1 } from "./p256.js";
 
 const te = new TextEncoder();
+const SEC1_PREFIX_LEN = 1;
 const ENVELOPE_HEADER_LEN = QOS_ENVELOPE_OVERHEAD - AES_GCM_TAG_LEN;
-const SEALED_LEN_OFFSET = ENVELOPE_HEADER_LEN - 4;
+const SEALED_LEN_OFFSET = ENVELOPE_HEADER_LEN - QOS_ENVELOPE_LEN_FIELD_LEN;
 
 type QosP256Public = {
   encryption: Uint8Array;
@@ -36,7 +39,7 @@ export function parseQosP256Public(bytes: Uint8Array): QosP256Public {
 
 function sharedX(secret: Uint8Array, publicSec1: Uint8Array): Uint8Array {
   const shared = p256.getSharedSecret(secret, publicSec1, false);
-  return shared.slice(1, 33);
+  return shared.slice(SEC1_PREFIX_LEN, SEC1_PREFIX_LEN + SHA256_LEN);
 }
 
 function cipherKey(
@@ -52,7 +55,7 @@ function cipherKey(
   preImage.set(sharedSecret, ephemeralPublic.length + receiverPublic.length);
   return hmac(sha512, preImage, te.encode(QOS_ENCRYPTION_HMAC_MESSAGE)).slice(
     0,
-    32
+    SHA256_LEN
   );
 }
 
@@ -71,7 +74,7 @@ function aad(
 }
 
 function encodeU32Le(value: number): Uint8Array {
-  const out = new Uint8Array(4);
+  const out = new Uint8Array(QOS_ENVELOPE_LEN_FIELD_LEN);
   const view = new DataView(out.buffer);
   view.setUint32(0, value, true);
   return out;

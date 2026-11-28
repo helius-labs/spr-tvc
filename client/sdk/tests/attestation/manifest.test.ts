@@ -1,3 +1,5 @@
+// Covers INV-17 (strict JSON/UTF-8 manifest envelopes, approved manifest-set signatures, debug/env refusal).
+
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -135,6 +137,22 @@ describe("approved manifest", () => {
     const withEnv = structuredClone(envelope);
     withEnv.manifest.pivot.env = { FOO: "bar" };
     expect(() => approvedManifestSha256(boot(withEnv), policy, pcrs)).toThrow(
+      "BootProofUnverified: manifest",
+    );
+
+    const rawJson = JSON.stringify(envelope);
+    const duplicateKeyJson = rawJson.replace('"version":"v2"', '"version":"v2","version":"v2"');
+    const duplicateBoot = {
+      qosManifestEnvelopeB64: Buffer.from(duplicateKeyJson).toString("base64"),
+    } as TurnkeyBootProofWire;
+    expect(() => approvedManifestSha256(duplicateBoot, policy, pcrs)).toThrow(
+      "BootProofUnverified: manifest",
+    );
+
+    const invalidUtf8Boot = {
+      qosManifestEnvelopeB64: Buffer.from([0xff, 0xfe, 0xfd]).toString("base64"),
+    } as TurnkeyBootProofWire;
+    expect(() => approvedManifestSha256(invalidUtf8Boot, policy, pcrs)).toThrow(
       "BootProofUnverified: manifest",
     );
   });

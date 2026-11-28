@@ -4,8 +4,8 @@
 
 use crate::attestation::{now_ms, BootProof, IdentityPcrs};
 use crate::service::{
-    bind_operation_proof, decrypt_operation, shielded_address, CheckReply, Exchange, OpenNotes,
-    ServiceKeys, Target, RESPONSE_ENVELOPE_SLACK,
+    bind_operation_proof, decrypt_items_with, fetch_address, open_keys, open_keys_for, CheckReply,
+    OpenNotes, ServiceKeys, RESPONSE_ENVELOPE_SLACK,
 };
 use crate::session::{join, verify_connection_release, verify_reply_boot, Session};
 use crate::transport::Transport;
@@ -13,15 +13,13 @@ use crate::{ClientError, OwnerSigner};
 use base64::Engine;
 use serde::Deserialize;
 use spr_keypair::ShieldedAddress;
-use spr_tvc_wire::constants::QOS_P256_PUBLIC_LEN;
-use spr_tvc_wire::decryption_service::{
-    DecryptedOutputs, ServiceOperation, ServiceRequest, ADDRESS_LEN,
-};
+use spr_tvc_wire::constants::{QOS_P256_PUBLIC_LEN, SHA256_LEN};
+use spr_tvc_wire::decryption_service::{DecryptedOutputs, ServiceRequest, ViewGrant, ADDRESS_LEN};
 use spr_tvc_wire::encoding::{decode_lower_hex, parse_strict_json};
 use spr_tvc_wire::error::{ErrorCode, TvcError};
 use spr_tvc_wire::release::PinnedReleaseAuthorities;
 use spr_tvc_wire::types::{
-    AppProof, DecryptItem, EncryptedResponse, Network, OperationKind, SignedReleasePolicy,
+    AppProof, DecryptItem, EncryptedResponse, Network, ReleasePolicy, SignedReleasePolicy,
 };
 
 const BOOT_PROOF_SLACK: u64 = 512 * 1024;
@@ -60,61 +58,33 @@ impl<T: Transport> OperationsClient<T> {
 
     /// The shielded address a sender pays `owner` at before that owner registers.
     pub fn address(&self, owner: &[u8; ADDRESS_LEN]) -> Result<ShieldedAddress, ClientError> {
-        crate::session::ensure_operation(
-            &self.session.release().policy,
-            OperationKind::ServicePublicKeys,
-        )?;
-        let result = self.call(
-            ServiceOperation::PublicKeys {
-                address: bs58::encode(owner).into_string(),
-            },
-            None,
-            owner,
-        )?;
-        shielded_address(owner, result)
+        fetch_address(self, owner)
     }
 
     /// Keys for `signer`. Does not call `Decrypt`.
     pub fn keys<'a>(&'a self, signer: &'a dyn OwnerSigner) -> Result<ServiceKeys<'a>, ClientError> {
-        let owner = signer.pubkey();
-        let address = self.address(&owner)?;
-        Ok(ServiceKeys::new(self, signer, address, None))
+        open_keys(self, signer)
     }
 
     /// Keys for the grant's owner. `grantee` signs each later `Decrypt`.
     pub fn keys_for<'a>(
         &'a self,
         grantee: &'a dyn OwnerSigner,
-        grant: &'a spr_tvc_wire::decryption_service::ViewGrant,
+        grant: &'a ViewGrant,
     ) -> Result<ServiceKeys<'a>, ClientError> {
-        let owner = crate::service::grant_owner(
-            grantee,
-            grant,
-            &self.session.release().policy,
-            self.session.now_ms(),
-        )?;
-        let address = self.address(&owner)?;
-        Ok(ServiceKeys::new(self, grantee, address, Some(grant)))
-    }
-
-    fn call(
-        &self,
-        operation: ServiceOperation,
-        signer: Option<&dyn OwnerSigner>,
-        owner: &[u8; ADDRESS_LEN],
-    ) -> Result<spr_tvc_wire::decryption_service::ServiceResult, ClientError> {
-        Exchange {
-            target: Target::from_policy(&self.session.release().policy),
-            operation,
-            signer,
-            owner,
-            checker: self,
-        }
-        .run()
+        open_keys_for(self, grantee, grant)
     }
 }
 
 impl<T: Transport> CheckReply for OperationsClient<T> {
+    fn policy(&self) -> &ReleasePolicy {
+        &self.session.release().policy
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.session.now_ms()
+    }
+
     fn gate(&self) -> Result<(), TvcError> {
         self.session.require_current()
     }
@@ -146,7 +116,7 @@ impl<T: Transport> CheckReply for OperationsClient<T> {
     fn check_reply(
         &self,
         proof: &AppProof,
-        request_digest: &[u8; 32],
+        request_digest: &[u8; SHA256_LEN],
         encrypted_result: &[u8],
         request: &ServiceRequest,
         boot: Option<&BootProof>,
@@ -168,30 +138,9 @@ impl<T: Transport> OpenNotes for OperationsClient<T> {
         &self,
         signer: &dyn OwnerSigner,
         items: Vec<DecryptItem>,
-        grant: Option<&spr_tvc_wire::decryption_service::ViewGrant>,
+        grant: Option<&ViewGrant>,
     ) -> Result<DecryptedOutputs, ClientError> {
-        crate::session::ensure_operation(
-            &self.session.release().policy,
-            OperationKind::ServiceDecrypt,
-        )?;
-        let owner = signer.pubkey();
-        let result = self.call(
-            decrypt_operation(
-                signer,
-                items,
-                grant,
-                &self.session.release().policy,
-                self.session.now_ms(),
-            )?,
-            Some(signer),
-            &owner,
-        )?;
-        match result {
-            spr_tvc_wire::decryption_service::ServiceResult::Decrypt(outputs) => Ok(outputs),
-            spr_tvc_wire::decryption_service::ServiceResult::PublicKeys { .. } => {
-                Err(TvcError::new(ErrorCode::ReleaseBindingMismatch).into())
-            }
-        }
+        decrypt_items_with(self, signer, items, grant)
     }
 }
 
@@ -217,11 +166,8 @@ fn decode_boot_proof(wire: &WireBootProof) -> Result<BootProof, TvcError> {
         .map_err(|_| TvcError::boot("decode"))?;
     let key =
         decode_lower_hex(&wire.ephemeral_public_key_hex).map_err(|_| TvcError::boot("decode"))?;
-    if key.len() != QOS_P256_PUBLIC_LEN {
-        return Err(TvcError::boot("decode"));
-    }
-    let mut ephemeral_public_key = [0u8; QOS_P256_PUBLIC_LEN];
-    ephemeral_public_key.copy_from_slice(&key);
+    let ephemeral_public_key: [u8; QOS_P256_PUBLIC_LEN] =
+        key.try_into().map_err(|_| TvcError::boot("decode"))?;
     let manifest_envelope = base64::engine::general_purpose::STANDARD
         .decode(wire.qos_manifest_envelope_b64.as_bytes())
         .map_err(|_| TvcError::boot("decode"))?;

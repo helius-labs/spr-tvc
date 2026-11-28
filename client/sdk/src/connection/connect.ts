@@ -5,6 +5,7 @@ import {
   API_VERSION,
   EXPECTED_TURNKEY_TRUST_ROOT_ID,
   QOS_P256_PUBLIC_LEN,
+  SHA256_LEN,
   TVC_APP_PROOF_KEYS,
   TVC_APP_PROOF_SCHEME,
   TVC_QOS_PING_PROOF_TYPE,
@@ -124,7 +125,7 @@ export async function qosPingChallenge(quorumPublicKey: string): Promise<QosPing
   const payload = canonicalizeJsonValue({
     type: TVC_QOS_PING_PROOF_TYPE,
     version: API_VERSION,
-    challenge: encodeLowerHex(crypto.getRandomValues(new Uint8Array(32))),
+    challenge: encodeLowerHex(crypto.getRandomValues(new Uint8Array(SHA256_LEN))),
   });
   const body = canonicalizeJsonValue({
     version: API_VERSION,

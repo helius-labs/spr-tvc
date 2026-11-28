@@ -5,6 +5,7 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use bytes::Bytes;
 use cadence_macros::statsd_count;
+use spr_tvc_wire::constants::{QOS_P256_PUBLIC_LEN, SEC1_COMPRESSED_LEN, SHA256_LEN};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, SemaphorePermit, watch};
 use turnkey_client::generated::services::coordinator::public::v1::GetBootProofRequest;
 use turnkey_client::{TurnkeyClient, TurnkeyClientError, TurnkeyP256ApiKey};
@@ -22,9 +23,9 @@ const MAX_CONCURRENT_TURNKEY_CALLS_PER_PROJECT: u32 = 8;
 const BOOT_PROOF_CACHE_CAPACITY: usize = 256;
 /// A replica's ephemeral key, which signs its answers and names its Boot
 /// Proof: 130 bytes, lowercase hex.
-const EPHEMERAL_KEY_HEX_LEN: usize = 260;
-const TURNKEY_PRIVATE_KEY_HEX_LEN: usize = 64;
-const TURNKEY_PUBLIC_KEY_HEX_LEN: usize = 66;
+const EPHEMERAL_KEY_HEX_LEN: usize = QOS_P256_PUBLIC_LEN * 2;
+const TURNKEY_PRIVATE_KEY_HEX_LEN: usize = SHA256_LEN * 2;
+const TURNKEY_PUBLIC_KEY_HEX_LEN: usize = SEC1_COMPRESSED_LEN * 2;
 
 /// Which limits a Turnkey call counts against.
 #[derive(Debug, Clone, Copy)]
@@ -257,11 +258,11 @@ fn turnkey_failure(call: &'static str, error: &TurnkeyClientError, rejected: Api
     mapped
 }
 
-const fn turnkey_status(status: Option<u16>, rejected: ApiError) -> ApiError {
-    match status {
-        Some(400 | 403 | 404) => rejected,
-        Some(401) => ApiError::TurnkeyUnauthorized,
-        Some(429) => ApiError::TurnkeyRateLimited,
+fn turnkey_status(status: Option<u16>, rejected: ApiError) -> ApiError {
+    match status.and_then(|code| StatusCode::from_u16(code).ok()) {
+        Some(StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND) => rejected,
+        Some(StatusCode::UNAUTHORIZED) => ApiError::TurnkeyUnauthorized,
+        Some(StatusCode::TOO_MANY_REQUESTS) => ApiError::TurnkeyRateLimited,
         Some(_) | None => ApiError::TurnkeyUnavailable,
     }
 }

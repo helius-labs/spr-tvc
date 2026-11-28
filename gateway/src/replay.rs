@@ -9,6 +9,7 @@ use redis::aio::ConnectionManager;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use spr_tvc_wire::EncryptedRequest;
+use spr_tvc_wire::constants::SHA256_LEN;
 
 use crate::error::ApiError;
 use crate::project::ProjectId;
@@ -33,7 +34,7 @@ pub type Outcome = Result<Forwarded, ApiError>;
 /// different routes, projects, quorum keys, epochs, versions, or ciphertexts
 /// cannot collide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Key([u8; 32]);
+pub struct Key([u8; SHA256_LEN]);
 
 impl Key {
     fn of(application: &str, project: &ProjectId, request: &EncryptedRequest) -> Self {

@@ -1,6 +1,8 @@
 import {
   API_VERSION,
   EXPECTED_TURNKEY_TRUST_ROOT_ID,
+  MAX_AUTHORITY_THRESHOLD,
+  MAX_IDENTIFIER_LEN,
 } from "../wire/constants.js";
 import { canonicalizeJsonValue } from "../wire/jcs.js";
 import { releasePolicyDigest } from "../wire/digest.js";
@@ -15,7 +17,8 @@ import type {
   SignedReleasePolicy,
 } from "../wire/types.js";
 import { SERVICE_PROOF_TYPE } from "../wire/decryption.js";
-import { parseUncompressedSec1, verifyP256Prehash } from "../crypto/p256.js";
+import { verifyP256Prehash } from "../crypto/p256.js";
+import { parseQosP256Public } from "../crypto/qos.js";
 
 export function policySigningDigest(policy: unknown): Uint8Array {
   return releasePolicyDigest(new TextEncoder().encode(canonicalizeJsonValue(policy)));
@@ -39,7 +42,7 @@ export function verifySignedReleasePolicy(
     throw new DecryptionServiceError("NetworkMismatch");
   }
   const { threshold, keys } = authorities;
-  if (!Number.isSafeInteger(threshold) || threshold < 1 || threshold > 255 ||
+  if (!Number.isSafeInteger(threshold) || threshold < 1 || threshold > MAX_AUTHORITY_THRESHOLD ||
       !Array.isArray(keys) || threshold > keys.length) {
     throw new DecryptionServiceError("ReleasePolicyInvalid");
   }
@@ -148,7 +151,7 @@ export function bindDiscoveryToPolicy(
 /** Namespace, threshold, and member keys on the pin. */
 function manifestSetIsPinned(policy: ReleasePolicy): boolean {
   const { namespace, manifestSet } = policy;
-  if (typeof namespace !== "string" || namespace.length === 0 || namespace.length > 128) {
+  if (typeof namespace !== "string" || namespace.length === 0 || namespace.length > MAX_IDENTIFIER_LEN) {
     return false;
   }
   if (!manifestSet || !Number.isSafeInteger(manifestSet.threshold) || manifestSet.threshold < 1 ||
@@ -164,15 +167,13 @@ function manifestSetIsPinned(policy: ReleasePolicy): boolean {
   const aliases = new Set<string>();
   const keys = new Set<string>();
   for (const member of manifestSet.members) {
-    if (typeof member?.alias !== "string" || member.alias.length === 0 || member.alias.length > 128 ||
+    if (typeof member?.alias !== "string" || member.alias.length === 0 ||
+        member.alias.length > MAX_IDENTIFIER_LEN ||
         aliases.has(member.alias) || keys.has(member.publicKey)) {
       return false;
     }
     try {
-      const bytes = decodeLowerHex(member.publicKey);
-      if (bytes.length !== 130) return false;
-      parseUncompressedSec1(bytes.subarray(0, 65));
-      parseUncompressedSec1(bytes.subarray(65));
+      parseQosP256Public(decodeLowerHex(member.publicKey));
     } catch {
       return false;
     }

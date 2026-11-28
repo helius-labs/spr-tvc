@@ -4,6 +4,7 @@ use std::fmt::{Display, Formatter, Result as FmtResult};
 
 use serde::{Deserialize, Serialize};
 
+use crate::constants::SHA256_LEN;
 use crate::encoding::{self, decimal_u64, hex};
 use crate::error::TvcError;
 
@@ -59,12 +60,12 @@ pub struct ServiceInfo {
     pub version: u8,
     pub network: Network,
     #[serde(with = "hex")]
-    pub security_domain_id: [u8; 32],
+    pub security_domain_id: [u8; SHA256_LEN],
     pub release_id: String,
     #[serde(with = "hex")]
-    pub manifest_digest: [u8; 32],
+    pub manifest_digest: [u8; SHA256_LEN],
     #[serde(with = "hex")]
-    pub executable_digest: [u8; 32],
+    pub executable_digest: [u8; SHA256_LEN],
     #[serde(with = "hex")]
     pub quorum_public_key: Vec<u8>,
     pub quorum_key_id: String,
@@ -140,7 +141,7 @@ pub struct QosPingChallenge {
     pub r#type: String,
     pub version: u8,
     #[serde(with = "hex")]
-    pub challenge: [u8; 32],
+    pub challenge: [u8; SHA256_LEN],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,7 +166,7 @@ pub struct QosPingResponse {
 pub struct EncryptedResponse {
     pub version: u8,
     #[serde(with = "hex")]
-    pub request_id: [u8; 32],
+    pub request_id: [u8; SHA256_LEN],
     #[serde(with = "hex")]
     pub encrypted_result: Vec<u8>,
     pub tvc_app_proof: AppProof,
@@ -177,11 +178,11 @@ pub struct OperationProofPayload {
     pub r#type: String,
     pub version: u8,
     #[serde(with = "hex")]
-    pub request_id: [u8; 32],
+    pub request_id: [u8; SHA256_LEN],
     #[serde(with = "hex")]
-    pub request_digest: [u8; 32],
+    pub request_digest: [u8; SHA256_LEN],
     #[serde(with = "hex")]
-    pub result_digest: [u8; 32],
+    pub result_digest: [u8; SHA256_LEN],
     pub operation: OperationKind,
 }
 
@@ -208,7 +209,7 @@ pub struct ReleasePolicy {
     pub version: u8,
     pub network: Network,
     #[serde(with = "hex")]
-    pub security_domain_id: [u8; 32],
+    pub security_domain_id: [u8; SHA256_LEN],
     /// QOS namespace name. A manifest for any other namespace is rejected.
     pub namespace: String,
     pub manifest_set: ManifestSetPolicy,

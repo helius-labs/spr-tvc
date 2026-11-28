@@ -9,7 +9,11 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID};
+use crate::constants::{
+    API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, MAX_IDENTIFIER_LEN, MAX_SAFE_INTEGER,
+    MIN_MAINNET_THRESHOLD, QOS_P256_PUBLIC_LEN, RAW_P256_SIGNATURE_LEN, SEC1_UNCOMPRESSED_LEN,
+    SHA256_LEN, SHA384_LEN,
+};
 use crate::crypto::{parse_uncompressed_sec1, sign_p256_prehash, verify_p256_prehash};
 use crate::digest::release_policy_digest;
 use crate::encoding::{decimal_u64, hex, jcs_serialize};
@@ -21,13 +25,13 @@ use crate::types::{ManifestSetPolicy, Network, ReleasePolicy, SignedReleasePolic
 #[serde(deny_unknown_fields)]
 pub struct IdentityPcrs {
     #[serde(rename = "0", with = "hex")]
-    pub pcr0: [u8; 48],
+    pub pcr0: [u8; SHA384_LEN],
     #[serde(rename = "1", with = "hex")]
-    pub pcr1: [u8; 48],
+    pub pcr1: [u8; SHA384_LEN],
     #[serde(rename = "2", with = "hex")]
-    pub pcr2: [u8; 48],
+    pub pcr2: [u8; SHA384_LEN],
     #[serde(rename = "3", with = "hex")]
-    pub pcr3: [u8; 48],
+    pub pcr3: [u8; SHA384_LEN],
 }
 
 /// Pinned mainnet trust root shared by client verification and release tooling.
@@ -37,13 +41,11 @@ pub struct MainnetTrust {
     pub release_authorities: PinnedReleaseAuthorities,
     pub qos_identity_pcrs: IdentityPcrs,
     #[serde(with = "hex")]
-    pub security_domain_id: [u8; 32],
+    pub security_domain_id: [u8; SHA256_LEN],
     #[serde(with = "hex")]
     pub quorum_public_key: Vec<u8>,
     pub maximum_policy_lifetime_ms: u64,
 }
-
-const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 
 impl MainnetTrust {
     /// Validate that the trust root itself is well-formed (quorum threshold >= 2,
@@ -51,7 +53,7 @@ impl MainnetTrust {
     pub fn validate(&self) -> Result<(), TvcError> {
         let authorities = &self.release_authorities;
         if authorities.authority_set_id.is_empty()
-            || authorities.threshold < 2
+            || authorities.threshold < MIN_MAINNET_THRESHOLD
             || usize::from(authorities.threshold) > authorities.keys.len()
         {
             return Err(TvcError::new(ErrorCode::ReleasePolicyInvalid));
@@ -135,15 +137,15 @@ pub struct PinnedReleaseAuthorities {
     pub minimum_revocation_epoch: u64,
 }
 
-pub fn policy_signing_digest(policy: &ReleasePolicy) -> Result<[u8; 32], TvcError> {
+pub fn policy_signing_digest(policy: &ReleasePolicy) -> Result<[u8; SHA256_LEN], TvcError> {
     let canonical = jcs_serialize(policy)?;
     Ok(release_policy_digest(canonical.as_bytes()))
 }
 
 pub fn sign_release_policy(
     policy: &ReleasePolicy,
-    secret: &[u8; 32],
-) -> Result<[u8; 64], TvcError> {
+    secret: &[u8; SHA256_LEN],
+) -> Result<[u8; RAW_P256_SIGNATURE_LEN], TvcError> {
     sign_p256_prehash(secret, &policy_signing_digest(policy)?)
 }
 
@@ -221,15 +223,17 @@ pub fn verify_signed_release_policy(
 }
 
 fn is_valid_quorum_public_key(bytes: &[u8]) -> bool {
-    bytes.len() == 130
-        && parse_uncompressed_sec1(&bytes[..65]).is_ok()
-        && parse_uncompressed_sec1(&bytes[65..]).is_ok()
+    if bytes.len() != QOS_P256_PUBLIC_LEN {
+        return false;
+    }
+    let (encryption, signing) = bytes.split_at(SEC1_UNCOMPRESSED_LEN);
+    parse_uncompressed_sec1(encryption).is_ok() && parse_uncompressed_sec1(signing).is_ok()
 }
 
 /// The pinned set is the one the client trusts. It is not read from a Boot Proof.
 fn manifest_set_is_pinned(set: &ManifestSetPolicy, namespace: &str) -> bool {
     if namespace.is_empty()
-        || namespace.len() > 128
+        || namespace.len() > MAX_IDENTIFIER_LEN
         || set.threshold == 0
         || set.members.is_empty()
         || set.threshold as usize > set.members.len()
@@ -240,7 +244,7 @@ fn manifest_set_is_pinned(set: &ManifestSetPolicy, namespace: &str) -> bool {
     let mut keys = HashSet::new();
     for member in &set.members {
         if member.alias.is_empty()
-            || member.alias.len() > 128
+            || member.alias.len() > MAX_IDENTIFIER_LEN
             || !is_valid_quorum_public_key(&member.public_key)
             || !aliases.insert(member.alias.as_str())
             || !keys.insert(member.public_key.as_slice())

@@ -27,6 +27,8 @@ rfMCMQCi85sWBbJwKKXdS6BptQFuZbT73o/gBh1qUxl/nNr12UO8Yfwr6wPLb+6N
 IwLz3/Y=
 -----END CERTIFICATE-----`;
 
+const AWS_NITRO_ROOT_CERT = new X509Certificate(AWS_NITRO_ROOT_CERT_PEM);
+
 export type CoseSign1 = {
   readonly protectedHeaders: Uint8Array;
   readonly payload: Uint8Array;
@@ -51,6 +53,7 @@ export async function verifyTurnkeyAwsAttestation(
   timestampMs: number,
   attestationTimestampMs: number = timestampMs,
 ): Promise<void> {
+  assertCertValidAt(AWS_NITRO_ROOT_CERT, attestationTimestampMs, true);
   assertCertValidAt(certificate, attestationTimestampMs, false);
   // cabundle[0] is an untrusted copy of the root; verifyCertificateChain discards it
   // and substitutes AWS_NITRO_ROOT_CERT_PEM, so check only intermediates here.
@@ -64,16 +67,18 @@ export async function verifyTurnkeyAwsAttestation(
   await verifyCertificateChain(cabundle, AWS_NITRO_ROOT_CERT_PEM, certificate, timestampMs);
 }
 
-/** Enforces X.509 validity at `timestampMs` and, for intermediates, CA constraints. */
+/** Enforces X.509 validity at `timestampMs` and, for CA certs, CA constraints. */
 export function assertCertValidAt(
-  certDer: Uint8Array,
+  certOrDer: X509Certificate | Uint8Array,
   timestampMs: number,
   requireCa = false,
 ): void {
   if (!Number.isSafeInteger(timestampMs) || timestampMs <= 0) {
     throw new Error("invalid certificate check timestamp");
   }
-  const cert = new X509Certificate(new Uint8Array(certDer));
+  const cert = certOrDer instanceof X509Certificate
+    ? certOrDer
+    : new X509Certificate(new Uint8Array(certOrDer));
   const notBeforeMs = cert.notBefore.getTime();
   const notAfterMs = cert.notAfter.getTime();
   if (notBeforeMs > notAfterMs || timestampMs < notBeforeMs || timestampMs > notAfterMs) {

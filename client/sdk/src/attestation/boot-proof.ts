@@ -2,6 +2,8 @@ import { sha384 } from "@noble/hashes/sha512";
 import { DecryptionServiceError } from "../wire/error.js";
 import {
   MAX_CLOCK_SKEW_MS,
+  MAX_SAFE_INTEGER_BIGINT,
+  QOS_P256_PUBLIC_LEN,
   SHA256_LEN,
   SHA384_LEN,
 } from "../wire/constants.js";
@@ -20,9 +22,12 @@ import {
 const QOS_LIVE_MANIFEST_PCR_COMMITMENT_DOMAIN = "qos-live-manifest-pcr-commitment-v1";
 const QOS_LIVE_MANIFEST_COMMITMENT_PCR_INDEX = 17;
 const QOS_ATTESTABLE_PCR_COUNT = 32;
-const QOS_EPHEMERAL_PUBLIC_KEY_LENGTH = 130;
+const IDENTITY_PCR_INDICES = [0, 1, 2, 3] as const;
+const COSE_SIGN1_LEN = 4;
+const COSE_HEADER_ALG = 1;
+const COSE_ALG_ES384 = -35;
 
-type QosIdentityPcrIndex = 0 | 1 | 2 | 3;
+type QosIdentityPcrIndex = (typeof IDENTITY_PCR_INDICES)[number];
 
 /**
  * Independently trusted Nitro measurements for the expected QOS deployment.
@@ -88,10 +93,7 @@ export function computeQosLiveManifestCommitmentPcr(
   manifestDigest: Uint8Array,
   ephemeralPublicKey: Uint8Array,
 ): Uint8Array {
-  if (manifestDigest.length !== SHA256_LEN) {
-    throw new DecryptionServiceError("BootProofUnverified");
-  }
-  if (ephemeralPublicKey.length !== QOS_EPHEMERAL_PUBLIC_KEY_LENGTH) {
+  if (manifestDigest.length !== SHA256_LEN || ephemeralPublicKey.length !== QOS_P256_PUBLIC_LEN) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
   const commitmentPreimage = new TextEncoder().encode(
@@ -100,14 +102,12 @@ export function computeQosLiveManifestCommitmentPcr(
     )}","manifestHash":"${encodeLowerHex(manifestDigest)}"}`,
   );
   const commitment = sha384(commitmentPreimage);
-  const extensionInput = new Uint8Array(SHA384_LEN + commitment.length);
-  extensionInput.set(commitment, SHA384_LEN);
-  return sha384(extensionInput);
+  return sha384.create().update(new Uint8Array(SHA384_LEN)).update(commitment).digest();
 }
 
 function decodeBootProof(bootProof: TurnkeyBootProofWire): DecodedBootProof {
   const decodedCose = decodeCbor(decodeBase64(bootProof.awsAttestationDocB64));
-  if (!Array.isArray(decodedCose) || decodedCose.length !== 4) {
+  if (!Array.isArray(decodedCose) || decodedCose.length !== COSE_SIGN1_LEN) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
   const [protectedHeaders, , payload, signature] = decodedCose;
@@ -133,8 +133,7 @@ function validateCoseProtectedHeader(protectedHeaders: Uint8Array): void {
     throw new DecryptionServiceError("BootProofUnverified");
   }
   const header = decodeCbor(protectedHeaders);
-  // COSE_Sign1 alg header (label 1) must be ES384 (-35).
-  if (!(header instanceof Map) || header.get(1) !== -35) {
+  if (!(header instanceof Map) || header.get(COSE_HEADER_ALG) !== COSE_ALG_ES384) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
 }
@@ -168,7 +167,7 @@ function validateAttestationShape(attestation: AwsNitroAttestationDocument): num
 function assertAttestationFreshness(timestampMs: number, nowMs: bigint): void {
   // Narrowed to Number below for the certificate-chain check, so anything past
   // the safe-integer range would silently lose precision.
-  if (nowMs <= 0n || nowMs > BigInt(Number.MAX_SAFE_INTEGER)) {
+  if (nowMs <= 0n || nowMs > MAX_SAFE_INTEGER_BIGINT) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
   // The signed challenge or operation reply proves live possession of the key.
@@ -189,24 +188,21 @@ function verifyProofBindings(
   }
 
   const attestedPublicKey = asBytes(attestation.get("public_key"));
-  if (attestedPublicKey.length !== QOS_EPHEMERAL_PUBLIC_KEY_LENGTH) {
+  if (attestedPublicKey.length !== QOS_P256_PUBLIC_LEN) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
-  const appPublicKey = decodeFixedLowerHex(
-    input.ephemeralPublicKey,
-    QOS_EPHEMERAL_PUBLIC_KEY_LENGTH,
-  );
+  const appPublicKey = decodeFixedLowerHex(input.ephemeralPublicKey, QOS_P256_PUBLIC_LEN);
   const bootPublicKey = decodeFixedLowerHex(
     input.bootProof.ephemeralPublicKeyHex,
-    QOS_EPHEMERAL_PUBLIC_KEY_LENGTH,
+    QOS_P256_PUBLIC_LEN,
   );
   if (!bytesEqual(appPublicKey, bootPublicKey) || !bytesEqual(bootPublicKey, attestedPublicKey)) {
     throw new DecryptionServiceError("BootProofUnverified");
   }
 
-  for (const index of [0, 1, 2, 3] as const) {
-    const expected = decodeFixedLowerHex(input.expectedPcrs[index], SHA384_LEN);
-    if (!bytesEqual(expected, getPcr(attestation, index))) {
+  for (const index of IDENTITY_PCR_INDICES) {
+    const expectedPcr = decodeFixedLowerHex(input.expectedPcrs[index], SHA384_LEN);
+    if (!bytesEqual(expectedPcr, getPcr(attestation, index))) {
       throw new DecryptionServiceError("BootProofUnverified");
     }
   }

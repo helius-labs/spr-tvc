@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use spr_tvc_wire::constants::{
     API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, MAX_ENCRYPTED_POLICY_BYTES,
-    MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES,
+    MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES, MAX_SAFE_INTEGER,
+    MIN_MAINNET_THRESHOLD,
 };
 use spr_tvc_wire::crypto::public_key_uncompressed;
 use spr_tvc_wire::decryption_service::SERVICE_PROOF_TYPE;
@@ -33,8 +34,8 @@ pub(crate) const OPERATIONS: [OperationKind; 2] = [
     OperationKind::ServicePublicKeys,
     OperationKind::ServiceDecrypt,
 ];
-const DAY_MS: u64 = 86_400_000;
-const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+const DAY_MS: u64 = 24 * 60 * 60 * 1_000;
+const MAX_MANIFEST_B64_BYTES: usize = 1024 * 1024;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -107,7 +108,7 @@ impl TurnkeyDeployment {
         );
         let encoded = &self.manifest.manifest;
         ensure!(
-            !encoded.is_empty() && encoded.len() <= 1_048_576,
+            !encoded.is_empty() && encoded.len() <= MAX_MANIFEST_B64_BYTES,
             "deployment has no supported manifest"
         );
         let manifest: ManifestV2 = serde_json::from_slice(&STANDARD.decode(encoded)?)?;
@@ -118,8 +119,10 @@ impl TurnkeyDeployment {
             "measured launch arguments, environment, or debug mode differ from the descriptor"
         );
         if mainnet {
+            let min_threshold = u32::from(MIN_MAINNET_THRESHOLD);
             ensure!(
-                manifest.manifest_set.threshold >= 2 && manifest.share_set.threshold >= 2,
+                manifest.manifest_set.threshold >= min_threshold
+                    && manifest.share_set.threshold >= min_threshold,
                 "mainnet requires threshold manifest approval and share recovery"
             );
         }

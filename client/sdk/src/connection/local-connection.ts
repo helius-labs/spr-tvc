@@ -1,4 +1,4 @@
-import { API_VERSION } from "../wire/constants.js";
+import { API_VERSION, MAX_U64_BIGINT } from "../wire/constants.js";
 import { decodeDecimalU64 } from "../wire/decimal.js";
 import { SERVICE_PROOF_TYPE } from "../wire/decryption.js";
 import { DecryptionServiceError } from "../wire/error.js";
@@ -83,7 +83,7 @@ export async function connectLocalUnattestedTvc(
     },
     transport,
     releasePolicyValidFromMs: 0n,
-    releasePolicyExpiresAtMs: 0xffff_ffff_ffff_ffffn,
+    releasePolicyExpiresAtMs: MAX_U64_BIGINT,
     nowMs,
     trustVerifier: Object.freeze({
       async verifyOperationAppProof(proof) {

@@ -1,3 +1,5 @@
+//! Transport security tests covering INV-28 (bounded responses, no redirects, API key isolation).
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -6,6 +8,54 @@ use std::thread;
 
 use super::*;
 
+/// Positive + negative (INV-28): accepts a 200 JSON reply within the byte cap while sending
+/// `x-api-key`, and rejects a reply whose body exceeds `max_bytes`.
+#[test]
+fn posts_with_api_key_within_cap_and_rejects_oversized_response() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        // First request: small valid reply.
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut req = [0u8; 1024];
+        let n = stream.read(&mut req).unwrap();
+        let req_text = std::str::from_utf8(&req[..n]).unwrap().to_ascii_lowercase();
+        assert!(req_text.contains("x-api-key: test-key"));
+        assert!(req_text.contains("content-type: application/json"));
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 9\r\n\r\n{\"ok\":1}\n",
+            )
+            .unwrap();
+
+        // Second request: oversized reply (32 bytes vs 8-byte client limit).
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut req = [0u8; 1024];
+        let _ = stream.read(&mut req);
+        let body = "a".repeat(32);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+    });
+
+    let transport = ReqwestTransport::new().unwrap();
+    let url = format!("http://{addr}/v1/decryption/operations");
+
+    let ok = transport
+        .post_with_api_key(&url, "test-key", "{}", 64)
+        .unwrap();
+    assert_eq!(ok, b"{\"ok\":1}\n");
+
+    let too_large = transport.post_with_api_key(&url, "test-key", "{}", 8);
+    assert!(matches!(too_large, Err(ClientError::ResponseTooLarge)));
+
+    server.join().unwrap();
+}
+
+/// Negative (INV-28): refuses HTTP redirects without contacting the redirect target or forwarding
+/// `x-api-key`.
 #[test]
 fn does_not_follow_redirects_or_forward_api_keys() {
     let target_hit = Arc::new(AtomicBool::new(false));
