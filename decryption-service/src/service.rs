@@ -110,15 +110,15 @@ pub(crate) fn router(service: Arc<Service>) -> Router {
 
 const MAX_PING_BODY_BYTES: usize = 4_096;
 
-async fn serve_get_json<T: serde::Serialize>(
+async fn serve_get_json(
     body: Body,
-    value: &T,
+    serialized: Result<String, spr_tvc_wire::TvcError>,
     serialize_error: PublicError,
 ) -> Response<Body> {
     if to_bytes(body, 0).await.is_err() {
         return PublicError::RequestTooLarge.into_response();
     }
-    match jcs_serialize(value) {
+    match serialized {
         Ok(json) => http::ok(json),
         Err(_) => serialize_error.into_response(),
     }
@@ -130,15 +130,20 @@ async fn dispatch(State(service): State<Arc<Service>>, request: Request<Body>) -
         ("GET", "/health") => {
             serve_get_json(
                 body,
-                &HealthResponse {
+                jcs_serialize(&HealthResponse {
                     status: HealthStatus::Healthy,
-                },
+                }),
                 PublicError::Unavailable,
             )
             .await
         }
         ("GET", "/v1/info") => {
-            serve_get_json(body, &service.info, PublicError::InvalidRequest).await
+            serve_get_json(
+                body,
+                jcs_serialize(&service.info),
+                PublicError::InvalidRequest,
+            )
+            .await
         }
         ("POST", "/v1/ping" | "/v1/operations") if !has_json_content_type(&parts.headers) => {
             PublicError::InvalidRequest.into_response()
