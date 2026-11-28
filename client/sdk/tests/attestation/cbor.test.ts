@@ -1,3 +1,5 @@
+// Covers INV-14 (strict deterministic CBOR subset safety before signature verification).
+
 import { describe, expect, it } from "vitest";
 import {
   CborError,

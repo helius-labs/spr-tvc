@@ -1,3 +1,5 @@
+//! Release staging provenance, immutable image digest, and live deployment continuity tests (INV-21).
+
 use spr_tvc_wire::types::Network;
 
 use crate::stage::{image_digest, provenance_command, require_candidate};

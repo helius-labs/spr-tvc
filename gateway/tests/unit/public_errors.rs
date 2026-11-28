@@ -1,3 +1,5 @@
+//! Gateway RFC 7807 problem-document and non-retriable error code tests (INV-27).
+
 use super::*;
 
 #[test]

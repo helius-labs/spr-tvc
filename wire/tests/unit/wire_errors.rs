@@ -1,3 +1,5 @@
+//! Wire error code to variant-name exactness test (INV-11).
+
 use strum::VariantArray;
 
 use crate::error::ErrorCode;

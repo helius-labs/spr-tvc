@@ -1,3 +1,5 @@
+//! Gateway per-project in-flight concurrency limiter tests (INV-24).
+
 use super::*;
 
 #[test]

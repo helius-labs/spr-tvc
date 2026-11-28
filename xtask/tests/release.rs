@@ -1,3 +1,5 @@
+//! Release CLI phase/network validation and deployment record tests (INV-21).
+
 use std::fs;
 
 use clap::Parser;

@@ -1,4 +1,4 @@
-//! The empty indexer page used to check that a normal decrypt fits in the 10 MiB body cap.
+//! Indexer page sizing against the 10 MiB body cap (INV-07).
 
 use spr_keypair::constants::{BLINDING_LEN, SALT_LEN};
 use spr_keypair::x25519::X25519_PUBKEY_LEN as SPR_X25519_PUBLIC_KEY_LEN;

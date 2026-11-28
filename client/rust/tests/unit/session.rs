@@ -1,3 +1,6 @@
+//! Session crypto and mainnet trust-anchor tests covering INV-05 (QOS response envelope round-trip)
+//! and INV-20 (fail-closed mainnet anchor pinning, threshold >= 2, and bounded policy lifetime).
+
 use p256::ecdsa::SigningKey;
 use qos_p256::encrypt::{P256EncryptPair, P256EncryptPublic};
 use spr_tvc_wire::constants::{API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID};

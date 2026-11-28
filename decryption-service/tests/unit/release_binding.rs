@@ -1,3 +1,5 @@
+//! Enclave Quorum-key replica consistency and request binding tests (INV-03, INV-04, INV-08).
+
 use super::*;
 
 #[test]

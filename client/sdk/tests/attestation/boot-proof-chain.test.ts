@@ -1,3 +1,4 @@
+// Covers INV-15 (pinned AWS Nitro root, X.509 validity windows, intermediate CA constraints).
 // Runs against the real Turnkey/AWS Nitro seam, with nothing mocked. A
 // synthetic attestation is well-formed and internally consistent but is not
 // chained to the pinned AWS Nitro root, so acceptance here would mean the

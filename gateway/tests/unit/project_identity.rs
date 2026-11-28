@@ -1,3 +1,5 @@
+//! Gateway project UUID and API key extraction tests (INV-23).
+
 use axum::http::Request;
 
 use super::*;

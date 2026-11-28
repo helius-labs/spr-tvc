@@ -1,4 +1,4 @@
-//! Protocol conformance: canonical encoding, P-256, QOS envelope, bindings, and HTTP.
+//! Protocol conformance: canonical encoding, P-256, QOS envelope, bindings, and HTTP (INV-08, INV-11, INV-12, INV-19, INV-22).
 
 use std::path::PathBuf;
 use std::sync::OnceLock;

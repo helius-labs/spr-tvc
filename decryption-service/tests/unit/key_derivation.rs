@@ -1,3 +1,5 @@
+//! Enclave deterministic key derivation and domain separation tests (INV-03).
+
 use qos_p256::P256Pair;
 use zeroize::Zeroizing;
 

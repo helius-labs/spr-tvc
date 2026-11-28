@@ -1,3 +1,5 @@
+// Covers INV-07 (pre-signing batch splitting, order preservation, incomplete result refusal).
+
 import { expect, it, vi } from "vitest";
 
 import { DecryptionServiceError } from "../../src/wire/error.js";

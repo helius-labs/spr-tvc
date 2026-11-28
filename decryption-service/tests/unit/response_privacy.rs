@@ -1,3 +1,5 @@
+//! Enclave response-key privacy and replay binding tests (INV-05).
+
 use spr_tvc_wire::types::EncryptedResponse;
 
 use super::*;

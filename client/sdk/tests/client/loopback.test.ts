@@ -1,3 +1,5 @@
+// Covers INV-05, INV-13, INV-18 (end-to-end loopback note decryption).
+
 import { generateKeyPairSigner } from "@solana/kit";
 import { ViewingKey } from "@heliuslabs/spr";
 import { randomSalt } from "@heliuslabs/spr/keypair";

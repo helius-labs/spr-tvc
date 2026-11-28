@@ -1,3 +1,5 @@
+// Covers INV-15 (ES384 COSE_Sign1 & X.509 chain) and INV-16 (attestation shape, PCR0-3, PCR17, replica key, clock skew).
+
 import { p256 } from "@noble/curves/p256";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeLowerHex } from "../../src/wire/hex.js";

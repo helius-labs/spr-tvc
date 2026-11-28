@@ -1,3 +1,5 @@
+//! Canonical hex JSON encoding tests for wire requests and decrypted results (INV-11).
+
 use crate::decryption_service::{DecryptedOutputs, ServiceResult};
 use crate::types::EncryptedRequest;
 

@@ -1,3 +1,5 @@
+// Covers INV-04 (decrypt digest & Solana off-chain message parity) and INV-09 (view-grant digest & 30-minute window).
+
 import { describe, expect, it } from "vitest";
 
 import { encodeLowerHex } from "../../src/wire/hex.js";

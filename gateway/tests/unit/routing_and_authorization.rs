@@ -1,3 +1,5 @@
+//! Gateway routing, origin auth, body caps, concurrency, and disconnect replay tests (INV-23, INV-24, INV-25).
+
 use axum::body::Body;
 use axum::http::{Request as HttpRequest, StatusCode};
 use tower::ServiceExt;

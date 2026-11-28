@@ -1,3 +1,6 @@
+//! Decryption client view-grant tests covering INV-09 (owner-signed half-open grant window <= 30m)
+//! and INV-10 (local validation before key fetch or signature prompt).
+
 use ed25519_dalek::Signer;
 use spr_tvc_wire::constants::API_VERSION;
 use spr_tvc_wire::decryption_service::{view_grant_digest, view_grant_message, MAX_VIEW_GRANT_MS};

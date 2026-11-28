@@ -1,3 +1,5 @@
+// Covers INV-18 (reply Boot Proof verification) and INV-28 (HTTPS origin enforcement).
+
 import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha256";
 import { address } from "@solana/kit";

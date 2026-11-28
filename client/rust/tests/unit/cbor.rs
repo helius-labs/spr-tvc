@@ -1,3 +1,6 @@
+//! Strict CBOR subset and COSE Sig_structure tests covering INV-14 (positive canonical decoding
+//! and negative rejection of non-minimal arguments, trailing bytes, and huge container lengths).
+
 use super::*;
 
 fn decode_hex(hex_str: &str) -> Cbor {

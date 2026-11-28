@@ -1,3 +1,5 @@
+//! Release verification subprocess timeout, reaping, and output-cap tests (INV-21).
+
 use std::process::Command;
 use std::time::Duration;
 

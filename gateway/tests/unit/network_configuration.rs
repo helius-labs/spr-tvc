@@ -1,3 +1,5 @@
+//! Gateway network overlay and origin secret configuration tests (INV-23).
+
 use figment::providers::Serialized;
 
 use super::*;

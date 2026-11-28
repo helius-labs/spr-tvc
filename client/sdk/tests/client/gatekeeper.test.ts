@@ -1,3 +1,5 @@
+// Covers INV-13, INV-18, INV-28 (live Gatekeeper end-to-end note decryption; gated by SPR_E2E_* env vars).
+
 import { readFileSync } from "node:fs";
 import { generateKeyPairSigner } from "@solana/kit";
 import { ViewingKey } from "@heliuslabs/spr";

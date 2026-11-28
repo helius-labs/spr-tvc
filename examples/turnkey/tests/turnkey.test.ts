@@ -1,3 +1,5 @@
+// Covers INV-30 (Turnkey raw Ed25519 signer exact-byte and account verification).
+
 import assert from "node:assert/strict";
 import { test } from "node:test";
 

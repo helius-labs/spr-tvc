@@ -1,3 +1,5 @@
+// Covers INV-12 (QOS 130-byte public key split, AES-GCM nonce/tag/length binding, buffer offset safety).
+
 import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha256";
 import { describe, expect, it } from "vitest";

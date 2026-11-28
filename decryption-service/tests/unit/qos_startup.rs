@@ -1,3 +1,5 @@
+//! Enclave QOS v2 manifest loading, argument binding, and debug/env refusal tests (INV-01).
+
 use std::fs;
 use std::path::PathBuf;
 

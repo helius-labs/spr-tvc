@@ -1,3 +1,5 @@
+// Covers INV-13 (indexed commitment verification and deterministic per-nullifier transaction keys).
+
 import { NullifierKey, ShieldedAddress, ShieldedPublicKey, initializePoseidon, type Bytes32 } from "@heliuslabs/spr";
 import { X25519Keypair, type Bytes31 } from "@heliuslabs/spr/keypair";
 import { beforeAll, describe, expect, it, vi } from "vitest";

@@ -1,3 +1,5 @@
+//! Release policy binding and mainnet authority signature verification tests (INV-21).
+
 use base64::{engine::general_purpose::STANDARD, Engine};
 use p256::ecdsa::SigningKey;
 use serde_json::{json, Value};

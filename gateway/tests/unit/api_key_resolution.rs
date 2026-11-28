@@ -1,3 +1,5 @@
+//! Gateway API-key lookup and negative caching tests (INV-23).
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

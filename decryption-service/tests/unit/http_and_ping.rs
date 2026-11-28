@@ -1,3 +1,5 @@
+//! Enclave HTTP surface (/health, /v1/info, /v1/ping) and body ceiling tests (INV-07, INV-08).
+
 use axum::http::StatusCode;
 use spr_tvc_wire::constants::{QOS_P256_PUBLIC_LEN, RAW_P256_SIGNATURE_LEN};
 use spr_tvc_wire::crypto::verify_p256_message;

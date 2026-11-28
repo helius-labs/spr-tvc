@@ -1,3 +1,5 @@
+// Covers INV-28 (HTTP status to OperationRejected / OperationUnavailable error mapping).
+
 import { describe, expect, it } from "vitest";
 import { sendToEnclave } from "../../src/connection/backend.js";
 

@@ -1,3 +1,5 @@
+//! Gateway local and Redis replay ledger tests (INV-25).
+
 use std::sync::Arc;
 
 use super::*;

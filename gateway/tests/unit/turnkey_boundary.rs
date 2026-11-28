@@ -1,3 +1,5 @@
+//! Gateway Turnkey P-256 key validation, burst coalescing, and per-project quota tests (INV-26).
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

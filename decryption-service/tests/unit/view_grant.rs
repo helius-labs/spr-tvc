@@ -1,3 +1,5 @@
+//! Enclave delegated view-grant authorization and window enforcement tests (INV-09).
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::Signer as _;

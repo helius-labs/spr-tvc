@@ -1,3 +1,6 @@
+//! Operations client tests covering INV-18 (authenticated replica reply & Boot Proof verification),
+//! INV-20 (fail-closed unpinned mainnet), and INV-28 (HTTPS origin enforcement).
+
 use std::cell::RefCell;
 use std::rc::Rc;
 

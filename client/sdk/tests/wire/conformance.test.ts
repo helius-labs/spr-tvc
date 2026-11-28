@@ -1,3 +1,5 @@
+// Covers INV-11, INV-12, INV-16, INV-18, INV-19, INV-22 (cross-runtime canonical wire, P-256, QOS, PCR17, policy & discovery conformance).
+
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

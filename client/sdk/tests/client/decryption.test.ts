@@ -1,3 +1,5 @@
+// Covers INV-07 (pre-signing request ceiling), INV-10 (view-grant validation), INV-28 (429 drop), and INV-29 (deadlines & key wiping).
+
 import { address, signatureBytes } from "@solana/kit";
 import { p256 } from "@noble/curves/p256";
 import { NullifierKey, ViewingKey, initializePoseidon } from "@heliuslabs/spr";

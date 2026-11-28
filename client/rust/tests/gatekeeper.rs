@@ -1,3 +1,5 @@
+//! Live Gatekeeper end-to-end operations test, ignored without SPR_E2E_* env vars (INV-13, INV-18, INV-28).
+
 #[path = "common/mod.rs"]
 mod support;
 
