@@ -187,23 +187,34 @@ fn pcrs() -> IdentityPcrs {
 
 #[test]
 fn rejects_an_endpoint_that_is_not_an_https_origin() {
-    let (transport, urls) = gate();
-    let (release, authorities) = signed_policy(&transport);
-    let Err(error) = OperationsClient::connect(
-        Network::Devnet,
-        OperationsConfig {
-            endpoint: "http://gate.example".into(),
-            api_key: "test-key".into(),
-        },
-        release,
-        authorities,
-        pcrs(),
-        transport,
-    ) else {
-        panic!("expected the endpoint to be refused");
-    };
-    assert!(matches!(error, ClientError::InvalidServiceConfig));
-    assert!(urls.borrow().is_empty());
+    for invalid in [
+        "http://gate.example",
+        "https://gate.example/extra",
+        "https://gate.example?a=1",
+        "https://gate.example#frag",
+        "https://user:pass@gate.example",
+    ] {
+        let (transport, urls) = gate();
+        let (release, authorities) = signed_policy(&transport);
+        let Err(error) = OperationsClient::connect(
+            Network::Devnet,
+            OperationsConfig {
+                endpoint: invalid.into(),
+                api_key: "test-key".into(),
+            },
+            release,
+            authorities,
+            pcrs(),
+            transport,
+        ) else {
+            panic!("expected endpoint {invalid} to be refused");
+        };
+        assert!(
+            matches!(error, ClientError::InvalidServiceConfig),
+            "{invalid}: {error}"
+        );
+        assert!(urls.borrow().is_empty());
+    }
 }
 
 #[test]

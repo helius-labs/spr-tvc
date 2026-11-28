@@ -102,12 +102,20 @@ beforeEach(() => {
 
 it("refuses an endpoint that is not an https origin", () => {
   const { release } = fixture();
-  expect(() => createDecryptionService({
-    network: "devnet",
-    endpoint: new URL("http://gate.example"),
-    apiKey: "test-key",
-    release,
-  })).toThrow(expect.objectContaining({ code: "InvalidServiceConfig" }));
+  for (const invalid of [
+    "http://gate.example",
+    "https://gate.example/extra",
+    "https://gate.example?a=1",
+    "https://gate.example#frag",
+    "https://user:pass@gate.example",
+  ]) {
+    expect(() => createDecryptionService({
+      network: "devnet",
+      endpoint: new URL(invalid),
+      apiKey: "test-key",
+      release,
+    })).toThrow(expect.objectContaining({ code: "InvalidServiceConfig" }));
+  }
 });
 
 it("checks the boot proof on the operation reply", async () => {

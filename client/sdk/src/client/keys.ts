@@ -72,16 +72,15 @@ export class ServiceKeys implements DecryptionServiceKeys {
     return local.withNullifierKey((key) => key.secretBytes());
   }
 
-  decrypt(requests: readonly DecryptRequest[], context?: RequestContext): Promise<readonly Uint8Array[]> {
+  async decrypt(requests: readonly DecryptRequest[], context?: RequestContext): Promise<readonly Uint8Array[]> {
     this.#checkLive();
-    if (requests.length === 0) return Promise.resolve([]);
+    if (requests.length === 0) return [];
     const job = this.#decrypt(requests.map(decryptItem), context);
     const ownsSecret = this.#local === undefined && this.#opening === undefined;
     if (ownsSecret) this.#claim(job);
-    return job.then((opened) => {
-      if (!ownsSecret) opened.nullifierSecret.fill(0);
-      return opened.plaintexts;
-    });
+    const opened = await job;
+    if (!ownsSecret) opened.nullifierSecret.fill(0);
+    return opened.plaintexts;
   }
 
   async derive(requests: readonly DeriveRequest[], context?: RequestContext): Promise<readonly Bytes32[]> {

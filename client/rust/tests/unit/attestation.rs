@@ -127,20 +127,48 @@ fn a_clock_reading_of_zero_is_the_timestamp_stage() {
     let manifest = [0x11; 32];
     let ephemeral = [0x04; QOS_P256_PUBLIC_LEN];
     let pcr0 = [0x22; SHA384_LEN];
-    let error = verify_boot_proof(
-        &ephemeral,
-        &synthetic_boot(&manifest, &ephemeral, &pcr0),
-        &manifest,
-        &IdentityPcrs {
-            pcr0,
-            pcr1: [0; SHA384_LEN],
-            pcr2: [0; SHA384_LEN],
-            pcr3: [0; SHA384_LEN],
-        },
-        0,
-    )
-    .unwrap_err();
-    assert_eq!(error.detail, Some("timestamp"));
+    let pcrs = IdentityPcrs {
+        pcr0,
+        pcr1: [0; SHA384_LEN],
+        pcr2: [0; SHA384_LEN],
+        pcr3: [0; SHA384_LEN],
+    };
+    let proof = synthetic_boot(&manifest, &ephemeral, &pcr0);
+
+    // Verifier clock == 0 rejected at timestamp stage.
+    assert_eq!(
+        verify_boot_proof(&ephemeral, &proof, &manifest, &pcrs, 0)
+            .unwrap_err()
+            .detail,
+        Some("timestamp")
+    );
+
+    // Attestation timestamped past allowed clock skew (1_000 ms in fixture vs now = 1 ms + skew).
+    let future_proof = synthetic_boot_with_timestamp(&manifest, &ephemeral, &pcr0, 1_000_000);
+    assert_eq!(
+        verify_boot_proof(&ephemeral, &future_proof, &manifest, &pcrs, 1_000)
+            .unwrap_err()
+            .detail,
+        Some("timestamp")
+    );
+
+    // Mismatched advertised ephemeral key or PCR17 commitment fails at bindings stage.
+    let mut wrong_ephemeral = proof.clone();
+    wrong_ephemeral.ephemeral_public_key[0] ^= 1;
+    assert_eq!(
+        verify_boot_proof(&ephemeral, &wrong_ephemeral, &manifest, &pcrs, 1_000_000)
+            .unwrap_err()
+            .detail,
+        Some("bindings")
+    );
+    let mut wrong_manifest = manifest;
+    wrong_manifest[0] ^= 1;
+    assert_eq!(
+        verify_boot_proof(&ephemeral, &proof, &wrong_manifest, &pcrs, 1_000_000)
+            .unwrap_err()
+            .detail,
+        Some("bindings")
+    );
 }
 
 #[test]
@@ -233,6 +261,17 @@ fn the_pinned_manifest_set_approves_the_boot_manifest() {
     );
 
     parsed["manifest"]["pivot"]["debugMode"] = serde_json::json!(false);
+    parsed["manifest"]["pivot"]["env"] =
+        serde_json::json!({ "FOO": { "plain": { "value": "bar" } } });
+    let with_env = serde_json::to_vec(&parsed).unwrap();
+    assert_eq!(
+        approved_manifest_digest(&with_env, &policy, &pcrs)
+            .unwrap_err()
+            .detail,
+        Some("manifest")
+    );
+
+    parsed["manifest"]["pivot"]["env"] = serde_json::json!({});
     parsed["manifestSetApprovals"] = serde_json::json!([]);
     let missing = serde_json::to_vec(&parsed).unwrap();
     assert_eq!(
@@ -271,6 +310,7 @@ fn x509_chain_checks_ca_constraints_dn_validity_and_cose_alg() {
         issuer_key: &'a SigningKey,
         validity: (u64, u64),
         basic_ca: Option<bool>,
+        path_len_constraint: Option<u8>,
         key_cert_sign: Option<bool>,
     }
 
@@ -293,7 +333,7 @@ fn x509_chain_checks_ca_constraints_dn_validity_and_cose_alg() {
                     extn_value: OctetString::new(
                         BasicConstraints {
                             ca,
-                            path_len_constraint: None,
+                            path_len_constraint: self.path_len_constraint,
                         }
                         .to_der()
                         .unwrap(),
@@ -357,6 +397,7 @@ fn x509_chain_checks_ca_constraints_dn_validity_and_cose_alg() {
         issuer_key: &root_key,
         validity: (att_secs - 86_400, att_secs + 10 * 86_400),
         basic_ca: Some(true),
+        path_len_constraint: None,
         key_cert_sign: Some(true),
     }
     .build();
@@ -367,6 +408,7 @@ fn x509_chain_checks_ca_constraints_dn_validity_and_cose_alg() {
         issuer_key: &root_key,
         validity: (att_secs - 3_600, att_secs + 7_200),
         basic_ca: Some(true),
+        path_len_constraint: None,
         key_cert_sign: Some(true),
     }
     .build();
@@ -377,6 +419,7 @@ fn x509_chain_checks_ca_constraints_dn_validity_and_cose_alg() {
         issuer_key: &inter_key,
         validity: (att_secs - 60, att_secs + 10_800),
         basic_ca: Some(false),
+        path_len_constraint: None,
         key_cert_sign: Some(false),
     }
     .build();
@@ -399,6 +442,17 @@ fn x509_chain_checks_ca_constraints_dn_validity_and_cose_alg() {
     )
     .unwrap();
 
+    // Root expired on verifier clock (now_ms) is rejected even though valid at att_ms.
+    let after_root_expiry_ms = (att_secs + 11 * 86_400) * 1_000;
+    assert!(verify_certificate_chain_against_root(
+        &leaf_der,
+        &[root_der.clone(), inter_der.clone()],
+        &root_der,
+        att_ms,
+        after_root_expiry_ms,
+    )
+    .is_err());
+
     // Expired leaf at attestation timestamp is rejected.
     let expired_leaf = TestCert {
         subject_cn: "leaf",
@@ -407,12 +461,98 @@ fn x509_chain_checks_ca_constraints_dn_validity_and_cose_alg() {
         issuer_key: &inter_key,
         validity: (att_secs - 7_200, att_secs - 1),
         basic_ca: Some(false),
+        path_len_constraint: None,
         key_cert_sign: Some(false),
     }
     .build();
     assert!(verify_certificate_chain_against_root(
         &expired_leaf,
         &[root_der.clone(), inter_der.clone()],
+        &root_der,
+        att_ms,
+        att_ms,
+    )
+    .is_err());
+
+    // Expired intermediate at attestation timestamp is rejected.
+    let expired_inter = TestCert {
+        subject_cn: "inter",
+        issuer_cn: "root",
+        subject_key: &inter_key,
+        issuer_key: &root_key,
+        validity: (att_secs - 7_200, att_secs - 1),
+        basic_ca: Some(true),
+        path_len_constraint: None,
+        key_cert_sign: Some(true),
+    }
+    .build();
+    assert!(verify_certificate_chain_against_root(
+        &leaf_der,
+        &[root_der.clone(), expired_inter],
+        &root_der,
+        att_ms,
+        att_ms,
+    )
+    .is_err());
+
+    // pathLenConstraint on an intermediate CA: pathLen=1 permits one sub-CA (inter2), whereas
+    // pathLen=0 forbids signing another CA.
+    let sub_inter_key = SigningKey::from_slice(&[4u8; 48]).unwrap();
+    let inter1_pathlen_one = TestCert {
+        subject_cn: "inter1",
+        issuer_cn: "root",
+        subject_key: &inter_key,
+        issuer_key: &root_key,
+        validity: (att_secs - 3_600, att_secs + 7_200),
+        basic_ca: Some(true),
+        path_len_constraint: Some(1),
+        key_cert_sign: Some(true),
+    }
+    .build();
+    let inter1_pathlen_zero = TestCert {
+        subject_cn: "inter1",
+        issuer_cn: "root",
+        subject_key: &inter_key,
+        issuer_key: &root_key,
+        validity: (att_secs - 3_600, att_secs + 7_200),
+        basic_ca: Some(true),
+        path_len_constraint: Some(0),
+        key_cert_sign: Some(true),
+    }
+    .build();
+    let inter2_der = TestCert {
+        subject_cn: "inter2",
+        issuer_cn: "inter1",
+        subject_key: &sub_inter_key,
+        issuer_key: &inter_key,
+        validity: (att_secs - 3_600, att_secs + 7_200),
+        basic_ca: Some(true),
+        path_len_constraint: None,
+        key_cert_sign: Some(true),
+    }
+    .build();
+    let leaf_under_inter2 = TestCert {
+        subject_cn: "leaf",
+        issuer_cn: "inter2",
+        subject_key: &leaf_key,
+        issuer_key: &sub_inter_key,
+        validity: (att_secs - 60, att_secs + 10_800),
+        basic_ca: Some(false),
+        path_len_constraint: None,
+        key_cert_sign: Some(false),
+    }
+    .build();
+    assert!(verify_certificate_chain_against_root(
+        &leaf_under_inter2,
+        &[root_der.clone(), inter1_pathlen_one, inter2_der.clone()],
+        &root_der,
+        att_ms,
+        att_ms,
+    )
+    .is_ok());
+    assert!(verify_certificate_chain_against_root(
+        &leaf_under_inter2,
+        &[root_der.clone(), inter1_pathlen_zero, inter2_der],
         &root_der,
         att_ms,
         att_ms,
@@ -427,6 +567,7 @@ fn x509_chain_checks_ca_constraints_dn_validity_and_cose_alg() {
         issuer_key: &root_key,
         validity: (att_secs - 3_600, att_secs + 7_200),
         basic_ca: Some(false),
+        path_len_constraint: None,
         key_cert_sign: Some(true),
     }
     .build();
@@ -447,6 +588,7 @@ fn x509_chain_checks_ca_constraints_dn_validity_and_cose_alg() {
         issuer_key: &root_key,
         validity: (att_secs - 3_600, att_secs + 7_200),
         basic_ca: Some(true),
+        path_len_constraint: None,
         key_cert_sign: Some(false),
     }
     .build();
@@ -467,6 +609,7 @@ fn x509_chain_checks_ca_constraints_dn_validity_and_cose_alg() {
         issuer_key: &inter_key,
         validity: (att_secs - 60, att_secs + 10_800),
         basic_ca: Some(false),
+        path_len_constraint: None,
         key_cert_sign: Some(false),
     }
     .build();
@@ -502,6 +645,15 @@ fn synthetic_boot(
     ephemeral: &[u8; QOS_P256_PUBLIC_LEN],
     pcr0: &[u8; SHA384_LEN],
 ) -> BootProof {
+    synthetic_boot_with_timestamp(manifest, ephemeral, pcr0, 1_000)
+}
+
+fn synthetic_boot_with_timestamp(
+    manifest: &[u8; 32],
+    ephemeral: &[u8; QOS_P256_PUBLIC_LEN],
+    pcr0: &[u8; SHA384_LEN],
+    timestamp_ms: u64,
+) -> BootProof {
     let live = live_manifest_pcr(manifest, ephemeral);
     let zeros = [0u8; SHA384_LEN];
     let mut pcr_body = Vec::new();
@@ -520,7 +672,7 @@ fn synthetic_boot(
     for (name, value) in [
         ("module_id", cbor_text("enclave")),
         ("digest", cbor_text("SHA384")),
-        ("timestamp", cbor_unsigned(1_000)),
+        ("timestamp", cbor_unsigned(timestamp_ms)),
         ("nonce", vec![0xf6]),
         ("pcrs", cbor_container(5, PCR_COUNT as u64, pcr_body)),
         ("user_data", cbor_bytes(manifest)),
@@ -551,13 +703,7 @@ fn synthetic_boot(
 }
 
 fn cbor_unsigned(value: u64) -> Vec<u8> {
-    if value < 24 {
-        return vec![value as u8];
-    }
-    if value < 0x100 {
-        return vec![24, value as u8];
-    }
-    vec![25, (value >> 8) as u8, value as u8]
+    cbor_head(0, value)
 }
 
 fn cbor_bytes(bytes: &[u8]) -> Vec<u8> {
@@ -583,8 +729,20 @@ fn cbor_head(major: u8, argument: u64) -> Vec<u8> {
     if argument < 24 {
         return vec![prefix | argument as u8];
     }
-    if argument < 0x100 {
+    if argument <= u64::from(u8::MAX) {
         return vec![prefix | 24, argument as u8];
     }
-    vec![prefix | 25, (argument >> 8) as u8, argument as u8]
+    if argument <= u64::from(u16::MAX) {
+        let mut out = vec![prefix | 25];
+        out.extend_from_slice(&(argument as u16).to_be_bytes());
+        return out;
+    }
+    if argument <= u64::from(u32::MAX) {
+        let mut out = vec![prefix | 26];
+        out.extend_from_slice(&(argument as u32).to_be_bytes());
+        return out;
+    }
+    let mut out = vec![prefix | 27];
+    out.extend_from_slice(&argument.to_be_bytes());
+    out
 }

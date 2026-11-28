@@ -121,11 +121,34 @@ fn the_owner_signs_the_grant_and_the_grantee_carries_it() {
         code(grant_owner(&grantee, &other_network, &policy(), 1_000).expect_err("network")),
         ErrorCode::InvalidSignature
     );
+
+    // Not yet valid (now < not_before_ms).
+    assert_eq!(
+        code(grant_owner(&grantee, &grant, &policy(), 999).expect_err("not yet valid")),
+        ErrorCode::ExpiredRequest
+    );
+
+    // Mismatched quorum_key_id and quorum_key_epoch.
+    let mut wrong_quorum_id = grant.clone();
+    wrong_quorum_id.quorum_key_id = "other-quorum".into();
+    assert_eq!(
+        code(grant_owner(&grantee, &wrong_quorum_id, &policy(), 1_000).expect_err("quorum id")),
+        ErrorCode::InvalidSignature
+    );
+    let mut wrong_quorum_epoch = grant.clone();
+    wrong_quorum_epoch.quorum_key_epoch = 2;
+    assert_eq!(
+        code(
+            grant_owner(&grantee, &wrong_quorum_epoch, &policy(), 1_000).expect_err("quorum epoch")
+        ),
+        ErrorCode::InvalidSignature
+    );
 }
 
 #[test]
 fn a_grant_names_someone_else_for_at_most_thirty_minutes() {
     let owner = Key::from_seed(1);
+    let grantee = Key::from_seed(2);
     assert_eq!(
         code(
             grant_for(&owner, 1_000, 1_000 + 1)
@@ -136,7 +159,23 @@ fn a_grant_names_someone_else_for_at_most_thirty_minutes() {
     );
     assert_eq!(
         code(
-            grant_for(&Key::from_seed(2), 1_000, 1_000 + MAX_VIEW_GRANT_MS + 1)
+            grant_for(&grantee, 1_000, 1_000)
+                .sign(&owner)
+                .expect_err("zero span")
+        ),
+        ErrorCode::ExpiredRequest
+    );
+    assert_eq!(
+        code(
+            grant_for(&grantee, 1_000, 999)
+                .sign(&owner)
+                .expect_err("inverted span")
+        ),
+        ErrorCode::ExpiredRequest
+    );
+    assert_eq!(
+        code(
+            grant_for(&grantee, 1_000, 1_000 + MAX_VIEW_GRANT_MS + 1)
                 .sign(&owner)
                 .expect_err("span")
         ),

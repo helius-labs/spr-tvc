@@ -224,6 +224,14 @@ async fn every_other_request_gets_a_generic_json_error() {
             invalid,
         ),
         (
+            request("GET", "/health", "", b"x".to_vec()),
+            (StatusCode::PAYLOAD_TOO_LARGE, "RequestTooLarge"),
+        ),
+        (
+            request("GET", "/v1/info", "", b"x".to_vec()),
+            (StatusCode::PAYLOAD_TOO_LARGE, "RequestTooLarge"),
+        ),
+        (
             request("GET", "/health", "", oversized),
             (StatusCode::PAYLOAD_TOO_LARGE, "RequestTooLarge"),
         ),

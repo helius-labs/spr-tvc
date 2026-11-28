@@ -1,9 +1,7 @@
 //! Transport security tests covering INV-28 (bounded responses, no redirects, API key isolation).
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::thread;
 
 use super::*;
@@ -58,18 +56,9 @@ fn posts_with_api_key_within_cap_and_rejects_oversized_response() {
 /// `x-api-key`.
 #[test]
 fn does_not_follow_redirects_or_forward_api_keys() {
-    let target_hit = Arc::new(AtomicBool::new(false));
-    let target_hit_thread = Arc::clone(&target_hit);
     let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    target.set_nonblocking(true).unwrap();
     let target_addr = target.local_addr().unwrap();
-    let _target_thread = thread::spawn(move || {
-        if let Ok((mut stream, _)) = target.accept() {
-            target_hit_thread.store(true, Ordering::SeqCst);
-            let mut buf = [0u8; 512];
-            let _ = stream.read(&mut buf);
-            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}");
-        }
-    });
 
     let redirector = TcpListener::bind("127.0.0.1:0").unwrap();
     let redirector_addr = redirector.local_addr().unwrap();
@@ -78,7 +67,7 @@ fn does_not_follow_redirects_or_forward_api_keys() {
         let mut buf = [0u8; 1024];
         let _ = stream.read(&mut buf);
         let response = format!(
-            "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{target_addr}/steal\r\nContent-Length: 0\r\n\r\n"
+            "HTTP/1.1 307 Temporary Redirect\r\nConnection: close\r\nLocation: http://{target_addr}/steal\r\nContent-Length: 0\r\n\r\n"
         );
         stream.write_all(response.as_bytes()).unwrap();
     });
@@ -90,7 +79,13 @@ fn does_not_follow_redirects_or_forward_api_keys() {
         "{}",
         1024,
     );
-    assert!(result.is_err());
+    assert!(matches!(
+        result,
+        Err(ClientError::Protocol(ref err)) if err.code == ErrorCode::TurnkeyEvidenceInvalid
+    ));
     redirect_thread.join().unwrap();
-    assert!(!target_hit.load(Ordering::SeqCst));
+    assert!(matches!(
+        target.accept(),
+        Err(ref err) if err.kind() == ErrorKind::WouldBlock
+    ));
 }

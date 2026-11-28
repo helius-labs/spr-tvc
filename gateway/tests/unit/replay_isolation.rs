@@ -21,8 +21,8 @@ fn body(claim: Result<Claim, ApiError>) -> Result<String, ApiError> {
     }
 }
 
-const APP: &str = "/v1/private-wallet";
-const OTHER_APP: &str = "/v1/decryption";
+const APP: &str = "/v1/decryption";
+const OTHER_APP: &str = "/v1/other-service";
 
 fn req(ciphertext: &[u8]) -> EncryptedRequest {
     EncryptedRequest {
@@ -90,7 +90,7 @@ async fn a_resend_gets_the_first_outcome(ledger: &ReplayLedger) {
     );
 
     // The same project and ciphertext on another application is its own:
-    // posting it to decryption must not return the private-wallet answer.
+    // posting it to another application must not return the decryption answer.
     let Ok(Claim::New(cross)) = ledger.claim(OTHER_APP, &project, &first_req).await else {
         panic!("another application's claim is new");
     };

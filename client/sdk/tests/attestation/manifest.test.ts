@@ -88,6 +88,11 @@ describe("QOS canonical JSON", () => {
       encodeLowerHex(qosJsonHash({ threshold: 1 })),
     );
   });
+
+  it("rejects lone surrogates in object keys and values", () => {
+    expect(() => qosJsonHash({ a: "\ud800" })).toThrow();
+    expect(() => qosJsonHash({ ["\ud800"]: "a" })).toThrow();
+  });
 });
 
 describe("approved manifest", () => {
