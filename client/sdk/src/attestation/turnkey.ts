@@ -3,6 +3,12 @@
 // digest. Turnkey's `verify` does not, and it also requires a `timestampMs`
 // field our proofs do not carry.
 
+import {
+  BasicConstraintsExtension,
+  KeyUsageFlags,
+  KeyUsagesExtension,
+  X509Certificate,
+} from "@peculiar/x509";
 import { quorumKeyEncrypt, verifyCertificateChain, verifyCoseSign1Sig } from "@turnkey/crypto";
 import type { v1AppProof, v1BootProof } from "@turnkey/sdk-types";
 
@@ -20,6 +26,8 @@ MQCjfy+Rocm9Xue4YnwWmNJVA44fA0P5W2OpYow9OYCVRaEevL8uO1XYru5xtMPW
 rfMCMQCi85sWBbJwKKXdS6BptQFuZbT73o/gBh1qUxl/nNr12UO8Yfwr6wPLb+6N
 IwLz3/Y=
 -----END CERTIFICATE-----`;
+
+const AWS_NITRO_ROOT_CERT = new X509Certificate(AWS_NITRO_ROOT_CERT_PEM);
 
 export type CoseSign1 = {
   readonly protectedHeaders: Uint8Array;
@@ -43,10 +51,47 @@ export async function verifyTurnkeyAwsAttestation(
   certificate: Uint8Array,
   cabundle: Uint8Array[],
   timestampMs: number,
+  attestationTimestampMs: number = timestampMs,
 ): Promise<void> {
+  assertCertValidAt(AWS_NITRO_ROOT_CERT, attestationTimestampMs, true);
+  assertCertValidAt(certificate, attestationTimestampMs, false);
+  // cabundle[0] is an untrusted copy of the root; verifyCertificateChain discards it
+  // and substitutes AWS_NITRO_ROOT_CERT_PEM, so check only intermediates here.
+  for (const intermediate of cabundle.slice(1)) {
+    assertCertValidAt(intermediate, attestationTimestampMs, true);
+  }
   await verifyCoseSign1Sig(
     [coseSign1.protectedHeaders, new Uint8Array(0), coseSign1.payload, coseSign1.signature],
     certificate,
   );
   await verifyCertificateChain(cabundle, AWS_NITRO_ROOT_CERT_PEM, certificate, timestampMs);
+}
+
+/** Enforces X.509 validity at `timestampMs` and, for CA certs, CA constraints. */
+export function assertCertValidAt(
+  certOrDer: X509Certificate | Uint8Array,
+  timestampMs: number,
+  requireCa = false,
+): void {
+  if (!Number.isSafeInteger(timestampMs) || timestampMs <= 0) {
+    throw new Error("invalid certificate check timestamp");
+  }
+  const cert = certOrDer instanceof X509Certificate
+    ? certOrDer
+    : new X509Certificate(new Uint8Array(certOrDer));
+  const notBeforeMs = cert.notBefore.getTime();
+  const notAfterMs = cert.notAfter.getTime();
+  if (notBeforeMs > notAfterMs || timestampMs < notBeforeMs || timestampMs > notAfterMs) {
+    throw new Error("certificate outside validity window");
+  }
+  if (requireCa) {
+    const basicConstraints = cert.getExtension(BasicConstraintsExtension);
+    if (!basicConstraints?.ca) {
+      throw new Error("intermediate certificate is not a CA");
+    }
+    const keyUsage = cert.getExtension(KeyUsagesExtension);
+    if (keyUsage && (keyUsage.usages & KeyUsageFlags.keyCertSign) === 0) {
+      throw new Error("intermediate certificate lacks keyCertSign");
+    }
+  }
 }

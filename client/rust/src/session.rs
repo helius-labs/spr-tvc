@@ -4,24 +4,54 @@ use qos_p256::encrypt::P256EncryptPair;
 #[cfg(feature = "local-dev")]
 use qos_p256::encrypt::P256EncryptPublic;
 #[cfg(feature = "local-dev")]
-use spr_tvc_wire::constants::{API_VERSION, TVC_QOS_PING_PROOF_TYPE};
-use spr_tvc_wire::constants::{QOS_P256_PUBLIC_LEN, TVC_APP_PROOF_SCHEME};
+use spr_tvc_wire::constants::{API_VERSION, SHA256_LEN, TVC_QOS_PING_PROOF_TYPE};
+use spr_tvc_wire::constants::{QOS_P256_PUBLIC_LEN, SEC1_UNCOMPRESSED_LEN, TVC_APP_PROOF_SCHEME};
 use spr_tvc_wire::crypto::verify_p256_message;
 #[cfg(feature = "local-dev")]
 use spr_tvc_wire::decryption_service::SERVICE_PROOF_TYPE;
-use spr_tvc_wire::encoding::is_rfc8785;
 #[cfg(feature = "local-dev")]
 use spr_tvc_wire::encoding::jcs_serialize;
+use spr_tvc_wire::encoding::{is_rfc8785, parse_strict_json};
 use spr_tvc_wire::error::{ErrorCode, TvcError};
-use spr_tvc_wire::release::{verify_signed_release_policy, PinnedReleaseAuthorities};
+use spr_tvc_wire::release::{
+    verify_signed_release_policy, IdentityPcrs, MainnetTrust, PinnedReleaseAuthorities,
+};
 use spr_tvc_wire::types::{AppProof, Network, OperationKind, ReleasePolicy, SignedReleasePolicy};
 #[cfg(feature = "local-dev")]
 use spr_tvc_wire::types::{QosPingChallenge, QosPingRequest, QosPingResponse, ServiceInfo};
 use zeroize::Zeroizing;
 
-use crate::attestation::{
-    approved_manifest_digest, now_ms, verify_boot_proof, BootProof, IdentityPcrs,
-};
+const MAINNET_TRUST_JSON: &str = include_str!("../../sdk/trust/mainnet.json");
+
+pub(crate) fn pinned_mainnet_trust() -> Result<Option<MainnetTrust>, TvcError> {
+    parse_strict_json(MAINNET_TRUST_JSON)
+}
+
+pub(crate) fn bind_mainnet_release(
+    release: &SignedReleasePolicy,
+    authorities: &PinnedReleaseAuthorities,
+    pcrs: &IdentityPcrs,
+    trust: Option<&MainnetTrust>,
+) -> Result<(), TvcError> {
+    let trust = trust.ok_or_else(|| TvcError::new(ErrorCode::ReleaseNotPinned))?;
+    trust.bind_release(release, authorities, pcrs)
+}
+
+pub(crate) fn verify_connection_release(
+    network: Network,
+    release: &SignedReleasePolicy,
+    authorities: &PinnedReleaseAuthorities,
+    pcrs: &IdentityPcrs,
+    now: u64,
+) -> Result<(), TvcError> {
+    if network == Network::Mainnet {
+        let trust = pinned_mainnet_trust()?;
+        bind_mainnet_release(release, authorities, pcrs, trust.as_ref())?;
+    }
+    verify_signed_release_policy(release, authorities, network, now)
+}
+
+use crate::attestation::{approved_manifest_digest, now_ms, verify_boot_proof, BootProof};
 use crate::transport::Transport;
 use crate::ClientError;
 
@@ -64,8 +94,18 @@ impl<B: BootProofs> Session<B> {
     pub(crate) fn connect<T: Transport>(
         config: ConnectConfig<T, B>,
     ) -> Result<(Self, T), ClientError> {
-        let now = config.now_ms.unwrap_or(now_ms);
-        verify_signed_release_policy(&config.release, &config.authorities, config.network, now())?;
+        let now = if config.network == Network::Mainnet {
+            now_ms
+        } else {
+            config.now_ms.unwrap_or(now_ms)
+        };
+        verify_connection_release(
+            config.network,
+            &config.release,
+            &config.authorities,
+            &config.pcrs,
+            now(),
+        )?;
         Ok((
             Self {
                 endpoint: config.endpoint,
@@ -209,9 +249,9 @@ pub(crate) fn ping_challenge(quorum_public_key: &[u8]) -> Result<(String, String
     if quorum_public_key.len() != QOS_P256_PUBLIC_LEN {
         return Err(TvcError::new(ErrorCode::InvalidPublicKey).into());
     }
-    let encryption = P256EncryptPublic::from_bytes(&quorum_public_key[..65])
+    let encryption = P256EncryptPublic::from_bytes(&quorum_public_key[..SEC1_UNCOMPRESSED_LEN])
         .map_err(|_| TvcError::new(ErrorCode::InvalidPublicKey))?;
-    let mut challenge = [0u8; 32];
+    let mut challenge = [0u8; SHA256_LEN];
     getrandom::getrandom(&mut challenge).map_err(|_| ClientError::Entropy)?;
     let payload = jcs_serialize(&QosPingChallenge {
         r#type: TVC_QOS_PING_PROOF_TYPE.into(),
@@ -249,7 +289,11 @@ pub(crate) fn verify_app_signature(proof: &AppProof) -> Result<(), TvcError> {
         return Err(TvcError::new(ErrorCode::TurnkeyEvidenceInvalid));
     }
     let key = ephemeral_key(&proof.public_key)?;
-    verify_p256_message(&key[65..], proof.proof_payload.as_bytes(), &proof.signature)
+    verify_p256_message(
+        &key[SEC1_UNCOMPRESSED_LEN..],
+        proof.proof_payload.as_bytes(),
+        &proof.signature,
+    )
 }
 
 fn ephemeral_key(bytes: &[u8]) -> Result<[u8; QOS_P256_PUBLIC_LEN], TvcError> {
@@ -293,15 +337,5 @@ pub(crate) fn ensure_operation(
 }
 
 #[cfg(test)]
-mod tests {
-    use qos_p256::encrypt::{P256EncryptPair, P256EncryptPublic};
-
-    #[test]
-    fn qos_envelope_round_trips_the_response_key() {
-        let pair = P256EncryptPair::generate();
-        let public = P256EncryptPublic::from_bytes(&pair.public_key().to_bytes()).unwrap();
-        let envelope = public.encrypt(b"opened-note").unwrap();
-        let opened = pair.decrypt(&envelope).unwrap();
-        assert_eq!(&*opened, b"opened-note");
-    }
-}
+#[path = "../tests/unit/session.rs"]
+mod tests;

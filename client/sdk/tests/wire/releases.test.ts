@@ -1,3 +1,5 @@
+// Covers INV-19 (signed release policies: network isolation, distinct authority keys, strict decimals, expiry/tampering).
+
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

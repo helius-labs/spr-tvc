@@ -1,3 +1,5 @@
+//! Enclave output decryption, atomic batch rejection, and ring deposit cipher tests (INV-02, INV-06).
+
 use super::*;
 
 #[test]

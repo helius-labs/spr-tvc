@@ -2,6 +2,7 @@ import devnet from "../../releases/devnet.json";
 import mainnet from "../../releases/mainnet.json";
 import mainnetTrust from "../../trust/mainnet.json";
 import type { QosIdentityPcrs } from "../attestation/boot-proof.js";
+import { MAX_SAFE_INTEGER_BIGINT, MIN_MAINNET_THRESHOLD } from "./constants.js";
 import { decodeDecimalU64 } from "./decimal.js";
 import { DecryptionServiceError } from "./error.js";
 import type { Network, PinnedReleaseAuthorities, SignedReleasePolicy } from "./types.js";
@@ -43,12 +44,16 @@ export function bindMainnetRelease(
   const { releaseAuthorities, qosIdentityPcrs, maximumPolicyLifetimeMs } = trust;
   if (policy.network !== "mainnet" || policy.securityDomainId !== trust.securityDomainId ||
       policy.quorumPublicKey !== trust.quorumPublicKey ||
-      !Number.isSafeInteger(releaseAuthorities.threshold) || releaseAuthorities.threshold < 2 ||
+      !Number.isSafeInteger(releaseAuthorities.threshold) ||
+      releaseAuthorities.threshold < MIN_MAINNET_THRESHOLD ||
       !Number.isSafeInteger(maximumPolicyLifetimeMs) || maximumPolicyLifetimeMs <= 0) {
     throw new DecryptionServiceError("ReleasePolicyInvalid");
   }
-  const lifetime = decodeDecimalU64(policy.expiresAtMs) - decodeDecimalU64(policy.validFromMs);
-  if (lifetime <= 0n || lifetime > BigInt(maximumPolicyLifetimeMs)) {
+  const validFromMs = decodeDecimalU64(policy.validFromMs);
+  const expiresAtMs = decodeDecimalU64(policy.expiresAtMs);
+  const lifetime = expiresAtMs - validFromMs;
+  if (validFromMs <= 0n || expiresAtMs > MAX_SAFE_INTEGER_BIGINT ||
+      lifetime <= 0n || lifetime > BigInt(maximumPolicyLifetimeMs)) {
     throw new DecryptionServiceError("ReleasePolicyInvalid");
   }
   return structuredClone({ releasePolicy, releaseAuthorities, qosIdentityPcrs });

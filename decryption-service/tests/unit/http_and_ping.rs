@@ -1,3 +1,5 @@
+//! Enclave HTTP surface (/health, /v1/info, /v1/ping) and body ceiling tests (INV-07, INV-08).
+
 use axum::http::StatusCode;
 use spr_tvc_wire::constants::{QOS_P256_PUBLIC_LEN, RAW_P256_SIGNATURE_LEN};
 use spr_tvc_wire::crypto::verify_p256_message;
@@ -220,6 +222,14 @@ async fn every_other_request_gets_a_generic_json_error() {
                 b"{}".to_vec(),
             ),
             invalid,
+        ),
+        (
+            request("GET", "/health", "", b"x".to_vec()),
+            (StatusCode::PAYLOAD_TOO_LARGE, "RequestTooLarge"),
+        ),
+        (
+            request("GET", "/v1/info", "", b"x".to_vec()),
+            (StatusCode::PAYLOAD_TOO_LARGE, "RequestTooLarge"),
         ),
         (
             request("GET", "/health", "", oversized),

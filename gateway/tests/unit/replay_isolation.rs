@@ -1,3 +1,5 @@
+//! Gateway local and Redis replay ledger tests (INV-25).
+
 use std::sync::Arc;
 
 use super::*;
@@ -19,95 +21,132 @@ fn body(claim: Result<Claim, ApiError>) -> Result<String, ApiError> {
     }
 }
 
-const APP: &str = "/v1/private-wallet";
-const OTHER_APP: &str = "/v1/decryption";
+const APP: &str = "/v1/decryption";
+const OTHER_APP: &str = "/v1/other-service";
+
+fn req(ciphertext: &[u8]) -> EncryptedRequest {
+    EncryptedRequest {
+        version: 1,
+        quorum_key_id: "q".to_owned(),
+        quorum_key_epoch: 1,
+        ciphertext: ciphertext.to_vec(),
+    }
+}
 
 /// Exercises one ledger the way two gateway tasks would.
 async fn a_resend_gets_the_first_outcome(ledger: &ReplayLedger) {
     let (project, other) = (ProjectId::for_tests("a"), ProjectId::for_tests("b"));
-    let Ok(Claim::New(key)) = ledger.claim(APP, &project, b"ciphertext").await else {
+    let first_req = req(b"ciphertext");
+    let Ok(Claim::New(key)) = ledger.claim(APP, &project, &first_req).await else {
         panic!("the first claim is new");
     };
     assert_eq!(
-        body(ledger.claim(APP, &project, b"ciphertext").await),
+        body(ledger.claim(APP, &project, &first_req).await),
         Err(ApiError::OperationInProgress)
     );
     ledger.record(key, &answer("first")).await;
     assert_eq!(
-        body(ledger.claim(APP, &project, b"ciphertext").await),
+        body(ledger.claim(APP, &project, &first_req).await),
         Ok("first".to_owned())
     );
 
+    // Changing outer envelope routing fields (version, quorum_key_id,
+    // quorum_key_epoch) produces distinct keys even for identical ciphertext.
+    for variant in [
+        EncryptedRequest {
+            version: 2,
+            ..first_req.clone()
+        },
+        EncryptedRequest {
+            quorum_key_id: "other-quorum".to_owned(),
+            ..first_req.clone()
+        },
+        EncryptedRequest {
+            quorum_key_epoch: 2,
+            ..first_req.clone()
+        },
+    ] {
+        let Ok(Claim::New(variant_key)) = ledger.claim(APP, &project, &variant).await else {
+            panic!("distinct envelope fields must not collide in replay ledger");
+        };
+        assert_ne!(variant_key, key);
+        ledger.release(variant_key).await;
+    }
+
     // Another project's request with the same ciphertext is its own: it
     // neither sees nor takes the first project's entry.
-    let Ok(Claim::New(theirs)) = ledger.claim(APP, &other, b"ciphertext").await else {
+    let Ok(Claim::New(theirs)) = ledger.claim(APP, &other, &first_req).await else {
         panic!("another project's claim is new");
     };
     assert_ne!(theirs, key);
     ledger.record(theirs, &answer("theirs")).await;
     assert_eq!(
-        body(ledger.claim(APP, &project, b"ciphertext").await),
+        body(ledger.claim(APP, &project, &first_req).await),
         Ok("first".to_owned())
     );
     assert_eq!(
-        body(ledger.claim(APP, &other, b"ciphertext").await),
+        body(ledger.claim(APP, &other, &first_req).await),
         Ok("theirs".to_owned())
     );
 
     // The same project and ciphertext on another application is its own:
-    // posting it to decryption must not return the private-wallet answer.
-    let Ok(Claim::New(cross)) = ledger.claim(OTHER_APP, &project, b"ciphertext").await else {
+    // posting it to another application must not return the decryption answer.
+    let Ok(Claim::New(cross)) = ledger.claim(OTHER_APP, &project, &first_req).await else {
         panic!("another application's claim is new");
     };
     assert_ne!(cross, key);
     ledger.record(cross, &answer("decryption")).await;
     assert_eq!(
-        body(ledger.claim(APP, &project, b"ciphertext").await),
+        body(ledger.claim(APP, &project, &first_req).await),
         Ok("first".to_owned())
     );
     assert_eq!(
-        body(ledger.claim(OTHER_APP, &project, b"ciphertext").await),
+        body(ledger.claim(OTHER_APP, &project, &first_req).await),
         Ok("decryption".to_owned())
     );
 
-    let Ok(Claim::New(failed)) = ledger.claim(APP, &project, b"failed").await else {
+    let failed_req = req(b"failed");
+    let Ok(Claim::New(failed)) = ledger.claim(APP, &project, &failed_req).await else {
         panic!("the first claim is new");
     };
     ledger
         .record(failed, &Err(ApiError::EnclaveUnavailable))
         .await;
     assert_eq!(
-        body(ledger.claim(APP, &project, b"failed").await),
+        body(ledger.claim(APP, &project, &failed_req).await),
         Err(ApiError::EnclaveUnavailable)
     );
 
-    let Ok(Claim::New(released)) = ledger.claim(APP, &project, b"released").await else {
+    let released_req = req(b"released");
+    let Ok(Claim::New(released)) = ledger.claim(APP, &project, &released_req).await else {
         panic!("the first claim is new");
     };
     ledger.release(released).await;
     assert_eq!(
-        body(ledger.claim(APP, &project, b"released").await),
+        body(ledger.claim(APP, &project, &released_req).await),
         Ok("new".to_owned())
     );
 
     // An answer at the cap is kept; a larger one releases its claim.
     let largest = "x".repeat(MAX_KEPT_ANSWER_BYTES);
-    let Ok(Claim::New(kept)) = ledger.claim(APP, &project, b"largest").await else {
+    let largest_req = req(b"largest");
+    let Ok(Claim::New(kept)) = ledger.claim(APP, &project, &largest_req).await else {
         panic!("the first claim is new");
     };
     ledger.record(kept, &answer(&largest)).await;
     assert_eq!(
-        body(ledger.claim(APP, &project, b"largest").await),
+        body(ledger.claim(APP, &project, &largest_req).await),
         Ok(largest)
     );
-    let Ok(Claim::New(dropped)) = ledger.claim(APP, &project, b"too large").await else {
+    let too_large_req = req(b"too large");
+    let Ok(Claim::New(dropped)) = ledger.claim(APP, &project, &too_large_req).await else {
         panic!("the first claim is new");
     };
     ledger
         .record(dropped, &answer(&"x".repeat(MAX_KEPT_ANSWER_BYTES + 1)))
         .await;
     assert_eq!(
-        body(ledger.claim(APP, &project, b"too large").await),
+        body(ledger.claim(APP, &project, &too_large_req).await),
         Ok("new".to_owned())
     );
 }
@@ -154,7 +193,7 @@ async fn an_unresponsive_redis_refuses_the_request() {
     assert_eq!(
         body(
             ledger
-                .claim(APP, &ProjectId::for_tests("a"), b"ciphertext")
+                .claim(APP, &ProjectId::for_tests("a"), &req(b"ciphertext"))
                 .await
         ),
         Err(ApiError::ReplayGuardUnavailable)

@@ -1,3 +1,5 @@
+//! Wire error code to variant-name exactness test (INV-11).
+
 use strum::VariantArray;
 
 use crate::error::ErrorCode;
@@ -32,6 +34,7 @@ fn every_code_is_its_variant_name() {
             "DiscoveryUntrusted",
             "NetworkMismatch",
             "ReleasePolicyInvalid",
+            "ReleaseNotPinned",
         ]
     );
     for code in ErrorCode::VARIANTS {

@@ -13,6 +13,12 @@
 //   - duplicate map keys are rejected;
 //   - nesting is depth-limited and trailing bytes are rejected.
 
+import { MAX_SAFE_INTEGER_BIGINT } from "../wire/constants.js";
+
+const MAJOR_SHIFT = 5;
+const ADDITIONAL_MASK = 0x1f;
+const BITS_PER_BYTE = 8n;
+
 const MAJOR_UNSIGNED = 0;
 const MAJOR_NEGATIVE = 1;
 const MAJOR_BYTES = 2;
@@ -22,9 +28,30 @@ const MAJOR_MAP = 5;
 const MAJOR_TAG = 6;
 const MAJOR_SIMPLE = 7;
 
+const INLINE_ARG_LIMIT = 24;
+const ADDITIONAL_U8 = 24;
+const ADDITIONAL_U16 = 25;
+const ADDITIONAL_U32 = 26;
+const ADDITIONAL_U64 = 27;
+const ADDITIONAL_INDEFINITE = 31;
+
+const U16_BYTES = 2;
+const U32_BYTES = 4;
+const U64_BYTES = 8;
+const U16_MIN = 0x100n;
+const U32_MIN = 0x1_0000n;
+const U64_MIN = 0x1_0000_0000n;
+
+const SIMPLE_FALSE = 20;
+const SIMPLE_TRUE = 21;
+const SIMPLE_NULL = 22;
+const CBOR_BREAK = 0xff;
+
 const COSE_SIGN1_TAG = 18;
 const MAX_DEPTH = 16;
 const MAX_INDEFINITE_ROOT_MAP_ENTRIES = 32;
+
+const td = new TextDecoder("utf-8", { fatal: true });
 
 export type CborValue =
   | null
@@ -73,7 +100,7 @@ class Reader {
   }
 
   #nextIsBreak(): boolean {
-    return this.#bytes[this.#offset] === 0xff;
+    return this.#bytes[this.#offset] === CBOR_BREAK;
   }
 
   #indefiniteRootMap(depth: number): Map<string | number, CborValue> {
@@ -96,20 +123,20 @@ class Reader {
 
   /** Reads the argument, rejecting any non-shortest encoding of it. */
   #argument(additional: number): number {
-    if (additional < 24) return additional;
-    if (additional === 24) {
+    if (additional < INLINE_ARG_LIMIT) return additional;
+    if (additional === ADDITIONAL_U8) {
       const value = this.#byte();
-      if (value < 24) throw new CborError("non-minimal CBOR argument");
+      if (value < INLINE_ARG_LIMIT) throw new CborError("non-minimal CBOR argument");
       return value;
     }
-    if (additional === 25 || additional === 26 || additional === 27) {
-      const width = additional === 25 ? 2 : additional === 26 ? 4 : 8;
+    if (additional === ADDITIONAL_U16 || additional === ADDITIONAL_U32 || additional === ADDITIONAL_U64) {
+      const width = additional === ADDITIONAL_U16 ? U16_BYTES : additional === ADDITIONAL_U32 ? U32_BYTES : U64_BYTES;
+      const minimum = additional === ADDITIONAL_U16 ? U16_MIN : additional === ADDITIONAL_U32 ? U32_MIN : U64_MIN;
       const bytes = this.#take(width);
       let value = 0n;
-      for (const byte of bytes) value = (value << 8n) | BigInt(byte);
-      const minimum = additional === 25 ? 0x100n : additional === 26 ? 0x10000n : 0x100000000n;
+      for (const byte of bytes) value = (value << BITS_PER_BYTE) | BigInt(byte);
       if (value < minimum) throw new CborError("non-minimal CBOR argument");
-      if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw new CborError("CBOR argument too large");
+      if (value > MAX_SAFE_INTEGER_BIGINT) throw new CborError("CBOR argument too large");
       return Number(value);
     }
     // 28-30 are reserved; 31 is the indefinite-length marker.
@@ -119,18 +146,18 @@ class Reader {
   read(depth: number): CborValue {
     if (depth > MAX_DEPTH) throw new CborError("CBOR nesting too deep");
     const initial = this.#byte();
-    const major = initial >> 5;
-    const additional = initial & 0x1f;
+    const major = initial >> MAJOR_SHIFT;
+    const additional = initial & ADDITIONAL_MASK;
 
     if (major === MAJOR_SIMPLE) {
-      if (additional === 20) return false;
-      if (additional === 21) return true;
-      if (additional === 22) return null;
+      if (additional === SIMPLE_FALSE) return false;
+      if (additional === SIMPLE_TRUE) return true;
+      if (additional === SIMPLE_NULL) return null;
       throw new CborError("unsupported CBOR simple value");
     }
 
     if (
-      additional === 31 &&
+      additional === ADDITIONAL_INDEFINITE &&
       major === MAJOR_MAP &&
       depth === 0 &&
       this.#allowIndefiniteRootMap
@@ -147,7 +174,7 @@ class Reader {
       case MAJOR_BYTES:
         return this.#take(argument);
       case MAJOR_TEXT:
-        return new TextDecoder("utf-8", { fatal: true }).decode(this.#take(argument));
+        return td.decode(this.#take(argument));
       case MAJOR_ARRAY: {
         const items: CborValue[] = [];
         for (let index = 0; index < argument; index += 1) items.push(this.read(depth + 1));

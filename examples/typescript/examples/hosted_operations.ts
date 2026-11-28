@@ -24,7 +24,7 @@ if (apiKey === undefined || apiKey === "") {
 
 const service = createDecryptionService({
   network: "devnet",
-  endpoint: new URL(required("SPR_E2E_GATEKEEPER_URL")),
+  endpoint: new URL(required("SPR_E2E_ENDPOINT")),
   apiKey,
   release: JSON.parse(readFileSync(required("SPR_E2E_RELEASE_PIN"), "utf8")) as NonNullable<
     DecryptionServiceConfig["release"]

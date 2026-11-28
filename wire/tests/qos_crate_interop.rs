@@ -1,4 +1,4 @@
-//! Check the shared QOS envelope vector with Turnkey's implementation.
+//! Shared QOS envelope vector interoperability against Turnkey's qos_p256 crate (INV-12).
 
 use qos_p256::encrypt::P256EncryptPair;
 use serde_json::Value;

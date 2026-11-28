@@ -1,4 +1,4 @@
-//! The public API as gatekeeper serves it, as OpenAPI 3.1. `openapi.json` is
+//! The public API as the edge proxy serves it, as OpenAPI 3.1. `openapi.json` is
 //! this document; `BLESS_OPENAPI=1 cargo test` rewrites it.
 
 use strum::VariantNames;
@@ -13,7 +13,7 @@ use crate::error::{ApiError, Problem};
     info(
         title = "Helius Decryption Service API",
         version = "1",
-        description = "The gatekeeper front of the decryption enclave. An operation forwards \
+        description = "The public edge front of the decryption enclave. An operation forwards \
                        the encrypted request and returns the Boot Proof of the replica that \
                        signed the reply. The client checks that proof and the App Proof \
                        against the signed pin.",

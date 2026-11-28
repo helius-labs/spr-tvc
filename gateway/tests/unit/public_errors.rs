@@ -1,9 +1,20 @@
+//! Gateway RFC 9457 problem-document and non-retriable error code tests (INV-27).
+
+use strum::VariantNames;
+
 use super::*;
 
 #[test]
-fn the_code_is_the_variant_name_and_no_failure_is_retried_by_gatekeeper() {
-    assert_eq!(ApiError::InvalidJson.code(), "InvalidJson");
-    assert_eq!("InvalidJson".parse(), Ok(ApiError::InvalidJson));
+fn the_code_is_the_variant_name_and_no_failure_is_retried_by_edge_proxy() {
+    for name in ApiError::VARIANTS {
+        let error: ApiError = name.parse().expect("variant name parses back");
+        assert_eq!(error.code(), *name);
+        assert!(
+            !error.status().is_server_error(),
+            "{name} returned 5xx ({}), which the edge proxy would retry",
+            error.status()
+        );
+    }
     for error in [ApiError::EnclaveUnavailable, ApiError::TurnkeyUnavailable] {
         assert_eq!(error.status(), StatusCode::FAILED_DEPENDENCY);
     }

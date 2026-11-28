@@ -29,8 +29,13 @@ pub struct ReqwestTransport {
 
 impl ReqwestTransport {
     pub fn new() -> Result<Self, ClientError> {
+        Self::with_timeout(REQUEST_TIMEOUT)
+    }
+
+    fn with_timeout(timeout: Duration) -> Result<Self, ClientError> {
         let client = reqwest::blocking::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(timeout)
             .build()
             .map_err(|_| ClientError::Transport)?;
         Ok(Self { client })
@@ -125,3 +130,7 @@ fn read(
 pub(crate) fn discovery_limit() -> usize {
     MAX_DISCOVERY_BYTES
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/transport.rs"]
+mod tests;

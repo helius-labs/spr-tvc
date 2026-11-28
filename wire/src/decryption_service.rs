@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::body_limit::ensure_within_body;
+use crate::constants::SHA256_LEN;
 use crate::digest::domain_separated_hash;
 use crate::encoding::{self, canonicalize_json_value, decimal_u64, encode_lower_hex, hex};
 use crate::error::{ErrorCode, TvcError};
@@ -22,14 +23,19 @@ pub const VIEW_GRANT_DIGEST_DOMAIN: &[u8] = b"SPR_TVC_VIEW_GRANT_V1";
 pub const MAX_VIEW_GRANT_MS: u64 = 30 * 60 * 1000;
 
 pub const ADDRESS_LEN: usize = 32;
+pub const ED25519_SIGNATURE_LEN: usize = 64;
 /// `spr_keypair::constants::BLINDING_LEN`. `key_lengths_match_spr_keypair` pins this.
 pub const NULLIFIER_SECRET_LEN: usize = 31;
 /// `spr_keypair::x25519::X25519_PUBKEY_LEN`. `key_lengths_match_spr_keypair` pins this.
 pub const X25519_PUBLIC_KEY_LEN: usize = 33;
 
 const OFFCHAIN_MESSAGE_MAGIC: &[u8; 16] = b"\xffsolana offchain";
+const OFFCHAIN_VERSION_V0: u8 = 0;
+const OFFCHAIN_FORMAT_UTF8: u8 = 0;
+const OFFCHAIN_SIGNER_COUNT: u8 = 1;
 /// Solana off-chain message v0 prefix: magic, version, domain, format, signer count, signer, length.
-const OFFCHAIN_HEADER_LEN: usize = 16 + 1 + 32 + 1 + 1 + 32 + 2;
+const OFFCHAIN_HEADER_LEN: usize =
+    OFFCHAIN_MESSAGE_MAGIC.len() + 1 + SHA256_LEN + 1 + 1 + ADDRESS_LEN + size_of::<u16>();
 
 /// The plaintext of an `EncryptedRequest` to the decryption service.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,7 +43,7 @@ const OFFCHAIN_HEADER_LEN: usize = 16 + 1 + 32 + 1 + 1 + 32 + 2;
 pub struct ServiceRequest {
     pub version: u8,
     #[serde(with = "hex")]
-    pub request_id: [u8; 32],
+    pub request_id: [u8; SHA256_LEN],
     pub quorum_key_id: String,
     #[serde(with = "decimal_u64")]
     pub quorum_key_epoch: u64,
@@ -58,7 +64,7 @@ pub enum ServiceOperation {
     Decrypt {
         signer: String,
         #[serde(with = "hex")]
-        signature: [u8; 64],
+        signature: [u8; ED25519_SIGNATURE_LEN],
         items: Vec<DecryptItem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         grant: Option<Box<ViewGrant>>,
@@ -83,7 +89,7 @@ pub struct ViewGrant {
     #[serde(with = "decimal_u64")]
     pub expiry_ms: u64,
     #[serde(with = "hex")]
-    pub signature: [u8; 64],
+    pub signature: [u8; ED25519_SIGNATURE_LEN],
 }
 
 impl ServiceOperation {
@@ -102,7 +108,7 @@ pub enum ServiceResult {
         #[serde(with = "hex")]
         viewing_public_key: [u8; X25519_PUBLIC_KEY_LEN],
         #[serde(with = "hex")]
-        nullifier_public_key: [u8; 32],
+        nullifier_public_key: [u8; SHA256_LEN],
     },
     Decrypt(DecryptedOutputs),
 }
@@ -129,7 +135,7 @@ pub fn parse_service_request(json: &str) -> Result<ServiceRequest, TvcError> {
 }
 
 /// `H(SERVICE_REQUEST_DIGEST_DOMAIN, JCS(request))`, without a `Decrypt`'s signature.
-pub fn service_request_digest(request: &ServiceRequest) -> Result<[u8; 32], TvcError> {
+pub fn service_request_digest(request: &ServiceRequest) -> Result<[u8; SHA256_LEN], TvcError> {
     let mut value = encoding::to_canonical_value(request)?;
     value
         .get_mut("operation")
@@ -147,7 +153,7 @@ pub fn service_request_digest(request: &ServiceRequest) -> Result<[u8; 32], TvcE
 pub fn decrypt_message(
     signer: &[u8; ADDRESS_LEN],
     network: Network,
-    request_digest: &[u8; 32],
+    request_digest: &[u8; SHA256_LEN],
 ) -> Vec<u8> {
     let payload = format!(
         "{DECRYPT_LABEL}/{network}/{}",
@@ -157,7 +163,7 @@ pub fn decrypt_message(
 }
 
 /// `H(VIEW_GRANT_DIGEST_DOMAIN, JCS(grant))`, without the owner's signature.
-pub fn view_grant_digest(grant: &ViewGrant) -> Result<[u8; 32], TvcError> {
+pub fn view_grant_digest(grant: &ViewGrant) -> Result<[u8; SHA256_LEN], TvcError> {
     let mut value = encoding::to_canonical_value(grant)?;
     value
         .as_object_mut()
@@ -171,7 +177,7 @@ pub fn view_grant_digest(grant: &ViewGrant) -> Result<[u8; 32], TvcError> {
 }
 
 /// What the owner signs for a view grant: a Solana off-chain message v0 with one signer.
-pub fn view_grant_message(owner: &[u8; ADDRESS_LEN], grant_digest: &[u8; 32]) -> Vec<u8> {
+pub fn view_grant_message(owner: &[u8; ADDRESS_LEN], grant_digest: &[u8; SHA256_LEN]) -> Vec<u8> {
     let payload = format!("{VIEW_GRANT_LABEL}/{}", encode_lower_hex(grant_digest));
     offchain_message(VIEW_GRANT_LABEL, owner, &payload)
 }
@@ -195,10 +201,10 @@ fn offchain_message(label: &str, signer: &[u8; ADDRESS_LEN], payload: &str) -> V
     let length = u16::try_from(payload.len()).expect("the payload is short");
     let mut message = Vec::with_capacity(OFFCHAIN_HEADER_LEN + payload.len());
     message.extend_from_slice(OFFCHAIN_MESSAGE_MAGIC);
-    message.push(0);
+    message.push(OFFCHAIN_VERSION_V0);
     message.extend_from_slice(&Sha256::digest(label.as_bytes()));
-    message.push(0);
-    message.push(1);
+    message.push(OFFCHAIN_FORMAT_UTF8);
+    message.push(OFFCHAIN_SIGNER_COUNT);
     message.extend_from_slice(signer);
     message.extend_from_slice(&length.to_le_bytes());
     message.extend_from_slice(payload.as_bytes());

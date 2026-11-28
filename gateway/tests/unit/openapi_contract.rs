@@ -1,3 +1,5 @@
+//! Gateway committed OpenAPI contract verification test (INV-24).
+
 use super::*;
 
 #[test]

@@ -1,3 +1,5 @@
+// Covers INV-07 (pre-signing request ceiling), INV-10 (view-grant validation), INV-28 (429 drop), and INV-29 (deadlines & key wiping).
+
 import { address, signatureBytes } from "@solana/kit";
 import { p256 } from "@noble/curves/p256";
 import { NullifierKey, ViewingKey, initializePoseidon } from "@heliuslabs/spr";
@@ -12,10 +14,11 @@ import { decodeLowerHex, encodeLowerHex } from "../../src/wire/hex.js";
 import { MAX_ENCRYPTED_REQUEST_BYTES } from "../../src/wire/constants.js";
 import { DecryptionServiceError, DecryptionServiceHttpError } from "../../src/wire/error.js";
 import * as exchange from "../../src/client/exchange.js";
-import { decryptionServiceFromSession } from "../../src/client/decryption.js";
-import type { ServiceRequest } from "../../src/wire/decryption.js";
+import { decryptionServiceFromSession, signViewGrant } from "../../src/client/decryption.js";
+import type { ServiceRequest, ViewGrant } from "../../src/wire/decryption.js";
 
 const ownerAddress = address("11111111111111111111111111111111");
+const granteeAddress = address("So11111111111111111111111111111111111111112");
 
 function fixture() {
   const quorum = new Uint8Array(32).fill(1);
@@ -217,4 +220,68 @@ it.each(["caller", "client"])("uses one %s deadline across all decrypt batches",
     viewing.destroy();
     vi.useRealTimers();
   }
+});
+
+it("rejects self-grants and invalid networks before signing a view grant", async () => {
+  const signMessages = vi.fn();
+  const owner = { address: ownerAddress, signMessages };
+  await expect(
+    signViewGrant(owner, {
+      grantee: ownerAddress,
+      network: "devnet",
+      quorumKeyId: "quorum",
+      quorumKeyEpoch: 1n,
+      notBeforeMs: 1000n,
+      expiryMs: 2000n,
+    }),
+  ).rejects.toMatchObject({ code: "InvalidSignature" });
+  await expect(
+    signViewGrant(owner, {
+      grantee: granteeAddress,
+      network: "testnet" as unknown as "devnet",
+      quorumKeyId: "quorum",
+      quorumKeyEpoch: 1n,
+      notBeforeMs: 1000n,
+      expiryMs: 2000n,
+    }),
+  ).rejects.toMatchObject({ code: "UnknownNetwork" });
+  expect(signMessages).not.toHaveBeenCalled();
+});
+
+it("validates grant target fields before fetching keys or prompting for a decrypt signature", async () => {
+  const { context, fetch } = fixture();
+  const signMessages = vi.fn();
+  const grantee = { address: granteeAddress, signMessages };
+  const service = decryptionServiceFromSession(sessionFromConnector(async () => context));
+  const baseGrant: ViewGrant = {
+    owner: ownerAddress,
+    grantee: granteeAddress,
+    network: "devnet",
+    quorum_key_id: "quorum",
+    quorum_key_epoch: "1",
+    not_before_ms: "500",
+    expiry_ms: "5000",
+    signature: "00".repeat(64),
+  };
+
+  for (const [patch, code] of [
+    [{ owner: granteeAddress }, "InvalidSignature"],
+    [{ grantee: ownerAddress }, "InvalidSignature"],
+    [{ network: "mainnet" as const }, "NetworkMismatch"],
+    [{ quorum_key_id: "other" }, "ReleaseBindingMismatch"],
+    [{ quorum_key_epoch: "2" }, "QuorumKeyEpochMismatch"],
+    [{ expiry_ms: "999" }, "ExpiredRequest"],
+  ] as const) {
+    const grant = { ...baseGrant, ...patch };
+    await expect(service.keys(grantee, { grant })).rejects.toMatchObject({ code });
+    await expect(
+      exchange.executeServiceCall(
+        context,
+        { type: "Decrypt", owner: grantee, items: [], grant },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code });
+  }
+  expect(signMessages).not.toHaveBeenCalled();
+  expect(fetch).not.toHaveBeenCalled();
 });

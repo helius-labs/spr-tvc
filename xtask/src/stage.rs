@@ -5,9 +5,11 @@ use serde::{Deserialize, Serialize};
 use spr_tvc_wire::types::{Network, ServiceInfo};
 
 use crate::tools::{bridge, capture, capture_check, run, tvc, tvc_json, Credentials};
-use crate::{lower_hex, read_json, write_json, Release, APP};
+use crate::{lower_hex, read_json, write_json, Release, APP, GIT_SHA_HEX_LEN, SHA256_HEX_LEN};
 
 const PIVOT_PATH: &str = "/tvc_app";
+const SHORT_SHA_HEX_LEN: usize = 12;
+const QOS_INGRESS_PORT: u16 = 3000;
 
 #[derive(Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -44,12 +46,12 @@ pub(crate) fn image_digest<'a>(
         .strip_prefix(&prefix)
         .context("image must have the release network tag")?;
     ensure!(
-        lower_hex(digest, 64) && lower_hex(suffix, 12),
+        lower_hex(digest, SHA256_HEX_LEN) && lower_hex(suffix, SHORT_SHA_HEX_LEN),
         "image needs a release commit tag and a lowercase SHA-256 digest"
     );
     if let Some(commit) = source_commit {
         ensure!(
-            lower_hex(commit, 40) && suffix == &commit[..12],
+            lower_hex(commit, GIT_SHA_HEX_LEN) && suffix == &commit[..SHORT_SHA_HEX_LEN],
             "image tag must name the reviewed source commit"
         );
     }
@@ -122,7 +124,7 @@ impl Release<'_> {
         let digest = std::str::from_utf8(&output)?
             .split_ascii_whitespace()
             .next()
-            .filter(|digest| lower_hex(digest, 64))
+            .filter(|digest| lower_hex(digest, SHA256_HEX_LEN))
             .context("could not read /tvc_app SHA-256")?;
         write_json(
             &self.path("deployment"),
@@ -131,6 +133,7 @@ impl Release<'_> {
     }
 
     pub(crate) fn deployment_descriptor(&self, image: &str, digest: &str) -> Descriptor {
+        let port = QOS_INGRESS_PORT.to_string();
         Descriptor {
             app_id: self.app.app_id.clone(),
             qos_version: self.qos_version().into(),
@@ -140,7 +143,7 @@ impl Release<'_> {
                 "--host",
                 "0.0.0.0",
                 "--port",
-                "3000",
+                &port,
                 "--security-domain-id",
                 &hex::encode(self.app.security_domain_id),
                 "--release-id",
@@ -155,8 +158,8 @@ impl Release<'_> {
             expected_pivot_digest: digest.into(),
             dangerous_deploy_debug_mode: false,
             health_check_type: "TVC_HEALTH_CHECK_TYPE_HTTP".into(),
-            health_check_port: 3000,
-            public_ingress_port: 3000,
+            health_check_port: QOS_INGRESS_PORT,
+            public_ingress_port: QOS_INGRESS_PORT,
         }
     }
 
@@ -164,7 +167,7 @@ impl Release<'_> {
         let descriptor: Descriptor =
             read_json(&self.path("deployment")).context("run describe first")?;
         ensure!(
-            lower_hex(&descriptor.expected_pivot_digest, 64)
+            lower_hex(&descriptor.expected_pivot_digest, SHA256_HEX_LEN)
                 && descriptor
                     == self.deployment_descriptor(
                         &descriptor.pivot_container_image_url,

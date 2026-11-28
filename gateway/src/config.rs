@@ -29,7 +29,7 @@ pub struct Config {
     pub stage: Stage,
     pub listen: SocketAddr,
     pub metrics: MetricsConfig,
-    /// `Authorization` value gatekeeper sends on every origin request. Secret.
+    /// `Authorization` value the edge proxy sends on every origin request. Secret.
     pub origin_auth_header: String,
     pub dev_api: DevApiConfig,
     /// The decryption-service enclave.

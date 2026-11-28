@@ -35,17 +35,17 @@ flowchart LR
   Gateway --> Service
 ```
 
-The public hosts are `https://devnet.helius-rpc.com` and `https://mainnet.helius-rpc.com`. A wallet sends `x-api-key`, or the `api-key` query parameter. The gatekeeper resolves the Helius project and calls the gateway with `Authorization` set to the shared origin credential and `x-helius-project-id` set to that project. The committed gateway config binds `127.0.0.1:8940`.
+The public hosts are `https://devnet.helius-rpc.com` and `https://mainnet.helius-rpc.com`. A wallet sends `x-api-key`, or the `api-key` query parameter. The edge proxy resolves the Helius project and calls the gateway with `Authorization` set to the shared origin credential and `x-helius-project-id` set to that project. The committed gateway config binds `127.0.0.1:8940`.
 
-The gateway calls `POST /v1/operations` and asks Turnkey for the Boot Proof of the replica that signed the reply. `GET /v1/info` and `POST /v1/ping` stay on the enclave for the release tool. A loopback test dials the enclave directly and skips the gatekeeper, the gateway, and the Boot Proof.
+The gateway calls `POST /v1/operations` and asks Turnkey for the Boot Proof of the replica that signed the reply. `GET /v1/info` and `POST /v1/ping` stay on the enclave for the release tool. A loopback test dials the enclave directly and skips the edge proxy, the gateway, and the Boot Proof.
 
-A request that reaches the gateway without the gatekeeper's `Authorization` header can still present an API key. The gateway resolves the project itself. Production wallets use the gatekeeper hosts.
+A request that reaches the gateway without the edge proxy's `Authorization` header can still present an API key. The gateway resolves the project itself. Production wallets use the public edge hosts.
 
 ## Glossary
 
 | Term | Definition |
 | --- | --- |
-| Gatekeeper | The public Helius edge. Admits an API key and forwards `/v1/decryption/*` to the gateway. |
+| Edge proxy | The public Helius edge. Admits an API key and forwards `/v1/decryption/*` to the gateway. |
 | Gateway | The private process that calls the enclave and Turnkey, and stores a replay of the first answer. |
 | Enclave | The decryption process inside a Turnkey Nitro replica. Holds the Quorum seed and the viewing secrets. |
 | Quorum key | The release's P-256 key pair. Clients encrypt requests to its encryption half. The enclave proves it can use that key. |
@@ -69,7 +69,7 @@ Both calls are the `operation` inside one `POST /v1/decryption/operations`. The 
 
 `PublicKeys` is sealed to the Quorum key, because that is the only request the service accepts on `/v1/operations`. `Decrypt` also requires the owner's Ed25519 signature, or a grantee's signature plus the owner's grant.
 
-The gateway forwards the operations ciphertext unchanged. It keys a replay ledger by project and ciphertext under the prefix `/v1/decryption`. The configured window is 360 seconds. A repeat returns the first answer and sets `Idempotent-Replayed: true`. The current admission limits are a 512 KiB body and 16 in-flight calls per project (`gateway/configs/config.yaml`).
+The gateway forwards the operations ciphertext unchanged. It keys a replay ledger by project and request envelope under the prefix `/v1/decryption`. The configured window is 360 seconds. A repeat returns the first answer and sets `Idempotent-Replayed: true`. The current admission limits are a 10 MiB body and 16 in-flight calls per project (`gateway/configs/config.yaml`).
 
 The enclave's own ceiling is 10 MiB for the encrypted request and the encrypted result, the same cap as the indexer. It rejects a larger body before opening any ciphertext. The SDK splits a decrypt on the pin's ceiling, before signing. There is no item cap. The enclave has no separate in-flight limit, so concurrent connections can multiply that ceiling by the connection count.
 
@@ -217,7 +217,7 @@ sequenceDiagram
     Service-->>Grantee: plaintexts, nullifier secret
 ```
 
-The request still travels the [Operations](#operations) path. The gatekeeper and the gateway forward the ciphertext. The gateway can replay the first answer for 360 seconds. Neither one reads the grant.
+The request still travels the [Operations](#operations) path. The edge proxy and the gateway forward the ciphertext. The gateway can replay the first answer for 360 seconds. Neither one reads the grant.
 
 ### Who signs what
 
@@ -322,15 +322,15 @@ let grant = SignViewGrant {
 let mut keys = client.keys_for(&grantee, &grant)?;
 ```
 
-`keys` with no grant is the owner. `OperationsClient::keys_for` is the same grant at the gatekeeper.
+`keys` with no grant is the owner. `OperationsClient::keys_for` is the same grant against a hosted endpoint.
 
 ## What crosses each boundary
 
 | Data | Visible to | Why |
 | --- | --- | --- |
 | Owner tag, ciphertext, ephemeral public key, salt, commitment | The chain and the indexer | The transfer publishes them so the wallet can find and check the note |
-| API key, project id, body sizes, timing | Gatekeeper and gateway | Admission, project limits, and the replay ledger |
-| Quorum key id, epoch, App Proof | Gatekeeper, gateway, and anyone who sees the request or reply | They are outside the QOS envelope |
+| API key, project id, body sizes, timing | Edge proxy and gateway | Admission, project limits, and the replay ledger |
+| Quorum key id, epoch, App Proof | Edge proxy, gateway, and anyone who sees the request or reply | They are outside the QOS envelope |
 | Note plaintext, viewing secret | The enclave, then the wallet that holds the response key | The viewing secret is derived inside the enclave and is not in the reply |
 | Nullifier secret | The enclave, the authorized caller, and the prover at sweep | `Decrypt` returns it so the owner can spend. A grantee receives the same secret |
 | View grant | The owner, the grantee, and the enclave | It rides inside the sealed request. The enclave keeps no copy |

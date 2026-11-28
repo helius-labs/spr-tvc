@@ -108,36 +108,74 @@ pub(crate) fn router(service: Arc<Service>) -> Router {
     Router::new().fallback(dispatch).with_state(service)
 }
 
+const MAX_PING_BODY_BYTES: usize = 4_096;
+
+async fn serve_get_json(
+    body: Body,
+    serialized: Result<String, spr_tvc_wire::TvcError>,
+    serialize_error: PublicError,
+) -> Response<Body> {
+    if to_bytes(body, 0).await.is_err() {
+        return PublicError::RequestTooLarge.into_response();
+    }
+    match serialized {
+        Ok(json) => http::ok(json),
+        Err(_) => serialize_error.into_response(),
+    }
+}
+
 async fn dispatch(State(service): State<Arc<Service>>, request: Request<Body>) -> Response<Body> {
     let (parts, body) = request.into_parts();
-    let Ok(body_limit) = usize::try_from(
-        service
-            .info
-            .max_encrypted_request_bytes
-            .min(MAX_ENCRYPTED_REQUEST_BYTES),
-    ) else {
-        return PublicError::Unavailable.into_response();
-    };
-    let Ok(body) = to_bytes(body, body_limit).await else {
-        return PublicError::RequestTooLarge.into_response();
-    };
-
     match (parts.method.as_str(), parts.uri.path()) {
+        ("GET", "/health") => {
+            serve_get_json(
+                body,
+                jcs_serialize(&HealthResponse {
+                    status: HealthStatus::Healthy,
+                }),
+                PublicError::Unavailable,
+            )
+            .await
+        }
+        ("GET", "/v1/info") => {
+            serve_get_json(
+                body,
+                jcs_serialize(&service.info),
+                PublicError::InvalidRequest,
+            )
+            .await
+        }
         ("POST", "/v1/ping" | "/v1/operations") if !has_json_content_type(&parts.headers) => {
             PublicError::InvalidRequest.into_response()
         }
-        ("POST", "/v1/ping") => handle_ping(&service, &body),
-        ("POST", "/v1/operations") => operations::handle(&service, &body),
-        ("GET", "/health") => match jcs_serialize(&HealthResponse {
-            status: HealthStatus::Healthy,
-        }) {
-            Ok(body) => http::ok(body),
-            Err(_) => PublicError::Unavailable.into_response(),
-        },
-        ("GET", "/v1/info") => match jcs_serialize(&service.info) {
-            Ok(body) => http::ok(body),
-            Err(_) => PublicError::InvalidRequest.into_response(),
-        },
+        ("POST", path @ ("/v1/ping" | "/v1/operations")) => {
+            let is_ping = path == "/v1/ping";
+            let Ok(max_ops) = usize::try_from(
+                service
+                    .info
+                    .max_encrypted_request_bytes
+                    .min(MAX_ENCRYPTED_REQUEST_BYTES),
+            ) else {
+                return PublicError::Unavailable.into_response();
+            };
+            let body_limit = if is_ping {
+                max_ops.min(MAX_PING_BODY_BYTES)
+            } else {
+                max_ops
+            };
+            let Ok(body) = to_bytes(body, body_limit).await else {
+                return PublicError::RequestTooLarge.into_response();
+            };
+            tokio::task::spawn_blocking(move || {
+                if is_ping {
+                    handle_ping(&service, &body)
+                } else {
+                    operations::handle(&service, &body)
+                }
+            })
+            .await
+            .unwrap_or_else(|_| PublicError::Unavailable.into_response())
+        }
         (_, "/v1/ping" | "/v1/operations" | "/health" | "/v1/info") => {
             PublicError::MethodNotAllowed.into_response()
         }

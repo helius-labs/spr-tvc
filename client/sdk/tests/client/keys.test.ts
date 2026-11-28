@@ -1,3 +1,5 @@
+// Covers INV-13 (indexed commitment verification and deterministic per-nullifier transaction keys).
+
 import { NullifierKey, ShieldedAddress, ShieldedPublicKey, initializePoseidon, type Bytes32 } from "@heliuslabs/spr";
 import { X25519Keypair, type Bytes31 } from "@heliuslabs/spr/keypair";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -88,5 +90,20 @@ describe("the keys of an address under the service", () => {
     expect(nullifiers).toEqual([nullifier.nullifier(derivation.utxoHash, derivation.blinding)]);
     expect(decrypt).toHaveBeenCalledOnce();
     expect(decrypt.mock.calls[0]?.[0]).toHaveLength(1);
+  });
+
+  it("wipes the nullifier secret and refuses further calls after destroy", async () => {
+    const secret = bytes(5, 31) as Bytes31;
+    const { address, keys: held } = keys(secret);
+    expect(await held.nullifierSecret()).toEqual(bytes(5, 31));
+    held.destroy();
+    await expect(held.nullifierSecret()).rejects.toThrow("destroyed");
+    await expect(held.decrypt([])).rejects.toThrow("destroyed");
+    await expect(
+      held.derive([{ kind: "nullifier", utxoHash: bytes(2) as Bytes32, blinding: bytes(3) as Bytes32 }]),
+    ).rejects.toThrow("destroyed");
+    await expect(
+      held.transactionKeys([{ viewingPublicKey: address.viewingPublicKey, firstNullifier: bytes(1) as Bytes32 }]),
+    ).rejects.toThrow("destroyed");
   });
 });

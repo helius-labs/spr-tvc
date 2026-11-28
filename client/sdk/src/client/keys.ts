@@ -15,6 +15,7 @@ import { hkdf } from "@noble/hashes/hkdf";
 import { sha256 } from "@noble/hashes/sha256";
 
 import { awaitWithSignal } from "../connection/request.js";
+import { SHA256_LEN } from "../wire/constants.js";
 import { DecryptionServiceError } from "../wire/error.js";
 import type { DecryptItem } from "../wire/types.js";
 import { decryptItem } from "./items.js";
@@ -71,16 +72,15 @@ export class ServiceKeys implements DecryptionServiceKeys {
     return local.withNullifierKey((key) => key.secretBytes());
   }
 
-  decrypt(requests: readonly DecryptRequest[], context?: RequestContext): Promise<readonly Uint8Array[]> {
+  async decrypt(requests: readonly DecryptRequest[], context?: RequestContext): Promise<readonly Uint8Array[]> {
     this.#checkLive();
-    if (requests.length === 0) return Promise.resolve([]);
+    if (requests.length === 0) return [];
     const job = this.#decrypt(requests.map(decryptItem), context);
     const ownsSecret = this.#local === undefined && this.#opening === undefined;
     if (ownsSecret) this.#claim(job);
-    return job.then((opened) => {
-      if (!ownsSecret) opened.nullifierSecret.fill(0);
-      return opened.plaintexts;
-    });
+    const opened = await job;
+    if (!ownsSecret) opened.nullifierSecret.fill(0);
+    return opened.plaintexts;
   }
 
   async derive(requests: readonly DeriveRequest[], context?: RequestContext): Promise<readonly Bytes32[]> {
@@ -143,10 +143,10 @@ export class ServiceKeys implements DecryptionServiceKeys {
       return;
     }
     const nullifierKey = NullifierKey.fromSecret(secret);
-    const transactionKey = ViewingKey.fromBytes(
-      hkdf(sha256, secret, undefined, TRANSACTION_KEY_LABEL, 32) as Bytes32,
-    );
+    const transactionSeed = hkdf(sha256, secret, undefined, TRANSACTION_KEY_LABEL, SHA256_LEN) as Bytes32;
+    let transactionKey: ViewingKey | undefined;
     try {
+      transactionKey = ViewingKey.fromBytes(transactionSeed);
       const transactionPublic = transactionKey.publicKey();
       this.#local = LocalShieldedKeys.fromKeys({
         address: ShieldedAddress.fromPublicKeys(
@@ -160,7 +160,8 @@ export class ServiceKeys implements DecryptionServiceKeys {
       this.#transactionKey = transactionPublic;
     } finally {
       nullifierKey.destroy();
-      transactionKey.destroy();
+      transactionKey?.destroy();
+      transactionSeed.fill(0);
       secret.fill(0);
     }
   }

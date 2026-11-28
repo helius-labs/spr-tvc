@@ -1,3 +1,5 @@
+// Covers INV-20 (fail-closed mainnet trust anchors, distinct authority threshold >= 2, revocation floor, bounded lifetime).
+
 import { p256 } from "@noble/curves/p256";
 import { describe, expect, it } from "vitest";
 
@@ -65,6 +67,12 @@ describe("mainnet pins", () => {
       { ...policy, quorumPublicKey: publicKeys[1]! + publicKeys[0]! },
       { ...policy, securityDomainId: "00".repeat(32) },
       { ...policy, expiresAtMs: String(now + 1n) },
+      { ...policy, validFromMs: "0", expiresAtMs: "60000" },
+      {
+        ...policy,
+        validFromMs: String(BigInt(Number.MAX_SAFE_INTEGER)),
+        expiresAtMs: String(BigInt(Number.MAX_SAFE_INTEGER) + 1n),
+      },
     ]) expect(() => verify(signed(value))).toThrow(/ReleasePolicyInvalid/);
     expect(() => verify(signed(), {
       ...trust, releaseAuthorities: { ...trust.releaseAuthorities, threshold: 1 },

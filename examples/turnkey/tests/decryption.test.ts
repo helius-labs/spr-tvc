@@ -1,3 +1,5 @@
+// Covers INV-13 (end-to-end commitment-verified note decryption against loopback enclave).
+
 import assert from "node:assert/strict";
 import { test } from "node:test";
 

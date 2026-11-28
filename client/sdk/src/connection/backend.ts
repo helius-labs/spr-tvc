@@ -34,6 +34,7 @@ export type EncryptedRequestWire = {
 const MAX_DISCOVERY_RESPONSE_BYTES = 64n * 1024n;
 const MAX_PING_RESPONSE_BYTES = 64n * 1024n;
 const MAX_BOOT_PROOF_BYTES = 512n * 1024n;
+const HTTP_SERVER_ERROR_MIN = 500;
 
 function postOperation(
   backend: EnclaveBackend,
@@ -117,7 +118,7 @@ export async function sendToEnclave(
   const response = await postJson(
     transport, endpointUrl(endpoint, "/v1/operations"), canonicalizeJsonValue(request), signal,
   );
-  const code = response.status >= 500 ? "OperationUnavailable" : "OperationRejected";
+  const code = response.status >= HTTP_SERVER_ERROR_MIN ? "OperationUnavailable" : "OperationRejected";
   return readAnswer(response, code, maxAnswerBytes, signal);
 }
 
@@ -135,7 +136,7 @@ export async function sendOperation(
   const response = await postOperation(
     backend, "operations", transport, canonicalizeJsonValue(request), signal,
   );
-  const code = response.status >= 500 ? "OperationUnavailable" : "OperationRejected";
+  const code = response.status >= HTTP_SERVER_ERROR_MIN ? "OperationUnavailable" : "OperationRejected";
   const text = await readAnswer(response, code, maxAnswerBytes + MAX_BOOT_PROOF_BYTES, signal);
   const answer = parseStrictJson<{ response: unknown; bootProof: TurnkeyBootProofWire }>(
     text, ["response", "bootProof"],

@@ -1,3 +1,5 @@
+// Covers INV-21 (live ping & manifest attestation), INV-22 (bounded release discovery), and INV-29 (live clock).
+
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

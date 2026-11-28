@@ -1,3 +1,5 @@
+// Covers INV-29 (stalled response stream abort and cancelled caller isolation).
+
 import { expect, it, vi } from "vitest";
 import { fetchWithSignal, readBoundedText } from "../../src/connection/http.js";
 

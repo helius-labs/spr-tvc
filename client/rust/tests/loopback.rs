@@ -1,3 +1,5 @@
+//! End-to-end loopback note decryption and replay test (INV-05, INV-13, INV-18).
+
 #[path = "common/mod.rs"]
 mod support;
 

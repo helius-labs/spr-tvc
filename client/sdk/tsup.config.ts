@@ -8,9 +8,10 @@ const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url));
 
 function verifyProductionBoundary(): void {
   const roots = ["dist/index.js", "dist/wire.js", "dist/release.js"];
-  // Names that exist only in the testkit: its session factory and its pinned
-  // key fixture.
-  const localTestkitMarkers = /LocalTvcSession|local-testkit/;
+  // Names that exist only in the testkit: its unattested connector and its
+  // pinned key fixture.
+  const localTestkitMarkers =
+    /connectLocalUnattestedTvc|local-unattested-do-not-deploy|ZOLANA_TVC_LOCAL_UNATTESTED_/;
   const relativeModule = /\.\.?\/[A-Za-z0-9/_-]+\.js/g;
   const visited = new Set<string>();
 

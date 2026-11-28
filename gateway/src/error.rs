@@ -6,7 +6,7 @@ use serde::Serialize;
 /// Every failure the gateway returns, as an RFC 9457 problem:
 /// `{"title", "status", "detail", "code"}`, where `code` is the variant name.
 ///
-/// Gatekeeper re-sends any 5xx up to twice. A failure after the request
+/// The edge proxy re-sends any 5xx up to twice. A failure after the request
 /// reached the enclave or Turnkey is a 424, never a 5xx.
 #[derive(
     Debug,
@@ -23,7 +23,7 @@ pub enum ApiError {
     #[error("the body is not the JSON this endpoint takes")]
     InvalidJson,
 
-    #[error("the request did not come through gatekeeper")]
+    #[error("the request did not carry valid origin authentication")]
     OriginAuthRequired,
     #[error("the request names no valid project")]
     ProjectRequired,

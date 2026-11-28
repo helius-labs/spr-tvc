@@ -5,6 +5,19 @@ function skipWs(text: string, i: number): number {
   return i;
 }
 
+const JSON_ESCAPES: Readonly<Record<string, string>> = {
+  '"': '"',
+  "\\": "\\",
+  "/": "/",
+  b: "\b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+};
+const UNICODE_ESCAPE_HEX_LEN = 4;
+const HEX_RADIX = 16;
+
 function parseString(text: string, start: number): { value: string; next: number } {
   if (text[start] !== '"') throw new DecryptionServiceError("InvalidCanonicalJson");
   let i = start + 1;
@@ -14,25 +27,16 @@ function parseString(text: string, start: number): { value: string; next: number
     if (ch === '"') return { value, next: i + 1 };
     if (ch === "\\") {
       const next = text[i + 1];
-      const map: Record<string, string> = {
-        '"': '"',
-        "\\": "\\",
-        "/": "/",
-        b: "\b",
-        f: "\f",
-        n: "\n",
-        r: "\r",
-        t: "\t",
-      };
-      if (next && map[next] !== undefined) {
-        value += map[next];
+      const escaped = next ? JSON_ESCAPES[next] : undefined;
+      if (escaped !== undefined) {
+        value += escaped;
         i += 2;
         continue;
       }
       if (next === "u") {
-        const hex = text.slice(i + 2, i + 6);
-        value += String.fromCharCode(Number.parseInt(hex, 16));
-        i += 6;
+        const hex = text.slice(i + 2, i + 2 + UNICODE_ESCAPE_HEX_LEN);
+        value += String.fromCharCode(Number.parseInt(hex, HEX_RADIX));
+        i += 2 + UNICODE_ESCAPE_HEX_LEN;
         continue;
       }
       throw new DecryptionServiceError("InvalidCanonicalJson");

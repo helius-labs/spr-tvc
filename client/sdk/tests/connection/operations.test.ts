@@ -1,3 +1,5 @@
+// Covers INV-18 (authenticated replica replies, request/ciphertext digest binding, App Proof & envelope verification).
+
 import { p256 } from "@noble/curves/p256";
 import { describe, expect, it, vi } from "vitest";
 

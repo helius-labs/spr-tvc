@@ -1,3 +1,5 @@
+//! Enclave App Proof low-S normalization and response size ceiling tests (INV-07, INV-08).
+
 use p256::ecdsa::Signature;
 use qos_p256::encrypt::P256EncryptPublic;
 use qos_p256::P256Pair;

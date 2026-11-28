@@ -1,3 +1,5 @@
+//! Canonical hex JSON encoding tests for wire requests and decrypted results (INV-11).
+
 use crate::decryption_service::{DecryptedOutputs, ServiceResult};
 use crate::types::EncryptedRequest;
 
@@ -18,16 +20,29 @@ fn results_encode_plaintexts_as_lowercase_hex_strings() {
         )
     );
     assert_eq!(parse_strict_json::<ServiceResult>(&json).unwrap(), decrypt);
-    for invalid in [
-        json.replace("0102", "0x01"),
-        json.replace("0102", "AB"),
-        json.replace(r#"["0102",""]"#, r#""01""#),
-    ] {
-        assert!(
-            parse_strict_json::<ServiceResult>(&invalid).is_err(),
+    for invalid in [json.replace("0102", "0x01"), json.replace("0102", "AB")] {
+        assert_eq!(
+            parse_strict_json::<ServiceResult>(&invalid)
+                .unwrap_err()
+                .code,
+            crate::error::ErrorCode::InvalidHex,
             "{invalid}"
         );
     }
+    assert_eq!(
+        parse_strict_json::<ServiceResult>(&json.replace(r#"["0102",""]"#, r#""01""#))
+            .unwrap_err()
+            .code,
+        crate::error::ErrorCode::InvalidCanonicalJson
+    );
+    assert_eq!(
+        parse_strict_json::<EncryptedRequest>(
+            r#"{"version":1,"quorum_key_id":"q","quorum_key_epoch":"01","ciphertext":"ff"}"#
+        )
+        .unwrap_err()
+        .code,
+        crate::error::ErrorCode::InvalidDecimal
+    );
 }
 
 #[test]

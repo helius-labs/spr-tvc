@@ -1,3 +1,5 @@
+//! Live hosted operations end-to-end test, ignored without SPR_E2E_* env vars (INV-13, INV-18, INV-28).
+
 #[path = "common/mod.rs"]
 mod support;
 
@@ -31,9 +33,9 @@ struct Pcrs {
 }
 
 #[test]
-#[ignore = "needs SPR_E2E_GATEKEEPER_URL, an API key, and SPR_E2E_RELEASE_PIN"]
+#[ignore = "needs SPR_E2E_ENDPOINT, an API key, and SPR_E2E_RELEASE_PIN"]
 fn operations_open_one_note() {
-    let endpoint = std::env::var("SPR_E2E_GATEKEEPER_URL").expect("SPR_E2E_GATEKEEPER_URL");
+    let endpoint = std::env::var("SPR_E2E_ENDPOINT").expect("SPR_E2E_ENDPOINT");
     let api_key = std::env::var("HELIUS_API_KEY")
         .or_else(|_| std::env::var("API_KEY"))
         .expect("HELIUS_API_KEY or API_KEY");

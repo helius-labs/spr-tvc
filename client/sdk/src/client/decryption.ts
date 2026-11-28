@@ -1,11 +1,16 @@
 import { ShieldedAddress, ShieldedPublicKey, type Bytes32 } from "@heliuslabs/spr";
 import { X25519PublicKey, type Bytes31 } from "@heliuslabs/spr/keypair";
-import { address as solanaAddress, createSignableMessage, getAddressEncoder, type Address, type MessagePartialSigner } from "@solana/kit";
+import { getAddressEncoder, type Address, type MessagePartialSigner } from "@solana/kit";
 
 import type { BootProofResolver, EnclaveBackend } from "../connection/backend.js";
 import type { DecryptionServiceTransport } from "../connection/http.js";
-import { awaitWithSignal, requestScope, type DecryptionServiceRequestOptions } from "../connection/request.js";
+import { requestScope, type DecryptionServiceRequestOptions } from "../connection/request.js";
 import { createDecryptionServiceSession, type DecryptionServiceSession } from "../connection/session.js";
+import {
+  NULLIFIER_SECRET_LEN,
+  SHA256_LEN,
+  X25519_PUBLIC_KEY_LEN,
+} from "../wire/constants.js";
 import {
   acceptViewGrantWindow,
   viewGrantDigest,
@@ -19,7 +24,14 @@ import { requireNetwork } from "../wire/network.js";
 import { releaseForConnection, type ReleaseTrust } from "../wire/releases.js";
 import type { DecryptItem, Network } from "../wire/types.js";
 import { batched, checkHexList } from "./items.js";
-import { executeServiceCall, type ServiceCall, type ServiceCallResult } from "./exchange.js";
+import {
+  executeServiceCall,
+  signOffchainMessage,
+  validateGrantForTarget,
+  validateGrantIdentity,
+  type ServiceCall,
+  type ServiceCallResult,
+} from "./exchange.js";
 import { ServiceKeys, type DecryptionServiceKeys } from "./keys.js";
 const addressEncoder = getAddressEncoder();
 
@@ -80,20 +92,19 @@ export async function signViewGrant(
   },
   options?: DecryptionServiceRequestOptions,
 ): Promise<ViewGrant> {
+  const network = requireNetwork(input.network);
+  if (input.grantee === owner.address) {
+    throw new DecryptionServiceError("InvalidSignature");
+  }
   acceptViewGrantWindow(input.notBeforeMs, input.expiryMs, input.notBeforeMs);
-  const unsigned = viewGrantWire({ ...input, owner: owner.address });
+  const unsigned = viewGrantWire({ ...input, network, owner: owner.address });
   const message = viewGrantMessage(
     new Uint8Array(addressEncoder.encode(owner.address)),
     viewGrantDigest(unsigned),
   );
   const scope = requestScope(options);
   try {
-    const [signatures] = await awaitWithSignal(
-      owner.signMessages([createSignableMessage(message)], { abortSignal: scope.signal }),
-      scope.signal,
-    );
-    const signature = signatures?.[owner.address];
-    if (signature?.length !== 64) throw new DecryptionServiceError("InvalidSignature");
+    const signature = await signOffchainMessage(owner, message, scope.signal);
     return { ...unsigned, signature: encodeLowerHex(signature) };
   } finally {
     scope.dispose();
@@ -133,8 +144,8 @@ export function decryptionServiceFromSession(
     const keys = await call({ type: "PublicKeys", address: owner }, signal);
     return ShieldedAddress.fromPublicKeys(
       ShieldedPublicKey.fromEd25519(new Uint8Array(addressEncoder.encode(owner)) as Bytes32),
-      requireHex(keys.nullifier_public_key, 32) as Bytes32,
-      X25519PublicKey.fromBytes(requireHex(keys.viewing_public_key, 33)),
+      requireHex(keys.nullifier_public_key, SHA256_LEN) as Bytes32,
+      X25519PublicKey.fromBytes(requireHex(keys.viewing_public_key, X25519_PUBLIC_KEY_LEN)),
     );
   }
 
@@ -154,7 +165,7 @@ export function decryptionServiceFromSession(
           ...(grant === undefined ? {} : { grant }),
         }, signal);
         checkHexList(result.plaintexts, batch.length);
-        const next = requireHex(result.nullifier_secret, 31) as Bytes31;
+        const next = requireHex(result.nullifier_secret, NULLIFIER_SECRET_LEN) as Bytes31;
         secret?.fill(0);
         secret = next;
         return result.plaintexts.map((plaintext) => decodeLowerHex(plaintext));
@@ -176,7 +187,12 @@ export function decryptionServiceFromSession(
     keys(signer, options) {
       return withinRequest(options, async (signal) => {
         const grant = options?.grant;
-        const owner = grant === undefined ? signer.address : solanaAddress(grant.owner);
+        let owner: Address = signer.address;
+        if (grant !== undefined) {
+          owner = validateGrantIdentity(grant, signer.address);
+          const context = await session.context(signal);
+          validateGrantForTarget(grant, signer.address, context.target, context.nowMs());
+        }
         const shielded = await address(owner, signal);
         return new ServiceKeys(shielded, (items, context) =>
           withinRequest(context, (batchSignal) => decryptItems(signer, items, batchSignal, grant)));

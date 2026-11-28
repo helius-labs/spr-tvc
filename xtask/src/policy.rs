@@ -10,13 +10,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use spr_tvc_wire::constants::{
     API_VERSION, EXPECTED_TURNKEY_TRUST_ROOT_ID, MAX_ENCRYPTED_POLICY_BYTES,
-    MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES,
+    MAX_ENCRYPTED_REQUEST_BYTES, MAX_ENCRYPTED_RESPONSE_BYTES, MAX_SAFE_INTEGER,
+    MIN_MAINNET_THRESHOLD,
 };
-use spr_tvc_wire::crypto::{parse_uncompressed_sec1, public_key_uncompressed};
+use spr_tvc_wire::crypto::public_key_uncompressed;
 use spr_tvc_wire::decryption_service::SERVICE_PROOF_TYPE;
 use spr_tvc_wire::encoding::hex as wire_hex;
 use spr_tvc_wire::release::{
-    policy_signing_digest, sign_release_policy, verify_signed_release_policy,
+    policy_signing_digest, sign_release_policy, verify_signed_release_policy, MainnetTrust,
     PinnedReleaseAuthorities, ReleaseAuthorityKey,
 };
 use spr_tvc_wire::types::{
@@ -27,26 +28,14 @@ use zeroize::Zeroizing;
 
 use crate::stage::{Deployment, Descriptor};
 use crate::tools::{capture_check, verify_live, Credentials};
-use crate::{app_config, lower_hex, read_json, write_json, Pcrs, Phase, Release};
+use crate::{app_config, read_json, write_json, Phase, Release};
 
 pub(crate) const OPERATIONS: [OperationKind; 2] = [
     OperationKind::ServicePublicKeys,
     OperationKind::ServiceDecrypt,
 ];
-const DAY_MS: u64 = 86_400_000;
-const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MainnetTrust {
-    pub(crate) release_authorities: PinnedReleaseAuthorities,
-    pub(crate) qos_identity_pcrs: Pcrs,
-    #[serde(with = "wire_hex")]
-    pub(crate) security_domain_id: [u8; 32],
-    #[serde(with = "wire_hex")]
-    pub(crate) quorum_public_key: Vec<u8>,
-    pub(crate) maximum_policy_lifetime_ms: u64,
-}
+const DAY_MS: u64 = 24 * 60 * 60 * 1_000;
+const MAX_MANIFEST_B64_BYTES: usize = 1024 * 1024;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,6 +71,8 @@ pub(crate) struct Approved {
     pub(crate) quorum_public_key: Vec<u8>,
     pub(crate) namespace: String,
     pub(crate) manifest_set: ManifestSetPolicy,
+    #[serde(skip_serializing)]
+    pub(crate) manifest_nonce: u32,
 }
 
 impl TurnkeyDeployment {
@@ -117,7 +108,7 @@ impl TurnkeyDeployment {
         );
         let encoded = &self.manifest.manifest;
         ensure!(
-            !encoded.is_empty() && encoded.len() <= 1_048_576,
+            !encoded.is_empty() && encoded.len() <= MAX_MANIFEST_B64_BYTES,
             "deployment has no supported manifest"
         );
         let manifest: ManifestV2 = serde_json::from_slice(&STANDARD.decode(encoded)?)?;
@@ -128,8 +119,10 @@ impl TurnkeyDeployment {
             "measured launch arguments, environment, or debug mode differ from the descriptor"
         );
         if mainnet {
+            let min_threshold = u32::from(MIN_MAINNET_THRESHOLD);
             ensure!(
-                manifest.manifest_set.threshold >= 2 && manifest.share_set.threshold >= 2,
+                manifest.manifest_set.threshold >= min_threshold
+                    && manifest.share_set.threshold >= min_threshold,
                 "mainnet requires threshold manifest approval and share recovery"
             );
         }
@@ -159,6 +152,7 @@ impl TurnkeyDeployment {
                     })
                     .collect(),
             },
+            manifest_nonce: manifest.namespace.nonce,
         })
     }
 }
@@ -269,13 +263,20 @@ impl Release<'_> {
             valid_from_ms > 0 && expires_at_ms > valid_from_ms && expires_at_ms <= MAX_SAFE_INTEGER,
             "invalid policy lifetime"
         );
+        let minimum_manifest_nonce = u64::from(self.args.minimum_manifest_nonce.unwrap_or(0));
+        ensure!(
+            u64::from(approved.manifest_nonce) >= minimum_manifest_nonce,
+            "approved manifest nonce {} is below --minimum-manifest-nonce {}",
+            approved.manifest_nonce,
+            minimum_manifest_nonce
+        );
         Ok(ReleasePolicy {
             version: API_VERSION,
             network: self.network(),
             security_domain_id: self.app.security_domain_id,
             namespace: approved.namespace.clone(),
             manifest_set: approved.manifest_set.clone(),
-            minimum_manifest_nonce: 0,
+            minimum_manifest_nonce,
             quorum_key_id: self.app.quorum_key_id.clone(),
             quorum_key_epoch: self.app.quorum_key_epoch,
             quorum_public_key: approved.quorum_public_key.clone(),
@@ -316,7 +317,6 @@ impl Release<'_> {
             .map_or(&self.config.qos_identity_pcrs, |trust| {
                 &trust.qos_identity_pcrs
             });
-        validate_pcrs(pcrs)?;
         if let Some(signed) = &signed {
             verify_mainnet_policy(
                 signed,
@@ -373,41 +373,6 @@ impl Release<'_> {
     }
 }
 
-impl MainnetTrust {
-    pub(crate) fn validate(&self) -> Result<()> {
-        let authorities = &self.release_authorities;
-        ensure!(
-            authorities.threshold >= 2
-                && usize::from(authorities.threshold) <= authorities.keys.len(),
-            "mainnet requires two or more distinct release authorities"
-        );
-        let mut ids = std::collections::HashSet::new();
-        let mut public_keys = std::collections::HashSet::new();
-        for key in &authorities.keys {
-            parse_uncompressed_sec1(&key.public_key)?;
-            ensure!(
-                ids.insert(&key.key_id) && public_keys.insert(&key.public_key),
-                "duplicate release authority"
-            );
-        }
-        ensure!(
-            (1..=MAX_SAFE_INTEGER).contains(&self.maximum_policy_lifetime_ms),
-            "invalid mainnet policy lifetime"
-        );
-        P256Public::from_bytes(&self.quorum_public_key)
-            .map_err(|error| anyhow::anyhow!("invalid pinned Quorum key ({error:?})"))?;
-        validate_pcrs(&self.qos_identity_pcrs)
-    }
-}
-
-fn validate_pcrs(pcrs: &Pcrs) -> Result<()> {
-    ensure!(
-        pcrs.len() == 4 && (0..=3).all(|i| pcrs.get(&i).is_some_and(|pcr| lower_hex(pcr, 96))),
-        "expected four pinned 48-byte PCRs"
-    );
-    Ok(())
-}
-
 fn now_ms() -> Result<u64> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)?
@@ -421,10 +386,23 @@ pub(crate) fn verify_mainnet_policy(
     trust: &MainnetTrust,
     now: u64,
 ) -> Result<()> {
+    let policy = &signed.policy;
+    let normalized = ReleasePolicy {
+        minimum_manifest_nonce: expected.minimum_manifest_nonce,
+        expires_at_ms: expected.expires_at_ms,
+        revocation_epoch: expected.revocation_epoch,
+        ..policy.clone()
+    };
     ensure!(
-        &signed.policy == expected,
+        normalized == *expected,
         "signed mainnet policy does not match the attested candidate"
     );
+    ensure!(
+        policy.minimum_manifest_nonce >= expected.minimum_manifest_nonce
+            && policy.minimum_manifest_nonce <= u64::from(u32::MAX),
+        "signed mainnet policy manifest nonce floor is out of range"
+    );
+    trust.check_policy_bounds(policy)?;
     verify_signed_release_policy(signed, &trust.release_authorities, Network::Mainnet, now)?;
     Ok(())
 }

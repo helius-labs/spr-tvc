@@ -1,3 +1,5 @@
+//! Gateway project UUID and API key extraction tests (INV-23).
+
 use axum::http::Request;
 
 use super::*;
@@ -24,24 +26,24 @@ fn parts(uri: &str, header: Option<&str>) -> Parts {
 
 #[test]
 fn the_api_key_is_the_header_or_the_api_key_query_parameter() {
-    let session = "/v1/private-wallet/session";
+    let operations = "/v1/decryption/operations";
     assert_eq!(
-        api_key(&parts(&format!("{session}?api-key=k1"), None)),
+        api_key(&parts(&format!("{operations}?api-key=k1"), None)),
         Some("k1")
     );
     assert_eq!(
-        api_key(&parts(&format!("{session}?a=1&api-key=k1"), None)),
+        api_key(&parts(&format!("{operations}?a=1&api-key=k1"), None)),
         Some("k1")
     );
     assert_eq!(
-        api_key(&parts(&format!("{session}?api-key=k1"), Some("k2"))),
+        api_key(&parts(&format!("{operations}?api-key=k1"), Some("k2"))),
         Some("k2")
     );
     assert_eq!(
-        api_key(&parts(&format!("{session}?xapi-key=k1"), None)),
+        api_key(&parts(&format!("{operations}?xapi-key=k1"), None)),
         None
     );
-    assert_eq!(api_key(&parts(session, None)), None);
+    assert_eq!(api_key(&parts(operations, None)), None);
 }
 
 impl ProjectId {

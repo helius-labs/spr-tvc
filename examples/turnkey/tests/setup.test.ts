@@ -1,3 +1,5 @@
+// Covers INV-30 (RPC genesis preflight validation before credential loading).
+
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 

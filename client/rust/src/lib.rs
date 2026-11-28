@@ -7,8 +7,8 @@
 //! checks that the pinned manifest set approved the manifest in the reply,
 //! then the Nitro document, PCR0–3, and PCR17, and opens the reply only after
 //! the App Proof names the request. A failed Boot Proof is
-//! `BootProofUnverified` and names the stage: `decode`, `shape`, `timestamp`,
-//! `bindings`, or `aws-chain`. The reply stays sealed.
+//! `BootProofUnverified` and names the stage: `manifest`, `decode`, `shape`,
+//! `timestamp`, `bindings`, or `aws-chain`. The reply stays sealed.
 //! [`OperationsClient`] posts `keys` and `decrypt` to
 //! `/v1/decryption/operations` and checks the Boot Proof bundled in that reply
 //! the same way.
@@ -32,6 +32,7 @@ pub use transport::{ReqwestTransport, Transport};
 
 use std::fmt::{Display, Formatter, Result as FmtResult};
 
+use spr_tvc_wire::decryption_service::{ADDRESS_LEN, ED25519_SIGNATURE_LEN};
 use spr_tvc_wire::error::TvcError;
 use spr_tvc_wire::release::PinnedReleaseAuthorities;
 use spr_tvc_wire::Network;
@@ -43,8 +44,8 @@ pub use crate::session::BootProofs;
 
 /// Signs the Solana off-chain message for one `Decrypt`.
 pub trait OwnerSigner {
-    fn pubkey(&self) -> [u8; 32];
-    fn sign_offchain(&self, message: &[u8]) -> Result<[u8; 64], ClientError>;
+    fn pubkey(&self) -> [u8; ADDRESS_LEN];
+    fn sign_offchain(&self, message: &[u8]) -> Result<[u8; ED25519_SIGNATURE_LEN], ClientError>;
 }
 
 /// Failure without response bytes or key material in the display.

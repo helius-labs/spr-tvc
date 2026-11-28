@@ -1,3 +1,5 @@
+//! Enclave delegated view-grant authorization and window enforcement tests (INV-09).
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::Signer as _;
@@ -158,11 +160,61 @@ fn a_grant_is_refused_outside_its_rules() {
         &signed(&service, &grantee, items.clone(), Some(flipped)),
     );
 
-    let mut other_epoch = valid;
+    let mut other_epoch = valid.clone();
     other_epoch.quorum_key_epoch = other_epoch.quorum_key_epoch.wrapping_add(1);
     other_epoch.signature = sign(&owner, &other_epoch);
     refused(
         &service,
-        &signed(&service, &grantee, items, Some(other_epoch)),
+        &signed(&service, &grantee, items.clone(), Some(other_epoch)),
     );
+
+    // Not-yet-valid grant (future not_before_ms).
+    refused(
+        &service,
+        &signed(
+            &service,
+            &grantee,
+            items.clone(),
+            Some(grant(
+                &service,
+                &owner,
+                &grantee,
+                now + 60_000,
+                now + 120_000,
+            )),
+        ),
+    );
+
+    // Self-grant (owner == grantee).
+    refused(
+        &service,
+        &signed(
+            &service,
+            &owner,
+            items.clone(),
+            Some(grant(&service, &owner, &owner, now - 60_000, now + 60_000)),
+        ),
+    );
+
+    // Wrong network bound inside the grant.
+    let mut wrong_network = valid.clone();
+    wrong_network.network = super::other(service.info.network);
+    wrong_network.signature = sign(&owner, &wrong_network);
+    refused(
+        &service,
+        &signed(&service, &grantee, items.clone(), Some(wrong_network)),
+    );
+
+    // Wrong quorum_key_id bound inside the grant.
+    let mut wrong_quorum = valid.clone();
+    wrong_quorum.quorum_key_id.push_str("-other");
+    wrong_quorum.signature = sign(&owner, &wrong_quorum);
+    refused(
+        &service,
+        &signed(&service, &grantee, items.clone(), Some(wrong_quorum)),
+    );
+
+    // A stranger signing a decrypt request carrying grantee's valid grant.
+    let stranger = SigningKey::from_bytes(&[12; 32]);
+    refused(&service, &signed(&service, &stranger, items, Some(valid)));
 }

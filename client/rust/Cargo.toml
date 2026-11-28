@@ -26,14 +26,16 @@ bs58 = { version = "=0.5.1" }
 getrandom = { version = "=0.2.17" }
 hex = { version = "=0.4.3" }
 hkdf = { version = "=0.12.4" }
-p384 = { version = "=0.13.1", default-features = false, features = ["arithmetic", "ecdsa", "std"] }
+p384 = { version = "=0.13.1", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8", "std"] }
 qos_p256.workspace = true
 reqwest = { version = "=0.12.24", default-features = false, features = ["blocking", "charset", "rustls-tls"] }
+rustls-pki-types = { version = "=1.16.0", default-features = false, features = ["std"] }
+rustls-webpki = { version = "=0.103.17", default-features = false, features = ["ring", "std"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 sha2 = { version = "=0.10.9" }
 spr-keypair.workspace = true
 spr-tvc-wire = { path = "../../wire" }
-x509-cert = { version = "=0.2.5", default-features = false, features = ["std"] }
+x509-cert = { version = "=0.2.5", default-features = false, features = ["pem", "std"] }
 zeroize = { version = "=1.9.0", features = ["zeroize_derive"] }
 
 [[test]]
@@ -42,5 +44,5 @@ path = "tests/loopback.rs"
 required-features = ["local-dev"]
 
 [[test]]
-name = "gatekeeper"
-path = "tests/gatekeeper.rs"
+name = "hosted_operations"
+path = "tests/hosted_operations.rs"

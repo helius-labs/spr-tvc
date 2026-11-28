@@ -31,6 +31,7 @@ pub enum ErrorCode {
     DiscoveryUntrusted,
     NetworkMismatch,
     ReleasePolicyInvalid,
+    ReleaseNotPinned,
 }
 
 impl ErrorCode {
@@ -48,8 +49,9 @@ impl Display for ErrorCode {
 /// Typed error. Display is the code name only: no IDs, payloads, or secrets.
 ///
 /// `detail` is set only for [`ErrorCode::BootProofUnverified`]. It is one of
-/// `decode`, `shape`, `timestamp`, `bindings`, and `aws-chain`, the same stage
-/// names the TypeScript client reports. It is not a second error code.
+/// `manifest`, `decode`, `shape`, `timestamp`, `bindings`, and `aws-chain`,
+/// the same stage names the TypeScript client reports. It is not a second
+/// error code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TvcError {
     pub code: ErrorCode,

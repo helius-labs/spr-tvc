@@ -1,3 +1,5 @@
+//! Decryption request digest, Solana off-chain message, strict parsing, and view-grant window tests (INV-04, INV-09).
+
 use sha2::{Digest, Sha256};
 
 use crate::decryption_service::{

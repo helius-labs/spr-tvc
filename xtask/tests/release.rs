@@ -1,3 +1,5 @@
+//! Release CLI phase/network validation and deployment record tests (INV-21).
+
 use std::fs;
 
 use clap::Parser;
@@ -24,6 +26,7 @@ fn release_requires_inputs_for_its_phase_and_network() {
         ("stage", "mainnet", vec![]),
         ("stage", "mainnet", vec!["--source-commit", &sha[..12]]),
         ("pin", "mainnet", vec!["--source-commit", &sha]),
+        ("stage", "devnet", vec!["--minimum-manifest-nonce", "2"]),
     ] {
         assert!(
             parse(phase, network, &args).unwrap().validate().is_err(),

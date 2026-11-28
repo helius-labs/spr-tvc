@@ -12,11 +12,13 @@ use spr_keypair::pubkey::PublicKey;
 use spr_keypair::x25519::X25519Pubkey;
 use spr_keypair::ShieldedAddress;
 use spr_tvc_wire::body_limit::encrypted_request_http_len;
-use spr_tvc_wire::constants::{API_VERSION, QOS_P256_PUBLIC_LEN};
+use spr_tvc_wire::constants::{
+    API_VERSION, QOS_P256_PUBLIC_LEN, SEC1_UNCOMPRESSED_LEN, SHA256_LEN,
+};
 use spr_tvc_wire::decryption_service::{
     accept_view_grant_window, decrypt_message, service_request_digest, view_grant_digest,
     view_grant_message, DecryptedOutputs, ServiceOperation, ServiceRequest, ServiceResult,
-    ViewGrant, ADDRESS_LEN,
+    ViewGrant, ADDRESS_LEN, ED25519_SIGNATURE_LEN, NULLIFIER_SECRET_LEN, X25519_PUBLIC_KEY_LEN,
 };
 use spr_tvc_wire::digest::result_digest;
 use spr_tvc_wire::encoding::{is_rfc8785, jcs_serialize};
@@ -29,7 +31,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::attestation::BootProof;
 use crate::session::{
-    decrypt_response, ensure_operation, response_keypair, verify_app_signature, Session,
+    decrypt_response, ensure_operation, join, response_keypair, verify_app_signature, Session,
 };
 use crate::transport::Transport;
 use crate::{BootProofs, ClientError, OwnerSigner};
@@ -41,7 +43,7 @@ pub(crate) const RESPONSE_ENVELOPE_SLACK: u64 = 65_536;
 #[derive(Debug, Clone)]
 pub struct Note {
     pub ciphertext: Vec<u8>,
-    pub ephemeral_viewing_public_key: [u8; 33],
+    pub ephemeral_viewing_public_key: [u8; X25519_PUBLIC_KEY_LEN],
     pub salt: Vec<u8>,
     pub slot_index: u64,
     pub label: spr_tvc_wire::DecryptLabel,
@@ -59,25 +61,12 @@ impl<T: Transport, B: BootProofs> DecryptionClient<T, B> {
 
     /// The shielded address a sender pays `owner` at before that owner registers.
     pub fn address(&self, owner: &[u8; ADDRESS_LEN]) -> Result<ShieldedAddress, ClientError> {
-        ensure_operation(
-            &self.session.release().policy,
-            OperationKind::ServicePublicKeys,
-        )?;
-        let result = self.call(
-            ServiceOperation::PublicKeys {
-                address: bs58::encode(owner).into_string(),
-            },
-            None,
-            owner,
-        )?;
-        shielded_address(owner, result)
+        fetch_address(self, owner)
     }
 
     /// Keys for `signer`. Does not call `Decrypt`.
     pub fn keys<'a>(&'a self, signer: &'a dyn OwnerSigner) -> Result<ServiceKeys<'a>, ClientError> {
-        let owner = signer.pubkey();
-        let address = self.address(&owner)?;
-        Ok(ServiceKeys::new(self, signer, address, None))
+        open_keys(self, signer)
     }
 
     /// Keys for the grant's owner. `grantee` signs each later `Decrypt`.
@@ -86,60 +75,7 @@ impl<T: Transport, B: BootProofs> DecryptionClient<T, B> {
         grantee: &'a dyn OwnerSigner,
         grant: &'a ViewGrant,
     ) -> Result<ServiceKeys<'a>, ClientError> {
-        let owner = grant_owner(
-            grantee,
-            grant,
-            &self.session.release().policy,
-            self.session.now_ms(),
-        )?;
-        let address = self.address(&owner)?;
-        Ok(ServiceKeys::new(self, grantee, address, Some(grant)))
-    }
-
-    fn call(
-        &self,
-        operation: ServiceOperation,
-        signer: Option<&dyn OwnerSigner>,
-        owner: &[u8; ADDRESS_LEN],
-    ) -> Result<ServiceResult, ClientError> {
-        Exchange {
-            target: Target::from_policy(&self.session.release().policy),
-            operation,
-            signer,
-            owner,
-            checker: self,
-        }
-        .run()
-    }
-
-    fn decrypt_items(
-        &self,
-        signer: &dyn OwnerSigner,
-        items: Vec<DecryptItem>,
-        grant: Option<&ViewGrant>,
-    ) -> Result<DecryptedOutputs, ClientError> {
-        ensure_operation(
-            &self.session.release().policy,
-            OperationKind::ServiceDecrypt,
-        )?;
-        let owner = signer.pubkey();
-        let result = self.call(
-            decrypt_operation(
-                signer,
-                items,
-                grant,
-                &self.session.release().policy,
-                self.session.now_ms(),
-            )?,
-            Some(signer),
-            &owner,
-        )?;
-        match result {
-            ServiceResult::Decrypt(outputs) => Ok(outputs),
-            ServiceResult::PublicKeys { .. } => {
-                Err(TvcError::new(ErrorCode::ReleaseBindingMismatch).into())
-            }
-        }
+        open_keys_for(self, grantee, grant)
     }
 }
 
@@ -153,16 +89,21 @@ pub(crate) trait OpenNotes {
 }
 
 impl<T: Transport, B: BootProofs> CheckReply for DecryptionClient<T, B> {
+    fn policy(&self) -> &ReleasePolicy {
+        &self.session.release().policy
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.session.now_ms()
+    }
+
     fn gate(&self) -> Result<(), TvcError> {
         self.session.require_current()
     }
 
     fn post_operation(&self, body: &str, limit: usize) -> Result<Vec<u8>, ClientError> {
         self.transport.post(
-            &format!(
-                "{}/v1/operations",
-                self.session.endpoint().trim_end_matches('/')
-            ),
+            &join(self.session.endpoint(), "/v1/operations"),
             body,
             limit,
         )
@@ -184,7 +125,7 @@ impl<T: Transport, B: BootProofs> CheckReply for DecryptionClient<T, B> {
     fn check_reply(
         &self,
         proof: &AppProof,
-        request_digest: &[u8; 32],
+        request_digest: &[u8; SHA256_LEN],
         encrypted_result: &[u8],
         request: &ServiceRequest,
         _: Option<&BootProof>,
@@ -202,7 +143,7 @@ impl<T: Transport, B: BootProofs> OpenNotes for DecryptionClient<T, B> {
         items: Vec<DecryptItem>,
         grant: Option<&ViewGrant>,
     ) -> Result<DecryptedOutputs, ClientError> {
-        DecryptionClient::decrypt_items(self, signer, items, grant)
+        decrypt_items_with(self, signer, items, grant)
     }
 }
 
@@ -212,7 +153,7 @@ pub struct ServiceKeys<'a> {
     signer: &'a dyn OwnerSigner,
     address: ShieldedAddress,
     grant: Option<&'a ViewGrant>,
-    secret: Option<Zeroizing<[u8; 31]>>,
+    secret: Option<Zeroizing<[u8; NULLIFIER_SECRET_LEN]>>,
 }
 
 impl<'a> ServiceKeys<'a> {
@@ -251,7 +192,7 @@ impl ServiceKeys<'_> {
     /// A copy of the nullifier secret. The caller wipes it.
     ///
     /// The first note decrypt supplies it. A spend that has not opened notes fetches it once.
-    pub fn nullifier_secret(&mut self) -> Result<[u8; 31], ClientError> {
+    pub fn nullifier_secret(&mut self) -> Result<[u8; NULLIFIER_SECRET_LEN], ClientError> {
         if self.secret.is_none() {
             let outputs = self.open(Vec::new())?;
             self.store_secret(outputs.nullifier_secret);
@@ -263,9 +204,9 @@ impl ServiceKeys<'_> {
     }
 
     /// HKDF seed the wallet uses for local transaction viewing keys.
-    pub fn transaction_viewing_seed(&mut self) -> Result<[u8; 32], ClientError> {
+    pub fn transaction_viewing_seed(&mut self) -> Result<[u8; SHA256_LEN], ClientError> {
         let mut secret = self.nullifier_secret()?;
-        let mut seed = [0u8; 32];
+        let mut seed = [0u8; SHA256_LEN];
         Hkdf::<Sha256>::new(None, &secret)
             .expand(TX_KEY_LABEL, &mut seed)
             .expect("32 bytes fits HKDF-SHA256");
@@ -293,7 +234,7 @@ impl ServiceKeys<'_> {
         }
     }
 
-    fn store_secret(&mut self, mut secret: [u8; 31]) {
+    fn store_secret(&mut self, mut secret: [u8; NULLIFIER_SECRET_LEN]) {
         if self.secret.is_some() {
             secret.zeroize();
             return;
@@ -327,7 +268,7 @@ impl SignViewGrant<'_> {
             quorum_key_epoch: self.quorum_key_epoch,
             not_before_ms: self.not_before_ms,
             expiry_ms: self.expiry_ms,
-            signature: [0; 64],
+            signature: [0; ED25519_SIGNATURE_LEN],
         };
         let digest = view_grant_digest(&grant)?;
         grant.signature = owner.sign_offchain(&view_grant_message(&owner.pubkey(), &digest))?;
@@ -335,7 +276,71 @@ impl SignViewGrant<'_> {
     }
 }
 
-pub(crate) fn decrypt_operation(
+pub(crate) fn fetch_address(
+    checker: &dyn CheckReply,
+    owner: &[u8; ADDRESS_LEN],
+) -> Result<ShieldedAddress, ClientError> {
+    let policy = checker.policy();
+    ensure_operation(policy, OperationKind::ServicePublicKeys)?;
+    let result = Exchange {
+        target: Target::from_policy(policy),
+        operation: ServiceOperation::PublicKeys {
+            address: bs58::encode(owner).into_string(),
+        },
+        signer: None,
+        owner,
+        checker,
+    }
+    .run()?;
+    shielded_address(owner, result)
+}
+
+pub(crate) fn open_keys<'a, C: CheckReply + OpenNotes>(
+    client: &'a C,
+    signer: &'a dyn OwnerSigner,
+) -> Result<ServiceKeys<'a>, ClientError> {
+    let owner = signer.pubkey();
+    let address = fetch_address(client, &owner)?;
+    Ok(ServiceKeys::new(client, signer, address, None))
+}
+
+pub(crate) fn open_keys_for<'a, C: CheckReply + OpenNotes>(
+    client: &'a C,
+    grantee: &'a dyn OwnerSigner,
+    grant: &'a ViewGrant,
+) -> Result<ServiceKeys<'a>, ClientError> {
+    let owner = grant_owner(grantee, grant, client.policy(), client.now_ms())?;
+    let address = fetch_address(client, &owner)?;
+    Ok(ServiceKeys::new(client, grantee, address, Some(grant)))
+}
+
+pub(crate) fn decrypt_items_with(
+    checker: &dyn CheckReply,
+    signer: &dyn OwnerSigner,
+    items: Vec<DecryptItem>,
+    grant: Option<&ViewGrant>,
+) -> Result<DecryptedOutputs, ClientError> {
+    let policy = checker.policy();
+    ensure_operation(policy, OperationKind::ServiceDecrypt)?;
+    let owner = signer.pubkey();
+    let operation = decrypt_operation(signer, items, grant, policy, checker.now_ms())?;
+    let result = Exchange {
+        target: Target::from_policy(policy),
+        operation,
+        signer: Some(signer),
+        owner: &owner,
+        checker,
+    }
+    .run()?;
+    match result {
+        ServiceResult::Decrypt(outputs) => Ok(outputs),
+        ServiceResult::PublicKeys { .. } => {
+            Err(TvcError::new(ErrorCode::ReleaseBindingMismatch).into())
+        }
+    }
+}
+
+fn decrypt_operation(
     signer: &dyn OwnerSigner,
     items: Vec<DecryptItem>,
     grant: Option<&ViewGrant>,
@@ -347,13 +352,13 @@ pub(crate) fn decrypt_operation(
     }
     Ok(ServiceOperation::Decrypt {
         signer: bs58::encode(signer.pubkey()).into_string(),
-        signature: [0; 64],
+        signature: [0; ED25519_SIGNATURE_LEN],
         items,
         grant: grant.cloned().map(Box::new),
     })
 }
 
-pub(crate) fn grant_owner(
+fn grant_owner(
     grantee: &dyn OwnerSigner,
     grant: &ViewGrant,
     policy: &ReleasePolicy,
@@ -405,6 +410,8 @@ impl<'a> Target<'a> {
 }
 
 pub(crate) trait CheckReply {
+    fn policy(&self) -> &ReleasePolicy;
+    fn now_ms(&self) -> u64;
     fn gate(&self) -> Result<(), TvcError>;
     fn response_overhead(&self) -> u64 {
         RESPONSE_ENVELOPE_SLACK
@@ -415,7 +422,7 @@ pub(crate) trait CheckReply {
     fn check_reply(
         &self,
         proof: &AppProof,
-        request_digest: &[u8; 32],
+        request_digest: &[u8; SHA256_LEN],
         encrypted_result: &[u8],
         request: &ServiceRequest,
         boot: Option<&BootProof>,
@@ -424,7 +431,7 @@ pub(crate) trait CheckReply {
 
 pub(crate) fn bind_operation_proof(
     proof: &AppProof,
-    request_digest: &[u8; 32],
+    request_digest: &[u8; SHA256_LEN],
     encrypted_result: &[u8],
     request: &ServiceRequest,
 ) -> Result<(), ClientError> {
@@ -445,16 +452,16 @@ pub(crate) fn bind_operation_proof(
     Ok(())
 }
 
-pub(crate) struct Exchange<'a> {
-    pub(crate) target: Target<'a>,
-    pub(crate) operation: ServiceOperation,
-    pub(crate) signer: Option<&'a dyn OwnerSigner>,
-    pub(crate) owner: &'a [u8; ADDRESS_LEN],
-    pub(crate) checker: &'a dyn CheckReply,
+struct Exchange<'a> {
+    target: Target<'a>,
+    operation: ServiceOperation,
+    signer: Option<&'a dyn OwnerSigner>,
+    owner: &'a [u8; ADDRESS_LEN],
+    checker: &'a dyn CheckReply,
 }
 
 impl Exchange<'_> {
-    pub(crate) fn run(self) -> Result<ServiceResult, ClientError> {
+    fn run(self) -> Result<ServiceResult, ClientError> {
         let Exchange {
             target,
             operation,
@@ -546,7 +553,7 @@ impl Exchange<'_> {
     }
 }
 
-pub(crate) fn shielded_address(
+fn shielded_address(
     owner: &[u8; ADDRESS_LEN],
     result: ServiceResult,
 ) -> Result<ShieldedAddress, ClientError> {
@@ -580,160 +587,16 @@ fn quorum_encryption_key(public_key: &[u8]) -> Result<P256EncryptPublic, TvcErro
     if public_key.len() != QOS_P256_PUBLIC_LEN {
         return Err(TvcError::new(ErrorCode::InvalidPublicKey));
     }
-    P256EncryptPublic::from_bytes(&public_key[..65])
+    P256EncryptPublic::from_bytes(&public_key[..SEC1_UNCOMPRESSED_LEN])
         .map_err(|_| TvcError::new(ErrorCode::InvalidPublicKey))
 }
 
-fn random_32() -> Result<[u8; 32], ClientError> {
-    let mut bytes = [0u8; 32];
+fn random_32() -> Result<[u8; SHA256_LEN], ClientError> {
+    let mut bytes = [0u8; SHA256_LEN];
     getrandom::getrandom(&mut bytes).map_err(|_| ClientError::Entropy)?;
     Ok(bytes)
 }
 
 #[cfg(test)]
-mod tests {
-    use ed25519_dalek::Signer;
-    use spr_tvc_wire::constants::API_VERSION;
-    use spr_tvc_wire::decryption_service::{
-        view_grant_digest, view_grant_message, MAX_VIEW_GRANT_MS,
-    };
-    use spr_tvc_wire::error::ErrorCode;
-    use spr_tvc_wire::types::{ManifestSetPolicy, Network, ReleasePolicy};
-
-    use super::*;
-
-    struct Key(ed25519_dalek::SigningKey);
-
-    impl Key {
-        fn from_seed(seed: u8) -> Self {
-            Self(ed25519_dalek::SigningKey::from_bytes(&[seed; 32]))
-        }
-    }
-
-    impl OwnerSigner for Key {
-        fn pubkey(&self) -> [u8; 32] {
-            self.0.verifying_key().to_bytes()
-        }
-
-        fn sign_offchain(&self, message: &[u8]) -> Result<[u8; 64], ClientError> {
-            Ok(self.0.sign(message).to_bytes())
-        }
-    }
-
-    fn policy() -> ReleasePolicy {
-        ReleasePolicy {
-            version: API_VERSION,
-            network: Network::Devnet,
-            security_domain_id: [0; 32],
-            namespace: "namespace".into(),
-            manifest_set: ManifestSetPolicy {
-                threshold: 1,
-                members: Vec::new(),
-            },
-            minimum_manifest_nonce: 0,
-            quorum_key_id: "quorum".into(),
-            quorum_key_epoch: 1,
-            quorum_public_key: Vec::new(),
-            allowed_operations: Vec::new(),
-            max_encrypted_request_bytes: 1,
-            max_encrypted_response_bytes: 1,
-            turnkey_trust_root_id: "root".into(),
-            valid_from_ms: 0,
-            expires_at_ms: 1,
-            revocation_epoch: 0,
-        }
-    }
-
-    fn grant_for(grantee: &Key, not_before_ms: u64, expiry_ms: u64) -> SignViewGrant<'static> {
-        SignViewGrant {
-            grantee: grantee.pubkey(),
-            network: Network::Devnet,
-            quorum_key_id: "quorum",
-            quorum_key_epoch: 1,
-            not_before_ms,
-            expiry_ms,
-        }
-    }
-
-    fn code(error: ClientError) -> ErrorCode {
-        match error {
-            ClientError::Protocol(error) => error.code,
-            other => panic!("protocol error, got {other}"),
-        }
-    }
-
-    #[test]
-    fn the_owner_signs_the_grant_and_the_grantee_carries_it() {
-        let owner = Key::from_seed(1);
-        let grantee = Key::from_seed(2);
-        let grant = grant_for(&grantee, 1_000, 1_000 + MAX_VIEW_GRANT_MS)
-            .sign(&owner)
-            .expect("grant");
-        let digest = view_grant_digest(&grant).expect("digest");
-        owner
-            .0
-            .verifying_key()
-            .verify_strict(
-                &view_grant_message(&owner.pubkey(), &digest),
-                &ed25519_dalek::Signature::from_bytes(&grant.signature),
-            )
-            .expect("owner signature");
-
-        let operation = decrypt_operation(&grantee, Vec::new(), Some(&grant), &policy(), 1_000)
-            .expect("decrypt");
-        let ServiceOperation::Decrypt {
-            signer,
-            grant: carried,
-            ..
-        } = operation
-        else {
-            panic!("decrypt operation");
-        };
-        assert_eq!(signer, bs58::encode(grantee.pubkey()).into_string());
-        assert_eq!(
-            carried.expect("grant").owner,
-            bs58::encode(owner.pubkey()).into_string()
-        );
-
-        let other = Key::from_seed(3);
-        assert_eq!(
-            code(grant_owner(&other, &grant, &policy(), 1_000).expect_err("grantee")),
-            ErrorCode::InvalidSignature
-        );
-        assert_eq!(
-            code(
-                grant_owner(&grantee, &grant, &policy(), 1_000 + MAX_VIEW_GRANT_MS)
-                    .expect_err("expired")
-            ),
-            ErrorCode::ExpiredRequest
-        );
-
-        let mut other_network = grant.clone();
-        other_network.network = Network::Mainnet;
-        assert_eq!(
-            code(grant_owner(&grantee, &other_network, &policy(), 1_000).expect_err("network")),
-            ErrorCode::InvalidSignature
-        );
-    }
-
-    #[test]
-    fn a_grant_names_someone_else_for_at_most_thirty_minutes() {
-        let owner = Key::from_seed(1);
-        assert_eq!(
-            code(
-                grant_for(&owner, 1_000, 1_000 + 1)
-                    .sign(&owner)
-                    .expect_err("self")
-            ),
-            ErrorCode::InvalidSignature
-        );
-        assert_eq!(
-            code(
-                grant_for(&Key::from_seed(2), 1_000, 1_000 + MAX_VIEW_GRANT_MS + 1)
-                    .sign(&owner)
-                    .expect_err("span")
-            ),
-            ErrorCode::ExpiredRequest
-        );
-    }
-}
+#[path = "../tests/unit/service.rs"]
+mod tests;

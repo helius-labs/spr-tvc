@@ -1,3 +1,5 @@
+// Covers INV-29 (shared session verification, release expiry renewal, reset & abort isolation).
+
 import { expect, it, vi } from "vitest";
 import { MAX_ENCRYPTED_REQUEST_BYTES } from "../../src/wire/constants.js";
 import type { ConnectedTvcRuntime } from "../../src/connection/connect.js";

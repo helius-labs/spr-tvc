@@ -6,7 +6,9 @@ use axum::response::IntoResponse;
 use p256::ecdsa::Signature;
 use qos_p256::encrypt::P256EncryptPublic;
 use qos_p256::P256Pair;
-use spr_tvc_wire::constants::{API_VERSION, MAX_ENCRYPTED_RESPONSE_BYTES, TVC_APP_PROOF_SCHEME};
+use spr_tvc_wire::constants::{
+    API_VERSION, MAX_ENCRYPTED_RESPONSE_BYTES, SHA256_LEN, TVC_APP_PROOF_SCHEME,
+};
 use spr_tvc_wire::decryption_service::{ServiceRequest, ServiceResult, SERVICE_PROOF_TYPE};
 use spr_tvc_wire::digest::result_digest;
 use spr_tvc_wire::encoding::{is_rfc8785, jcs_serialize};
@@ -66,7 +68,7 @@ pub(crate) fn open_envelope(
 pub(crate) fn respond(
     ephemeral: &P256Pair,
     request: &ServiceRequest,
-    request_digest: [u8; 32],
+    request_digest: [u8; SHA256_LEN],
     response_key: &P256EncryptPublic,
     result: &ServiceResult,
 ) -> Result<String, Failure> {

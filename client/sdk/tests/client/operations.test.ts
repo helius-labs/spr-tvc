@@ -1,3 +1,5 @@
+// Covers INV-18 (reply Boot Proof verification) and INV-28 (HTTPS origin enforcement).
+
 import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha256";
 import { address } from "@solana/kit";
@@ -35,11 +37,11 @@ function qosPublic(encryptionSecret: Uint8Array, signingSecret: Uint8Array): str
 }
 
 function fixture() {
-  const quorumEncryptionSecret = secret("gatekeeper-quorum-encryption");
-  const ephemeralSigningSecret = secret("gatekeeper-ephemeral-signing");
-  const authoritySecret = secret("gatekeeper-authority");
-  const quorumPublicKey = qosPublic(quorumEncryptionSecret, secret("gatekeeper-quorum-signing"));
-  const ephemeralPublicKey = qosPublic(secret("gatekeeper-ephemeral-encryption"), ephemeralSigningSecret);
+  const quorumEncryptionSecret = secret("operations-quorum-encryption");
+  const ephemeralSigningSecret = secret("operations-ephemeral-signing");
+  const authoritySecret = secret("operations-authority");
+  const quorumPublicKey = qosPublic(quorumEncryptionSecret, secret("operations-quorum-signing"));
+  const ephemeralPublicKey = qosPublic(secret("operations-ephemeral-encryption"), ephemeralSigningSecret);
   const policy: ReleasePolicy = {
     version: 1,
     network: "devnet",
@@ -100,12 +102,20 @@ beforeEach(() => {
 
 it("refuses an endpoint that is not an https origin", () => {
   const { release } = fixture();
-  expect(() => createDecryptionService({
-    network: "devnet",
-    endpoint: new URL("http://gate.example"),
-    apiKey: "test-key",
-    release,
-  })).toThrow(expect.objectContaining({ code: "InvalidServiceConfig" }));
+  for (const invalid of [
+    "http://gate.example",
+    "https://gate.example/extra",
+    "https://gate.example?a=1",
+    "https://gate.example#frag",
+    "https://user:pass@gate.example",
+  ]) {
+    expect(() => createDecryptionService({
+      network: "devnet",
+      endpoint: new URL(invalid),
+      apiKey: "test-key",
+      release,
+    })).toThrow(expect.objectContaining({ code: "InvalidServiceConfig" }));
+  }
 });
 
 it("checks the boot proof on the operation reply", async () => {

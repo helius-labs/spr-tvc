@@ -1,6 +1,6 @@
 # Gateway
 
-The gatekeeper is the public edge. It checks a Helius API key and calls this process with its origin credential and the project id. This process calls the firewalled enclave and Turnkey.
+The public edge proxy checks a Helius API key and calls this process with its origin credential and the project id. This process calls the firewalled enclave and Turnkey.
 
 `POST /v1/decryption/operations` forwards the encrypted request unchanged and attaches the Boot Proof of the replica that signed the reply. The same ciphertext returns the first answer, with `Idempotent-Replayed: true`.
 
@@ -14,7 +14,7 @@ Pass one overlay: `--config configs/devnet.yaml` or `--config configs/mainnet.ya
 
 | Variable | Value |
 | --- | --- |
-| `TVC_GATEWAY_ORIGIN_AUTH_HEADER` | The `Authorization` value gatekeeper sends. At least 32 bytes. |
+| `TVC_GATEWAY_ORIGIN_AUTH_HEADER` | The `Authorization` value the edge proxy sends. At least 32 bytes. |
 | `TVC_GATEWAY_TURNKEY__BOOT_PROOF_API_KEY__PUBLIC_KEY` | Turnkey API key in the TVC organization, public half. |
 | `TVC_GATEWAY_TURNKEY__BOOT_PROOF_API_KEY__PRIVATE_KEY` | That key's private half. |
 | `TVC_GATEWAY_ENCLAVE__BASE_URL` | Decryption enclave URL. Required on mainnet. Devnet's overlay pins one. |

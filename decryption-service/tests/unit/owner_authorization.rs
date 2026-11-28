@@ -1,3 +1,5 @@
+//! Enclave owner Ed25519 signature, address validation, and batch binding tests (INV-02, INV-04).
+
 use super::*;
 
 #[test]
